@@ -15,6 +15,22 @@ pub enum ToolErrorCode {
 }
 
 impl ToolErrorCode {
+    // Reverse of as_str: lets the loop map a code string from a tool-returned
+    // envelope back to the enum so error hints can be attached.
+    pub fn from_code(code: &str) -> Option<Self> {
+        match code {
+            "invalid_args" => Some(ToolErrorCode::InvalidArgs),
+            "not_found" => Some(ToolErrorCode::NotFound),
+            "permission_denied" => Some(ToolErrorCode::PermissionDenied),
+            "denied_by_user" => Some(ToolErrorCode::DeniedByUser),
+            "execution_error" => Some(ToolErrorCode::ExecutionError),
+            "hidden" => Some(ToolErrorCode::Hidden),
+            "unknown_tool" => Some(ToolErrorCode::UnknownTool),
+            "limit_exceeded" => Some(ToolErrorCode::LimitExceeded),
+            _ => None,
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             ToolErrorCode::InvalidArgs => "invalid_args",

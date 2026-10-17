@@ -22,7 +22,7 @@ pub enum PermissionPolicy {
     CheckConditional,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct ToolCtx {
     pub project_id: Option<i64>,
     // Set for harness session runs: schedule tools bind new schedules to the

@@ -572,6 +572,7 @@ fn run_agent_inner(
     let config = agent_loop::AgentRunConfig {
         messages: ctx.messages,
         max_steps: MAX_STEPS,
+        limits: agent_loop::RunLimits::default(),
         // Full autopilot (SPEC 5.2) short-circuits the confirmation queue.
         allow_all: app_cfg.autopilot,
         project_id: run.project_id(),
@@ -761,6 +762,7 @@ mod tests {
         agent_loop::AgentRunConfig {
             messages: vec![ChatMessage::system("sys"), ChatMessage::user(user_message)],
             max_steps: 8,
+            limits: agent_loop::RunLimits::default(),
             allow_all: false,
             project_id: None,
             session_id: None,

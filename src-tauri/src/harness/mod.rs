@@ -655,6 +655,7 @@ mod tests {
         let config = agent_loop::AgentRunConfig {
             messages: vec![ChatMessage::system("sys"), ChatMessage::user("go")],
             max_steps: 8,
+            limits: agent_loop::RunLimits::default(),
             allow_all: false,
             project_id: None,
             session_id: None,

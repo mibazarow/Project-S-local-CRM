@@ -9,6 +9,7 @@ pub mod edit_tools;
 pub mod finish;
 pub mod git_tools;
 pub mod harness_tools;
+pub mod hints;
 pub mod permissions;
 pub mod project_tools;
 pub mod prompts;
