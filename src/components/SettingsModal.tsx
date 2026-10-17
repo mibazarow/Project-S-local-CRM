@@ -9,7 +9,6 @@ import type {
   IndexingConfig,
   LlmConfig,
   McpServerStatus,
-  MemoryDto,
   SkillInfo,
   VisionStatus,
 } from "../api/types";
@@ -43,7 +42,6 @@ interface LlmForm {
   apiKey: string;
   model: string;
   contextWindow: string;
-  temperature: string;
   maxTokens: string;
   vision: "auto" | "yes" | "no";
 }
@@ -54,7 +52,6 @@ function toLlmForm(cfg: LlmConfig): LlmForm {
     apiKey: cfg.apiKey,
     model: cfg.model,
     contextWindow: String(cfg.contextWindow),
-    temperature: cfg.temperature == null ? "" : String(cfg.temperature),
     maxTokens: cfg.maxTokens == null ? "" : String(cfg.maxTokens),
     vision: cfg.vision == null ? "auto" : cfg.vision ? "yes" : "no",
   };
@@ -93,15 +90,6 @@ function errMsg(e: unknown): string {
     if (typeof m === "string" && m) return m;
   }
   return typeof e === "string" ? e : "Неизвестная ошибка";
-}
-
-// Comma-separated tag input → trimmed non-empty list (same normalization the
-// backend applies).
-function parseTags(s: string): string[] {
-  return s
-    .split(",")
-    .map((t) => t.trim())
-    .filter(Boolean);
 }
 
 type McpTransportKind = "stdio" | "http" | "sse";
@@ -172,7 +160,7 @@ async function patchMcpServers(
 }
 
 export default function SettingsModal({ onClose }: { onClose: () => void }) {
-  const [tab, setTab] = useState<"llm" | "agent" | "skills" | "mcp" | "memory" | "other">("llm");
+  const [tab, setTab] = useState<"llm" | "agent" | "skills" | "mcp" | "other">("llm");
   const [workingDir, setWorkingDir] = useState<string | null>(null);
   const [configDir, setConfigDir] = useState("");
   const [form, setForm] = useState<Form | null>(null);
@@ -216,14 +204,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [mcpEditing, setMcpEditing] = useState<string | null>(null);
   const [mcpFormError, setMcpFormError] = useState<string | null>(null);
 
-  const [mem, setMem] = useState<MemoryDto[] | null>(null);
-  const [memError, setMemError] = useState<string | null>(null);
-  const [memQuery, setMemQuery] = useState("");
-  const [memNew, setMemNew] = useState({ content: "", tags: "" });
-  const [memEditingId, setMemEditingId] = useState<number | null>(null);
-  const [memDraft, setMemDraft] = useState({ content: "", tags: "" });
-  const [projectNames, setProjectNames] = useState<Record<number, string>>({});
-
   // Last raw config object as read from disk, so unknown keys survive writes.
   const rawRef = useRef<Record<string, unknown> | null>(null);
   const formRef = useRef<Form | null>(null);
@@ -240,10 +220,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const appFormRef = useRef<AppForm | null>(null);
   const appFocusedRef = useRef<keyof AppForm | null>(null);
   const appSaveTimer = useRef<number | undefined>(undefined);
-
-  // Search query kept in a ref so loadMemory (and the memory-changed
-  // listener) stay stable while typing.
-  const memQueryRef = useRef("");
 
   const flushSave = useCallback(() => {
     window.clearTimeout(saveTimer.current);
@@ -311,11 +287,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     patch.model = f.model;
     const cw = parseNum(f.contextWindow);
     if (cw !== null) patch.contextWindow = Math.max(1, Math.round(cw));
-    if (f.temperature.trim() === "") patch.temperature = null;
-    else {
-      const t = parseNum(f.temperature);
-      if (t !== null) patch.temperature = t;
-    }
     if (f.maxTokens.trim() === "") patch.maxTokens = null;
     else {
       const m = parseNum(f.maxTokens);
@@ -468,14 +439,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
       .catch((e) => setMcpError(errMsg(e)));
   }, []);
 
-  const loadMemory = useCallback(() => {
-    const q = memQueryRef.current.trim();
-    const req = q ? ipc.memorySearch(q, 100) : ipc.memoryList();
-    void req
-      .then(setMem)
-      .catch((e) => setMemError(errMsg(e)));
-  }, []);
-
   useEffect(() => {
     void ipc.getWorkingDir().then(setWorkingDir).catch(() => setWorkingDir(null));
     void ipc.configDirPath().then(setConfigDir).catch(() => setConfigDir(""));
@@ -488,11 +451,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     void ipc.getAutostart().then(setAutostart).catch(() => setAutostart(null));
     loadSkills();
     loadMcp();
-    loadMemory();
-    void ipc
-      .listProjects()
-      .then((ps) => setProjectNames(Object.fromEntries(ps.map((p) => [p.id, p.name]))))
-      .catch(() => setProjectNames({}));
 
     let cancelled = false;
     const unlisteners: (() => void)[] = [];
@@ -515,7 +473,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
       ),
     );
     track(ipc.onSkillsChanged(() => loadSkills()));
-    track(ipc.onMemoryChanged(() => loadMemory()));
     return () => {
       cancelled = true;
       unlisteners.forEach((u) => u());
@@ -536,7 +493,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     flushAppSave,
     loadSkills,
     loadMcp,
-    loadMemory,
   ]);
 
   const reindex = () => {
@@ -674,46 +630,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
       })
       .catch((err) => setSkillFormError(errMsg(err)))
       .finally(() => setSkillCreateBusy(false));
-  };
-
-  // memory-changed reloads the list, so add/update/delete need no manual refresh.
-  const addMemory = (e: FormEvent) => {
-    e.preventDefault();
-    const content = memNew.content.trim();
-    if (!content) {
-      setMemError("Впиши текст записи");
-      return;
-    }
-    setMemError(null);
-    void ipc
-      .memoryAdd(content, undefined, parseTags(memNew.tags))
-      .then(() => setMemNew({ content: "", tags: "" }))
-      .catch((err) => setMemError(errMsg(err)));
-  };
-
-  const startMemoryEdit = (m: MemoryDto) => {
-    setMemError(null);
-    setMemEditingId(m.id);
-    setMemDraft({ content: m.content, tags: m.tags.join(", ") });
-  };
-
-  const saveMemoryEdit = (id: number) => {
-    const content = memDraft.content.trim();
-    if (!content) {
-      setMemError("Запись не может быть пустой");
-      return;
-    }
-    setMemError(null);
-    void ipc
-      .memoryUpdate(id, content, parseTags(memDraft.tags))
-      .then(() => setMemEditingId(null))
-      .catch((err) => setMemError(errMsg(err)));
-  };
-
-  const deleteMemory = (m: MemoryDto) => {
-    if (!window.confirm("Удалить запись из памяти?")) return;
-    setMemError(null);
-    void ipc.memoryDelete(m.id).catch((err) => setMemError(errMsg(err)));
   };
 
   const toggleMcp = async (name: string, enabled: boolean) => {
@@ -928,12 +844,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
             MCP
           </button>
           <button
-            className={tab === "memory" ? "settings-tab active" : "settings-tab"}
-            onClick={() => setTab("memory")}
-          >
-            Память
-          </button>
-          <button
             className={tab === "other" ? "settings-tab active" : "settings-tab"}
             onClick={() => setTab("other")}
           >
@@ -1032,17 +942,11 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                 </div>
               </div>
               <div className="set-row">
-                <label>Temperature (необязательно)</label>
-                <input
-                  className="narrow"
-                  type="text"
-                  inputMode="decimal"
-                  value={llmForm?.temperature ?? ""}
-                  onChange={(e) => updateLlmForm({ temperature: e.target.value })}
-                  onFocus={focusLlmField("temperature")}
-                  onBlur={blurLlmField}
-                />
-                <div className="set-hint">Пусто — значение по умолчанию провайдера.</div>
+                <label>Temperature</label>
+                <div className="set-hint">
+                  Фиксирована для каждого агента и не настраивается: проекты и сессии харнеса —
+                  0.2, заметки — 0.4. Поле в llm.json игнорируется.
+                </div>
               </div>
               <div className="set-row">
                 <label>Максимум токенов в ответе (необязательно)</label>
@@ -1132,7 +1036,9 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                   onFocus={focusField("maxMb")}
                   onBlur={blurField}
                 />
-                <div className="set-hint">Файлы больше этого размера в индекс не попадают.</div>
+                <div className="set-hint">
+                  Файлы больше этого размера в индекс не попадают. По умолчанию 10 МБ.
+                </div>
               </div>
               <div className="set-row">
                 <label>Лимит извлечённого текста, символов</label>
@@ -1145,7 +1051,10 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                   onFocus={focusField("maxChars")}
                   onBlur={blurField}
                 />
-                <div className="set-hint">Из одного большого файла берётся не больше этого куска текста.</div>
+                <div className="set-hint">
+                  Из одного большого файла берётся не больше этого куска текста. По умолчанию
+                  1 000 000 символов.
+                </div>
               </div>
               <div className="set-row">
                 <label>Исключать из индекса (через запятую)</label>
@@ -1520,116 +1429,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                   )}
                 </div>
                 {mcpFormError && <div className="set-error">{mcpFormError}</div>}
-              </form>
-            </>
-          )}
-          {tab === "memory" && (
-            <>
-              <div className="set-hint">
-                Память едина для всех чатов — и проектов, и сессий харнеса. Агент читает и
-                пополняет её сам через remember/recall, поэтому записи отсюда доступны ему в
-                любом чате.
-              </div>
-              <div className="set-row">
-                <label>Поиск по памяти</label>
-                <input
-                  type="text"
-                  value={memQuery}
-                  onChange={(e) => {
-                    memQueryRef.current = e.target.value;
-                    setMemQuery(e.target.value);
-                    loadMemory();
-                  }}
-                  placeholder="ключевые слова"
-                />
-              </div>
-              <div className="schedule-group-title">
-                {memQuery.trim() ? "Найденные записи" : "Все записи"}
-              </div>
-              {mem === null ? (
-                <div className="set-hint">Загрузка…</div>
-              ) : mem.length === 0 ? (
-                <div className="set-hint">
-                  {memQuery.trim()
-                    ? "Ничего не найдено."
-                    : "Записей нет. Добавь ниже или попроси агента запомнить."}
-                </div>
-              ) : (
-                <div className="memory-list">
-                  {mem.map((m) =>
-                    memEditingId === m.id ? (
-                      <div key={m.id} className="memory-item memory-editing">
-                        <textarea
-                          rows={3}
-                          value={memDraft.content}
-                          onChange={(e) => setMemDraft({ ...memDraft, content: e.target.value })}
-                        />
-                        <input
-                          type="text"
-                          value={memDraft.tags}
-                          placeholder="теги через запятую"
-                          onChange={(e) => setMemDraft({ ...memDraft, tags: e.target.value })}
-                        />
-                        <div className="form-actions">
-                          <button className="primary-btn small" onClick={() => saveMemoryEdit(m.id)}>
-                            Сохранить
-                          </button>
-                          <button className="ghost-btn small" onClick={() => setMemEditingId(null)}>
-                            Отмена
-                          </button>
-                        </div>
-                      </div>
-                    ) : (
-                      <div key={m.id} className="memory-item">
-                        <div className="content">{m.content}</div>
-                        <div className="memory-meta">
-                          {m.source?.startsWith("identity:") && (
-                            <span className="badge">из настроек</span>
-                          )}
-                          {m.projectId != null && (
-                            <span className="badge">
-                              проект: {projectNames[m.projectId] ?? `#${m.projectId}`}
-                            </span>
-                          )}
-                          {m.tags.map((t) => (
-                            <span key={t} className="badge">
-                              {t}
-                            </span>
-                          ))}
-                          <span className="memory-actions">
-                            <button className="ghost-btn small" onClick={() => startMemoryEdit(m)}>
-                              Изменить
-                            </button>
-                            <button className="ghost-btn small" onClick={() => deleteMemory(m)}>
-                              Удалить
-                            </button>
-                          </span>
-                        </div>
-                      </div>
-                    ),
-                  )}
-                </div>
-              )}
-              {memError && <div className="set-error">{memError}</div>}
-              <div className="schedule-group-title">Новая запись</div>
-              <form className="schedule-form" onSubmit={(e) => addMemory(e)}>
-                <textarea
-                  rows={3}
-                  value={memNew.content}
-                  placeholder="что агент должен запомнить"
-                  onChange={(e) => setMemNew({ ...memNew, content: e.target.value })}
-                />
-                <input
-                  type="text"
-                  value={memNew.tags}
-                  placeholder="теги через запятую (необязательно)"
-                  onChange={(e) => setMemNew({ ...memNew, tags: e.target.value })}
-                />
-                <div className="form-actions">
-                  <button className="primary-btn small" type="submit">
-                    Добавить
-                  </button>
-                </div>
               </form>
             </>
           )}

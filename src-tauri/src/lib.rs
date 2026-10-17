@@ -1332,6 +1332,9 @@ pub fn run() {
             if let Some(wd) = onboarding::load_working_dir(&app_cfg) {
                 *state.db.lock().unwrap() = Some(db::open(&paths::db_path(&wd))?);
                 *state.working_dir.lock().unwrap() = Some(wd.clone());
+                // One-time indexing-limits migration for installs created
+                // before the 10 MB / 1M chars defaults. Best-effort.
+                let _ = config::migrate_indexing_defaults(&wd);
                 // SPEC 6.2: keep the bundled builtin skill set in sync with
                 // this app build on every start (missing/changed copies are
                 // refreshed; user skills and unknown builtin dirs survive).

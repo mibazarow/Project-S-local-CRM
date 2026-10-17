@@ -138,11 +138,17 @@ pub struct IndexingConfig {
     // load unchanged (serde ignores unknown keys).
 }
 
+impl IndexingConfig {
+    // Current shipped defaults (10 MB / 1 000 000 chars).
+    pub const DEFAULT_MAX_FILE_SIZE_BYTES: u64 = 10 * 1024 * 1024;
+    pub const DEFAULT_MAX_TEXT_CHARS: u64 = 1_000_000;
+}
+
 impl Default for IndexingConfig {
     fn default() -> Self {
         IndexingConfig {
-            max_file_size_bytes: 20 * 1024 * 1024,
-            max_text_chars: 200_000,
+            max_file_size_bytes: Self::DEFAULT_MAX_FILE_SIZE_BYTES,
+            max_text_chars: Self::DEFAULT_MAX_TEXT_CHARS,
             exclude_dirs: vec![
                 ".git".into(),
                 "node_modules".into(),
@@ -225,6 +231,46 @@ pub fn ensure_defaults(wd: &Path) -> Result<()> {
             write_json(&file, &default_value(kind)?)?;
         }
     }
+    migrate_indexing_defaults(wd)
+}
+
+// Limits that shipped as indexing.json defaults before the 10 MB / 1M chars
+// change. An existing file still holding exactly these values was never
+// customized, so it is bumped to the new defaults once (see below).
+const LEGACY_MAX_FILE_SIZE_BYTES: u64 = 20 * 1024 * 1024;
+const LEGACY_MAX_TEXT_CHARS: u64 = 200_000;
+
+// One-time migration of indexing.json limits: a file that still carries the
+// old shipped defaults (20 MB / 200 000) is bumped to the new defaults
+// (10 MB / 1 000 000). User-customized values are left untouched, and the
+// file is rewritten only when at least one field actually changed.
+pub fn migrate_indexing_defaults(wd: &Path) -> Result<()> {
+    let file = file_path(wd, ConfigKind::Indexing);
+    let Ok(text) = fs::read_to_string(&file) else {
+        return Ok(()); // no file yet: ensure_defaults already writes new ones
+    };
+    let mut value: Value = serde_json::from_str(&text)?;
+    let Some(obj) = value.as_object_mut() else {
+        return Ok(());
+    };
+    let mut changed = false;
+    if obj.get("maxFileSizeBytes").and_then(Value::as_u64) == Some(LEGACY_MAX_FILE_SIZE_BYTES) {
+        obj.insert(
+            "maxFileSizeBytes".into(),
+            json!(IndexingConfig::DEFAULT_MAX_FILE_SIZE_BYTES),
+        );
+        changed = true;
+    }
+    if obj.get("maxTextChars").and_then(Value::as_u64) == Some(LEGACY_MAX_TEXT_CHARS) {
+        obj.insert(
+            "maxTextChars".into(),
+            json!(IndexingConfig::DEFAULT_MAX_TEXT_CHARS),
+        );
+        changed = true;
+    }
+    if changed {
+        write_json(&file, &value)?;
+    }
     Ok(())
 }
 
@@ -301,10 +347,9 @@ mod tests {
         assert_eq!(read_config(&dir, ConfigKind::Mcp).unwrap()["servers"], json!([]));
         let app = read_config(&dir, ConfigKind::App).unwrap();
         assert_eq!(app["autopilot"], false);
-        assert!(read_config(&dir, ConfigKind::Indexing)
-            .unwrap()
-            .get("maxFileSizeBytes")
-            .is_some());
+        let indexing = read_config(&dir, ConfigKind::Indexing).unwrap();
+        assert_eq!(indexing["maxFileSizeBytes"], 10 * 1024 * 1024);
+        assert_eq!(indexing["maxTextChars"], 1_000_000);
 
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -346,6 +391,59 @@ mod tests {
         assert_eq!(cfg.max_file_size_bytes, 1024);
         assert_eq!(cfg.max_text_chars, 500);
         assert_eq!(cfg.exclude_dirs, vec![".git".to_string()]);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn indexing_migration_bumps_legacy_defaults_to_new_values() {
+        let dir = temp_test_dir("config-indexing-migrate");
+        fs::create_dir_all(paths::config_dir(&dir)).unwrap();
+        fs::write(
+            file_path(&dir, ConfigKind::Indexing),
+            r#"{ "maxFileSizeBytes": 20971520, "maxTextChars": 200000, "excludeDirs": [".git"] }"#,
+        )
+        .unwrap();
+
+        migrate_indexing_defaults(&dir).unwrap();
+        let v = read_config(&dir, ConfigKind::Indexing).unwrap();
+        assert_eq!(v["maxFileSizeBytes"], 10 * 1024 * 1024);
+        assert_eq!(v["maxTextChars"], 1_000_000);
+        // untouched fields survive the rewrite
+        assert_eq!(v["excludeDirs"], json!([".git"]));
+
+        // Idempotent: a second pass leaves the new values alone.
+        migrate_indexing_defaults(&dir).unwrap();
+        let v = read_config(&dir, ConfigKind::Indexing).unwrap();
+        assert_eq!(v["maxFileSizeBytes"], 10 * 1024 * 1024);
+        assert_eq!(v["maxTextChars"], 1_000_000);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn indexing_migration_keeps_user_customized_values() {
+        let dir = temp_test_dir("config-indexing-custom");
+        fs::create_dir_all(paths::config_dir(&dir)).unwrap();
+        // One field customized, the other still the legacy default: only the
+        // legacy one moves, the custom one is preserved.
+        fs::write(
+            file_path(&dir, ConfigKind::Indexing),
+            r#"{ "maxFileSizeBytes": 5242880, "maxTextChars": 200000, "excludeDirs": [".git", "vendor"] }"#,
+        )
+        .unwrap();
+
+        migrate_indexing_defaults(&dir).unwrap();
+        let v = read_config(&dir, ConfigKind::Indexing).unwrap();
+        assert_eq!(v["maxFileSizeBytes"], 5242880); // custom, kept
+        assert_eq!(v["maxTextChars"], 1_000_000); // legacy, migrated
+        assert_eq!(v["excludeDirs"], json!([".git", "vendor"]));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn indexing_migration_is_a_noop_without_a_file() {
+        let dir = temp_test_dir("config-indexing-missing");
+        migrate_indexing_defaults(&dir).unwrap();
+        assert!(!file_path(&dir, ConfigKind::Indexing).exists());
         fs::remove_dir_all(&dir).unwrap();
     }
 

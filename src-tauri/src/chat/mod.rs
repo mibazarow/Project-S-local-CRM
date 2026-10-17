@@ -616,6 +616,16 @@ pub(crate) struct RunBridge {
     pub notes_root: Option<PathBuf>,
 }
 
+// Fixed per-agent sampling temperature, applied to every run regardless of
+// llm.json (the Settings UI no longer exposes it): notes run a touch warmer,
+// project/harness/scheduled runs stay deterministic.
+pub(crate) fn temperature_for_kind(kind: &str) -> f32 {
+    match kind {
+        "notes" => 0.4,
+        _ => 0.2,
+    }
+}
+
 // Spawns the shared agent run on a background thread for either agent.
 pub(crate) fn spawn_run(
     app: &AppHandle,
@@ -679,7 +689,13 @@ fn run_agent_inner(
     *thread_state.emitter.lock().unwrap() = Some(Arc::new(app.clone()));
 
     let llm_cfg: LlmConfig = serde_json::from_value(config::read_config(wd, ConfigKind::Llm)?)?;
-    let params = ChatParams::from(&llm_cfg);
+    // Temperature is fixed per agent (project/harness/schedule 0.2, notes 0.4)
+    // and always overrides whatever llm.json carries, so every run path —
+    // including scheduled ones — sends the same value.
+    let params = ChatParams {
+        temperature: Some(temperature_for_kind(kind)),
+        ..ChatParams::from(&llm_cfg)
+    };
     // Manual `vision` override wins over the cached probe result; unknown
     // means images are not sent and the turn carries an honest note.
     let vision_supported = llm_cfg.vision_enabled();
@@ -856,6 +872,25 @@ mod tests {
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+
+    #[test]
+    fn run_temperature_is_fixed_per_agent_kind() {
+        assert_eq!(temperature_for_kind("project"), 0.2);
+        assert_eq!(temperature_for_kind("harness"), 0.2);
+        assert_eq!(temperature_for_kind("schedule"), 0.2);
+        assert_eq!(temperature_for_kind("notes"), 0.4);
+
+        // Whatever the kind, the fixed value actually reaches the request body.
+        for kind in ["project", "harness", "schedule", "notes"] {
+            let params = ChatParams {
+                model: "m".into(),
+                temperature: Some(temperature_for_kind(kind)),
+                max_tokens: None,
+            };
+            let body = crate::llm::build_body(&[ChatMessage::user("hi")], None, &params, false);
+            assert_eq!(body["temperature"], json!(temperature_for_kind(kind)));
+        }
+    }
 
     struct ScriptedBackend {
         rounds: Mutex<VecDeque<ChatOutcome>>,
