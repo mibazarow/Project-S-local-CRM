@@ -145,7 +145,8 @@ fn coerce_to_string(val: &Value) -> Value {
 // Minimal JSON-schema validator over the subset the catalog declares:
 // object, required, types (string/integer/number/boolean/array/object),
 // enum, additionalProperties. Unknown properties are rejected by default
-// (additionalProperties:false semantics) unless the schema opts in.
+// (additionalProperties:false semantics) unless the schema opts in with
+// true or validates them against a schema-valued additionalProperties.
 pub fn validate_args(schema: &Value, args: &Value) -> std::result::Result<(), String> {
     let obj = args
         .as_object()
@@ -164,15 +165,24 @@ fn validate_object(schema: &Value, obj: &Map<String, Value>, path: &str) -> std:
         }
     }
     let props = schema.get("properties").and_then(Value::as_object);
-    let allow_extra = schema
-        .get("additionalProperties")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if !allow_extra {
-        for key in obj.keys() {
-            let known = props.map(|p| p.contains_key(key)).unwrap_or(false);
-            if !known {
-                return Err(format!("unknown property \"{key}\""));
+    match schema.get("additionalProperties") {
+        // Schema-valued additionalProperties (e.g. a header map of strings):
+        // extra properties are allowed but must validate against the schema.
+        Some(extra) if extra.is_object() => {
+            for (key, val) in obj {
+                if props.is_some_and(|p| p.contains_key(key)) {
+                    continue;
+                }
+                validate_value(extra, val, &format!("{path}{key}"))?;
+            }
+        }
+        Some(Value::Bool(true)) => {}
+        _ => {
+            for key in obj.keys() {
+                let known = props.map(|p| p.contains_key(key)).unwrap_or(false);
+                if !known {
+                    return Err(format!("unknown property \"{key}\""));
+                }
             }
         }
     }
@@ -320,6 +330,22 @@ mod tests {
     fn allows_extra_when_schema_opts_in() {
         let s = json!({ "type": "object", "additionalProperties": true });
         assert!(validate_args(&s, &json!({ "anything": 1 })).is_ok());
+    }
+
+    #[test]
+    fn validates_extra_properties_against_schema_valued_additional_properties() {
+        let s = json!({
+            "type": "object",
+            "properties": { "headers": { "type": "object", "additionalProperties": { "type": "string" } } }
+        });
+        assert!(validate_args(&s, &json!({ "headers": { "X-Token": "abc", "Accept": "*/*" } })).is_ok());
+        assert!(validate_args(&s, &json!({ "headers": { "n": 5 } }))
+            .unwrap_err()
+            .contains("string"));
+        // declared properties still win over the additionalProperties schema
+        assert!(validate_args(&s, &json!({ "headers": "not-an-object" }))
+            .unwrap_err()
+            .contains("object"));
     }
 
     #[test]

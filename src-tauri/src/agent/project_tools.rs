@@ -64,6 +64,7 @@ pub fn project_catalog() -> Catalog {
         Arc::new(crate::agent::ssh_tools::SshCopyTool::download()),
         Arc::new(crate::agent::net_tools::WebfetchTool::new()),
         Arc::new(crate::agent::net_tools::WebsearchTool::new()),
+        Arc::new(crate::agent::net_tools::HttpRequestTool),
         Arc::new(crate::skills::SkillTool),
         Arc::new(crate::skills::CreateSkillTool),
         // Global memory is shared with the harness agent (SPEC 6.3).
@@ -862,7 +863,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 40] = [
+    const TOOL_NAMES: [&str; 41] = [
         "search",
         "read_file",
         "list_tree",
@@ -895,6 +896,7 @@ mod tests {
         "ssh_download",
         "webfetch",
         "websearch",
+        "http_request",
         "skill",
         "create_skill",
         "remember",

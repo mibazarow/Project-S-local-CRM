@@ -20,7 +20,6 @@
 ### Nice-to-have
 - [TODO] **`pdf_merge` / `pdf_split` / `pdf_fill_form`** — расширение документов. M.
 - [TODO] **`screenshot`** (рабочий стол/регион) — S.
-- [TODO] **`http_request`** (методы/заголовки/тело) — API-проверки, не только GET. S.
 - [TODO] **`undo_last` / `undo_list` + корзина для удалений** — сеть безопасности. M.
 - [TODO] **`image_transform`** (resize/crop/convert/thumbnail). M.
 - [TODO] **`clipboard_get` / `clipboard_set`** — S.

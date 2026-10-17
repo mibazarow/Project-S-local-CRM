@@ -94,6 +94,7 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(super::browser_tool::BrowserTool),
         Arc::new(super::net_tools::WebfetchTool::new()),
         Arc::new(super::net_tools::WebsearchTool::new()),
+        Arc::new(super::net_tools::HttpRequestTool),
         Arc::new(CrmListProjectsTool),
         Arc::new(CrmSearchTool),
         Arc::new(CrmTasksTool),
@@ -1780,7 +1781,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const DEFERRED_NAMES: [&str; 45] = [
+    const DEFERRED_NAMES: [&str; 46] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -1802,6 +1803,7 @@ mod tests {
         "browser",
         "webfetch",
         "websearch",
+        "http_request",
         "crm_list_projects",
         "crm_search",
         "crm_tasks",
