@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -435,6 +435,31 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         conn.pragma_update(None, "foreign_keys", "OFF")?;
         conn.execute_batch(MIGRATION_17)?;
         conn.pragma_update(None, "foreign_keys", if fk_on { "ON" } else { "OFF" })?;
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    }
+    if version < 18 {
+        // Cached project brief (SPEC project context slice): a short Russian
+        // summary generated from the project's files/tasks and injected into
+        // the project system prompt; brief_updated_at drives staleness
+        // (auto-refresh on project open / file changes when older than ~24 h).
+        // Guarded per column (same recipe as v14) so a re-run after an
+        // interrupted v18 does not re-ALTER.
+        let has_brief: i64 = conn.query_row(
+            "SELECT count(*) FROM pragma_table_info('projects') WHERE name = 'brief'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_brief == 0 {
+            conn.execute("ALTER TABLE projects ADD COLUMN brief TEXT", [])?;
+        }
+        let has_brief_updated_at: i64 = conn.query_row(
+            "SELECT count(*) FROM pragma_table_info('projects') WHERE name = 'brief_updated_at'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_brief_updated_at == 0 {
+            conn.execute("ALTER TABLE projects ADD COLUMN brief_updated_at TEXT", [])?;
+        }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
     Ok(())
@@ -1135,6 +1160,43 @@ CREATE UNIQUE INDEX uniq_chats_one_project_chat ON chats(project_id) WHERE kind 
             [],
         );
         assert!(bad_kind.is_err());
+    }
+
+    #[test]
+    fn migration_v18_adds_brief_columns_guarded() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+
+        let cols: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('projects')").unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        for name in ["brief", "brief_updated_at"] {
+            assert!(cols.iter().any(|c| c == name), "missing column {name}");
+        }
+
+        // Simulate an interrupted v18: user_version below 18 with the brief
+        // column already present — the guarded ALTER must not fail.
+        conn.execute_batch("ALTER TABLE projects DROP COLUMN brief_updated_at")
+            .unwrap();
+        conn.pragma_update(None, "user_version", 17).unwrap();
+        run_migrations(&conn).unwrap();
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let cols: Vec<String> = {
+            let mut stmt = conn.prepare("SELECT name FROM pragma_table_info('projects')").unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert!(cols.iter().any(|c| c == "brief_updated_at"));
     }
 
     #[test]

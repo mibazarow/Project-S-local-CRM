@@ -1,5 +1,6 @@
 mod agent;
 mod attachments;
+mod brief;
 mod cdp;
 mod chat;
 mod config;
@@ -225,8 +226,53 @@ fn project_path(state: State<AppState>, id: i64) -> Result<String> {
 }
 
 #[tauri::command]
-fn touch_project_opened(state: State<AppState>, id: i64) -> Result<()> {
-    with_db(&state, |conn| projects::touch_project_opened(conn, id))
+fn touch_project_opened(app: AppHandle, state: State<AppState>, id: i64) -> Result<()> {
+    with_db(&state, |conn| projects::touch_project_opened(conn, id))?;
+    // Background brief maintenance: regenerates only when the cached brief
+    // is missing or stale (>24 h); a fresh brief costs one cheap SQL check.
+    brief::schedule_refresh(&app, id);
+    Ok(())
+}
+
+// Cached project brief; generates it now (LLM with heuristic fallback) when
+// it is missing or stale. Emits "project-brief-changed" when regenerated.
+#[tauri::command]
+async fn project_brief(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: i64,
+) -> Result<brief::BriefDto> {
+    let wd = state.working_dir()?;
+    let (dto, generated) = tauri::async_runtime::spawn_blocking(move || {
+        let conn = db::open(&paths::db_path(&wd))?;
+        projects::get_project(&conn, project_id)?;
+        brief::ensure_brief_on(&conn, &wd, project_id, brief::MAX_AGE)
+    })
+    .await
+    .map_err(|e| AppError::Io(format!("brief task: {e}")))??;
+    if generated {
+        let _ = app.emit("project-brief-changed", brief::BriefChanged { project_id });
+    }
+    Ok(dto)
+}
+
+// Force-regenerates the brief now, bypassing the cache.
+#[tauri::command]
+async fn refresh_project_brief(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    project_id: i64,
+) -> Result<brief::BriefDto> {
+    let wd = state.working_dir()?;
+    let dto = tauri::async_runtime::spawn_blocking(move || {
+        let conn = db::open(&paths::db_path(&wd))?;
+        projects::get_project(&conn, project_id)?;
+        brief::refresh_brief(&conn, &wd, project_id)
+    })
+    .await
+    .map_err(|e| AppError::Io(format!("brief task: {e}")))??;
+    let _ = app.emit("project-brief-changed", brief::BriefChanged { project_id });
+    Ok(dto)
 }
 
 #[tauri::command]
@@ -1295,6 +1341,8 @@ pub fn run() {
             rename_project,
             project_path,
             touch_project_opened,
+            project_brief,
+            refresh_project_brief,
             move_project,
             tasks_list,
             task_create,

@@ -390,7 +390,7 @@ pub fn start_project_run(
         return Err(AppError::Invalid("message text is empty".into()));
     }
     let wd = state.working_dir()?;
-    let (chat_id, project) = {
+    let (chat_id, project, brief) = {
         let guard = state.db.lock().unwrap();
         let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
         let project = projects::get_project(conn, project_id)?;
@@ -399,7 +399,10 @@ pub fn start_project_run(
         // transcript (including it) when estimating and compacting.
         let user_message = append_message(conn, chat_id, Role::User, Some(text), &[], None, None)?;
         attachments::save_message_attachments(conn, user_message.id, attachments_in)?;
-        (chat_id, project)
+        // Cached project brief for the system prompt (brief.rs): read-only
+        // here; generation/refresh happens on project open and file changes.
+        let brief = crate::brief::get_brief(conn, project_id)?;
+        (chat_id, project, brief)
     };
 
     // The catalog is built BEFORE the prompt so the generated tool block
@@ -411,7 +414,8 @@ pub fn start_project_run(
     // borrows the live server clients (SPEC 6.2).
     register_mcp_tools(&mut catalog, state.mcp.lock().unwrap().tools());
     let skills = crate::skills::short_list(&wd);
-    let system_prompt = project_system_prompt(&project, &skills, &catalog.summary_prompt_block());
+    let brief = brief.as_ref().map(|b| (b.text.as_str(), b.updated_at.as_str()));
+    let system_prompt = project_system_prompt(&project, &skills, &catalog.summary_prompt_block(), brief);
 
     spawn_run(
         app,

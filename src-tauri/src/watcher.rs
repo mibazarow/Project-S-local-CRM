@@ -99,6 +99,9 @@ pub fn start(app: &tauri::AppHandle, state: &AppState, wd: &Path) {
                         "index-changed",
                         index::IndexChanged { project_id, stats },
                     );
+                    // The watcher already debounced the burst of file
+                    // events; the brief itself only regenerates when stale.
+                    crate::brief::schedule_refresh(&app, project_id);
                 }
             }
         }

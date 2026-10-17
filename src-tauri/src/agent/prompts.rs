@@ -25,12 +25,20 @@ const SKILLS_RULE: &str = "Before starting work, scan the Available skills list;
 
 // tools_block comes from Catalog::summary_prompt_block and is built AFTER
 // the run catalog (core + deferred + MCP bridges) is complete, so the agent
-// always sees its full tool set; schemas stay lazy.
+// always sees its full tool set; schemas stay lazy. brief is the cached
+// project brief (text + updated_at) from the brief module: an English label
+// with Russian content, placed right after the identity/tools block; None
+// renders the "No brief yet." placeholder.
 pub fn project_system_prompt(
     project: &ProjectDto,
     skills: &[(String, String)],
     tools_block: &str,
+    brief: Option<(&str, &str)>,
 ) -> String {
+    let brief_block = match brief {
+        Some((text, updated_at)) => format!("Project brief (updated {updated_at}):\n{text}"),
+        None => "Project brief:\nNo brief yet.".to_string(),
+    };
     let base = format!(
         "You are the agent of project \"{name}\" in the Project S CRM. The project lives in the folder {path}; \
 all paths in tools are relative to the project root.\n\
@@ -42,6 +50,8 @@ You run this project: you hold its context, retell the course of work from the c
 files and tasks, maintain the access file datas.md, and answer the user from the project materials.\n\
 \n\
 {tools_block}\n\
+\n\
+{brief_block}\n\
 \n\
 Rules:\n\
 - do not invent file or task contents: search and read first;\n\
@@ -172,7 +182,7 @@ mod tests {
 
     #[test]
     fn prompt_mentions_project_tools_and_finish_task() {
-        let p = project_system_prompt(&sample(), &[], &project_tools_block());
+        let p = project_system_prompt(&sample(), &[], &project_tools_block(), None);
         assert!(p.contains("example.ru"));
         assert!(p.contains("/wd/Projects/example.ru"));
         for token in ["search", "read_file", "task_create", "datas_add", "finish_task", "remember", "recall", "set_user_gender"] {
@@ -189,7 +199,7 @@ mod tests {
 
     #[test]
     fn project_prompt_carries_generated_tool_block_and_skills_rule() {
-        let p = project_system_prompt(&sample(), &[], &project_tools_block());
+        let p = project_system_prompt(&sample(), &[], &project_tools_block(), None);
         assert!(p.contains("Available tools (names and one-line descriptions"));
         assert!(p.contains("- search — Search this project's index"));
         assert!(p.contains("- create_skill —"));
@@ -218,8 +228,30 @@ mod tests {
         assert!(block.contains("- research — Investigate a question."));
         // Header plus exactly one line per skill: no bodies, no extra keys.
         assert_eq!(block.trim().lines().count(), 1 + skills.len());
-        let p = project_system_prompt(&sample(), &skills, &project_tools_block());
+        let p = project_system_prompt(&sample(), &skills, &project_tools_block(), None);
         assert!(p.contains("- ponytail — Lazy senior dev mode."));
+    }
+
+    #[test]
+    fn project_prompt_carries_brief_block_after_tools_or_placeholder() {
+        let tools = project_tools_block();
+        let p = project_system_prompt(
+            &sample(),
+            &[],
+            &tools,
+            Some(("Проект example.ru: лендинг под ключ. См. datas.md.", "2026-10-17 12:00:00")),
+        );
+        assert!(p.contains("Project brief (updated 2026-10-17 12:00:00):"), "{p}");
+        assert!(p.contains("Проект example.ru: лендинг под ключ. См. datas.md."), "{p}");
+        // The brief block sits after the tools block and before the rules.
+        let tools_at = p.find("Available tools (names and one-line descriptions").unwrap();
+        let brief_at = p.find("Project brief (updated").unwrap();
+        let rules_at = p.find("\nRules:").unwrap();
+        assert!(tools_at < brief_at && brief_at < rules_at, "brief block misplaced");
+
+        let p = project_system_prompt(&sample(), &[], &tools, None);
+        assert!(p.contains("Project brief:"), "{p}");
+        assert!(p.contains("No brief yet."), "{p}");
     }
 
     #[test]
