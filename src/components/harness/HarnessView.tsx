@@ -15,6 +15,7 @@ import {
   MessageAttachments,
   AttachFileIcon,
   AttachXIcon,
+  useVisionSupport,
 } from "../chat/chatShared";
 import { useChatAttachments } from "../chat/useChatAttachments";
 
@@ -222,6 +223,7 @@ export default function HarnessView() {
   const listRef = useRef<HTMLDivElement>(null);
   const chatRootRef = useRef<HTMLElement | null>(null);
   const att = useChatAttachments(chatRootRef);
+  const visionSupported = useVisionSupport();
 
   const [schedules, setSchedules] = useState<ScheduleDto[]>([]);
   const [schedulesError, setSchedulesError] = useState<string | null>(null);
@@ -560,6 +562,12 @@ export default function HarnessView() {
                 </button>
               </div>
             ))}
+          </div>
+        )}
+
+        {att.pending.some((a) => a.isImage) && visionSupported !== true && (
+          <div className="vision-warn">
+            Модель не поддерживает vision — изображение не будет распознано (сохранится в проект)
           </div>
         )}
 

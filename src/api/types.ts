@@ -118,6 +118,19 @@ export interface LlmConfig {
   contextWindow: number;
   temperature: number | null;
   maxTokens: number | null;
+  // Manual vision override: null/absent = auto-detect, true/false = force.
+  vision?: boolean | null;
+  // Cached result of the last vision probe (written by detect_vision).
+  visionDetected?: boolean | null;
+}
+
+// llm::VisionStatus — result of get_vision_status / detect_vision.
+export interface VisionStatus {
+  // null = unknown (never probed, or the probe was inconclusive).
+  supported: boolean | null;
+  // True when llm.json `vision` manually overrides detection.
+  overridden: boolean;
+  reason: string | null;
 }
 
 export interface ModelInfo {

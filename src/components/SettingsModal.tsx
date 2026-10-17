@@ -12,6 +12,7 @@ import type {
   McpServerStatus,
   MemoryDto,
   SkillInfo,
+  VisionStatus,
 } from "../api/types";
 
 const MB = 1024 * 1024;
@@ -54,6 +55,7 @@ interface LlmForm {
   contextWindow: string;
   temperature: string;
   maxTokens: string;
+  vision: "auto" | "yes" | "no";
 }
 
 function toLlmForm(cfg: LlmConfig): LlmForm {
@@ -64,11 +66,17 @@ function toLlmForm(cfg: LlmConfig): LlmForm {
     contextWindow: String(cfg.contextWindow),
     temperature: cfg.temperature == null ? "" : String(cfg.temperature),
     maxTokens: cfg.maxTokens == null ? "" : String(cfg.maxTokens),
+    vision: cfg.vision == null ? "auto" : cfg.vision ? "yes" : "no",
   };
 }
 
 function fmtMb(bytes: number): string {
   return (bytes / MB).toFixed(1);
+}
+
+function visionLabel(v: VisionStatus | null): string {
+  if (!v || v.supported == null) return "Не проверено";
+  return v.supported ? "Поддерживается" : "Не поддерживается";
 }
 
 // app.json fields edited by the "Агент" and "Прочее" tabs share one form so a
@@ -138,6 +146,8 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [llmTest, setLlmTest] = useState<ConnectionTest | null>(null);
   const [llmBusy, setLlmBusy] = useState<"test" | "models" | null>(null);
   const [revealKey, setRevealKey] = useState(false);
+  const [vision, setVision] = useState<VisionStatus | null>(null);
+  const [visionBusy, setVisionBusy] = useState(false);
   const [appForm, setAppForm] = useState<AppForm | null>(null);
   const [backups, setBackups] = useState("");
   const [autostart, setAutostart] = useState<boolean | null>(null);
@@ -280,6 +290,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
       const m = parseNum(f.maxTokens);
       if (m !== null) patch.maxTokens = Math.round(m);
     }
+    patch.vision = f.vision === "auto" ? null : f.vision === "yes";
     return ipc.writeConfig("llm", patch).catch((e) => setError(errMsg(e)));
   }, []);
 
@@ -314,6 +325,24 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
       })
       .catch((e) => setError(errMsg(e)));
   }, []);
+
+  const loadVision = useCallback(() => {
+    void ipc
+      .getVisionStatus()
+      .then(setVision)
+      .catch(() => setVision(null));
+  }, []);
+
+  // detect_vision reads llm.json from disk, so pending form edits must land
+  // first (same ordering as runLlmAction).
+  const probeVision = () => {
+    setVisionBusy(true);
+    flushLlmSave()
+      .then(() => ipc.detectVision())
+      .then(setVision)
+      .catch((e) => setError(errMsg(e)))
+      .finally(() => setVisionBusy(false));
+  };
 
   // Same read-modify-write pattern for app.json, shared by the "Агент" and
   // "Прочее" tabs.
@@ -423,6 +452,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     void ipc.configDirPath().then(setConfigDir).catch(() => setConfigDir(""));
     reloadConfig();
     reloadLlmConfig();
+    loadVision();
     reloadAppConfig();
     void ipc.embedStatus().then(setEmbed).catch(() => setEmbed(null));
     void ipc.backupsDir().then(setBackups).catch(() => setBackups(""));
@@ -442,8 +472,10 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     track(
       ipc.onConfigChanged(({ which }) => {
         if (which === "indexing") reloadConfig();
-        else if (which === "llm") reloadLlmConfig();
-        else if (which === "app") reloadAppConfig();
+        else if (which === "llm") {
+          reloadLlmConfig();
+          loadVision();
+        } else if (which === "app") reloadAppConfig();
       }),
     );
     track(
@@ -469,6 +501,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   }, [
     reloadConfig,
     reloadLlmConfig,
+    loadVision,
     reloadAppConfig,
     flushSave,
     flushLlmSave,
@@ -879,6 +912,31 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                   onBlur={blurLlmField}
                 />
                 <div className="set-hint">Пусто — без ограничения со стороны приложения.</div>
+              </div>
+              <div className="set-row">
+                <label>Распознавание изображений (vision)</label>
+                <div className="set-hint">
+                  Статус: {visionLabel(vision)}
+                  {vision?.overridden ? " (задано вручную)" : ""}
+                </div>
+                {vision?.reason && <div className="set-hint">{vision.reason}</div>}
+                <select
+                  value={llmForm?.vision ?? "auto"}
+                  onChange={(e) => {
+                    updateLlmForm({ vision: e.target.value as "auto" | "yes" | "no" });
+                    void flushLlmSave();
+                  }}
+                >
+                  <option value="auto">Авто (определять)</option>
+                  <option value="yes">Да</option>
+                  <option value="no">Нет</option>
+                </select>
+                <div className="set-hint">
+                  Если провайдер не поддерживает vision, изображения из чата не будут отправлены модели.
+                </div>
+                <button className="ghost-btn" disabled={visionBusy} onClick={probeVision}>
+                  {visionBusy ? "Проверка…" : "Проверить"}
+                </button>
               </div>
               <div className="llm-actions">
                 <button

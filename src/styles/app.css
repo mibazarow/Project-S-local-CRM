@@ -580,6 +580,18 @@ input, textarea { font-family: inherit; }
 .attach-chip img { width: 34px; height: 34px; object-fit: cover; border-radius: 5px; flex-shrink: 0; }
 .attach-chip svg { flex-shrink: 0; color: var(--text-muted); }
 
+.vision-warn {
+  margin: 8px 12px 0;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .msg-attachment {
   margin-top: 4px;
   border-radius: 10px;

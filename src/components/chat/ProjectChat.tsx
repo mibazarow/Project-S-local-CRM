@@ -10,6 +10,7 @@ import {
   MessageAttachments,
   AttachFileIcon,
   AttachXIcon,
+  useVisionSupport,
 } from "./chatShared";
 import { useChatAttachments } from "./useChatAttachments";
 
@@ -27,6 +28,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
   const listRef = useRef<HTMLDivElement>(null);
   const chatRootRef = useRef<HTMLElement | null>(null);
   const att = useChatAttachments(chatRootRef);
+  const visionSupported = useVisionSupport();
 
   const slice = projectId != null ? (state[projectId] ?? null) : null;
   const running = slice?.run != null;
@@ -199,6 +201,12 @@ export default function ProjectChat({ projectId, projectName }: Props) {
               </button>
             </div>
           ))}
+        </div>
+      )}
+
+      {att.pending.some((a) => a.isImage) && visionSupported !== true && (
+        <div className="vision-warn">
+          Модель не поддерживает vision — изображение не будет распознано (сохранится в проект)
         </div>
       )}
 

@@ -31,6 +31,7 @@ import type {
   TaskPatch,
   TasksChanged,
   TmpStats,
+  VisionStatus,
   WorkingDirInfo,
 } from "./types";
 
@@ -158,6 +159,12 @@ export const downloadEmbedModel = () => invoke<EmbedStatus>("download_embed_mode
 export const listModels = () => invoke<ModelInfo[]>("list_models");
 
 export const testConnection = () => invoke<ConnectionTest>("test_connection");
+
+// Vision support (SPEC 6.1): get_vision_status is cached/override-only,
+// detect_vision probes the endpoint and caches the result in llm.json.
+export const getVisionStatus = () => invoke<VisionStatus>("get_vision_status");
+
+export const detectVision = () => invoke<VisionStatus>("detect_vision");
 
 export const sendProjectMessage = (
   projectId: number,

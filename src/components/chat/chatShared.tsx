@@ -6,6 +6,33 @@ import type {
   MessageDto,
 } from "../../api/types";
 
+// Vision support for the composer warning: cached/override status read once per
+// chat mount and refreshed whenever llm.json changes. Returns the effective
+// `supported` flag (null = unknown / never probed).
+export function useVisionSupport(): boolean | null {
+  const [supported, setSupported] = useState<boolean | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    const load = () =>
+      void ipc
+        .getVisionStatus()
+        .then((s) => !cancelled && setSupported(s.supported))
+        .catch(() => {});
+    load();
+    void ipc
+      .onConfigChanged(({ which }) => {
+        if (which === "llm") load();
+      })
+      .then((u) => (cancelled ? u() : (unlisten = u)));
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+  return supported;
+}
+
 // Transcript model shared by the project chat and the harness session chat:
 // one reducer keyed by a numeric id (project id or session id), the same
 // streaming/steps/confirmation flow for both (SPEC 6: one loop, one stream).
