@@ -30,6 +30,10 @@ pub fn project_catalog() -> Catalog {
         // via git apply; see edit_tools.rs for the safety rules.
         Arc::new(crate::agent::edit_tools::EditFileTool::project()),
         Arc::new(crate::agent::edit_tools::ApplyPatchTool),
+        // Native document generation (DOCX/PDF/MD/TXT/HTML + XLSX/CSV) with
+        // pure Rust writers; see doc_tools.rs for the safety rules.
+        Arc::new(crate::agent::doc_tools::CreateDocumentTool::project()),
+        Arc::new(crate::agent::doc_tools::CreateSpreadsheetTool::project()),
         Arc::new(CreateFolderTool),
         Arc::new(RenamePathTool),
         Arc::new(DeletePathTool),
@@ -842,13 +846,15 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 30] = [
+    const TOOL_NAMES: [&str; 32] = [
         "search",
         "read_file",
         "list_tree",
         "write_file",
         "edit_file",
         "apply_patch",
+        "create_document",
+        "create_spreadsheet",
         "create_folder",
         "rename_path",
         "delete_path",

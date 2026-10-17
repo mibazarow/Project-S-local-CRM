@@ -5,6 +5,7 @@
 
 pub mod browser_tool;
 pub mod catalog;
+pub mod doc_tools;
 pub mod edit_tools;
 pub mod finish;
 pub mod git_tools;

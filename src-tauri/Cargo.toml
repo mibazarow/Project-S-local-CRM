@@ -51,6 +51,11 @@ tauri-plugin-autostart = "2"
 # blocking WebSocket client for the CDP browser bridge (SPEC 5.2 #3); default
 # features are handshake-only (no TLS stack) because ws:// targets localhost.
 tungstenite = "0.29"
+# native document generation for the agent doc tools (agent/doc_tools.rs):
+# DOCX, XLSX and PDF writers, pure Rust, no external binaries.
+docx-rs = "0.4.22"
+rust_xlsxwriter = "0.100.0"
+printpdf = { version = "0.12.8", default-features = false }
 
 [features]
 # ONNX text embedder + model provisioning is the default embedding backend.

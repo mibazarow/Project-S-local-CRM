@@ -68,6 +68,10 @@ pub fn harness_catalog() -> Catalog {
         // see edit_tools.rs for the safety rules.
         Arc::new(super::edit_tools::EditFileTool::harness()),
         Arc::new(super::edit_tools::ApplyPatchTool),
+        // Native document generation (DOCX/PDF/MD/TXT/HTML + XLSX/CSV) with
+        // pure Rust writers; see doc_tools.rs for the safety rules.
+        Arc::new(super::doc_tools::CreateDocumentTool::harness()),
+        Arc::new(super::doc_tools::CreateSpreadsheetTool::harness()),
         Arc::new(crate::skills::CreateSkillTool),
         Arc::new(BashTool::default()),
         Arc::new(super::browser_tool::BrowserTool),
@@ -140,7 +144,7 @@ fn normalize(path: &Path) -> PathBuf {
 
 // Best-effort canonical form for policy checks: existing prefixes resolve
 // through symlinks, the missing tail (fs_write targets) is appended back.
-fn canonicalish(path: &Path) -> PathBuf {
+pub(crate) fn canonicalish(path: &Path) -> PathBuf {
     if let Ok(c) = path.canonicalize() {
         return c;
     }
@@ -1389,7 +1393,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const DEFERRED_NAMES: [&str; 30] = [
+    const DEFERRED_NAMES: [&str; 32] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -1397,6 +1401,8 @@ mod tests {
         "fs_grep",
         "edit_file",
         "apply_patch",
+        "create_document",
+        "create_spreadsheet",
         "create_skill",
         "bash",
         "browser",
