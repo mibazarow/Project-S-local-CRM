@@ -212,16 +212,18 @@ mod tests {
     fn real_tool_blocks_fit_the_prompt_cap() {
         let project = project_tools_block();
         let harness = harness_tools_block();
-        assert!(
-            project.len() < crate::agent::catalog::SUMMARY_BLOCK_CAP,
-            "project block {} chars",
-            project.len()
-        );
-        assert!(
-            harness.len() < crate::agent::catalog::SUMMARY_BLOCK_CAP,
-            "harness block {} chars",
-            harness.len()
-        );
+        for (label, block) in [("project", &project), ("harness", &harness)] {
+            assert!(
+                block.len() < crate::agent::catalog::SUMMARY_BLOCK_CAP,
+                "{label} block {} chars",
+                block.len()
+            );
+            assert!(
+                !block.contains("truncated:"),
+                "{label} block is truncated at {} chars",
+                block.len()
+            );
+        }
     }
 
     #[test]
@@ -324,6 +326,13 @@ mod tests {
         assert!(p.contains("Available tools (names and one-line descriptions"), "{p}");
         assert!(p.contains("- bash —"), "{p}");
         assert!(p.contains("- schedule_create —"), "{p}");
+        let block = harness_tools_block();
+        assert!(
+            block.len() < crate::agent::catalog::SUMMARY_BLOCK_CAP,
+            "harness block {} chars",
+            block.len()
+        );
+        assert!(!p.contains("truncated:"), "harness prompt tool list is truncated");
         assert!(p.contains("Before starting work, scan the Available skills list"), "{p}");
         assert!(p.contains("Never invent a skill's contents."), "{p}");
 

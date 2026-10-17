@@ -83,6 +83,9 @@ pub fn harness_catalog() -> Catalog {
         // OCR of images and PDFs via the macOS Vision framework through an
         // embedded Swift helper; see ocr_tools.rs for the safety rules.
         Arc::new(super::ocr_tools::OcrTool),
+        // Image resize/crop/rotate/convert via the macOS sips CLI; in-place
+        // calls confirm, new files in the territory skip; see image_tools.rs.
+        Arc::new(super::image_tools::ImageTransformTool),
         // Screen capture via the macOS screencapture CLI; always confirmed,
         // see screenshot_tool.rs for the safety rules.
         Arc::new(super::screenshot_tool::ScreenshotTool::default()),
@@ -1788,7 +1791,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const DEFERRED_NAMES: [&str; 47] = [
+    const DEFERRED_NAMES: [&str; 48] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -1801,6 +1804,7 @@ mod tests {
         "create_document",
         "create_spreadsheet",
         "ocr",
+        "image_transform",
         "screenshot",
         "create_skill",
         "bash",
@@ -1941,6 +1945,13 @@ mod tests {
             let forced = json!({ "from": "Harness/a.txt", "to": "Harness/b.txt", "overwrite": true });
             assert!(t.danger_reason(&forced, &env.ctx).is_some(), "{name}: overwrite must confirm even inside");
         }
+
+        let img = tool("image_transform");
+        assert_eq!(img.class(), ToolClass::Mutating);
+        assert_eq!(img.policy(), PermissionPolicy::CheckConditional);
+        assert!(img.danger_reason(&json!({ "path": "Harness/a.png", "maxSize": 10 }), &env.ctx).is_some());
+        assert!(img.danger_reason(&json!({ "path": "Harness/a.png", "output": "Harness/b.png", "maxSize": 10 }), &env.ctx).is_none());
+        assert!(img.danger_reason(&json!({ "path": "Harness/a.png", "output": "outside.png", "maxSize": 10 }), &env.ctx).is_some());
         fs::remove_dir_all(&env.wd).unwrap();
     }
 

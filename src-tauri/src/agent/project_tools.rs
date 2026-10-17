@@ -37,6 +37,9 @@ pub fn project_catalog() -> Catalog {
         // OCR of images and PDFs via the macOS Vision framework through an
         // embedded Swift helper; see ocr_tools.rs for the safety rules.
         Arc::new(crate::agent::ocr_tools::OcrTool),
+        // Image resize/crop/rotate/convert via the macOS sips CLI; in-place
+        // calls confirm, new files inside the project skip; see image_tools.rs.
+        Arc::new(crate::agent::image_tools::ImageTransformTool),
         Arc::new(CreateFolderTool),
         Arc::new(RenamePathTool),
         Arc::new(DeletePathTool),
@@ -867,7 +870,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 43] = [
+    const TOOL_NAMES: [&str; 44] = [
         "search",
         "read_file",
         "list_tree",
@@ -877,6 +880,7 @@ mod tests {
         "create_document",
         "create_spreadsheet",
         "ocr",
+        "image_transform",
         "create_folder",
         "rename_path",
         "delete_path",
@@ -1279,5 +1283,16 @@ mod tests {
         }
         assert_eq!(tool("git_branch").class(), ToolClass::Mutating);
         assert_eq!(tool("git_branch").policy(), PermissionPolicy::CheckConditional);
+        assert_eq!(tool("image_transform").class(), ToolClass::Mutating);
+        assert_eq!(tool("image_transform").policy(), PermissionPolicy::CheckConditional);
+        let env = setup("pt-image-policy");
+        let img = tool("image_transform");
+        assert!(img
+            .danger_reason(&json!({ "path": "a.png", "maxSize": 10 }), &env.ctx)
+            .is_some());
+        assert!(img
+            .danger_reason(&json!({ "path": "a.png", "output": "b.png", "maxSize": 10 }), &env.ctx)
+            .is_none());
+        fs::remove_dir_all(&env.wd).unwrap();
     }
 }
