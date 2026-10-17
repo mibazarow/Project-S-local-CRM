@@ -49,8 +49,21 @@ export interface TaskDto {
   overdue: boolean;
 }
 
-export interface SearchHit {
-  relPath: string;
+// todos::TodoDto — one plan item of a scope (project chat or harness session).
+export interface TodoDto {
+  id: number;
+  text: string;
+  done: boolean;
+  position: number;
+}
+
+// Payload of the "todos-changed" event emitted by the todowrite tool.
+export interface TodosChanged {
+  scopeKind: "project" | "session";
+  scopeId: number;
+}
+
+export interface SearchHit {  relPath: string;
   name: string;
   kind: string;
   score: number;

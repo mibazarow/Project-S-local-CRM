@@ -24,6 +24,7 @@ mod search;
 mod skills;
 mod state;
 mod tasks;
+mod todos;
 mod watcher;
 
 use agent::permissions::ConfirmDecision;
@@ -221,6 +222,17 @@ fn move_project(app: AppHandle, state: State<AppState>, id: i64, position: f64) 
 #[tauri::command]
 fn tasks_list(state: State<AppState>, project_id: i64) -> Result<Vec<TaskDto>> {
     with_db(&state, |conn| tasks::tasks_list(conn, project_id))
+}
+
+// Read-only plan panel data: scopeKind is "project" (scopeId = project id)
+// or "session" (scopeId = harness session id), mirroring the tool scopes.
+#[tauri::command]
+fn todos_list(
+    state: State<AppState>,
+    scope_kind: String,
+    scope_id: i64,
+) -> Result<Vec<todos::TodoDto>> {
+    with_db(&state, |conn| todos::todos_list(conn, &scope_kind, scope_id))
 }
 
 #[tauri::command]
@@ -1100,9 +1112,9 @@ pub fn run() {
         .setup(|app| {
             let app_cfg = app_config_dir(app.handle())?;
             let state = app.state::<AppState>();
-            // Background emitters (the rename_chat tool) reach the windows
-            // through the app state handle.
-            *state.emitter.lock().unwrap() = Some(app.handle().clone());
+            // Background emitters (the rename_chat, todowrite tools) reach
+            // the windows through the app state handle.
+            *state.emitter.lock().unwrap() = Some(Arc::new(app.handle().clone()));
             if let Some(wd) = onboarding::load_working_dir(&app_cfg) {
                 *state.db.lock().unwrap() = Some(db::open(&paths::db_path(&wd))?);
                 *state.working_dir.lock().unwrap() = Some(wd.clone());
@@ -1145,6 +1157,7 @@ pub fn run() {
             task_update,
             task_move,
             task_delete,
+            todos_list,
             fs_list_dir,
             fs_read_text,
             fs_write_text,

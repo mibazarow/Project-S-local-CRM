@@ -23,7 +23,6 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tauri::Emitter;
 
 const MAX_READ_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_GREP_FILE_BYTES: u64 = 1024 * 1024;
@@ -46,6 +45,9 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(crate::memory::SetUserGenderTool),
         Arc::new(ListChatsTool),
         Arc::new(RenameChatTool),
+        // Per-conversation plan panel (SPEC: todowrite/todoread).
+        Arc::new(crate::todos::TodoWriteTool),
+        Arc::new(crate::todos::TodoReadTool),
     ];
     let deferred: Vec<Arc<dyn Tool>> = vec![
         Arc::new(FsReadTool),
@@ -1292,8 +1294,8 @@ impl Tool for RenameChatTool {
         let r = with_conn(ctx, |conn| crate::harness::rename_session(conn, session_id, &title));
         if r.is_ok() {
             if let Ok(state) = state_of(ctx) {
-                if let Some(app) = state.emitter.lock().unwrap().as_ref() {
-                    let _ = app.emit("sessions-changed", json!({}));
+                if let Some(emitter) = state.emitter.lock().unwrap().as_ref() {
+                    emitter.emit_event("sessions-changed", json!({}));
                 }
             }
         }
@@ -1419,6 +1421,10 @@ mod tests {
         assert_eq!(tool("list_chats").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("rename_chat").class(), ToolClass::Mutating);
         assert_eq!(tool("rename_chat").policy(), PermissionPolicy::Skip);
+        assert_eq!(tool("todowrite").class(), ToolClass::Mutating);
+        assert_eq!(tool("todowrite").policy(), PermissionPolicy::Skip);
+        assert_eq!(tool("todoread").class(), ToolClass::ReadOnly);
+        assert_eq!(tool("todoread").policy(), PermissionPolicy::Skip);
 
         let env = setup("ht-policy");
         let write = tool("fs_write");

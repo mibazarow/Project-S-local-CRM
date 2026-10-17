@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -278,6 +278,27 @@ ALTER TABLE projects ADD COLUMN position REAL NOT NULL DEFAULT 0;
 UPDATE projects SET position = id;
 ";
 
+// Per-conversation TODO plans (todowrite/todoread tools): one ordered list
+// per scope — a project chat ('project', scope_id = project id) or a harness
+// session ('session', scope_id = session id). scope_kind/scope_id are not
+// FKs: project and session ids come from different tables and may collide
+// numerically, the kind column separates them (same reasoning as RunKey).
+// The tool replaces the whole list per write, so no cascade is wired: rows
+// left by a deleted scope are unreachable and harmless.
+const MIGRATION_15: &str = "
+CREATE TABLE IF NOT EXISTS todos (
+    id INTEGER PRIMARY KEY,
+    scope_kind TEXT NOT NULL CHECK(scope_kind IN ('project','session')),
+    scope_id INTEGER NOT NULL,
+    text TEXT NOT NULL,
+    done INTEGER NOT NULL DEFAULT 0,
+    position INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_todos_scope ON todos(scope_kind, scope_id, position);
+";
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -344,6 +365,10 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         if has_position == 0 {
             conn.execute_batch(MIGRATION_14)?;
         }
+        conn.pragma_update(None, "user_version", 14)?;
+    }
+    if version < 15 {
+        conn.execute_batch(MIGRATION_15)?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
     Ok(())
@@ -368,7 +393,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(indexes, 7);
+        assert_eq!(indexes, 8);
 
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
@@ -876,6 +901,33 @@ CREATE VIRTUAL TABLE vec_items USING vec0(
         };
         assert_eq!(positions, vec![1.0, 2.0, 3.0]);
         assert_eq!(ids, vec![1, 2, 3], "backfill must keep id order stable");
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_v15_creates_todos_with_scope_check_and_defaults() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO todos (scope_kind, scope_id, text, position, created_at, updated_at) VALUES ('session', 1, 'a', 1, '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let done: i64 = conn
+            .query_row("SELECT done FROM todos WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(done, 0, "done must default to 0");
+
+        let bad_kind = conn.execute(
+            "INSERT INTO todos (scope_kind, scope_id, text, position, created_at, updated_at) VALUES ('bogus', 1, 'x', 1, '2026-01-01', '2026-01-01')",
+            [],
+        );
+        assert!(bad_kind.is_err(), "unknown scope kind accepted");
+
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
     }

@@ -30,6 +30,8 @@ import type {
   TaskDto,
   TaskPatch,
   TasksChanged,
+  TodoDto,
+  TodosChanged,
   TmpStats,
   VisionStatus,
   WorkingDirInfo,
@@ -115,6 +117,10 @@ export const taskMove = (id: number, status: string, position: number) =>
   invoke<TaskDto>("task_move", { id, status, position });
 
 export const taskDelete = (id: number) => invoke<void>("task_delete", { id });
+
+// Per-conversation plans (todowrite/todoread tools): read-only panel data.
+export const todosList = (scopeKind: "project" | "session", scopeId: number) =>
+  invoke<TodoDto[]>("todos_list", { scopeKind, scopeId });
 
 export const fsListDir = (projectId: number, relPath: string) =>
   invoke<FsEntry[]>("fs_list_dir", { projectId, relPath });
@@ -347,3 +353,7 @@ export const onProjectsChanged = (handler: () => void) =>
 
 export const onMemoryChanged = (handler: (payload: MemoryChanged) => void) =>
   listen<MemoryChanged>("memory-changed", (e) => handler(e.payload));
+
+// Emitted by the todowrite tool after the plan of a scope changed.
+export const onTodosChanged = (handler: (payload: TodosChanged) => void) =>
+  listen<TodosChanged>("todos-changed", (e) => handler(e.payload));

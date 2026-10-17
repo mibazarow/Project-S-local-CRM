@@ -13,6 +13,7 @@ import {
   useVisionSupport,
 } from "./chatShared";
 import { useChatAttachments } from "./useChatAttachments";
+import TodoPanel from "./TodoPanel";
 
 interface Props {
   projectId: number | null;
@@ -152,6 +153,8 @@ export default function ProjectChat({ projectId, projectName }: Props) {
         <span className="chat-title">Чат проекта «{projectName ?? "—"}»</span>
         {running && <span className="chat-sub">агент работает…</span>}
       </div>
+
+      <TodoPanel scopeKind="project" scopeId={projectId} />
 
       <div className="chat-messages" ref={listRef}>
         {!slice || (slice.items.length === 0 && !slice.run) ? (

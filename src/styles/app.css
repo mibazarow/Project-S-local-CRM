@@ -443,6 +443,45 @@ input, textarea { font-family: inherit; }
 .chat-title { font-weight: 600; font-size: 13.5px; }
 .chat-sub { font-size: 12px; color: var(--text-muted); }
 
+/* ---------- План (todowrite/todoread) ---------- */
+
+.todo-panel {
+  margin: 10px 16px 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  flex-shrink: 0;
+}
+.todo-panel summary {
+  cursor: pointer;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  padding: 6px 10px;
+  list-style: none;
+}
+.todo-panel summary::-webkit-details-marker { display: none; }
+.todo-panel[open] summary { border-bottom: 1px solid var(--border); }
+.todo-panel ul {
+  list-style: none;
+  padding: 7px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-height: 180px;
+  overflow-y: auto;
+}
+.todo-panel li {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text);
+}
+.todo-panel li .mark { display: inline-flex; align-self: center; color: var(--border-strong); }
+.todo-panel li.done .mark { color: var(--accent); }
+.todo-panel li.done .txt { text-decoration: line-through; color: var(--text-muted); }
+
 .chat-messages {
   flex: 1;
   overflow-y: auto;

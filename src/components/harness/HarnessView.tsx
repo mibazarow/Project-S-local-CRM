@@ -18,6 +18,7 @@ import {
   useVisionSupport,
 } from "../chat/chatShared";
 import { useChatAttachments } from "../chat/useChatAttachments";
+import TodoPanel from "../chat/TodoPanel";
 
 const UNTITLED = "Новая сессия";
 
@@ -520,6 +521,9 @@ export default function HarnessView() {
           <h2>{activeSession ? activeSession.title ?? UNTITLED : "Харнес"}</h2>
           {running && <span className="chat-sub">агент работает…</span>}
         </div>
+
+        <TodoPanel scopeKind="session" scopeId={activeId} />
+
         <div className="chat-messages harness-messages" ref={listRef}>
           {sessionsError && (
             <div className="chat-error">{sessionsError}</div>

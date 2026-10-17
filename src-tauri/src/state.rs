@@ -19,10 +19,24 @@ pub struct AppState {
     // Run/tool journal (SPEC 3.3): opened with the working dir, shared by
     // every run thread through the app state.
     pub journal: Mutex<Option<crate::journal::Journal>>,
-    // App handle for background emitters that only hold AppState (the
-    // rename_chat tool): set once in setup and cloned into every run
-    // thread's state so tools can emit UI events like "sessions-changed".
-    pub emitter: Mutex<Option<tauri::AppHandle>>,
+    // Emitter seam for background emitters that only hold AppState (the
+    // rename_chat and todowrite tools): production installs the Tauri app
+    // handle once in setup and clones it into every run thread's state, so
+    // tools can emit UI events like "sessions-changed"/"todos-changed";
+    // tests install a recording sink to assert those events.
+    pub emitter: Mutex<Option<Arc<dyn UiEmitter>>>,
+}
+
+// Minimal UI event sink behind AppState.emitter (see field comment).
+pub trait UiEmitter: Send + Sync {
+    fn emit_event(&self, event: &str, payload: serde_json::Value);
+}
+
+impl UiEmitter for tauri::AppHandle {
+    fn emit_event(&self, event: &str, payload: serde_json::Value) {
+        use tauri::Emitter;
+        let _ = self.emit(event, payload);
+    }
 }
 
 impl AppState {

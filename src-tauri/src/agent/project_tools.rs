@@ -39,6 +39,9 @@ pub fn project_catalog() -> Catalog {
         Arc::new(crate::memory::RememberTool),
         Arc::new(crate::memory::RecallTool),
         Arc::new(crate::memory::SetUserGenderTool),
+        // Per-conversation plan panel (SPEC: todowrite/todoread).
+        Arc::new(crate::todos::TodoWriteTool),
+        Arc::new(crate::todos::TodoReadTool),
     ];
     for tool in tools {
         // Names are statically unique; a failure here is a programming bug.
@@ -785,7 +788,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 21] = [
+    const TOOL_NAMES: [&str; 23] = [
         "search",
         "read_file",
         "list_tree",
@@ -807,6 +810,8 @@ mod tests {
         "remember",
         "recall",
         "set_user_gender",
+        "todowrite",
+        "todoread",
     ];
 
     #[test]
@@ -1048,6 +1053,7 @@ mod tests {
             "websearch",
             "skill",
             "recall",
+            "todoread",
         ] {
             assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
             assert_eq!(tool(name).class(), ToolClass::ReadOnly, "{name} class");
@@ -1062,6 +1068,7 @@ mod tests {
             "create_skill",
             "remember",
             "set_user_gender",
+            "todowrite",
         ] {
             assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
