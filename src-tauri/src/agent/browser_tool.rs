@@ -1,9 +1,10 @@
 // Harness browser tool (SPEC 5.2 #3): drives the installed Chrome/Chromium
 // through the cdp module. The browser session survives across tool calls in
-// one app process (open, then text/click/screenshot/eval on the same page)
-// and is killed after IDLE_SECS of inactivity or when the tool errors. All
-// artifacts (profile, screenshots) stay under Harness/tmp/. Missing Chrome is
-// a plain execution_error: the tool is always registered, it just degrades.
+// one app process (open, then text/click/screenshot/eval/wait/type/press/
+// select/extract on the same page) and is killed after IDLE_SECS of
+// inactivity or when the tool errors. All artifacts (profile, screenshots)
+// stay under Harness/tmp/. Missing Chrome is a plain execution_error: the
+// tool is always registered, it just degrades.
 use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::cdp::{self, Browser};
@@ -16,6 +17,9 @@ use std::time::{Duration, Instant};
 
 const IDLE_SECS: u64 = 120;
 const TEXT_CAP: usize = 20_000;
+const EXTRACT_CAP: usize = 50_000;
+const WAIT_TIMEOUT_MS: i64 = 10_000;
+const WAIT_TIMEOUT_MAX_MS: i64 = 60_000;
 
 struct Session {
     browser: Browser,
@@ -44,6 +48,29 @@ fn truncate_text(text: &str) -> (String, bool) {
     (cut, true)
 }
 
+fn clamp_timeout_ms(ms: Option<i64>) -> Duration {
+    Duration::from_millis(ms.unwrap_or(WAIT_TIMEOUT_MS).clamp(1, WAIT_TIMEOUT_MAX_MS) as u64)
+}
+
+fn clamp_max_chars(chars: Option<i64>) -> usize {
+    match chars {
+        Some(chars) => chars.clamp(1, EXTRACT_CAP as i64) as usize,
+        None => EXTRACT_CAP,
+    }
+}
+
+// Returns the JSON value as-is when it fits the cap, otherwise the cut
+// serialized form flagged as truncated (never a half-broken JSON blob).
+fn cap_json(value: Value, max_chars: usize) -> Value {
+    let serialized = value.to_string();
+    if serialized.chars().count() <= max_chars {
+        json!({ "value": value, "truncated": false })
+    } else {
+        let cut: String = serialized.chars().take(max_chars).collect();
+        json!({ "value": cut, "truncated": true })
+    }
+}
+
 fn danger_for(action: &str) -> &'static str {
     match action {
         "open" => "открыть страницу в браузере",
@@ -51,6 +78,11 @@ fn danger_for(action: &str) -> &'static str {
         "screenshot" => "сделать скриншот страницы",
         "click" => "клик по элементу на странице",
         "eval" => "выполнить JavaScript на странице",
+        "wait" => "ждать появления элемента или текста на странице",
+        "type" => "ввести текст в поле на странице",
+        "press" => "нажать клавишу на странице",
+        "select" => "выбрать пункт в выпадающем списке на странице",
+        "extract" => "извлечь данные со страницы через JavaScript",
         _ => "управление браузером",
     }
 }
@@ -62,16 +94,21 @@ impl Tool for BrowserTool {
         "browser"
     }
     fn description(&self) -> &str {
-        "Drive the installed Chrome/Chromium via CDP (headless by default, headful with headless:false). Actions: open (url), text, screenshot, click (selector), eval (expression). The page stays open between calls; the browser is killed after 120 s of idle. Screenshots are saved under Harness/tmp/. Requires confirmation."
+        "Drive the installed Chrome/Chromium via CDP (headless by default, headful with headless:false). Actions: open (url), text, screenshot, click (selector), eval (expression), wait (selector and/or text, optional timeoutMs), type (selector, text), press (key: Enter/Tab/Escape/Backspace/Arrow*/single char), select (selector, value), extract (expression, optional maxChars). The page stays open between calls; the browser is killed after 120 s of idle. Screenshots are saved under Harness/tmp/. Requires confirmation."
     }
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "action": { "type": "string", "enum": ["open", "text", "screenshot", "click", "eval"] },
+                "action": { "type": "string", "enum": ["open", "text", "screenshot", "click", "eval", "wait", "type", "press", "select", "extract"] },
                 "url": { "type": "string" },
                 "selector": { "type": "string" },
                 "expression": { "type": "string" },
+                "text": { "type": "string" },
+                "key": { "type": "string" },
+                "value": { "type": "string" },
+                "timeoutMs": { "type": "integer" },
+                "maxChars": { "type": "integer" },
                 "headless": { "type": "boolean" }
             },
             "required": ["action"],
@@ -88,7 +125,8 @@ impl Tool for BrowserTool {
         Some(danger_for(args.get("action").and_then(Value::as_str).unwrap_or("")).to_string())
     }
     fn max_result_len(&self) -> usize {
-        30_000
+        // 55 k so a 50 k extract result still fits inside the capped envelope.
+        55_000
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> crate::error::Result<ToolResult> {
         let wd = match ctx.working_dir.as_deref() {
@@ -99,7 +137,12 @@ impl Tool for BrowserTool {
         let url = args.get("url").and_then(Value::as_str);
         let selector = args.get("selector").and_then(Value::as_str);
         let expression = args.get("expression").and_then(Value::as_str);
+        let text = args.get("text").and_then(Value::as_str);
+        let key = args.get("key").and_then(Value::as_str);
+        let value = args.get("value").and_then(Value::as_str);
         let headless = args.get("headless").and_then(Value::as_bool).unwrap_or(true);
+        let timeout = clamp_timeout_ms(args.get("timeoutMs").and_then(Value::as_i64));
+        let max_chars = clamp_max_chars(args.get("maxChars").and_then(Value::as_i64));
 
         let invalid = |msg: &str| Ok(ToolResult::err(ToolErrorCode::InvalidArgs, msg));
         match action {
@@ -108,8 +151,19 @@ impl Tool for BrowserTool {
             }
             "click" if selector.unwrap_or_default().is_empty() => return invalid("click needs a selector"),
             "eval" if expression.unwrap_or_default().is_empty() => return invalid("eval needs an expression"),
+            "wait" if selector.unwrap_or_default().is_empty() && text.unwrap_or_default().is_empty() => {
+                return invalid("wait needs a selector or text")
+            }
+            "type" if selector.unwrap_or_default().is_empty() => return invalid("type needs a selector"),
+            "type" if text.is_none() => return invalid("type needs a text"),
+            "press" if key.unwrap_or_default().is_empty() => return invalid("press needs a key"),
+            "select" if selector.unwrap_or_default().is_empty() => return invalid("select needs a selector"),
+            "select" if value.is_none() => return invalid("select needs a value"),
+            "extract" if expression.unwrap_or_default().is_empty() => {
+                return invalid("extract needs an expression")
+            }
             "text" | "screenshot" => {}
-            "open" | "click" | "eval" => {}
+            "open" | "click" | "eval" | "wait" | "type" | "press" | "select" | "extract" => {}
             other => return invalid(&format!("unknown browser action {other:?}")),
         }
 
@@ -130,6 +184,7 @@ impl Tool for BrowserTool {
         // Raw bytes never travel through serde_json strings (lossy UTF-8).
         enum Outcome {
             Text(String),
+            Json(Value),
             Png(Vec<u8>),
             Empty,
         }
@@ -140,6 +195,28 @@ impl Tool for BrowserTool {
                 "screenshot" => browser.screenshot_png().map(Outcome::Png),
                 "click" => browser.click(selector.unwrap()).map(|_| Outcome::Empty),
                 "eval" => browser.eval(expression.unwrap()).map(Outcome::Text),
+                "wait" => {
+                    let found = browser.wait_for(
+                        selector.filter(|s| !s.is_empty()),
+                        text.filter(|t| !t.is_empty()),
+                        timeout,
+                    )?;
+                    if !found {
+                        return Err(AppError::Http(format!(
+                            "wait timed out after {} ms waiting for selector/text",
+                            timeout.as_millis()
+                        )));
+                    }
+                    Ok(Outcome::Empty)
+                }
+                "type" => browser
+                    .type_text(selector.unwrap(), text.unwrap())
+                    .map(|_| Outcome::Empty),
+                "press" => browser.press_key(key.unwrap()).map(|_| Outcome::Empty),
+                "select" => browser
+                    .select_value(selector.unwrap(), value.unwrap())
+                    .map(|_| Outcome::Empty),
+                "extract" => browser.eval_json(expression.unwrap()).map(Outcome::Json),
                 _ => unreachable!("action validated above"),
             }
         };
@@ -205,6 +282,11 @@ impl Tool for BrowserTool {
             }
             ("click", _) => json!({ "clicked": selector }),
             ("eval", Outcome::Text(result)) => json!({ "result": result }),
+            ("wait", _) => json!({ "waited": true }),
+            ("type", _) => json!({ "typed": selector, "chars": text.unwrap_or_default().chars().count() }),
+            ("press", _) => json!({ "pressed": key }),
+            ("select", _) => json!({ "selected": selector, "value": value }),
+            ("extract", Outcome::Json(extracted)) => cap_json(extracted, max_chars),
             _ => unreachable!("action validated above"),
         };
         Ok(ToolResult::ok(data).capped(self.max_result_len()))
@@ -237,7 +319,10 @@ mod tests {
             Resolution::Found(tool) => {
                 assert_eq!(tool.class(), ToolClass::Mutating);
                 assert_eq!(tool.policy(), PermissionPolicy::Check);
-                for action in ["open", "text", "screenshot", "click", "eval"] {
+                for action in [
+                    "open", "text", "screenshot", "click", "eval", "wait", "type", "press",
+                    "select", "extract",
+                ] {
                     let reason = tool.danger_reason(&json!({ "action": action }), &ToolCtx::default());
                     assert!(reason.is_some(), "no danger_reason for {action}");
                     assert!(!reason.unwrap().is_empty());
@@ -262,14 +347,24 @@ mod tests {
     #[test]
     fn argument_schema_validates_actions_and_rejects_extras() {
         let schema = BrowserTool.parameters();
-        for action in ["open", "text", "screenshot", "click", "eval"] {
+        for action in [
+            "open", "text", "screenshot", "click", "eval", "wait", "type", "press", "select",
+            "extract",
+        ] {
             assert!(validate_args(&schema, &json!({ "action": action })).is_ok(), "{action}");
         }
         assert!(validate_args(&schema, &json!({ "action": "open", "url": "https://example.ru", "headless": false })).is_ok());
+        assert!(validate_args(&schema, &json!({ "action": "wait", "selector": "#x", "text": "hi", "timeoutMs": 5000 })).is_ok());
+        assert!(validate_args(&schema, &json!({ "action": "type", "selector": "#i", "text": "hello" })).is_ok());
+        assert!(validate_args(&schema, &json!({ "action": "press", "key": "Enter" })).is_ok());
+        assert!(validate_args(&schema, &json!({ "action": "select", "selector": "#s", "value": "b" })).is_ok());
+        assert!(validate_args(&schema, &json!({ "action": "extract", "expression": "document.title", "maxChars": 1000 })).is_ok());
         assert!(validate_args(&schema, &json!({ "action": "print" })).is_err());
         assert!(validate_args(&schema, &json!({})).is_err());
         assert!(validate_args(&schema, &json!({ "action": "text", "bogus": 1 })).is_err());
         assert!(validate_args(&schema, &json!({ "action": "text", "headless": "yes" })).is_err());
+        assert!(validate_args(&schema, &json!({ "action": "wait", "timeoutMs": "5000" })).is_err());
+        assert!(validate_args(&schema, &json!({ "action": "press", "key": true })).is_err());
     }
 
     #[test]
@@ -300,6 +395,14 @@ mod tests {
             json!({ "action": "click" }),
             json!({ "action": "eval" }),
             json!({ "action": "print" }),
+            json!({ "action": "wait" }),
+            json!({ "action": "wait", "selector": "" }),
+            json!({ "action": "type" }),
+            json!({ "action": "type", "selector": "#i" }),
+            json!({ "action": "type", "text": "hi" }),
+            json!({ "action": "press" }),
+            json!({ "action": "select", "selector": "#s" }),
+            json!({ "action": "extract" }),
         ] {
             let r = BrowserTool.execute(&args, &ctx).unwrap();
             assert_eq!(r.error.unwrap().code, "invalid_args", "{args}");
@@ -321,6 +424,34 @@ mod tests {
         assert_eq!(text.chars().count(), TEXT_CAP);
         let (text, truncated) = truncate_text("short");
         assert!(!truncated && text == "short");
+    }
+
+    #[test]
+    fn wait_timeout_and_extract_cap_are_clamped() {
+        assert_eq!(clamp_timeout_ms(None), Duration::from_secs(10));
+        assert_eq!(clamp_timeout_ms(Some(500)), Duration::from_millis(500));
+        assert_eq!(clamp_timeout_ms(Some(120_000)), Duration::from_millis(60_000));
+        assert_eq!(clamp_timeout_ms(Some(-5)), Duration::from_millis(1));
+        assert_eq!(clamp_max_chars(None), EXTRACT_CAP);
+        assert_eq!(clamp_max_chars(Some(10)), 10);
+        assert_eq!(clamp_max_chars(Some(0)), 1);
+        assert_eq!(clamp_max_chars(Some(1_000_000)), EXTRACT_CAP);
+    }
+
+    #[test]
+    fn cap_json_keeps_small_values_and_cuts_large_ones() {
+        let small = cap_json(json!({ "a": 1 }), 100);
+        assert_eq!(small["truncated"], false);
+        assert_eq!(small["value"], json!({ "a": 1 }));
+        let big = cap_json(json!("x".repeat(50)), 10);
+        assert_eq!(big["truncated"], true);
+        assert_eq!(big["value"].as_str().unwrap().chars().count(), 10);
+        // multibyte text must be cut on char boundaries, never mid-UTF-8
+        let big = cap_json(json!("х".repeat(50)), 10);
+        assert_eq!(big["value"].as_str().unwrap().chars().count(), 10);
+        let nullish = cap_json(Value::Null, 100);
+        assert_eq!(nullish["truncated"], false);
+        assert!(nullish["value"].is_null());
     }
 
     // Manual end-to-end: needs a real Chrome on this machine.
@@ -352,6 +483,42 @@ mod tests {
         end_session();
         // Chrome helper processes flush the profile a moment after the main
         // process dies, so the removal gets a few retries.
+        for attempt in 0..10 {
+            match std::fs::remove_dir_all(&wd) {
+                Ok(()) => break,
+                Err(e) if attempt == 9 => panic!("cleanup failed: {e}"),
+                Err(_) => std::thread::sleep(Duration::from_millis(300)),
+            }
+        }
+    }
+
+    // Manual end-to-end for the B1 actions: needs a real Chrome.
+    // Run with: cargo test -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn live_chrome_wait_type_press_select_extract() {
+        let chrome = cdp::find_chrome().expect("no Chrome installed");
+        let wd = temp_test_dir("browser-live-b1");
+        let tmp = paths::harness_tmp_dir(&wd);
+        let url = "data:text/html,%3Cselect%20id%3D%22s%22%3E%3Coption%20value%3D%22a%22%3EA%3C%2Foption%3E%3Coption%20value%3D%22b%22%3EB%3C%2Foption%3E%3C%2Fselect%3E%3Cinput%20id%3D%22i%22%3E";
+        let mut browser = cdp::Browser::launch(&chrome, &tmp, true).expect("launch failed");
+        browser.navigate(url).expect("navigate failed");
+        assert!(browser.wait_for(Some("#s"), Some("A"), Duration::from_secs(2)).unwrap());
+        assert!(!browser.wait_for(Some("#missing"), None, Duration::from_millis(300)).unwrap());
+        browser.type_text("#i", "hello").expect("type failed");
+        assert_eq!(browser.eval("document.querySelector('#i').value").unwrap(), "hello");
+        browser.select_value("#s", "b").expect("select failed");
+        assert_eq!(browser.eval("document.querySelector('#s').value").unwrap(), "b");
+        assert!(browser.select_value("#s", "zzz").is_err());
+        assert_eq!(
+            browser.eval_json("({ ok: true, n: 2 })").unwrap(),
+            json!({ "ok": true, "n": 2 })
+        );
+        browser.press_key("Escape").expect("press failed");
+        browser.press_key("a").expect("press char failed");
+        assert!(browser.press_key("F13").is_err());
+        drop(browser);
+        end_session();
         for attempt in 0..10 {
             match std::fs::remove_dir_all(&wd) {
                 Ok(()) => break,

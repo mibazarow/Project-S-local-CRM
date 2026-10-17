@@ -7,7 +7,7 @@
 // come from channel recv_timeout instead of tungstenite internals.
 use crate::error::{AppError, Result};
 use base64::Engine;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::io::BufRead;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -96,15 +96,22 @@ pub fn parse_devtools_url(line: &str) -> Option<String> {
 }
 
 // Runtime.evaluate envelope: exception details beat a bare "undefined".
+pub fn exception_text(exception: &Value) -> String {
+    exception
+        .get("exception")
+        .and_then(|e| e.get("description"))
+        .and_then(Value::as_str)
+        .or_else(|| exception.get("text").and_then(Value::as_str))
+        .unwrap_or("unknown error")
+        .to_string()
+}
+
 pub fn eval_text(result: &Value) -> Result<String> {
     if let Some(exception) = result.get("exceptionDetails") {
-        let text = exception
-            .get("exception")
-            .and_then(|e| e.get("description"))
-            .and_then(Value::as_str)
-            .or_else(|| exception.get("text").and_then(Value::as_str))
-            .unwrap_or("unknown error");
-        return Err(AppError::Invalid(format!("page JS error: {text}")));
+        return Err(AppError::Invalid(format!(
+            "page JS error: {}",
+            exception_text(exception)
+        )));
     }
     let value = &result["result"]["value"];
     if value.is_null() {
@@ -114,6 +121,97 @@ pub fn eval_text(result: &Value) -> Result<String> {
         Value::String(s) => s.clone(),
         other => other.to_string(),
     })
+}
+
+// Pure request builders for the interaction actions: no I/O, so the exact
+// CDP payloads are unit-testable without a live Chrome.
+pub fn wait_expression(selector: Option<&str>, text: Option<&str>) -> String {
+    let sel = selector.map(|s| format!("!!document.querySelector({s:?})"));
+    let txt = text.map(|t| format!("document.body.innerText.includes({t:?})"));
+    match (sel, txt) {
+        (Some(s), Some(t)) => format!("({s}) && ({t})"),
+        (Some(s), None) => s,
+        (None, Some(t)) => t,
+        (None, None) => "false".into(),
+    }
+}
+
+pub fn focus_expression(selector: &str) -> String {
+    format!(
+        "(() => {{ const el = document.querySelector({selector:?}); if (!el) return 'no-match'; el.focus(); return document.activeElement === el ? 'focused' : 'unfocusable'; }})()"
+    )
+}
+
+// React-friendly fallback for elements that never take focus: write through
+// the native value setter, then fire input+change like a real user would.
+pub fn type_fallback_expression(selector: &str, text: &str) -> String {
+    format!(
+        "(() => {{ const el = document.querySelector({selector:?}); if (!el) return 'no-match'; const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype; Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, {text:?}); el.dispatchEvent(new Event('input', {{ bubbles: true }})); el.dispatchEvent(new Event('change', {{ bubbles: true }})); return 'ok'; }})()"
+    )
+}
+
+pub fn select_expression(selector: &str, value: &str) -> String {
+    format!(
+        "(() => {{ const el = document.querySelector({selector:?}); if (!el) return 'no-match'; if (el.tagName !== 'SELECT') return 'not-select'; el.value = {value:?}; if (el.value !== {value:?}) return 'no-option'; el.dispatchEvent(new Event('change', {{ bubbles: true }})); return 'ok'; }})()"
+    )
+}
+
+pub fn insert_text_params(text: &str) -> Value {
+    json!({ "text": text })
+}
+
+// (name, key, code, windowsVirtualKeyCode) for the keys the tool promises.
+const NAMED_KEYS: [(&str, &str, &str, u32); 8] = [
+    ("Enter", "Enter", "Enter", 13),
+    ("Tab", "Tab", "Tab", 9),
+    ("Escape", "Escape", "Escape", 27),
+    ("Backspace", "Backspace", "Backspace", 8),
+    ("ArrowUp", "ArrowUp", "ArrowUp", 38),
+    ("ArrowDown", "ArrowDown", "ArrowDown", 40),
+    ("ArrowLeft", "ArrowLeft", "ArrowLeft", 37),
+    ("ArrowRight", "ArrowRight", "ArrowRight", 39),
+];
+
+// (keyDown params, keyUp params) for a named key or a single character.
+pub fn key_params(key: &str) -> Option<(Value, Value)> {
+    let (key_name, code, vk, text): (String, Option<String>, Option<u32>, Option<String>) =
+        if let Some((_, name, code, vk)) = NAMED_KEYS.iter().find(|(n, ..)| n.eq_ignore_ascii_case(key)) {
+            (name.to_string(), Some(code.to_string()), Some(*vk), None)
+        } else {
+            let mut chars = key.chars();
+            let ch = chars.next()?;
+            if chars.next().is_some() {
+                return None;
+            }
+            if ch.is_ascii_alphabetic() {
+                let upper = ch.to_ascii_uppercase();
+                (ch.to_string(), Some(format!("Key{upper}")), Some(upper as u32), Some(ch.to_string()))
+            } else if ch.is_ascii_digit() {
+                (ch.to_string(), Some(format!("Digit{ch}")), Some(ch as u32), Some(ch.to_string()))
+            } else if ch == ' ' {
+                (" ".to_string(), Some("Space".to_string()), Some(32), Some(" ".to_string()))
+            } else {
+                let vk = if ch.is_ascii() { Some(ch as u32) } else { None };
+                (ch.to_string(), None, vk, Some(ch.to_string()))
+            }
+        };
+    let mut down = Map::new();
+    down.insert("type".into(), json!("keyDown"));
+    down.insert("key".into(), json!(key_name));
+    if let Some(code) = &code {
+        down.insert("code".into(), json!(code));
+    }
+    if let Some(vk) = vk {
+        down.insert("windowsVirtualKeyCode".into(), json!(vk));
+        down.insert("nativeVirtualKeyCode".into(), json!(vk));
+    }
+    if let Some(text) = &text {
+        down.insert("text".into(), json!(text));
+    }
+    let mut up = down.clone();
+    up.insert("type".into(), json!("keyUp"));
+    up.remove("text");
+    Some((Value::Object(down), Value::Object(up)))
 }
 
 pub struct Browser {
@@ -426,6 +524,129 @@ impl Browser {
         )?;
         eval_text(&result)
     }
+
+    // Polls the condition every 200 ms; Ok(true) = seen, Ok(false) = timed out.
+    pub fn wait_for(
+        &mut self,
+        selector: Option<&str>,
+        text: Option<&str>,
+        timeout: Duration,
+    ) -> Result<bool> {
+        let expression = wait_expression(selector, text);
+        let session_id = self.session_id.clone();
+        let deadline = Instant::now() + timeout;
+        loop {
+            let result = self.call(
+                "Runtime.evaluate",
+                &json!({ "expression": expression, "returnByValue": true }),
+                Some(&session_id),
+            )?;
+            if let Some(exception) = result.get("exceptionDetails") {
+                return Err(AppError::Invalid(format!(
+                    "page JS error: {}",
+                    exception_text(exception)
+                )));
+            }
+            if result["result"]["value"].as_bool().unwrap_or(false) {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    pub fn insert_text(&mut self, text: &str) -> Result<()> {
+        let session_id = self.session_id.clone();
+        self.call("Input.insertText", &insert_text_params(text), Some(&session_id))
+            .map(|_| ())
+    }
+
+    pub fn press_key(&mut self, key: &str) -> Result<()> {
+        let (down, up) = key_params(key).ok_or_else(|| {
+            AppError::Invalid(format!(
+                "unsupported key {key:?}: use Enter, Tab, Escape, Backspace, ArrowUp/Down/Left/Right or a single character"
+            ))
+        })?;
+        let session_id = self.session_id.clone();
+        self.call("Input.dispatchKeyEvent", &down, Some(&session_id))?;
+        self.call("Input.dispatchKeyEvent", &up, Some(&session_id))
+            .map(|_| ())
+    }
+
+    // Focus first (so Input.insertText lands like real typing); elements that
+    // refuse focus get the native-setter fallback instead.
+    pub fn type_text(&mut self, selector: &str, text: &str) -> Result<()> {
+        let session_id = self.session_id.clone();
+        let result = self.call(
+            "Runtime.evaluate",
+            &json!({ "expression": focus_expression(selector), "returnByValue": true }),
+            Some(&session_id),
+        )?;
+        match eval_text(&result)?.as_str() {
+            "no-match" => {
+                return Err(AppError::Invalid(format!(
+                    "no element matches selector {selector:?}"
+                )))
+            }
+            "focused" => return self.insert_text(text),
+            _ => {}
+        }
+        let result = self.call(
+            "Runtime.evaluate",
+            &json!({ "expression": type_fallback_expression(selector, text), "returnByValue": true }),
+            Some(&session_id),
+        )?;
+        if eval_text(&result)? == "no-match" {
+            return Err(AppError::Invalid(format!(
+                "no element matches selector {selector:?}"
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn select_value(&mut self, selector: &str, value: &str) -> Result<()> {
+        let session_id = self.session_id.clone();
+        let result = self.call(
+            "Runtime.evaluate",
+            &json!({ "expression": select_expression(selector, value), "returnByValue": true }),
+            Some(&session_id),
+        )?;
+        match eval_text(&result)?.as_str() {
+            "ok" => Ok(()),
+            "not-select" => Err(AppError::Invalid(format!(
+                "element {selector:?} is not a <select>"
+            ))),
+            "no-option" => Err(AppError::Invalid(format!(
+                "no <option> with value {value:?} in {selector:?}"
+            ))),
+            _ => Err(AppError::Invalid(format!(
+                "no element matches selector {selector:?}"
+            ))),
+        }
+    }
+
+    // Like eval but keeps the JSON value (null included) instead of stringifying.
+    pub fn eval_json(&mut self, expression: &str) -> Result<Value> {
+        let session_id = self.session_id.clone();
+        let result = self.call(
+            "Runtime.evaluate",
+            &json!({ "expression": expression, "returnByValue": true }),
+            Some(&session_id),
+        )?;
+        if let Some(exception) = result.get("exceptionDetails") {
+            return Err(AppError::Invalid(format!(
+                "page JS error: {}",
+                exception_text(exception)
+            )));
+        }
+        Ok(result
+            .get("result")
+            .and_then(|r| r.get("value"))
+            .cloned()
+            .unwrap_or(Value::Null))
+    }
 }
 
 impl Drop for Browser {
@@ -541,5 +762,55 @@ mod tests {
         });
         let err = eval_text(&thrown).unwrap_err();
         assert!(err.to_string().contains("TypeError: x is undefined"));
+    }
+
+    #[test]
+    fn wait_expression_covers_selector_text_and_both() {
+        let sel = wait_expression(Some("#b"), None);
+        assert!(sel.contains(r##"!!document.querySelector("#b")"##), "{sel}");
+        let txt = wait_expression(None, Some("hello world"));
+        assert!(txt.contains(r##"document.body.innerText.includes("hello world")"##), "{txt}");
+        let both = wait_expression(Some("#b"), Some("hi"));
+        assert!(both.contains("&&") && both.contains("querySelector") && both.contains("includes"), "{both}");
+        assert_eq!(wait_expression(None, None), "false");
+    }
+
+    #[test]
+    fn key_params_maps_named_keys_and_single_chars() {
+        let (down, up) = key_params("Enter").unwrap();
+        assert_eq!(down["type"], "keyDown");
+        assert_eq!(down["key"], "Enter");
+        assert_eq!(down["code"], "Enter");
+        assert_eq!(down["windowsVirtualKeyCode"], 13);
+        assert_eq!(down["nativeVirtualKeyCode"], 13);
+        assert_eq!(up["type"], "keyUp");
+        assert!(up.get("text").is_none());
+        let (down, _) = key_params("a").unwrap();
+        assert_eq!(down["text"], "a");
+        assert_eq!(down["code"], "KeyA");
+        assert_eq!(down["windowsVirtualKeyCode"], 65);
+        let (down, _) = key_params("ArrowDown").unwrap();
+        assert_eq!(down["windowsVirtualKeyCode"], 40);
+        let (down, _) = key_params("7").unwrap();
+        assert_eq!(down["code"], "Digit7");
+        assert_eq!(down["windowsVirtualKeyCode"], 55);
+        assert!(key_params("F13").is_none());
+        assert!(key_params("").is_none());
+    }
+
+    #[test]
+    fn interaction_request_builders_are_pure() {
+        let focus = focus_expression("#i");
+        assert!(focus.contains(r##"document.querySelector("#i")"##), "{focus}");
+        assert!(focus.contains("el.focus()"));
+        let fallback = type_fallback_expression("#i", "hi");
+        assert!(fallback.contains("getOwnPropertyDescriptor"));
+        assert!(fallback.contains("'input'") && fallback.contains("'change'"));
+        assert!(fallback.contains(r##""hi""##), "{fallback}");
+        let select = select_expression("#s", "b");
+        assert!(select.contains("tagName !== 'SELECT'"));
+        assert!(select.contains("'change'"));
+        assert!(select.contains(r##"el.value = "b""##), "{select}");
+        assert_eq!(insert_text_params("hi"), json!({ "text": "hi" }));
     }
 }
