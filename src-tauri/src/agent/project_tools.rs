@@ -34,6 +34,9 @@ pub fn project_catalog() -> Catalog {
         // pure Rust writers; see doc_tools.rs for the safety rules.
         Arc::new(crate::agent::doc_tools::CreateDocumentTool::project()),
         Arc::new(crate::agent::doc_tools::CreateSpreadsheetTool::project()),
+        // OCR of images and PDFs via the macOS Vision framework through an
+        // embedded Swift helper; see ocr_tools.rs for the safety rules.
+        Arc::new(crate::agent::ocr_tools::OcrTool),
         Arc::new(CreateFolderTool),
         Arc::new(RenamePathTool),
         Arc::new(DeletePathTool),
@@ -859,7 +862,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 39] = [
+    const TOOL_NAMES: [&str; 40] = [
         "search",
         "read_file",
         "list_tree",
@@ -868,6 +871,7 @@ mod tests {
         "apply_patch",
         "create_document",
         "create_spreadsheet",
+        "ocr",
         "create_folder",
         "rename_path",
         "delete_path",
@@ -1231,6 +1235,7 @@ mod tests {
             "search",
             "read_file",
             "list_tree",
+            "ocr",
             "task_list",
             "datas_read",
             "git_status",

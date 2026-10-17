@@ -17,7 +17,6 @@
 
 ## Инструменты: доработки по аудиту (ДЕЛАЕМ)
 ### Must-have
-- [TODO] **`ocr_image` / `ocr_pdf`** — OCR через macOS Vision (сканы/акты в CRM). M.
 ### Nice-to-have
 - [TODO] **`pdf_merge` / `pdf_split` / `pdf_fill_form`** — расширение документов. M.
 - [TODO] **`screenshot`** (рабочий стол/регион) — S.

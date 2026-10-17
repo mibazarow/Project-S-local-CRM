@@ -12,6 +12,7 @@ pub mod git_tools;
 pub mod harness_tools;
 pub mod hints;
 pub mod notes_tools;
+pub mod ocr_tools;
 pub mod permissions;
 pub mod process_tools;
 pub mod project_tools;

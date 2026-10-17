@@ -80,6 +80,9 @@ pub fn harness_catalog() -> Catalog {
         // pure Rust writers; see doc_tools.rs for the safety rules.
         Arc::new(super::doc_tools::CreateDocumentTool::harness()),
         Arc::new(super::doc_tools::CreateSpreadsheetTool::harness()),
+        // OCR of images and PDFs via the macOS Vision framework through an
+        // embedded Swift helper; see ocr_tools.rs for the safety rules.
+        Arc::new(super::ocr_tools::OcrTool),
         Arc::new(crate::skills::CreateSkillTool),
         Arc::new(BashTool::default()),
         // Background process control (dev servers, installs): the background
@@ -1777,7 +1780,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const DEFERRED_NAMES: [&str; 44] = [
+    const DEFERRED_NAMES: [&str; 45] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -1789,6 +1792,7 @@ mod tests {
         "apply_patch",
         "create_document",
         "create_spreadsheet",
+        "ocr",
         "create_skill",
         "bash",
         "process_start",
@@ -1844,7 +1848,7 @@ mod tests {
 
     #[test]
     fn classes_policies_and_danger_reasons_match_the_spec() {
-        for name in ["fs_read", "fs_list", "fs_grep", "webfetch", "websearch", "crm_list_projects", "crm_search", "crm_tasks", "datas_read", "git_status", "git_diff", "git_log", "ssh_list_profiles"] {
+        for name in ["fs_read", "fs_list", "fs_grep", "ocr", "webfetch", "websearch", "crm_list_projects", "crm_search", "crm_tasks", "datas_read", "git_status", "git_diff", "git_log", "ssh_list_profiles"] {
             assert_eq!(tool(name).class(), ToolClass::ReadOnly, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
         }
