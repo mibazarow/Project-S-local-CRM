@@ -61,6 +61,10 @@ export interface Run {
   text: string;
   steps: Step[];
   error: string | null;
+  // True when this view started the run itself ("send"). A run that only
+  // arrives as events (a fired schedule) is remote: it is finalized from
+  // the persisted transcript, not from the stream.
+  local: boolean;
 }
 
 export interface Slice {
@@ -125,26 +129,30 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             error: null,
           },
         ],
-        run: { text: "", steps: [], error: null },
+        run: { text: "", steps: [], error: null, local: true },
       }));
     case "sendFailed":
       return withSlice(state, action.key, (s) => ({ ...s, run: null, sendError: action.message }));
     case "delta":
-      return withSlice(state, action.key, (s) =>
-        s.run ? { ...s, run: { ...s.run, text: s.run.text + action.text } } : s,
-      );
-    case "stepStart":
+      // The first event of a run this view did not start (a fired schedule)
+      // opens the run slice so the session streams live either way.
       return withSlice(state, action.key, (s) =>
         s.run
-          ? {
-              ...s,
-              run: {
-                ...s.run,
-                steps: [...s.run.steps, { key: nextKey++, name: action.name, summary: action.summary, status: "run" }],
-              },
-            }
-          : s,
+          ? { ...s, run: { ...s.run, text: s.run.text + action.text } }
+          : { ...s, run: { text: action.text, steps: [], error: null, local: false } },
       );
+    case "stepStart":
+      return withSlice(state, action.key, (s) => {
+        const step: Step = {
+          key: nextKey++,
+          name: action.name,
+          summary: action.summary,
+          status: "run",
+        };
+        return s.run
+          ? { ...s, run: { ...s.run, steps: [...s.run.steps, step] } }
+          : { ...s, run: { text: "", steps: [step], error: null, local: false } };
+      });
     case "stepFinish":
       // Tool calls run sequentially, so the oldest open step is the match.
       return withSlice(state, action.key, (s) => {
@@ -157,6 +165,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case "runError":
       return withSlice(state, action.key, (s) => {
         if (!s.run) return s;
+        // Remote run: drop the live slice; the view pulls the persisted
+        // transcript (the partial run is already in the DB).
+        if (!s.run.local) return { ...s, run: null };
         const item: ChatItem = {
           key: nextKey++,
           role: "agent",
@@ -171,6 +182,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case "done":
       return withSlice(state, action.key, (s) => {
         if (!s.run) return s;
+        // Remote run: drop the live slice; the view pulls the persisted
+        // transcript, which also carries the schedule's user turn.
+        if (!s.run.local) return { ...s, run: null };
         const streamed = s.run.text.trim();
         const answer = action.answer.trim();
         const parts = [streamed];

@@ -273,14 +273,18 @@ export default function HarnessView() {
       .catch(() => dispatch({ type: "loaded", key: activeId, items: [] }));
   }, [activeId]);
 
-  // One shared event stream: harness runs are routed by sessionId. done/error
-  // also refresh the session list (title / last_active) and, for runs started
-  // outside this view (a fired schedule), pull the persisted transcript.
+  // One shared event stream: harness runs are routed by sessionId. A run
+  // started outside this view (a fired schedule) streams live too: the first
+  // incoming event opens the run slice (chatReducer), so the open session
+  // shows the running state, text and tool steps. done/error also refresh the
+  // session list (title / last_active) and, for remote runs, pull the
+  // persisted transcript (it carries the schedule's user turn).
   useEffect(() => {
     let cancelled = false;
     let unEvent: (() => void) | undefined;
     let unConfirm: (() => void) | undefined;
     let unSchedules: (() => void) | undefined;
+    let unSessions: (() => void) | undefined;
     const reloadHistory = (key: number) => {
       void ipc
         .harnessSessionHistory(key)
@@ -300,22 +304,24 @@ export default function HarnessView() {
         case "toolCallFinished":
           dispatch({ type: "stepFinish", key, ok: p.event.ok });
           break;
-        case "done":
-          if (chatRef.current[key]?.run) {
-            dispatch({ type: "done", key, answer: p.event.answer, reason: p.event.reason });
-          } else if (key === activeIdRef.current) {
-            reloadHistory(key);
+        case "done": {
+          const run = chatRef.current[key]?.run;
+          dispatch({ type: "done", key, answer: p.event.answer, reason: p.event.reason });
+          if (!run || !run.local) {
+            if (key === activeIdRef.current) reloadHistory(key);
           }
           void loadSessions();
           break;
-        case "error":
-          if (chatRef.current[key]?.run) {
-            dispatch({ type: "runError", key, message: p.event.message });
-          } else if (key === activeIdRef.current) {
-            reloadHistory(key);
+        }
+        case "error": {
+          const run = chatRef.current[key]?.run;
+          dispatch({ type: "runError", key, message: p.event.message });
+          if (!run || !run.local) {
+            if (key === activeIdRef.current) reloadHistory(key);
           }
           void loadSessions();
           break;
+        }
         case "confirmationRequested":
           break; // the id-bearing copy arrives as "agent-confirmation"
       }
@@ -328,11 +334,15 @@ export default function HarnessView() {
       })
       .then((u) => (cancelled ? u() : (unConfirm = u)));
     void ipc.onSchedulesChanged(() => void loadSchedules()).then((u) => (cancelled ? u() : (unSchedules = u)));
+    // A fired schedule can create a fresh session (its origin was deleted):
+    // the new session appears in the list without a manual reload.
+    void ipc.onSessionsChanged(() => void loadSessions()).then((u) => (cancelled ? u() : (unSessions = u)));
     return () => {
       cancelled = true;
       unEvent?.();
       unConfirm?.();
       unSchedules?.();
+      unSessions?.();
     };
   }, [loadSessions, loadSchedules]);
 
@@ -362,7 +372,7 @@ export default function HarnessView() {
 
   const deleteSession = async (s: SessionDto) => {
     const label = s.title ?? UNTITLED;
-    if (!window.confirm(`Удалить сессию «${label}»? Её история и расписания будут удалены.`)) return;
+    if (!window.confirm(`Удалить сессию «${label}»? Её история будет удалена, а расписания сохранятся и при следующем срабатывании создадут новую сессию.`)) return;
     try {
       await ipc.harnessDeleteSession(s.id);
       if (activeId === s.id) setActiveId(null);

@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 11;
+pub const SCHEMA_VERSION: i64 = 12;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -227,6 +227,33 @@ DROP TABLE IF EXISTS file_vectors;
     )
 }
 
+// Schedules survive session deletion (SPEC 5.3 decision): a schedule
+// remembers its session, and when that session is gone the schedule fires
+// into a fresh one. SQLite cannot change a column constraint in place, so
+// the table is rebuilt: create the new shape (identical columns/CHECKs, FK
+// now ON DELETE SET NULL), copy every row, drop the old table, rename.
+// No indexes exist on schedules; the rename carries any along.
+const MIGRATION_12: &str = "
+CREATE TABLE schedules_new (
+    id INTEGER PRIMARY KEY,
+    session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('run_at','cron','notify')),
+    spec TEXT NOT NULL,
+    prompt TEXT,
+    status TEXT NOT NULL CHECK(status IN ('active','paused','done','error')),
+    related_task_id INTEGER,
+    created_at TEXT NOT NULL,
+    last_run_at TEXT,
+    next_run_at TEXT,
+    timezone TEXT,
+    error TEXT
+);
+INSERT INTO schedules_new (id, session_id, kind, spec, prompt, status, related_task_id, created_at, last_run_at, next_run_at, timezone, error)
+    SELECT id, session_id, kind, spec, prompt, status, related_task_id, created_at, last_run_at, next_run_at, timezone, error FROM schedules;
+DROP TABLE schedules;
+ALTER TABLE schedules_new RENAME TO schedules;
+";
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -272,6 +299,10 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     }
     if version < 11 {
         conn.execute_batch(&migration_11())?;
+        conn.pragma_update(None, "user_version", 11)?;
+    }
+    if version < 12 {
+        conn.execute_batch(MIGRATION_12)?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
     Ok(())
@@ -401,7 +432,7 @@ mod tests {
     }
 
     #[test]
-    fn migration_v6_sessions_cascade_to_chat_messages_and_schedules() {
+    fn migration_v6_session_deletion_cascades_to_chat_but_v12_detaches_schedules() {
         crate::db::ensure_vec_extension();
         let conn = Connection::open_in_memory().unwrap();
         run_migrations(&conn).unwrap();
@@ -429,6 +460,7 @@ mod tests {
             params![session_id],
         )
         .unwrap();
+        let schedule_id = conn.last_insert_rowid();
 
         conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id])
             .unwrap();
@@ -438,10 +470,12 @@ mod tests {
         let messages: i64 = conn
             .query_row("SELECT count(*) FROM messages WHERE chat_id = ?1", params![chat_id], |r| r.get(0))
             .unwrap();
-        let schedules: i64 = conn
-            .query_row("SELECT count(*) FROM schedules WHERE session_id = ?1", params![session_id], |r| r.get(0))
+        // Since v12 the schedule row survives with session_id detached to NULL.
+        let schedule_session: Option<i64> = conn
+            .query_row("SELECT session_id FROM schedules WHERE id = ?1", params![schedule_id], |r| r.get(0))
             .unwrap();
-        assert_eq!((chats, messages, schedules), (0, 0, 0));
+        assert_eq!((chats, messages), (0, 0));
+        assert_eq!(schedule_session, None);
 
         // CHECK constraints reject unknown schedule kind/status.
         conn.execute(
@@ -635,6 +669,67 @@ CREATE VIRTUAL TABLE vec_items USING vec0(
             params![blob256],
         );
         assert!(wrong_dim.is_err(), "256-d vector accepted into a 512-d vec0 table");
+    }
+
+    #[test]
+    fn migration_v12_rebuilds_schedules_with_set_null_and_keeps_rows() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+
+        // Simulate a pre-v12 database: schedules with the old CASCADE FK.
+        conn.execute_batch("DROP TABLE schedules;").unwrap();
+        conn.execute_batch(
+            "
+CREATE TABLE schedules (
+    id INTEGER PRIMARY KEY,
+    session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('run_at','cron','notify')),
+    spec TEXT NOT NULL,
+    prompt TEXT,
+    status TEXT NOT NULL CHECK(status IN ('active','paused','done','error')),
+    related_task_id INTEGER,
+    created_at TEXT NOT NULL,
+    last_run_at TEXT,
+    next_run_at TEXT,
+    timezone TEXT,
+    error TEXT
+);
+",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (title, created_at, updated_at, last_active_at) VALUES ('s', '2026-01-01', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let session_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO schedules (session_id, kind, spec, prompt, status, created_at, timezone) VALUES (?1, 'cron', '0 10 * * *', 'daily', 'active', '2026-01-01', 'Europe/Moscow')",
+            params![session_id],
+        )
+        .unwrap();
+        let schedule_id = conn.last_insert_rowid();
+        conn.pragma_update(None, "user_version", 11).unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        // The row survived the create/copy/drop/rename rebuild with its data.
+        let spec: String = conn
+            .query_row("SELECT spec FROM schedules WHERE id = ?1", params![schedule_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(spec, "0 10 * * *");
+
+        // The rebuilt FK is SET NULL: deleting the session keeps the schedule.
+        conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id])
+            .unwrap();
+        let schedule_session: Option<i64> = conn
+            .query_row("SELECT session_id FROM schedules WHERE id = ?1", params![schedule_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(schedule_session, None);
     }
 
     #[test]

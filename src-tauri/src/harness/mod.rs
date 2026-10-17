@@ -2,8 +2,10 @@
 // global memory. A session is its own identity row (title + TTL timestamps);
 // its messages reuse the chats/messages tables through a kind='harness' chat
 // linked by session_id, so message storage is not duplicated and deleting a
-// session cascades to its messages and schedules. The run path mirrors the
-// project chat run and shares the agent loop and confirmation bridge.
+// session cascades to its messages. Schedules survive session deletion
+// (session_id SET NULL, schema v12): a schedule whose session is gone creates
+// a fresh session when it fires. The run path mirrors the project chat run
+// and shares the agent loop and confirmation bridge.
 use crate::agent::catalog::Catalog;
 use crate::agent::prompts::harness_system_prompt;
 use crate::attachments::{self, AttachmentRef};
@@ -98,7 +100,9 @@ pub fn rename_session(conn: &Connection, id: i64, title: &str) -> Result<Session
     session_dto(conn, id)
 }
 
-// Cascades to the session's chat (→ messages, summaries) and its schedules.
+// Cascades to the session's chat (→ messages, summaries); the session's
+// schedules survive and detach (session_id SET NULL) to fire into a fresh
+// session later.
 pub fn delete_session(conn: &Connection, id: i64) -> Result<()> {
     let deleted = conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
     if deleted != 1 {
@@ -121,7 +125,8 @@ pub fn touch_session(conn: &Connection, id: i64) -> Result<()> {
 }
 
 // SPEC 5.1: sessions idle for `days` days are auto-deleted; 0 disables purging.
-// Returns the number of sessions removed (their chats/messages/schedules cascade).
+// Returns the number of sessions removed (their chats/messages cascade; their
+// schedules detach and keep firing into fresh sessions).
 pub fn purge_inactive_sessions(conn: &Connection, days: u32) -> Result<usize> {
     if days == 0 {
         return Ok(0);
@@ -159,14 +164,32 @@ pub fn run_session(
     kind: &'static str,
     attachments_in: &[AttachmentRef],
 ) -> Result<i64> {
+    let guard = state.db.lock().unwrap();
+    let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
+    run_session_on(app, state, registry, conn, session_id, text, kind, attachments_in)
+}
+
+// Same as run_session but persists the user turn on a caller-supplied
+// connection: the scheduler tick thread already holds the app DB mutex, so
+// it must not be locked twice (std Mutex is not reentrant). The agent run
+// itself always spawns its own thread with its own connection.
+#[allow(clippy::too_many_arguments)]
+pub fn run_session_on(
+    app: &AppHandle,
+    state: &AppState,
+    registry: &Arc<AgentRegistry>,
+    conn: &Connection,
+    session_id: i64,
+    text: &str,
+    kind: &'static str,
+    attachments_in: &[AttachmentRef],
+) -> Result<i64> {
     let text = text.trim();
     if text.is_empty() {
         return Err(AppError::Invalid("message text is empty".into()));
     }
     let wd = state.working_dir()?;
     let chat_id = {
-        let guard = state.db.lock().unwrap();
-        let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
         let chat_id = session_chat_id(conn, session_id)?;
         touch_session(conn, session_id)?;
         let user_message =
@@ -317,7 +340,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_session_removes_messages_and_schedules() {
+    fn delete_session_removes_messages_but_keeps_schedules_detached() {
         let (wd, conn) = setup("harness-delete");
         let s = create_session(&conn, Some("s")).unwrap();
         let chat_id = session_chat_id(&conn, s.id).unwrap();
@@ -335,10 +358,12 @@ mod tests {
         let chats: i64 = conn
             .query_row("SELECT count(*) FROM chats WHERE session_id = ?1", params![s.id], |r| r.get(0))
             .unwrap();
-        let schedules: i64 = conn
-            .query_row("SELECT count(*) FROM schedules WHERE session_id = ?1", params![s.id], |r| r.get(0))
+        // v12: the schedule survives session deletion with session_id NULL.
+        let schedule_session: Option<i64> = conn
+            .query_row("SELECT session_id FROM schedules WHERE kind = 'cron'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!((messages, chats, schedules), (0, 0, 0));
+        assert_eq!((messages, chats), (0, 0));
+        assert_eq!(schedule_session, None);
         assert!(matches!(delete_session(&conn, s.id), Err(AppError::Invalid(_))));
         fs::remove_dir_all(&wd).unwrap();
     }

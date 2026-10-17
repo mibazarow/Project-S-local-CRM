@@ -98,10 +98,15 @@ impl Notifier for TauriNotifier<'_> {
 
 // Starting a `run_at`/`cron` schedule: a harness run in the schedule's
 // session with `prompt` as the user turn, through the shared run bridge.
-// Managed state is resolved through the AppHandle so the background thread
-// owns no borrowed handles. Tests inject a recording runner.
+// When the schedule has no session (never had one, or it was deleted — v12
+// keeps schedules and nulls their session_id) the engine first creates a
+// fresh session and re-points the schedule at it. The tick thread already
+// holds the app DB mutex, so the runner receives the tick's connection
+// instead of locking it again. Managed state is resolved through the
+// AppHandle so the background thread owns no borrowed handles. Tests inject
+// a recording runner.
 pub trait SessionRunner {
-    fn run(&self, session_id: i64, prompt: &str) -> Result<()>;
+    fn run(&self, conn: &Connection, session_id: i64, prompt: &str) -> Result<()>;
 }
 
 pub struct TauriSessionRunner<'a> {
@@ -115,13 +120,14 @@ impl<'a> TauriSessionRunner<'a> {
 }
 
 impl SessionRunner for TauriSessionRunner<'_> {
-    fn run(&self, session_id: i64, prompt: &str) -> Result<()> {
+    fn run(&self, conn: &Connection, session_id: i64, prompt: &str) -> Result<()> {
         let state = self.app.state::<AppState>();
         let registry = self.app.state::<Arc<AgentRegistry>>();
-        let chat_id = harness::run_session(
+        let chat_id = harness::run_session_on(
             self.app,
             state.inner(),
             registry.inner(),
+            conn,
             session_id,
             prompt,
             "schedule",
@@ -439,6 +445,31 @@ fn due_ids(conn: &Connection, now: DateTime<Utc>) -> Result<Vec<i64>> {
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+// The session a run_at/cron fire runs in: the schedule's own session while
+// it exists; otherwise a fresh one (SPEC 5.3 decision — a schedule survives
+// session deletion and creates a new session when it fires). The new id is
+// stored back on the schedule so later fires reuse it, and it is the id the
+// shared run bridge routes "agent-event"/"agent-confirmation" by.
+fn ensure_run_session(conn: &Connection, s: &ScheduleDto) -> Result<i64> {
+    if let Some(sid) = s.session_id {
+        let exists: i64 = conn.query_row(
+            "SELECT count(*) FROM sessions WHERE id = ?1",
+            params![sid],
+            |r| r.get(0),
+        )?;
+        if exists > 0 {
+            return Ok(sid);
+        }
+    }
+    let title = format!("Расписание · {} · {}", s.kind, s.spec);
+    let session = harness::create_session(conn, Some(&title))?;
+    conn.execute(
+        "UPDATE schedules SET session_id = ?1 WHERE id = ?2",
+        params![session.id, s.id],
+    )?;
+    Ok(session.id)
+}
+
 fn fire_due(
     conn: &Connection,
     id: i64,
@@ -459,30 +490,26 @@ fn fire_due(
             mark_done(conn, id, now)
         }
         "run_at" => {
-            let session_id = s
-                .session_id
-                .ok_or_else(|| AppError::Invalid("schedule has no session to run in".into()))?;
+            let session_id = ensure_run_session(conn, &s)?;
             let prompt = s
                 .prompt
                 .clone()
                 .filter(|p| !p.trim().is_empty())
                 .ok_or_else(|| AppError::Invalid("schedule prompt is empty".into()))?;
-            runner.run(session_id, &prompt)?;
+            runner.run(conn, session_id, &prompt)?;
             mark_done(conn, id, now)
         }
         // The next occurrence is computed BEFORE the run is spawned: a long
         // run must not shift the cron grid or double-fire the next point.
         "cron" => {
             let next = next_cron_after(&s.spec, tz, now)?;
-            let session_id = s
-                .session_id
-                .ok_or_else(|| AppError::Invalid("schedule has no session to run in".into()))?;
+            let session_id = ensure_run_session(conn, &s)?;
             let prompt = s
                 .prompt
                 .clone()
                 .filter(|p| !p.trim().is_empty())
                 .ok_or_else(|| AppError::Invalid("schedule prompt is empty".into()))?;
-            runner.run(session_id, &prompt)?;
+            runner.run(conn, session_id, &prompt)?;
             conn.execute(
                 "UPDATE schedules SET last_run_at = ?1, next_run_at = ?2, error = NULL WHERE id = ?3",
                 params![fmt_utc(now), fmt_utc(next), id],
@@ -512,7 +539,9 @@ fn execute_due(
 // One scheduler pass: fire every active schedule whose next_run_at is due.
 // `now` is injected so tests never wait. A failing schedule flips to
 // status='error' with the message; the pass continues with the others.
-// Returns whether anything fired (the caller emits "schedules-changed").
+// Returns whether anything fired (the caller emits "schedules-changed" and
+// "sessions-changed": a fire touches the session's last_active_at and can
+// create a fresh session when the original one was deleted).
 pub fn tick(
     conn: &Connection,
     now: DateTime<Utc>,
@@ -549,6 +578,10 @@ pub fn start(app: AppHandle) {
                     match tick(conn, now, &notifier, &runner) {
                         Ok(true) => {
                             let _ = app.emit("schedules-changed", serde_json::json!({}));
+                            // The fired run touched its session (and a fire
+                            // may have created a fresh one): the UI refreshes
+                            // the session list so the new session appears.
+                            let _ = app.emit("sessions-changed", serde_json::json!({}));
                         }
                         Ok(false) => {}
                         Err(e) => eprintln!("scheduler tick failed: {e}"),
@@ -569,7 +602,7 @@ pub fn now_utc() -> DateTime<Utc> {
 mod tests {
     use super::*;
     use crate::db::schema;
-    use crate::harness::create_session;
+    use crate::harness::{self, create_session};
     use rusqlite::Connection;
     use std::sync::Mutex;
 
@@ -624,7 +657,7 @@ mod tests {
     }
 
     impl SessionRunner for RecordingRunner {
-        fn run(&self, session_id: i64, prompt: &str) -> Result<()> {
+        fn run(&self, _conn: &Connection, session_id: i64, prompt: &str) -> Result<()> {
             if self.fail {
                 return Err(AppError::Invalid("session 999 not found".into()));
             }
@@ -956,6 +989,145 @@ mod tests {
         let s = schedule_dto(&conn, notify.id).unwrap();
         assert_eq!(s.status, "error");
         assert!(s.error.as_deref().unwrap().contains("boom"));
+    }
+
+    #[test]
+    fn deleting_a_session_keeps_its_schedule_with_a_null_session() {
+        let conn = setup();
+        let session = create_session_row(&conn);
+        let s = create(
+            &conn,
+            &CreateIn {
+                kind: "run_at",
+                spec: "2026-10-16T10:00:00",
+                prompt: Some("go"),
+                timezone: Some("Europe/Moscow"),
+                session_id: Some(session),
+                related_task_id: None,
+            },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+
+        harness::delete_session(&conn, session).unwrap();
+        let after = schedule_dto(&conn, s.id).unwrap();
+        assert_eq!(after.session_id, None);
+        assert_eq!(after.status, "active");
+    }
+
+    #[test]
+    fn firing_a_schedule_whose_session_was_deleted_creates_a_fresh_one() {
+        let conn = setup();
+        let old = create_session_row(&conn);
+        let s = create(
+            &conn,
+            &CreateIn {
+                kind: "run_at",
+                spec: "2026-10-16T10:00:00",
+                prompt: Some("go"),
+                timezone: Some("Europe/Moscow"),
+                session_id: Some(old),
+                related_task_id: None,
+            },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+        harness::delete_session(&conn, old).unwrap();
+
+        let runner = RecordingRunner::new();
+        let fired = tick(
+            &conn,
+            utc("2026-10-16T11:00:00Z"),
+            &RecordingNotifier::new(),
+            &runner,
+        )
+        .unwrap();
+        assert!(fired);
+        let after = schedule_dto(&conn, s.id).unwrap();
+        let fresh = after
+            .session_id
+            .expect("the fire must re-point the schedule at a new session");
+        // The runner receives exactly the session id the shared bridge then
+        // routes every "agent-event"/"agent-confirmation" by.
+        assert_eq!(
+            *runner.runs.lock().unwrap(),
+            vec![(fresh, "go".to_string())]
+        );
+        let title: Option<String> = conn
+            .query_row("SELECT title FROM sessions WHERE id = ?1", params![fresh], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            title.as_deref(),
+            Some("Расписание · run_at · 2026-10-16T10:00:00")
+        );
+        // The fresh session has its harness chat row: the run bridge needs it.
+        assert!(harness::session_chat_id(&conn, fresh).is_ok());
+    }
+
+    #[test]
+    fn firing_a_run_at_created_without_a_session_creates_one() {
+        let conn = setup();
+        let s = create(
+            &conn,
+            &CreateIn {
+                kind: "run_at",
+                spec: "2026-10-16T10:00:00",
+                prompt: Some("go"),
+                timezone: Some("Europe/Moscow"),
+                session_id: None,
+                related_task_id: None,
+            },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+
+        let runner = RecordingRunner::new();
+        let fired = tick(
+            &conn,
+            utc("2026-10-16T11:00:00Z"),
+            &RecordingNotifier::new(),
+            &runner,
+        )
+        .unwrap();
+        assert!(fired);
+        let after = schedule_dto(&conn, s.id).unwrap();
+        let fresh = after.session_id.expect("a sessionless fire creates a session");
+        assert_eq!(*runner.runs.lock().unwrap(), vec![(fresh, "go".to_string())]);
+    }
+
+    #[test]
+    fn firing_reuses_the_existing_session_and_keeps_the_link() {
+        let conn = setup();
+        let session = create_session_row(&conn);
+        let s = create(
+            &conn,
+            &CreateIn {
+                kind: "cron",
+                spec: "0 10 * * *",
+                prompt: Some("daily"),
+                timezone: Some("Europe/Moscow"),
+                session_id: Some(session),
+                related_task_id: None,
+            },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+
+        let runner = RecordingRunner::new();
+        let fired = tick(
+            &conn,
+            utc("2026-10-17T09:00:00Z"),
+            &RecordingNotifier::new(),
+            &runner,
+        )
+        .unwrap();
+        assert!(fired);
+        assert_eq!(
+            *runner.runs.lock().unwrap(),
+            vec![(session, "daily".to_string())]
+        );
+        let after = schedule_dto(&conn, s.id).unwrap();
+        assert_eq!(after.session_id, Some(session));
     }
 
     #[test]
