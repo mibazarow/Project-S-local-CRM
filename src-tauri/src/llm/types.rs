@@ -44,10 +44,45 @@ impl ToolCall {
     }
 }
 
+// One OpenAI-compatible multimodal content part. Internally tagged so the
+// wire shape is exactly {type:"text",text} / {type:"image_url",image_url:{url}}.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContentPart {
+    Text { text: String },
+    ImageUrl { image_url: ImageUrlPart },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ImageUrlPart {
+    pub url: String,
+}
+
+impl ContentPart {
+    pub fn text(text: impl Into<String>) -> Self {
+        ContentPart::Text { text: text.into() }
+    }
+
+    pub fn image_url(url: impl Into<String>) -> Self {
+        ContentPart::ImageUrl {
+            image_url: ImageUrlPart { url: url.into() },
+        }
+    }
+}
+
+// Message content: a plain string (the default; keeps the exact legacy wire
+// shape) or an array of multimodal content parts (text + image_url).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MessageContent {
+    Text(String),
+    Parts(Vec<ContentPart>),
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub role: Role,
-    pub content: Option<String>,
+    pub content: Option<MessageContent>,
     pub tool_calls: Vec<ToolCall>,
     pub tool_call_id: Option<String>,
     pub name: Option<String>,
@@ -57,7 +92,7 @@ impl ChatMessage {
     fn text(role: Role, content: impl Into<String>) -> Self {
         ChatMessage {
             role,
-            content: Some(content.into()),
+            content: Some(MessageContent::Text(content.into())),
             tool_calls: Vec::new(),
             tool_call_id: None,
             name: None,
@@ -89,10 +124,29 @@ impl ChatMessage {
     pub fn tool_result(tool_call_id: impl Into<String>, content: impl Into<String>) -> Self {
         ChatMessage {
             role: Role::Tool,
-            content: Some(content.into()),
+            content: Some(MessageContent::Text(content.into())),
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             name: None,
+        }
+    }
+
+    // Multimodal user turn: content serializes as a parts array.
+    pub fn user_parts(parts: Vec<ContentPart>) -> Self {
+        ChatMessage {
+            role: Role::User,
+            content: Some(MessageContent::Parts(parts)),
+            tool_calls: Vec::new(),
+            tool_call_id: None,
+            name: None,
+        }
+    }
+
+    // Text of a plain string content; None for multimodal parts or no content.
+    pub fn text_content(&self) -> Option<&str> {
+        match &self.content {
+            Some(MessageContent::Text(text)) => Some(text),
+            _ => None,
         }
     }
 }
@@ -174,4 +228,61 @@ pub enum ChatEvent {
     ToolCallsFinal(Vec<ToolCall>),
     Usage(Option<Usage>),
     Done,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn text_only_message_keeps_the_plain_string_wire_shape() {
+        assert_eq!(
+            serde_json::to_value(ChatMessage::user("hi")).unwrap(),
+            json!({ "role": "user", "content": "hi" })
+        );
+        assert_eq!(
+            serde_json::to_value(ChatMessage::assistant_tool_calls(vec![ToolCall::new(
+                "c1".into(),
+                "f".into(),
+                "{}".into(),
+            )]))
+            .unwrap(),
+            json!({
+                "role": "assistant",
+                "content": null,
+                "tool_calls": [{
+                    "id": "c1",
+                    "type": "function",
+                    "function": { "name": "f", "arguments": "{}" }
+                }]
+            })
+        );
+    }
+
+    #[test]
+    fn multimodal_message_serializes_the_parts_array() {
+        let msg = ChatMessage::user_parts(vec![
+            ContentPart::text("что на картинке?"),
+            ContentPart::image_url("data:image/png;base64,AAA="),
+        ]);
+        assert_eq!(
+            serde_json::to_value(&msg).unwrap(),
+            json!({
+                "role": "user",
+                "content": [
+                    { "type": "text", "text": "что на картинке?" },
+                    { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAA=" } }
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn text_content_reads_plain_string_content_only() {
+        assert_eq!(ChatMessage::user("hi").text_content(), Some("hi"));
+        let parts = ChatMessage::user_parts(vec![ContentPart::text("x")]);
+        assert_eq!(parts.text_content(), None);
+        assert_eq!(ChatMessage::assistant_tool_calls(vec![]).text_content(), None);
+    }
 }

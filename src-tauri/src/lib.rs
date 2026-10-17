@@ -619,6 +619,23 @@ async fn test_connection(state: State<'_, AppState>) -> Result<llm::ConnectionTe
         .map_err(|e| AppError::Io(format!("llm task: {e}")))
 }
 
+// Probes whether the configured model accepts image content parts (a manual
+// `vision` override in llm.json short-circuits the probe) and caches the
+// result in `visionDetected`. The UI warns the user from the returned status.
+#[tauri::command]
+async fn detect_vision(state: State<'_, AppState>) -> Result<llm::VisionStatus> {
+    let wd = state.working_dir()?;
+    tauri::async_runtime::spawn_blocking(move || llm::detect_vision(&wd))
+        .await
+        .map_err(|e| AppError::Io(format!("vision probe task: {e}")))?
+}
+
+// Cached/overridden vision status without any network call.
+#[tauri::command]
+fn get_vision_status(state: State<AppState>) -> Result<llm::VisionStatus> {
+    llm::get_vision_status(&state.working_dir()?)
+}
+
 // Persists the user turn into the project's chat (with links to attachment
 // copies already saved by attach_files) and starts the agent loop on a
 // background thread; progress arrives as "agent-event" and
@@ -1095,6 +1112,8 @@ pub fn run() {
             search_project,
             list_models,
             test_connection,
+            detect_vision,
+            get_vision_status,
             send_project_message,
             resolve_confirmation,
             project_chat_history,

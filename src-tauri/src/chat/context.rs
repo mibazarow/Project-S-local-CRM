@@ -8,7 +8,7 @@
 use super::load_history;
 use crate::agent::r#loop::ChatBackend;
 use crate::error::{AppError, Result};
-use crate::llm::{ChatMessage, ChatParams, Role};
+use crate::llm::{ChatMessage, ChatParams, ContentPart, MessageContent, Role};
 use rusqlite::{params, Connection};
 
 // Compaction trigger defaults to 80% of the model context window (SPEC 4.6);
@@ -22,21 +22,38 @@ const SUMMARIZER_MAX_CHARS: usize = 60_000;
 
 // Heuristic token estimate: ~4 chars per token plus a per-message framing
 // overhead. Deterministic and cheap; it is an estimate, not a tokenizer.
+// Image content parts are not counted by their base64 length (that would
+// wildly inflate the estimate); each image carries a fixed token allowance.
 pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
     const PER_MESSAGE: usize = 8;
+    const PER_IMAGE_TOKENS: usize = 1000;
     messages
         .iter()
         .map(|m| {
-            let chars = m
-                .content
-                .as_ref()
-                .map(|c| c.chars().count())
-                .unwrap_or(0)
+            let (chars, images) = match &m.content {
+                Some(MessageContent::Text(c)) => (c.chars().count(), 0),
+                Some(MessageContent::Parts(parts)) => {
+                    let chars = parts
+                        .iter()
+                        .map(|p| match p {
+                            ContentPart::Text { text } => text.chars().count(),
+                            ContentPart::ImageUrl { .. } => 0,
+                        })
+                        .sum();
+                    let images = parts
+                        .iter()
+                        .filter(|p| matches!(p, ContentPart::ImageUrl { .. }))
+                        .count();
+                    (chars, images)
+                }
+                None => (0, 0),
+            };
+            chars / 4 + images * PER_IMAGE_TOKENS
                 + m.tool_calls
                     .iter()
                     .map(|tc| tc.name.chars().count() + tc.raw_arguments.chars().count())
-                    .sum::<usize>();
-            chars / 4 + PER_MESSAGE
+                    .sum::<usize>()
+                + PER_MESSAGE
         })
         .sum()
 }
@@ -51,6 +68,7 @@ pub struct ContextOutcome {
 // the recent tail, compacting the oldest messages when the estimate crosses
 // `threshold_percent` of `context_window`. `chat_id` must already contain the
 // fresh user turn: the last message is never dropped.
+#[allow(clippy::too_many_arguments)]
 pub fn build_context(
     conn: &Connection,
     chat_id: i64,
@@ -59,8 +77,9 @@ pub fn build_context(
     threshold_percent: u8,
     backend: &dyn ChatBackend,
     params: &ChatParams,
+    vision_supported: bool,
 ) -> Result<ContextOutcome> {
-    let history = load_history(conn, chat_id)?;
+    let history = load_history(conn, chat_id, vision_supported)?;
     let system = ChatMessage::system(system_prompt);
     let mut full = Vec::with_capacity(history.len() + 1);
     full.push(system.clone());
@@ -168,8 +187,21 @@ fn render_transcript(messages: &[ChatMessage]) -> String {
             Role::Assistant => "assistant",
             Role::Tool => "tool",
         };
-        if let Some(content) = &m.content {
-            out.push_str(&format!("{role}: {content}\n"));
+        match &m.content {
+            Some(MessageContent::Text(content)) => out.push_str(&format!("{role}: {content}\n")),
+            Some(MessageContent::Parts(parts)) => {
+                let text: Vec<&str> = parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        ContentPart::Text { text } => Some(text.as_str()),
+                        ContentPart::ImageUrl { .. } => None,
+                    })
+                    .collect();
+                let has_image = parts.iter().any(|p| matches!(p, ContentPart::ImageUrl { .. }));
+                let suffix = if has_image { " (изображение)" } else { "" };
+                out.push_str(&format!("{role}: {}{suffix}\n", text.join(" ")));
+            }
+            None => {}
         }
         for tc in &m.tool_calls {
             out.push_str(&format!("assistant[tool_call {}]: {}\n", tc.name, tc.raw_arguments));
@@ -364,12 +396,12 @@ mod tests {
         fill(&conn, chat_id, 2);
         append_message(&conn, chat_id, Role::User, Some("latest"), &[], None, None).unwrap();
         let backend = FakeBackend::ok("unused");
-        let out = build_context(&conn, chat_id, "sys", 100_000, 80, &backend, &params()).unwrap();
+        let out = build_context(&conn, chat_id, "sys", 100_000, 80, &backend, &params(), false).unwrap();
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
         assert_eq!(out.new_checkpoint_up_to, None);
         assert_eq!(out.messages.len(), 1 + 5);
         assert_eq!(out.messages[0].role, Role::System);
-        assert_eq!(out.messages.last().unwrap().content.as_deref(), Some("latest"));
+        assert_eq!(out.messages.last().unwrap().text_content(), Some("latest"));
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -379,7 +411,7 @@ mod tests {
         fill(&conn, chat_id, 20);
         append_message(&conn, chat_id, Role::User, Some("latest turn"), &[], None, None).unwrap();
         let backend = FakeBackend::ok("SUMMARY BODY");
-        let out = build_context(&conn, chat_id, "sys", 1000, 80, &backend, &params()).unwrap();
+        let out = build_context(&conn, chat_id, "sys", 1000, 80, &backend, &params(), false).unwrap();
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
         assert!(!backend.tool_options.lock().unwrap()[0], "summarizer got tools");
         let rows = summary_rows(&conn, chat_id);
@@ -387,16 +419,14 @@ mod tests {
         assert_eq!(rows[0].1, "SUMMARY BODY");
         assert_eq!(out.new_checkpoint_up_to, Some(rows[0].0));
         assert_eq!(out.messages[0].role, Role::System);
-        assert!(out.messages[1]
-            .content
-            .as_deref()
+        assert!(out.messages[1].text_content()
             .unwrap()
             .starts_with(&format!("{SUMMARY_PREFIX}\nSUMMARY BODY")));
-        assert_eq!(out.messages.last().unwrap().content.as_deref(), Some("latest turn"));
+        assert_eq!(out.messages.last().unwrap().text_content(), Some("latest turn"));
         assert!(out.messages.len() < 1 + 41);
         // The oldest messages went into the summarization prompt.
         let prompts = backend.prompts.lock().unwrap();
-        let transcript = prompts[0][1].content.as_deref().unwrap();
+        let transcript = prompts[0][1].text_content().unwrap();
         assert!(transcript.contains("turn0-u"));
         fs::remove_dir_all(&wd).unwrap();
     }
@@ -407,11 +437,11 @@ mod tests {
         fill(&conn, chat_id, 20);
         append_message(&conn, chat_id, Role::User, Some("latest turn"), &[], None, None).unwrap();
         let backend = FakeBackend::ok("S1");
-        let first = build_context(&conn, chat_id, "sys", 1000, 80, &backend, &params()).unwrap();
+        let first = build_context(&conn, chat_id, "sys", 1000, 80, &backend, &params(), false).unwrap();
         let up_to = first.new_checkpoint_up_to.unwrap();
 
         // Same transcript: the stored checkpoint is reused, no new call.
-        let second = build_context(&conn, chat_id, "sys", 1000, 80, &backend, &params()).unwrap();
+        let second = build_context(&conn, chat_id, "sys", 1000, 80, &backend, &params(), false).unwrap();
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
         assert_eq!(second.new_checkpoint_up_to, None);
         assert_eq!(
@@ -424,7 +454,7 @@ mod tests {
         append_message(&conn, chat_id, Role::Assistant, Some("answer"), &[], None, None).unwrap();
         append_message(&conn, chat_id, Role::User, Some("NEW MARKER TURN"), &[], None, None).unwrap();
         let backend2 = FakeBackend::ok("S2");
-        let third = build_context(&conn, chat_id, "sys", 1000, 80, &backend2, &params()).unwrap();
+        let third = build_context(&conn, chat_id, "sys", 1000, 80, &backend2, &params(), false).unwrap();
         assert_eq!(backend2.calls.load(Ordering::SeqCst), 1);
         let new_up_to = third.new_checkpoint_up_to.unwrap();
         assert!(new_up_to > up_to);
@@ -433,7 +463,7 @@ mod tests {
         assert_eq!(rows[1], (new_up_to, "S2".to_string()));
 
         let prompts = backend2.prompts.lock().unwrap();
-        let transcript = prompts[0][1].content.as_deref().unwrap();
+        let transcript = prompts[0][1].text_content().unwrap();
         for content in contents_in_range(&conn, chat_id, up_to, new_up_to) {
             assert!(transcript.contains(&content), "new range missing from prompt");
         }
@@ -443,10 +473,10 @@ mod tests {
         let summaries = third
             .messages
             .iter()
-            .filter(|m| m.content.as_deref().unwrap_or_default().starts_with(SUMMARY_PREFIX))
+            .filter(|m| m.text_content().unwrap_or_default().starts_with(SUMMARY_PREFIX))
             .count();
         assert_eq!(summaries, 2);
-        assert_eq!(third.messages.last().unwrap().content.as_deref(), Some("NEW MARKER TURN"));
+        assert_eq!(third.messages.last().unwrap().text_content(), Some("NEW MARKER TURN"));
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -456,7 +486,7 @@ mod tests {
         fill(&conn, chat_id, 20);
         append_message(&conn, chat_id, Role::User, Some("latest"), &[], None, None).unwrap();
         let backend = FakeBackend::failing();
-        let out = build_context(&conn, chat_id, "sys", 1000, 80, &backend, &params()).unwrap();
+        let out = build_context(&conn, chat_id, "sys", 1000, 80, &backend, &params(), false).unwrap();
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
         assert_eq!(out.new_checkpoint_up_to, None);
         assert_eq!(out.messages.len(), 1 + 41);
@@ -490,13 +520,12 @@ mod tests {
         }
         append_message(&conn, chat_id, Role::User, Some("final"), &[], None, None).unwrap();
         let backend = FakeBackend::ok("S");
-        let out = build_context(&conn, chat_id, "sys", 1000, 80, &backend, &params()).unwrap();
+        let out = build_context(&conn, chat_id, "sys", 1000, 80, &backend, &params(), false).unwrap();
         let tail_start = out
             .messages
             .iter()
             .rposition(|m| {
-                m.content
-                    .as_deref()
+                m.text_content()
                     .unwrap_or_default()
                     .starts_with(SUMMARY_PREFIX)
             })
@@ -515,7 +544,7 @@ mod tests {
         };
         assert!(estimate_tokens(tail) <= 200 + last_cost + slack);
         assert!(tail.len() < 46);
-        assert_eq!(tail.last().unwrap().content.as_deref(), Some("final"));
+        assert_eq!(tail.last().unwrap().text_content(), Some("final"));
         fs::remove_dir_all(&wd).unwrap();
     }
 }

@@ -52,6 +52,20 @@ pub struct LlmConfig {
     pub context_window: u64,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+    // Manual vision override: null = auto-detect via probe, true/false = force.
+    pub vision: Option<bool>,
+    // Cached result of the last vision probe (informational, written by detect_vision).
+    pub vision_detected: Option<bool>,
+}
+
+impl LlmConfig {
+    // Effective vision support for building model turns: the manual override
+    // wins, otherwise the cached probe result; unknown means "do not send
+    // images" (the UI warns the user via get_vision_status).
+    pub fn vision_enabled(&self) -> bool {
+        self.vision
+            .unwrap_or_else(|| self.vision_detected.unwrap_or(false))
+    }
 }
 
 impl Default for LlmConfig {
@@ -63,6 +77,8 @@ impl Default for LlmConfig {
             context_window: 100_000,
             temperature: None,
             max_tokens: None,
+            vision: None,
+            vision_detected: None,
         }
     }
 }
@@ -317,6 +333,29 @@ mod tests {
         assert_eq!(v, json!({ "servers": [] }));
         assert!(!file_path(&dir, ConfigKind::Mcp).exists());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn llm_vision_fields_round_trip_and_default_to_auto() {
+        let cfg: LlmConfig = serde_json::from_value(json!({
+            "baseUrl": "b", "model": "m", "contextWindow": 1,
+            "vision": false, "visionDetected": true,
+        }))
+        .unwrap();
+        assert_eq!(cfg.vision, Some(false));
+        assert_eq!(cfg.vision_detected, Some(true));
+        // Manual override wins over the cached probe result.
+        assert!(!cfg.vision_enabled());
+
+        let cached: LlmConfig =
+            serde_json::from_value(json!({ "baseUrl": "b", "model": "m", "contextWindow": 1, "visionDetected": true }))
+                .unwrap();
+        assert!(cached.vision_enabled());
+
+        let auto: LlmConfig = serde_json::from_value(json!({ "baseUrl": "b", "model": "m", "contextWindow": 1 }))
+            .unwrap();
+        assert_eq!((auto.vision, auto.vision_detected), (None, None));
+        assert!(!auto.vision_enabled());
     }
 
     #[test]

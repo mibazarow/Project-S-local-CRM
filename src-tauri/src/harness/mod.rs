@@ -419,7 +419,7 @@ mod tests {
                 &conn,
                 chat_id,
                 msg.role,
-                msg.content.as_deref(),
+                msg.text_content(),
                 &msg.tool_calls,
                 msg.tool_call_id.as_deref(),
                 msg.name.as_deref(),
@@ -430,14 +430,14 @@ mod tests {
             .unwrap();
         persist_final_answer(&conn, chat_id, &result).unwrap();
 
-        let hist = load_history(&conn, chat_id).unwrap();
+        let hist = load_history(&conn, chat_id, false).unwrap();
         let roles: Vec<Role> = hist.iter().map(|m| m.role).collect();
         assert_eq!(
             roles,
             [Role::User, Role::Assistant, Role::Tool, Role::Assistant]
         );
         assert_eq!(hist[1].tool_calls[0].name, "finish_task");
-        assert_eq!(hist[3].content.as_deref(), Some("final answer"));
+        assert_eq!(hist[3].text_content(), Some("final answer"));
         fs::remove_dir_all(&wd).unwrap();
     }
 

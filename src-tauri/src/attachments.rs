@@ -1,16 +1,16 @@
 // Chat attachments backend (SPEC 6.1): copy an attached file into the allowed
 // scope (project `Входящие/` or `Harness/Входящие/`), journal project copies in
-// `INBOX.md`, and turn document attachments into text the model can read. The
-// source path is never persisted: only the copied-in file is, so an attachment
-// from outside the working dir can never be referenced without being copied.
-//
-// Vision (sending images to the model) is a documented follow-up: images are
-// saved and referenced but `attachment_text` returns None for them, and the
-// LLM client would need image content parts to send them.
+// `INBOX.md`, and turn attachments into model-readable content: documents get
+// their extracted text injected into the turn, images are sent as OpenAI
+// image_url content parts when the model supports vision (llm::detect_vision)
+// and honestly noted otherwise. The source path is never persisted: only the
+// copied-in file is, so an attachment from outside the working dir can never
+// be referenced without being copied.
 use crate::error::{AppError, Result};
 use crate::extract;
 use crate::fs_ops;
 use crate::harness;
+use crate::llm;
 use crate::paths;
 use crate::projects;
 use rusqlite::{params, Connection};
@@ -199,10 +199,11 @@ pub fn attach_harness(
     Ok(out)
 }
 
-// Extracts an attachment's text for the model. Images return None (vision is a
-// follow-up); unsupported/other formats return None. `base` is the project root
-// for project attachments (savedPath is project-relative); harness savedPaths
-// are absolute, so `base` is ignored there.
+// Extracts an attachment's text for the model. Images return None (they are
+// sent as image content parts by build_user_content instead); unsupported/other
+// formats return None. `base` is the project root for project attachments
+// (savedPath is project-relative); harness savedPaths are absolute, so `base`
+// is ignored there.
 pub fn attachment_text(attachment: &AttachmentDto, base: &Path, max_chars: usize) -> Option<String> {
     if attachment.is_image {
         return None;
@@ -214,28 +215,57 @@ pub fn attachment_text(attachment: &AttachmentDto, base: &Path, max_chars: usize
     extract::extract_text(&path, max_chars).ok()
 }
 
+// The model-facing user turn: expanded text plus image data URLs to attach as
+// OpenAI image_url content parts (empty when vision is off or an image could
+// not be read).
+#[derive(Debug, Clone)]
+pub struct UserTurn {
+    pub text: String,
+    pub images: Vec<String>,
+}
+
 // Builds the model-facing user turn: the user's text followed by one clearly
-// delimited block per attachment. Documents carry their extracted text; images
-// and unsupported files carry only a reference (vision sending is a follow-up).
-// load_history applies it when rebuilding the transcript for a run.
-pub fn message_with_attachments(
+// delimited block per document attachment (carrying its extracted text).
+// Images: with vision supported they become data-URL content parts (no text
+// block); otherwise the turn carries an honest Russian note and the image is
+// not sent. load_history applies it when rebuilding the transcript for a run.
+pub fn build_user_content(
     text: &str,
     attachments: &[AttachmentDto],
     base: &Path,
-    max_chars: usize,
-) -> String {
+    vision_supported: bool,
+) -> UserTurn {
     let mut out = text.to_string();
+    let mut images = Vec::new();
     for attachment in attachments {
-        out.push_str(&format!("\n\n[Вложение: {}]", attachment.name));
-        match attachment_text(attachment, base, max_chars) {
-            Some(body) => out.push_str(&format!("\n{body}")),
-            None if attachment.is_image => {
-                out.push_str("\n(изображение сохранено; разбор через vision ещё не подключён)")
+        if attachment.is_image {
+            if vision_supported {
+                let path = resolve_saved_path(attachment, base);
+                match llm::image_data_url(&path) {
+                    Ok(url) => images.push(url),
+                    Err(e) => out.push_str(&format!(
+                        "\n\n[Изображение «{}» не отправлено: {}]",
+                        attachment.name, e
+                    )),
+                }
+            } else {
+                out.push_str(&format!(
+                    "\n\n[Изображение «{}» не отправлено: модель не поддерживает vision]",
+                    attachment.name
+                ));
             }
+            continue;
+        }
+        out.push_str(&format!("\n\n[Вложение: {}]", attachment.name));
+        match attachment_text(attachment, base, ATTACHMENT_MAX_CHARS) {
+            Some(body) => out.push_str(&format!("\n{body}")),
             None => out.push_str("\n(формат файла не разбирается)"),
         }
     }
-    out
+    UserTurn {
+        text: out,
+        images,
+    }
 }
 
 fn resolve_saved_path(attachment: &AttachmentDto, base: &Path) -> PathBuf {
@@ -453,7 +483,7 @@ mod tests {
     fn image_is_saved_flagged_and_has_no_text() {
         let (wd, conn, pid, _state) = setup("att-image");
         let src = source_dir("att-image-src");
-        fs::write(src.join("pic.png"), [0x89u8, b'P', b'N', b'G']).unwrap();
+        fs::write(src.join("pic.png"), llm::TINY_PNG).unwrap();
         let items =
             attach_project(&conn, &wd, pid, &[src.join("pic.png").display().to_string()]).unwrap();
         assert_eq!(items[0].kind, "image");
@@ -461,9 +491,11 @@ mod tests {
         assert!(root(&wd).join("Входящие/pic.png").is_file());
         assert!(attachment_text(&items[0], &root(&wd), 1000).is_none());
 
-        let turn = message_with_attachments("что на картинке?", &items, &root(&wd), 1000);
-        assert!(turn.contains("[Вложение: pic.png]"));
-        assert!(turn.contains("vision"));
+        let turn = build_user_content("что на картинке?", &items, &root(&wd), false);
+        assert!(turn.images.is_empty());
+        assert!(turn
+            .text
+            .contains("[Изображение «pic.png» не отправлено: модель не поддерживает vision]"));
         fs::remove_dir_all(&wd).unwrap();
         fs::remove_dir_all(&src).unwrap();
     }
@@ -533,13 +565,81 @@ mod tests {
         fs::write(src.join("a.md"), "данные проекта").unwrap();
         let items =
             attach_project(&conn, &wd, pid, &[src.join("a.md").display().to_string()]).unwrap();
-        let turn = message_with_attachments("проверь счёт", &items, &root(&wd), 1000);
-        assert!(turn.starts_with("проверь счёт"));
-        assert!(turn.contains("[Вложение: a.md]\nданные проекта"));
-        // Cap is honored: a tiny max_chars truncates the injected body.
-        let capped = message_with_attachments("x", &items, &root(&wd), 3);
-        assert!(capped.contains("[Вложение: a.md]\nдан"));
-        assert!(!capped.contains("данные проекта"));
+        let turn = build_user_content("проверь счёт", &items, &root(&wd), false);
+        assert!(turn.text.starts_with("проверь счёт"));
+        assert!(turn.text.contains("[Вложение: a.md]\nданные проекта"));
+        fs::remove_dir_all(&wd).unwrap();
+        fs::remove_dir_all(&src).unwrap();
+    }
+
+    #[test]
+    fn document_text_is_capped_at_the_attachment_limit() {
+        let (wd, conn, pid, _state) = setup("att-msg-cap");
+        let src = source_dir("att-msg-cap-src");
+        // Body longer than the cap, with a unique tail marker past the cut.
+        let body = format!("{}ХВОСТ", "д".repeat(ATTACHMENT_MAX_CHARS + 10));
+        fs::write(src.join("big.md"), &body).unwrap();
+        let items =
+            attach_project(&conn, &wd, pid, &[src.join("big.md").display().to_string()]).unwrap();
+        let turn = build_user_content("x", &items, &root(&wd), false);
+        assert!(turn.text.contains("[Вложение: big.md]"));
+        assert!(!turn.text.contains("ХВОСТ"));
+        fs::remove_dir_all(&wd).unwrap();
+        fs::remove_dir_all(&src).unwrap();
+    }
+
+    #[test]
+    fn build_user_content_sends_image_parts_when_vision_supported() {
+        let (wd, conn, pid, _state) = setup("att-turn-vision");
+        let src = source_dir("att-turn-vision-src");
+        fs::write(src.join("pic.png"), llm::TINY_PNG).unwrap();
+        fs::write(src.join("a.md"), "данные проекта").unwrap();
+        let items = attach_project(
+            &conn,
+            &wd,
+            pid,
+            &[
+                src.join("pic.png").display().to_string(),
+                src.join("a.md").display().to_string(),
+            ],
+        )
+        .unwrap();
+
+        let turn = build_user_content("что на картинке?", &items, &root(&wd), true);
+        // The image becomes a data URL part, not a text note...
+        assert_eq!(turn.images.len(), 1);
+        assert!(turn.images[0].starts_with("data:image/png;base64,"));
+        // ...while the document still contributes its extracted text.
+        assert!(turn.text.starts_with("что на картинке?"));
+        assert!(turn.text.contains("[Вложение: a.md]\nданные проекта"));
+        assert!(!turn.text.contains("не отправлено"));
+        fs::remove_dir_all(&wd).unwrap();
+        fs::remove_dir_all(&src).unwrap();
+    }
+
+    #[test]
+    fn build_user_content_notes_images_but_keeps_documents_when_vision_off() {
+        let (wd, conn, pid, _state) = setup("att-turn-novision");
+        let src = source_dir("att-turn-novision-src");
+        fs::write(src.join("pic.png"), llm::TINY_PNG).unwrap();
+        fs::write(src.join("a.md"), "данные проекта").unwrap();
+        let items = attach_project(
+            &conn,
+            &wd,
+            pid,
+            &[
+                src.join("pic.png").display().to_string(),
+                src.join("a.md").display().to_string(),
+            ],
+        )
+        .unwrap();
+
+        let turn = build_user_content("проверь", &items, &root(&wd), false);
+        assert!(turn.images.is_empty());
+        assert!(turn.text.contains("[Вложение: a.md]\nданные проекта"));
+        assert!(turn
+            .text
+            .contains("[Изображение «pic.png» не отправлено: модель не поддерживает vision]"));
         fs::remove_dir_all(&wd).unwrap();
         fs::remove_dir_all(&src).unwrap();
     }

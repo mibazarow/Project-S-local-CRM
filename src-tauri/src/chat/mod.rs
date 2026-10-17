@@ -18,7 +18,7 @@ use crate::attachments::{self, AttachmentRef};
 use crate::config::{self, AppConfig, ConfigKind, LlmConfig};
 use crate::db;
 use crate::error::{AppError, Result};
-use crate::llm::{self, ChatMessage, ChatParams, Role, ToolCall};
+use crate::llm::{self, ChatMessage, ChatParams, ContentPart, MessageContent, Role, ToolCall};
 use crate::memory;
 use crate::paths;
 use crate::projects;
@@ -219,11 +219,15 @@ fn message_dto(conn: &Connection, id: i64) -> Result<MessageDto> {
 
 // Rebuilds the model-facing transcript (system prompt excluded: the loop
 // regenerates it per run). User turns that carry attachments are expanded
-// through attachments::message_with_attachments, so documents contribute
-// their extracted text to the model while images stay referenced only
-// (vision sending is a documented follow-up). The stored rows keep the plain
-// user text; only this model-facing view is expanded.
-pub fn load_history(conn: &Connection, chat_id: i64) -> Result<Vec<ChatMessage>> {
+// through attachments::build_user_turn: documents contribute their extracted
+// text, and images become image_url content parts when `vision_supported`
+// (otherwise the turn carries an honest note and the image is not sent). The
+// stored rows keep the plain user text; only this model-facing view is expanded.
+pub fn load_history(
+    conn: &Connection,
+    chat_id: i64,
+    vision_supported: bool,
+) -> Result<Vec<ChatMessage>> {
     let base = chat_project_root(conn, chat_id)?;
     let mut stmt = conn.prepare(
         "SELECT id, role, content, tool_calls, tool_call_id, name
@@ -243,9 +247,9 @@ pub fn load_history(conn: &Connection, chat_id: i64) -> Result<Vec<ChatMessage>>
     for row in rows {
         let (id, role, content, tool_calls, tool_call_id, name) = row?;
         let content = if role == "user" {
-            expand_user_turn(conn, id, content, base.as_deref())?
+            expand_user_turn(conn, id, content, base.as_deref(), vision_supported)?
         } else {
-            content
+            content.map(MessageContent::Text)
         };
         out.push(ChatMessage {
             role: role_from_str(&role)?,
@@ -275,25 +279,40 @@ fn chat_project_root(conn: &Connection, chat_id: i64) -> Result<Option<PathBuf>>
 }
 
 // Rebuilds a user turn with its attachment blocks; messages without stored
-// attachments keep their content untouched.
+// attachments keep their content untouched. When vision is supported and an
+// image is present, the turn becomes a multimodal parts array (text part plus
+// one image_url part per image); otherwise it stays a plain string with the
+// document text injected and an honest note for any image.
 fn expand_user_turn(
     conn: &Connection,
     message_id: i64,
     content: Option<String>,
     base: Option<&Path>,
-) -> Result<Option<String>> {
+    vision_supported: bool,
+) -> Result<Option<MessageContent>> {
     let refs = attachments::load_message_attachments(conn, message_id)?;
     if refs.is_empty() {
-        return Ok(content);
+        return Ok(content.map(MessageContent::Text));
     }
     let dtos: Vec<attachments::AttachmentDto> = refs.iter().map(attachments::ref_to_dto).collect();
     let text = content.unwrap_or_default();
-    Ok(Some(attachments::message_with_attachments(
+    let turn = attachments::build_user_content(
         &text,
         &dtos,
         base.unwrap_or(Path::new("")),
-        attachments::ATTACHMENT_MAX_CHARS,
-    )))
+        vision_supported,
+    );
+    if turn.images.is_empty() {
+        return Ok(Some(MessageContent::Text(turn.text)));
+    }
+    let mut parts = Vec::with_capacity(turn.images.len() + 1);
+    if !turn.text.is_empty() {
+        parts.push(ContentPart::text(turn.text));
+    }
+    for url in turn.images {
+        parts.push(ContentPart::image_url(url));
+    }
+    Ok(Some(MessageContent::Parts(parts)))
 }
 
 // UI-facing history for a chat by its id (shared by project chats and harness
@@ -480,6 +499,9 @@ fn run_agent_inner(
 
     let llm_cfg: LlmConfig = serde_json::from_value(config::read_config(wd, ConfigKind::Llm)?)?;
     let params = ChatParams::from(&llm_cfg);
+    // Manual `vision` override wins over the cached probe result; unknown
+    // means images are not sent and the turn carries an honest note.
+    let vision_supported = llm_cfg.vision_enabled();
     let client = llm::client_from_config(wd)?;
     let app_cfg: AppConfig =
         serde_json::from_value(config::read_config(wd, ConfigKind::App)?).unwrap_or_default();
@@ -515,6 +537,7 @@ fn run_agent_inner(
             app_cfg.compaction_threshold_percent,
             &client,
             &params,
+            vision_supported,
         )?
     };
     if let Some(up_to_position) = ctx.new_checkpoint_up_to {
@@ -616,7 +639,7 @@ fn run_agent_inner(
                 conn,
                 chat_id,
                 msg.role,
-                msg.content.as_deref(),
+                msg.text_content(),
                 &msg.tool_calls,
                 msg.tool_call_id.as_deref(),
                 msg.name.as_deref(),
@@ -796,7 +819,7 @@ mod tests {
         .unwrap();
         append_message(&conn, chat_id, Role::Assistant, Some("done"), &[], None, None).unwrap();
 
-        let hist = load_history(&conn, chat_id).unwrap();
+        let hist = load_history(&conn, chat_id, false).unwrap();
         assert_eq!(hist.len(), 4);
         assert_eq!(hist[0].role, Role::User);
         assert_eq!(hist[1].tool_calls.len(), 1);
@@ -805,7 +828,7 @@ mod tests {
         assert_eq!(hist[1].tool_calls[0].raw_arguments, "{\"rel_path\":\"a.md\"}");
         assert_eq!(hist[2].role, Role::Tool);
         assert_eq!(hist[2].tool_call_id.as_deref(), Some("c1"));
-        assert_eq!(hist[3].content.as_deref(), Some("done"));
+        assert_eq!(hist[3].text_content(), Some("done"));
 
         let dtos = chat_history(&conn, pid).unwrap();
         assert_eq!(dtos.len(), 4);
@@ -851,12 +874,12 @@ mod tests {
     }
 
     #[test]
-    fn load_history_expands_document_text_but_not_images() {
+    fn load_history_expands_document_text_and_notes_images_when_vision_off() {
         let (wd, conn, pid) = setup("chat-attach-turn");
         let inbox = paths::projects_dir(&wd).join("proj").join("Входящие");
         fs::create_dir_all(&inbox).unwrap();
         fs::write(inbox.join("a.md"), "данные проекта").unwrap();
-        fs::write(inbox.join("pic.png"), [0x89u8, b'P', b'N', b'G']).unwrap();
+        fs::write(inbox.join("pic.png"), crate::llm::TINY_PNG).unwrap();
 
         let chat_id = ensure_project_chat(&conn, pid).unwrap();
         let user = append_message(&conn, chat_id, Role::User, Some("что тут?"), &[], None, None)
@@ -881,15 +904,14 @@ mod tests {
         )
         .unwrap();
 
-        let hist = load_history(&conn, chat_id).unwrap();
-        let turn = hist[0].content.as_deref().unwrap();
+        let hist = load_history(&conn, chat_id, false).unwrap();
+        let turn = hist[0].text_content().unwrap();
         assert!(turn.starts_with("что тут?"));
         // Documents contribute their extracted text to the model turn...
         assert!(turn.contains("[Вложение: a.md]\nданные проекта"));
-        // ...images stay referenced only (vision sending is a follow-up).
-        assert!(turn.contains("[Вложение: pic.png]"));
-        assert!(turn.contains("vision"));
-        assert!(!turn.contains("PNG"));
+        // ...images are honestly noted and not sent (no base64 in the turn).
+        assert!(turn.contains("[Изображение «pic.png» не отправлено: модель не поддерживает vision]"));
+        assert!(!turn.contains("base64"));
 
         // The stored row keeps the plain user text: the UI renders the
         // attachments as separate chips next to the bubble.
@@ -897,6 +919,56 @@ mod tests {
             .query_row("SELECT content FROM messages WHERE id = ?1", params![user.id], |r| r.get(0))
             .unwrap();
         assert_eq!(raw, "что тут?");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn load_history_sends_image_parts_when_vision_on() {
+        let (wd, conn, pid) = setup("chat-attach-turn-vision");
+        let inbox = paths::projects_dir(&wd).join("proj").join("Входящие");
+        fs::create_dir_all(&inbox).unwrap();
+        fs::write(inbox.join("a.md"), "данные проекта").unwrap();
+        fs::write(inbox.join("pic.png"), crate::llm::TINY_PNG).unwrap();
+
+        let chat_id = ensure_project_chat(&conn, pid).unwrap();
+        let user = append_message(&conn, chat_id, Role::User, Some("что тут?"), &[], None, None)
+            .unwrap();
+        attachments::save_message_attachments(
+            &conn,
+            user.id,
+            &[
+                AttachmentRef {
+                    name: "a.md".into(),
+                    saved_path: "Входящие/a.md".into(),
+                    kind: "document".into(),
+                    is_image: false,
+                },
+                AttachmentRef {
+                    name: "pic.png".into(),
+                    saved_path: "Входящие/pic.png".into(),
+                    kind: "image".into(),
+                    is_image: true,
+                },
+            ],
+        )
+        .unwrap();
+
+        let hist = load_history(&conn, chat_id, true).unwrap();
+        // With vision on, the user turn is a parts array: text + image_url.
+        let wire = serde_json::to_value(&hist[0]).unwrap();
+        let parts = wire["content"].as_array().unwrap();
+        assert_eq!(parts[0]["type"], "text");
+        assert!(parts[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("[Вложение: a.md]\nданные проекта"));
+        assert_eq!(parts[1]["type"], "image_url");
+        assert!(parts[1]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+        // No honest "not sent" note when the image is actually sent.
+        assert!(!serde_json::to_string(&hist[0]).unwrap().contains("не отправлено"));
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -921,7 +993,7 @@ mod tests {
                 &conn,
                 chat_id,
                 msg.role,
-                msg.content.as_deref(),
+                msg.text_content(),
                 &msg.tool_calls,
                 msg.tool_call_id.as_deref(),
                 msg.name.as_deref(),
@@ -956,7 +1028,7 @@ mod tests {
         ));
 
         // DB mirrors the transcript: user, asst(tool_call), tool, asst(finish), tool, asst(answer).
-        let hist = load_history(&conn, chat_id).unwrap();
+        let hist = load_history(&conn, chat_id, false).unwrap();
         let roles: Vec<Role> = hist.iter().map(|m| m.role).collect();
         assert_eq!(
             roles,
@@ -965,7 +1037,7 @@ mod tests {
         assert_eq!(hist[1].tool_calls[0].name, "echo");
         assert_eq!(hist[2].tool_call_id.as_deref(), Some("c1"));
         assert_eq!(hist[3].tool_calls[0].name, "finish_task");
-        assert_eq!(hist[5].content.as_deref(), Some("final answer"));
+        assert_eq!(hist[5].text_content(), Some("final answer"));
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -982,7 +1054,7 @@ mod tests {
         let mut cfg = test_config("go");
         cfg.max_steps = 1;
         let mut on_message = |msg: &ChatMessage| {
-            append_message(&conn, chat_id, msg.role, msg.content.as_deref(), &msg.tool_calls, None, None)
+            append_message(&conn, chat_id, msg.role, msg.text_content(), &msg.tool_calls, None, None)
                 .unwrap();
         };
         let result = agent_loop::run_with(
@@ -994,9 +1066,9 @@ mod tests {
         )
         .unwrap();
         persist_final_answer(&conn, chat_id, &result).unwrap();
-        let hist = load_history(&conn, chat_id).unwrap();
+        let hist = load_history(&conn, chat_id, false).unwrap();
         assert_eq!(hist.len(), 1);
-        assert_eq!(hist[0].content.as_deref(), Some("thought"));
+        assert_eq!(hist[0].text_content(), Some("thought"));
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -1258,7 +1330,7 @@ mod tests {
         assert_eq!(result.finish_reason, "cancelled");
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
         persist_final_answer(&conn, chat_id, &result).unwrap();
-        assert!(load_history(&conn, chat_id).unwrap().is_empty());
+        assert!(load_history(&conn, chat_id, false).unwrap().is_empty());
         fs::remove_dir_all(&wd).unwrap();
     }
 }
