@@ -66,7 +66,6 @@ export default function CommandPalette({ onTab, onClose }: Props) {
     const nav: PaletteItem[] = [
       { key: "nav-projects", label: "Проекты", run: () => { onTab("projects"); onClose(); } },
       { key: "nav-harness", label: "Харнес", run: () => { onTab("harness"); onClose(); } },
-      { key: "nav-journal", label: "Журнал", run: () => { onTab("journal"); onClose(); } },
       { key: "nav-notes", label: "Блокнот", run: () => { onTab("notes"); onClose(); } },
       { key: "nav-settings", label: "Настройки", run: () => { actions.requestSettings(); onClose(); } },
     ];

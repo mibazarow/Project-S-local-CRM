@@ -1298,37 +1298,6 @@ fn set_autostart(app: AppHandle, state: State<AppState>, enabled: bool) -> Resul
     Ok(enabled)
 }
 
-// Run journal feed (SPEC 3.3): read-only scan of Settings/logs/runs-*.jsonl
-// with filters; also returns the day/tool options for the "Журнал" UI.
-#[tauri::command]
-#[allow(clippy::too_many_arguments)]
-fn journal_list(
-    state: State<AppState>,
-    days: Option<u32>,
-    kind: Option<String>,
-    tool: Option<String>,
-    ok: Option<bool>,
-    project_id: Option<i64>,
-    session_id: Option<i64>,
-    limit: Option<usize>,
-) -> Result<journal::JournalListResult> {
-    let wd = state.working_dir()?;
-    let filter = journal::JournalFilter {
-        days: days.unwrap_or(journal::DEFAULT_DAYS).clamp(1, 365),
-        kind,
-        tool,
-        ok,
-        project_id,
-        session_id,
-        limit,
-    };
-    Ok(journal::JournalListResult {
-        entries: journal::list_entries(&wd, &filter)?,
-        days: journal::journal_days(&wd)?,
-        tools: journal::journal_tools(&wd, filter.days)?,
-    })
-}
-
 // Opens the run journal and runs startup hygiene for a working dir: tmp
 // auto-purge (SPEC 5.2) and journal retention pruning (SPEC 3.3), both
 // driven by app.json and both best-effort.
@@ -1492,8 +1461,7 @@ pub fn run() {
             clear_tmp,
             backups_dir,
             get_autostart,
-            set_autostart,
-            journal_list
+            set_autostart
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

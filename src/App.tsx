@@ -8,7 +8,6 @@ import ProjectList from "./components/projects/ProjectList";
 import FilesPanel from "./components/files/FilesPanel";
 import ProjectChat from "./components/chat/ProjectChat";
 import HarnessView from "./components/harness/HarnessView";
-import JournalView from "./components/journal/JournalView";
 import NotesView from "./components/notes/NotesView";
 
 export default function App() {
@@ -76,8 +75,6 @@ export default function App() {
         </main>
       ) : tab === "harness" ? (
         <HarnessView />
-      ) : tab === "journal" ? (
-        <JournalView />
       ) : (
         <NotesView />
       )}
