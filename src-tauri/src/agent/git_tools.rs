@@ -26,11 +26,11 @@ const LOG_MAX: f64 = 100.0;
 const DIFF_CONTEXT_DEFAULT: f64 = 3.0;
 const DIFF_CONTEXT_MAX: f64 = 20.0;
 
-struct GitOutput {
-    code: i32,
-    stdout: String,
-    stderr: String,
-    truncated: bool,
+pub(crate) struct GitOutput {
+    pub(crate) code: i32,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+    pub(crate) truncated: bool,
 }
 
 // Reads a pipe up to the cap plus one byte so truncation stays detectable
@@ -46,7 +46,7 @@ fn read_capped(mut reader: impl Read) -> (String, bool) {
 }
 
 // `git -C <dir> <args>` with piped output, a hard timeout and masked output.
-fn run_git(dir: &Path, args: &[&str]) -> Result<GitOutput> {
+pub(crate) fn run_git(dir: &Path, args: &[&str]) -> Result<GitOutput> {
     let mut child = match Command::new("git")
         .arg("-C")
         .arg(dir)

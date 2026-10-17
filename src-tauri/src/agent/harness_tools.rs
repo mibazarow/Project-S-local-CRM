@@ -55,6 +55,10 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(FsWriteTool),
         Arc::new(FsDeleteTool),
         Arc::new(FsGrepTool),
+        // Precise edits (exact string replacement + git apply patches);
+        // see edit_tools.rs for the safety rules.
+        Arc::new(super::edit_tools::EditFileTool::harness()),
+        Arc::new(super::edit_tools::ApplyPatchTool),
         Arc::new(crate::skills::CreateSkillTool),
         Arc::new(BashTool::default()),
         Arc::new(super::browser_tool::BrowserTool),
@@ -1355,12 +1359,14 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const DEFERRED_NAMES: [&str; 28] = [
+    const DEFERRED_NAMES: [&str; 30] = [
         "fs_read",
         "fs_list",
         "fs_write",
         "fs_delete",
         "fs_grep",
+        "edit_file",
+        "apply_patch",
         "create_skill",
         "bash",
         "browser",
@@ -1415,7 +1421,7 @@ mod tests {
         }
         assert_eq!(tool("fs_write").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("create_skill").policy(), PermissionPolicy::Skip);
-        for name in ["fs_delete", "bash", "crm_task_delete", "git_commit"] {
+        for name in ["fs_delete", "bash", "crm_task_delete", "git_commit", "apply_patch"] {
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
             assert!(tool(name).danger_reason(&json!({}), &ToolCtx::default()).is_some(), "{name} danger_reason");
@@ -1452,6 +1458,16 @@ mod tests {
         assert_eq!(outside.as_deref(), Some("запись вне Harness/ и Projects/"));
         let outside_abs = write.danger_reason(&json!({ "path": "/etc/hosts", "content": "x" }), &env.ctx);
         assert!(outside_abs.is_some());
+
+        let edit = tool("edit_file");
+        assert_eq!(edit.class(), ToolClass::Mutating);
+        assert_eq!(edit.policy(), PermissionPolicy::CheckConditional);
+        let edit_args = |path: &str| json!({ "path": path, "old_string": "x", "new_string": "y" });
+        assert!(edit.danger_reason(&edit_args("Harness/a.txt"), &env.ctx).is_none());
+        assert!(edit.danger_reason(&edit_args("Projects/p/a.txt"), &env.ctx).is_none());
+        assert!(edit.danger_reason(&edit_args("outside.txt"), &env.ctx).is_some());
+        assert_eq!(tool("apply_patch").class(), ToolClass::Mutating);
+        assert_eq!(tool("apply_patch").policy(), PermissionPolicy::Check);
         fs::remove_dir_all(&env.wd).unwrap();
     }
 

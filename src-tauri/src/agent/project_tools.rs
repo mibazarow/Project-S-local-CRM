@@ -21,6 +21,10 @@ pub fn project_catalog() -> Catalog {
         Arc::new(ReadFileTool),
         Arc::new(ListTreeTool),
         Arc::new(WriteFileTool),
+        // Precise edits: exact string replacement and unified-diff patches
+        // via git apply; see edit_tools.rs for the safety rules.
+        Arc::new(crate::agent::edit_tools::EditFileTool::project()),
+        Arc::new(crate::agent::edit_tools::ApplyPatchTool),
         Arc::new(CreateFolderTool),
         Arc::new(RenamePathTool),
         Arc::new(DeletePathTool),
@@ -795,11 +799,13 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 28] = [
+    const TOOL_NAMES: [&str; 30] = [
         "search",
         "read_file",
         "list_tree",
         "write_file",
+        "edit_file",
+        "apply_patch",
         "create_folder",
         "rename_path",
         "delete_path",
@@ -1075,6 +1081,7 @@ mod tests {
         }
         for name in [
             "write_file",
+            "edit_file",
             "create_folder",
             "task_create",
             "task_update",
@@ -1088,7 +1095,7 @@ mod tests {
             assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
         }
-        for name in ["rename_path", "delete_path", "task_delete", "git_commit"] {
+        for name in ["rename_path", "delete_path", "task_delete", "git_commit", "apply_patch"] {
             assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
         }
         assert_eq!(tool("git_branch").class(), ToolClass::Mutating);
