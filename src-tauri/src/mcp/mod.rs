@@ -430,7 +430,9 @@ fn transport_label(transport: &McpTransportConfig) -> &'static str {
 
 // Remote servers must be plain http(s) URLs whose host passes the SSRF
 // denylist; anything else is refused before a single packet is sent.
-fn check_url(url: &str) -> Result<()> {
+// Shared with the agent's network tools (agent/net_tools.rs) so the
+// denylist lives in exactly one place.
+pub(crate) fn check_url(url: &str) -> Result<()> {
     let scheme_ok = url.starts_with("http://") || url.starts_with("https://");
     match url_host(url) {
         Some(host) if scheme_ok && !ssrf_denied_host(&host) => Ok(()),

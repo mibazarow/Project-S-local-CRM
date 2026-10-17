@@ -31,6 +31,8 @@ pub fn project_catalog() -> Catalog {
         Arc::new(TaskDeleteTool),
         Arc::new(DatasAddTool),
         Arc::new(DatasReadTool),
+        Arc::new(crate::agent::net_tools::WebfetchTool::new()),
+        Arc::new(crate::agent::net_tools::WebsearchTool::new()),
         Arc::new(crate::skills::SkillTool),
         Arc::new(crate::skills::CreateSkillTool),
         // Global memory is shared with the harness agent (SPEC 6.3).
@@ -783,7 +785,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 19] = [
+    const TOOL_NAMES: [&str; 21] = [
         "search",
         "read_file",
         "list_tree",
@@ -798,6 +800,8 @@ mod tests {
         "task_delete",
         "datas_add",
         "datas_read",
+        "webfetch",
+        "websearch",
         "skill",
         "create_skill",
         "remember",
@@ -1034,7 +1038,17 @@ mod tests {
 
     #[test]
     fn policies_and_classes_match_the_spec() {
-        for name in ["search", "read_file", "list_tree", "task_list", "datas_read", "skill", "recall"] {
+        for name in [
+            "search",
+            "read_file",
+            "list_tree",
+            "task_list",
+            "datas_read",
+            "webfetch",
+            "websearch",
+            "skill",
+            "recall",
+        ] {
             assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
             assert_eq!(tool(name).class(), ToolClass::ReadOnly, "{name} class");
         }

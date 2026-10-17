@@ -56,6 +56,8 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(crate::skills::CreateSkillTool),
         Arc::new(BashTool::default()),
         Arc::new(super::browser_tool::BrowserTool),
+        Arc::new(super::net_tools::WebfetchTool::new()),
+        Arc::new(super::net_tools::WebsearchTool::new()),
         Arc::new(CrmListProjectsTool),
         Arc::new(CrmSearchTool),
         Arc::new(CrmTasksTool),
@@ -1344,7 +1346,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const DEFERRED_NAMES: [&str; 21] = [
+    const DEFERRED_NAMES: [&str; 23] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -1353,6 +1355,8 @@ mod tests {
         "create_skill",
         "bash",
         "browser",
+        "webfetch",
+        "websearch",
         "crm_list_projects",
         "crm_search",
         "crm_tasks",
@@ -1388,7 +1392,7 @@ mod tests {
 
     #[test]
     fn classes_policies_and_danger_reasons_match_the_spec() {
-        for name in ["fs_read", "fs_list", "fs_grep", "crm_list_projects", "crm_search", "crm_tasks", "datas_read"] {
+        for name in ["fs_read", "fs_list", "fs_grep", "webfetch", "websearch", "crm_list_projects", "crm_search", "crm_tasks", "datas_read"] {
             assert_eq!(tool(name).class(), ToolClass::ReadOnly, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
         }
