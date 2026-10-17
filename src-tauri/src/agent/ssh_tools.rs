@@ -25,6 +25,10 @@ use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const SSH_TIMEOUT: Duration = Duration::from_secs(120);
+// ssh_exec timeoutSec bounds: long installs need more than the default 120 s,
+// but the call is still capped so a hung session cannot wedge the agent loop.
+const SSH_TIMEOUT_MIN_SECS: u64 = 10;
+const SSH_TIMEOUT_MAX_SECS: u64 = 1800;
 const SSH_OUTPUT_CAP: usize = 20_000;
 // Envelope cap leaves room for the JSON wrapper around a full 20k output.
 const SSH_RESULT_CAP: usize = 21_000;
@@ -257,20 +261,55 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-// OpenSSH stops option parsing at the destination, so everything after
-// user@host is the remote command joined with spaces and run by the remote
-// shell. There is no "--" here: it would reach the remote shell literally and
-// break the command. A command that starts with "-" is wrapped in `sh -c`
-// (shell-quoted) so the leading dash cannot be parsed as an option.
-fn ssh_exec_argv(t: &Target, command: &str) -> Vec<String> {
-    let mut argv = ssh_argv(t);
-    argv.push(format!("{}@{}", t.user, t.host));
-    let remote = if command.starts_with('-') {
+// Per-call ssh_exec options (defaults resolved in execute()).
+struct ExecOpts {
+    login_shell: bool,
+    cwd: Option<String>,
+    pty: bool,
+    timeout: Duration,
+}
+
+// timeoutSec default 120 s, clamped to 10..1800 so a hung session cannot
+// wedge the agent loop but long installs still get room.
+fn clamp_timeout(value: Option<i64>) -> Duration {
+    let secs = value
+        .unwrap_or(SSH_TIMEOUT.as_secs() as i64)
+        .clamp(SSH_TIMEOUT_MIN_SECS as i64, SSH_TIMEOUT_MAX_SECS as i64);
+    Duration::from_secs(secs as u64)
+}
+
+// The single remote command string ssh hands to the remote shell. loginShell
+// wraps the command in `bash -lc '<command>'` so PATH/profile apply; otherwise
+// the command is passed through. A bare command that starts with '-' is wrapped
+// in `sh -c` so the remote shell does not read it as its own option. An
+// optional cwd is prepended as `cd '<cwd>' && ` (the path is shell-quoted).
+fn remote_command(command: &str, login_shell: bool, cwd: Option<&str>) -> String {
+    let body = if login_shell {
+        format!("bash -lc {}", shell_quote(command))
+    } else if command.starts_with('-') {
         format!("sh -c {}", shell_quote(command))
     } else {
         command.to_string()
     };
-    argv.push(remote);
+    match cwd {
+        Some(dir) if !dir.is_empty() => format!("cd {} && {}", shell_quote(dir), body),
+        _ => body,
+    }
+}
+
+// OpenSSH stops option parsing at the destination, so everything after
+// user@host is the remote command joined with spaces and run by the remote
+// shell. There is no "--" here: it would reach the remote shell literally and
+// break the command. The command stays a single trailing argv element.
+fn ssh_exec_argv(t: &Target, command: &str, opts: &ExecOpts) -> Vec<String> {
+    let mut argv = ssh_argv(t);
+    if opts.pty {
+        // -tt forces a pseudo-terminal even without one locally; interactive
+        // programs may hang, but the call is still capped by opts.timeout.
+        argv.push("-tt".to_string());
+    }
+    argv.push(format!("{}@{}", t.user, t.host));
+    argv.push(remote_command(command, opts.login_shell, opts.cwd.as_deref()));
     argv
 }
 
@@ -310,8 +349,8 @@ fn read_capped(mut reader: impl Read) -> (String, bool) {
 }
 
 // `ssh`/`scp` with piped output, TMPDIR/TEMP/TMP pointed at Harness/tmp/,
-// a hard 120 s timeout (kill) and masked output.
-fn run_process(program: &str, argv: &[String], wd: &Path) -> Result<SshOutput> {
+// a hard timeout (kill) and masked output.
+fn run_process(program: &str, argv: &[String], wd: &Path, timeout: Duration) -> Result<SshOutput> {
     let tmp = paths::harness_tmp_dir(wd);
     fs::create_dir_all(&tmp)?;
     let mut child = match Command::new(program)
@@ -331,7 +370,7 @@ fn run_process(program: &str, argv: &[String], wd: &Path) -> Result<SshOutput> {
     let stderr = child.stderr.take();
     let out_thread = std::thread::spawn(move || stdout.map(read_capped));
     let err_thread = std::thread::spawn(move || stderr.map(read_capped));
-    let deadline = Instant::now() + SSH_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
@@ -341,7 +380,7 @@ fn run_process(program: &str, argv: &[String], wd: &Path) -> Result<SshOutput> {
             let _ = child.wait();
             return Err(AppError::Io(format!(
                 "{program} timed out after {} s and was killed",
-                SSH_TIMEOUT.as_secs()
+                timeout.as_secs()
             )));
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -620,7 +659,7 @@ impl Tool for SshExecTool {
         "ssh_exec"
     }
     fn description(&self) -> &str {
-        "Run a command on a remote host via the system ssh CLI (BatchMode: keys/ssh-agent only, never prompts for a password; host keys follow accept-new by default). Target: a named profile from Settings/config/ssh.json (the profile wins over explicit fields) or explicit host/user/port/keyPath. Returns exitCode, stdout, stderr; 120 s timeout, output capped."
+        "Run a command on a remote host via the system ssh CLI (BatchMode: keys/ssh-agent only, never prompts for a password; host keys follow accept-new by default). Target: a named profile from Settings/config/ssh.json (the profile wins over explicit fields) or explicit host/user/port/keyPath. Each call is a fresh non-interactive session: nothing persists between calls, so keep commands self-contained and drive package managers non-interactively (apt-get -y, DEBIAN_FRONTEND=noninteractive, sudo -n). By default the command runs as `bash -lc '<command>'` so PATH/profile apply; set loginShell=false to run it verbatim. Optional cwd runs it inside that remote directory. pty=true allocates a TTY (-tt) for programs that need one, but interactive prompts then hang until the timeout. timeoutSec defaults to 120 and is clamped to 10..1800; long installs should raise it or run detached (nohup ... > log 2>&1 &) and poll the log. Returns exitCode, stdout, stderr; output capped."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -631,7 +670,11 @@ impl Tool for SshExecTool {
                 "user": { "type": "string" },
                 "port": { "type": "integer" },
                 "keyPath": { "type": "string" },
-                "command": { "type": "string" }
+                "command": { "type": "string" },
+                "timeoutSec": { "type": "integer" },
+                "loginShell": { "type": "boolean" },
+                "cwd": { "type": "string" },
+                "pty": { "type": "boolean" }
             },
             "required": ["command"],
             "additionalProperties": false
@@ -670,8 +713,21 @@ impl Tool for SshExecTool {
         if command.is_empty() {
             return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, "command is empty"));
         }
-        let argv = ssh_exec_argv(&target, command);
-        let out = run_process("ssh", &argv, &wd)?;
+        let opts = ExecOpts {
+            login_shell: args
+                .get("loginShell")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+            cwd: args
+                .get("cwd")
+                .and_then(Value::as_str)
+                .filter(|c| !c.is_empty())
+                .map(str::to_string),
+            pty: args.get("pty").and_then(Value::as_bool).unwrap_or(false),
+            timeout: clamp_timeout(args.get("timeoutSec").and_then(Value::as_i64)),
+        };
+        let argv = ssh_exec_argv(&target, command, &opts);
+        let out = run_process("ssh", &argv, &wd, opts.timeout)?;
         Ok(ToolResult::ok(json!({
             "target": target.label(),
             "exitCode": out.code,
@@ -767,7 +823,7 @@ impl Tool for SshCopyTool {
             (remote.to_string(), local.display().to_string())
         };
         let argv = scp_argv(&target, &src, &dst, recursive);
-        let out = run_process("scp", &argv, &wd)?;
+        let out = run_process("scp", &argv, &wd, SSH_TIMEOUT)?;
         Ok(ToolResult::ok(json!({
             "target": target.label(),
             "exitCode": out.code,
@@ -830,9 +886,19 @@ mod tests {
         }
     }
 
+    fn opts(login_shell: bool, cwd: Option<&str>, pty: bool, timeout_secs: Option<i64>) -> ExecOpts {
+        ExecOpts {
+            login_shell,
+            cwd: cwd.map(str::to_string),
+            pty,
+            timeout: clamp_timeout(timeout_secs),
+        }
+    }
+
     #[test]
-    fn ssh_exec_argv_is_exact_and_has_no_double_dash() {
-        let argv = ssh_exec_argv(&target(2222, Some("/keys/id_ed25519")), "ls -l");
+    fn ssh_exec_argv_default_uses_login_shell_and_120s() {
+        let o = opts(true, None, false, None);
+        let argv = ssh_exec_argv(&target(2222, Some("/keys/id_ed25519")), "ls -l", &o);
         assert_eq!(
             argv,
             [
@@ -847,11 +913,12 @@ mod tests {
                 "-i",
                 "/keys/id_ed25519",
                 "deploy@example.ru",
-                "ls -l",
+                "bash -lc 'ls -l'",
             ]
         );
+        assert_eq!(o.timeout, Duration::from_secs(120));
         // the command is the last argument and there is no "--" anywhere
-        assert_eq!(argv[argv.len() - 1], "ls -l");
+        assert_eq!(argv[argv.len() - 1], "bash -lc 'ls -l'");
         assert_eq!(argv[argv.len() - 2], "deploy@example.ru");
         assert!(!argv.iter().any(|a| a == "--"), "{argv:?}");
         // no key: no -i flag at all
@@ -860,15 +927,77 @@ mod tests {
     }
 
     #[test]
-    fn leading_dash_command_is_wrapped_in_sh_c() {
-        let argv = ssh_exec_argv(&target(22, None), "-l");
-        assert_eq!(argv[argv.len() - 1], "sh -c '-l'");
-        assert!(!argv.iter().any(|a| a == "--"), "{argv:?}");
-        // a normal command is passed through unchanged as the last argument
-        let argv = ssh_exec_argv(&target(22, None), "echo hi");
-        assert_eq!(argv[argv.len() - 1], "echo hi");
+    fn login_shell_false_passes_command_verbatim() {
+        let o = opts(false, None, false, None);
+        assert_eq!(
+            ssh_exec_argv(&target(22, None), "echo hi", &o).pop().unwrap(),
+            "echo hi"
+        );
+        // a bare leading-dash command is still wrapped so the remote shell does
+        // not read it as its own option
+        assert_eq!(ssh_exec_argv(&target(22, None), "-l", &o).pop().unwrap(), "sh -c '-l'");
+        // loginShell=true wraps even a leading-dash command in bash -lc
+        let o = opts(true, None, false, None);
+        assert_eq!(
+            ssh_exec_argv(&target(22, None), "-l", &o).pop().unwrap(),
+            "bash -lc '-l'"
+        );
         // shell_quote escapes embedded single quotes as '\''
         assert_eq!(shell_quote("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn cwd_is_shell_quoted_and_prepended() {
+        let o = opts(true, Some("/var/www/my dir"), false, None);
+        assert_eq!(
+            ssh_exec_argv(&target(22, None), "ls", &o).pop().unwrap(),
+            "cd '/var/www/my dir' && bash -lc 'ls'"
+        );
+        // an embedded single quote in cwd is escaped as '\''
+        let o = opts(false, Some("/it's"), false, None);
+        assert_eq!(
+            ssh_exec_argv(&target(22, None), "ls", &o).pop().unwrap(),
+            "cd '/it'\\''s' && ls"
+        );
+        // empty cwd is ignored
+        let o = opts(false, Some(""), false, None);
+        assert_eq!(ssh_exec_argv(&target(22, None), "ls", &o).pop().unwrap(), "ls");
+    }
+
+    #[test]
+    fn pty_adds_tt_before_the_destination() {
+        let o = opts(true, None, true, None);
+        let argv = ssh_exec_argv(&target(22, None), "top", &o);
+        let tt = argv.iter().position(|a| a == "-tt").expect("-tt present");
+        let host = argv.iter().position(|a| a == "deploy@example.ru").unwrap();
+        assert!(tt < host, "-tt must precede the destination: {argv:?}");
+        assert_eq!(argv[argv.len() - 1], "bash -lc 'top'");
+        assert!(!argv.iter().any(|a| a == "--"), "{argv:?}");
+        // pty=false: no -tt at all
+        let o = opts(true, None, false, None);
+        assert!(!ssh_exec_argv(&target(22, None), "top", &o).iter().any(|a| a == "-tt"));
+    }
+
+    #[test]
+    fn timeout_is_clamped_to_10_1800() {
+        assert_eq!(clamp_timeout(None), Duration::from_secs(120));
+        assert_eq!(clamp_timeout(Some(120)), Duration::from_secs(120));
+        assert_eq!(clamp_timeout(Some(5)), Duration::from_secs(10));
+        assert_eq!(clamp_timeout(Some(0)), Duration::from_secs(10));
+        assert_eq!(clamp_timeout(Some(-3)), Duration::from_secs(10));
+        assert_eq!(clamp_timeout(Some(1800)), Duration::from_secs(1800));
+        assert_eq!(clamp_timeout(Some(99999)), Duration::from_secs(1800));
+    }
+
+    #[test]
+    fn command_stays_last_element_with_no_double_dash() {
+        let o = opts(true, Some("/srv/app"), true, Some(600));
+        let argv = ssh_exec_argv(&target(22, None), "apt-get install -y nginx", &o);
+        assert_eq!(
+            argv[argv.len() - 1],
+            "cd '/srv/app' && bash -lc 'apt-get install -y nginx'"
+        );
+        assert!(!argv.iter().any(|a| a == "--"), "{argv:?}");
     }
 
     #[test]
@@ -1204,6 +1333,21 @@ mod tests {
         assert!(validate_args(&exec, &json!({ "command": "ls", "port": "x" }))
             .unwrap_err()
             .contains("integer"));
+        // new ssh_exec options validate against the schema
+        assert!(validate_args(
+            &exec,
+            &json!({ "command": "ls", "timeoutSec": 300, "loginShell": false, "cwd": "/srv", "pty": true })
+        )
+        .is_ok());
+        assert!(validate_args(&exec, &json!({ "command": "ls", "timeoutSec": "x" }))
+            .unwrap_err()
+            .contains("integer"));
+        assert!(validate_args(&exec, &json!({ "command": "ls", "pty": "yes" }))
+            .unwrap_err()
+            .contains("boolean"));
+        assert!(validate_args(&exec, &json!({ "command": "ls", "cwd": 5 }))
+            .unwrap_err()
+            .contains("string"));
         let copy = SshCopyTool::upload().parameters();
         assert!(validate_args(&copy, &json!({ "localPath": "a", "remotePath": "b" })).is_ok());
         assert!(validate_args(&copy, &json!({ "localPath": "a" }))
