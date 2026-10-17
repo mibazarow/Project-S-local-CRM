@@ -2,10 +2,7 @@
 // validator (SPEC 6.4 "инструмент = один источник истины").
 pub use super::result::ToolResult;
 use crate::error::Result;
-use serde_json::{Map, Value};
-
-#[cfg(test)]
-use serde_json::json;
+use serde_json::{json, Map, Value};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolClass {
@@ -56,9 +53,92 @@ pub trait Tool: Send + Sync {
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult>;
 }
 
+// Lenient coercion of weak-model scalar encodings, applied BEFORE strict
+// validation: only properties the schema declares are touched, and only
+// these conversions — clean numeric text to integer/number, "true"/"false"
+// to boolean, numbers to strings, integral floats to integers. Arrays and
+// objects are left to validation, missing fields are never invented.
+pub fn coerce_args(schema: &Value, args: &Value) -> Value {
+    let (Value::Object(obj), Some(props)) = (args, schema.get("properties").and_then(Value::as_object))
+    else {
+        return args.clone();
+    };
+    let mut out = Map::new();
+    let mut changed = false;
+    for (key, val) in obj {
+        let target = props.get(key).and_then(|prop| prop.get("type")).and_then(Value::as_str);
+        let coerced = match target {
+            Some("number") => coerce_to_number(val, false),
+            Some("integer") => coerce_to_number(val, true),
+            Some("boolean") => coerce_to_bool(val),
+            Some("string") => coerce_to_string(val),
+            _ => val.clone(),
+        };
+        changed |= coerced != *val;
+        out.insert(key.clone(), coerced);
+    }
+    if changed {
+        Value::Object(out)
+    } else {
+        args.clone()
+    }
+}
+
+fn coerce_to_number(val: &Value, integer_only: bool) -> Value {
+    if let Some(text) = val.as_str() {
+        let text = text.trim();
+        if let Ok(int) = text.parse::<i64>() {
+            return json!(int);
+        }
+        if let Ok(float) = text.parse::<f64>() {
+            if float.is_finite() {
+                if let Some(int) = integral_to_i64(float).filter(|_| integer_only) {
+                    return json!(int);
+                }
+                if let Some(num) = serde_json::Number::from_f64(float) {
+                    return Value::Number(num);
+                }
+            }
+        }
+    }
+    if integer_only && !val.is_i64() {
+        if let Some(float) = val.as_f64().and_then(integral_to_i64) {
+            return json!(float);
+        }
+    }
+    val.clone()
+}
+
+// f64 → i64 without the unstable TryFrom: exact enough for argument coercion.
+fn integral_to_i64(float: f64) -> Option<i64> {
+    if float.fract() == 0.0 && float >= i64::MIN as f64 && float <= i64::MAX as f64 {
+        Some(float as i64)
+    } else {
+        None
+    }
+}
+
+fn coerce_to_bool(val: &Value) -> Value {
+    if let Some(text) = val.as_str() {
+        match text.trim().to_ascii_lowercase().as_str() {
+            "true" => return json!(true),
+            "false" => return json!(false),
+            _ => {}
+        }
+    }
+    val.clone()
+}
+
+fn coerce_to_string(val: &Value) -> Value {
+    match val {
+        Value::Number(num) => json!(num.to_string()),
+        _ => val.clone(),
+    }
+}
+
 // Minimal JSON-schema validator over the subset the catalog declares:
-// object, required, types (string/number/boolean/array/object), enum,
-// additionalProperties. Unknown properties are rejected by default
+// object, required, types (string/integer/number/boolean/array/object),
+// enum, additionalProperties. Unknown properties are rejected by default
 // (additionalProperties:false semantics) unless the schema opts in.
 pub fn validate_args(schema: &Value, args: &Value) -> std::result::Result<(), String> {
     let obj = args
@@ -125,6 +205,9 @@ fn validate_value(schema: &Value, val: &Value, path: &str) -> std::result::Resul
             Ok(())
         }
         Some("string") if !val.is_string() => Err(format!("{path}: expected string")),
+        Some("integer") if !val.is_i64() && !val.is_u64() => {
+            Err(format!("{path}: expected integer"))
+        }
         Some("number") if !val.is_number() => Err(format!("{path}: expected number")),
         Some("boolean") if !val.is_boolean() => Err(format!("{path}: expected boolean")),
         _ => Ok(()),
@@ -261,5 +344,60 @@ mod tests {
     #[test]
     fn rejects_non_object_args() {
         assert!(validate_args(&schema(), &json!("hi")).is_err());
+    }
+
+    #[test]
+    fn coerces_weak_scalar_encodings_per_schema() {
+        let s = json!({
+            "type": "object",
+            "properties": {
+                "count": { "type": "integer" },
+                "ratio": { "type": "number" },
+                "flag": { "type": "boolean" },
+                "label": { "type": "string" }
+            },
+            "additionalProperties": false
+        });
+        let args = json!({ "count": "5", "ratio": "2.5", "flag": "true", "label": 42 });
+        assert_eq!(
+            coerce_args(&s, &args),
+            json!({ "count": 5, "ratio": 2.5, "flag": true, "label": "42" })
+        );
+        assert!(validate_args(&s, &coerce_args(&s, &args)).is_ok());
+    }
+
+    #[test]
+    fn coerces_integral_floats_to_integer_only_when_declared() {
+        let s = json!({ "type": "object", "properties": { "n": { "type": "integer" } } });
+        assert_eq!(coerce_args(&s, &json!({ "n": 5.0 })), json!({ "n": 5 }));
+        assert_eq!(coerce_args(&s, &json!({ "n": 5.5 })), json!({ "n": 5.5 }));
+        // integer→number needs no conversion: serde_json integers validate as numbers.
+        let s = json!({ "type": "object", "properties": { "n": { "type": "number" } } });
+        assert_eq!(coerce_args(&s, &json!({ "n": 5 })), json!({ "n": 5 }));
+        assert!(validate_args(&s, &coerce_args(&s, &json!({ "n": 5 }))).is_ok());
+    }
+
+    #[test]
+    fn coercion_leaves_unknown_nested_and_invalid_values_untouched() {
+        let s = json!({
+            "type": "object",
+            "properties": { "count": { "type": "integer" }, "nested": { "type": "object" } },
+            "additionalProperties": true
+        });
+        let args = json!({ "count": "x", "nested": { "inner": "5" }, "extra": "7" });
+        assert_eq!(coerce_args(&s, &args), args);
+        // invalid numeric text survives coercion and is rejected by validation
+        assert!(validate_args(&s, &coerce_args(&s, &json!({ "count": "x" })))
+            .unwrap_err()
+            .contains("integer"));
+        // missing fields are never invented
+        assert_eq!(coerce_args(&s, &json!({})), json!({}));
+    }
+
+    #[test]
+    fn rejects_non_integer_for_integer_property() {
+        let s = json!({ "type": "object", "properties": { "n": { "type": "integer" } } });
+        assert!(validate_args(&s, &json!({ "n": 5 })).is_ok());
+        assert!(validate_args(&s, &json!({ "n": "x" })).unwrap_err().contains("integer"));
     }
 }

@@ -9,7 +9,7 @@ use super::catalog::{Catalog, EnableOutcome, Resolution, ENABLE_TOOLS, LIST_TOOL
 use super::hints::hint_for;
 use super::permissions::{ConfirmDecision, ConfirmRequest, Confirmer};
 use super::result::{ToolErrorCode, ToolResult};
-use super::tool::{validate_args, PermissionPolicy, Tool, ToolCtx};
+use super::tool::{coerce_args, validate_args, PermissionPolicy, Tool, ToolCtx};
 use crate::error::Result;
 use crate::llm::{ChatEvent, ChatMessage, ChatOutcome, ChatParams, LlmClient, ToolCall, ToolSpec};
 use serde::Serialize;
@@ -506,11 +506,12 @@ fn execute_inner(
         }
     };
 
-    if let Err(msg) = validate_args(&tool.parameters(), &tc.arguments) {
+    let args = coerce_args(&tool.parameters(), &tc.arguments);
+    if let Err(msg) = validate_args(&tool.parameters(), &args) {
         return ToolResult::err(ToolErrorCode::InvalidArgs, msg);
     }
 
-    let danger = tool.danger_reason(&tc.arguments, ctx);
+    let danger = tool.danger_reason(&args, ctx);
     let needs_confirm = match tool.policy() {
         PermissionPolicy::Skip => false,
         PermissionPolicy::Check => true,
@@ -521,12 +522,12 @@ fn execute_inner(
     if needs_confirm && !config.allow_all && !always_allow.contains(&tc.name) {
         emit(AgentEvent::ConfirmationRequested {
             tool: tc.name.clone(),
-            args: tc.arguments.clone(),
+            args: args.clone(),
             danger_reason: danger.clone(),
         });
         let req = ConfirmRequest {
             tool: tc.name.clone(),
-            args: tc.arguments.clone(),
+            args: args.clone(),
             project_id: config.project_id,
             danger_reason: danger,
         };
@@ -541,7 +542,7 @@ fn execute_inner(
         }
     }
 
-    execute_with_timeout(tool, tc.arguments.clone(), ctx, config.limits.tool_timeout)
+    execute_with_timeout(tool, args, ctx, config.limits.tool_timeout)
 }
 
 // The tool runs on a detached worker so a hung tool cannot wedge the run: on
@@ -838,6 +839,27 @@ mod tests {
         let result = run(&mut state, &config(8), &DenyAllConfirmer, |e| events.push(e)).unwrap();
         assert_eq!(result.answer, "ok");
         assert_eq!(envelope_for(&events, "echo")["error"]["code"], "invalid_args");
+    }
+
+    #[test]
+    fn weak_scalar_arguments_are_coerced_before_validation() {
+        // EchoTool declares text as string: a weak model sending the number
+        // 42 must be coerced to "42" and the call must succeed.
+        let backend = ScriptedBackend::new(vec![
+            tools_outcome(vec![call("c1", "echo", json!({ "text": 42 }))]),
+            tools_outcome(vec![finish_call("ok")]),
+        ]);
+        let mut catalog = catalog_with(Some(EchoTool::new(PermissionPolicy::Skip)));
+        let mut state = AgentState {
+            backend: &backend,
+            catalog: &mut catalog,
+        };
+        let mut events = Vec::new();
+        let result = run(&mut state, &config(8), &DenyAllConfirmer, |e| events.push(e)).unwrap();
+        assert_eq!(result.answer, "ok");
+        let envelope = envelope_for(&events, "echo");
+        assert!(envelope.get("ok").unwrap().as_bool().unwrap());
+        assert_eq!(envelope["data"]["echo"], "42");
     }
 
     #[test]
