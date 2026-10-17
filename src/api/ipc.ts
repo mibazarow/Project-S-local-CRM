@@ -7,7 +7,6 @@ import type {
   ConfigChanged,
   ConfigKind,
   ConnectionTest,
-  EmbedModelProgress,
   EmbedStatus,
   FsChanged,
   FsEntry,
@@ -178,8 +177,6 @@ export const reindexAll = () => invoke<ProjectIndexStats[]>("reindex_all");
 
 export const embedStatus = () => invoke<EmbedStatus>("embed_status");
 
-export const downloadEmbedModel = () => invoke<EmbedStatus>("download_embed_model");
-
 export const listModels = () => invoke<ModelInfo[]>("list_models");
 
 export const testConnection = () => invoke<ConnectionTest>("test_connection");
@@ -323,9 +320,6 @@ export const onConfigChanged = (handler: (payload: ConfigChanged) => void) =>
 
 export const onIndexChanged = (handler: (payload: IndexChanged) => void) =>
   listen<IndexChanged>("index-changed", (e) => handler(e.payload));
-
-export const onEmbedModelProgress = (handler: (payload: EmbedModelProgress) => void) =>
-  listen<EmbedModelProgress>("embed-model-progress", (e) => handler(e.payload));
 
 export const onAgentEvent = (handler: (payload: AgentEventPayload) => void) =>
   listen<AgentEventPayload>("agent-event", (e) => handler(e.payload));

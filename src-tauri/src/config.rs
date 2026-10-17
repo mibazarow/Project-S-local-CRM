@@ -119,37 +119,14 @@ impl Default for AppConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-pub struct EmbeddingConfig {
-    pub enabled: bool,
-    // "noop" | "ollama" | "ort"; unknown values fall back to noop at runtime.
-    pub backend: String,
-    pub ollama_model: String,
-    pub dim: usize,
-    pub name_weight: f32,
-}
-
-impl Default for EmbeddingConfig {
-    fn default() -> Self {
-        EmbeddingConfig {
-            enabled: true,
-            // ORT (EmbeddingGemma 2, in-app ONNX) is the default backend; if
-            // the model files are missing, select_embedder falls back to noop
-            // (FTS only) instead of probing the network unasked.
-            backend: "ort".into(),
-            ollama_model: "nomic-embed-text".into(),
-            dim: crate::embed::EMBED_DIM,
-            name_weight: 0.3,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
 pub struct IndexingConfig {
     pub max_file_size_bytes: u64,
     pub max_text_chars: u64,
     pub exclude_dirs: Vec<String>,
-    pub embedding: EmbeddingConfig,
+    // The old `embedding` object (enabled/backend/ollamaModel/dim/nameWeight)
+    // is gone: semantic search is always on with the in-app ORT model, so it
+    // is not configurable. Old indexing.json files still carrying that key
+    // load unchanged (serde ignores unknown keys).
 }
 
 impl Default for IndexingConfig {
@@ -166,7 +143,6 @@ impl Default for IndexingConfig {
                 "target".into(),
                 "dist".into(),
             ],
-            embedding: EmbeddingConfig::default(),
         }
     }
 }
@@ -340,6 +316,26 @@ mod tests {
         assert_eq!(cfg.session_ttl_days, 5);
         // absent keys still fall back to defaults
         assert_eq!(cfg.compaction_threshold_percent, 80);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn indexing_config_ignores_removed_embedding_keys() {
+        // Old indexing.json files still carry the embedding object: unknown
+        // keys are ignored, so existing configs load without a migration.
+        let dir = temp_test_dir("config-indexing-legacy");
+        fs::create_dir_all(paths::config_dir(&dir)).unwrap();
+        fs::write(
+            file_path(&dir, ConfigKind::Indexing),
+            r#"{ "maxFileSizeBytes": 1024, "maxTextChars": 500, "excludeDirs": [".git"],
+                 "embedding": { "enabled": false, "backend": "ollama", "ollamaModel": "nomic-embed-text", "dim": 512, "nameWeight": 0.5 } }"#,
+        )
+        .unwrap();
+        let cfg: IndexingConfig =
+            serde_json::from_value(read_config(&dir, ConfigKind::Indexing).unwrap()).unwrap();
+        assert_eq!(cfg.max_file_size_bytes, 1024);
+        assert_eq!(cfg.max_text_chars, 500);
+        assert_eq!(cfg.exclude_dirs, vec![".git".to_string()]);
         fs::remove_dir_all(&dir).unwrap();
     }
 

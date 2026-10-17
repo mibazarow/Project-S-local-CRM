@@ -269,7 +269,7 @@ mod tests {
     // cargo test -- --ignored live_model
     #[test]
     #[ignore]
-    fn live_model_embeds_unit_vectors_at_512_dims() {
+    fn live_model_embeds_unit_vectors_at_768_dims() {
         use std::time::Instant;
         let wd = crate::embed::model_store::real_working_dir();
         if !crate::embed::model_store::model_present(&wd) {
@@ -279,12 +279,9 @@ mod tests {
             .unwrap();
         }
         let embedder = OrtEmbedder::new(crate::embed::model_store::model_dir(&wd), EMBED_DIM);
-        // The default config (backend "ort") must resolve to the ort backend
-        // once the model files are provisioned in the working dir.
-        let selected = crate::embed::select_embedder(
-            &crate::config::EmbeddingConfig::default(),
-            &wd,
-        );
+        // With the model files provisioned in the working dir, the always-on
+        // selection must resolve to the ort backend.
+        let selected = crate::embed::select_embedder(&wd);
         assert_eq!(selected.backend_id(), "ort");
         assert_eq!(selected.dim(), EMBED_DIM);
         let texts = vec![

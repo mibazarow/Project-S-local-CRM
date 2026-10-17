@@ -4,7 +4,6 @@ import * as ipc from "../api/ipc";
 import type {
   AppConfig,
   ConnectionTest,
-  EmbedModelProgress,
   EmbedStatus,
   ImportResult,
   IndexingConfig,
@@ -18,16 +17,12 @@ import type {
 const MB = 1024 * 1024;
 
 // Form fields are kept as strings so mid-typing states ("20.", "") survive;
-// parsing happens only at save time.
+// parsing happens only at save time. Semantic search settings are not part of
+// the form: semantic search is always on and only its indexing limits are here.
 interface Form {
   maxMb: string;
   maxChars: string;
   excludeDirs: string;
-  backend: string;
-  ollamaModel: string;
-  dim: string;
-  nameWeight: string;
-  enabled: boolean;
 }
 
 function toForm(cfg: IndexingConfig): Form {
@@ -35,11 +30,6 @@ function toForm(cfg: IndexingConfig): Form {
     maxMb: String(Math.round((cfg.maxFileSizeBytes / MB) * 100) / 100),
     maxChars: String(cfg.maxTextChars),
     excludeDirs: cfg.excludeDirs.join(", "),
-    backend: cfg.embedding.backend,
-    ollamaModel: cfg.embedding.ollamaModel,
-    dim: String(cfg.embedding.dim),
-    nameWeight: String(cfg.embedding.nameWeight),
-    enabled: cfg.embedding.enabled,
   };
 }
 
@@ -187,8 +177,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [configDir, setConfigDir] = useState("");
   const [form, setForm] = useState<Form | null>(null);
   const [embed, setEmbed] = useState<EmbedStatus | null>(null);
-  const [embedBusy, setEmbedBusy] = useState(false);
-  const [embedProgress, setEmbedProgress] = useState<EmbedModelProgress | null>(null);
   const [reindexBusy, setReindexBusy] = useState(false);
   const [reindexNote, setReindexNote] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -262,19 +250,10 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     const raw = rawRef.current;
     const f = formRef.current;
     if (!raw || !f) return;
-    const embRaw =
-      raw.embedding && typeof raw.embedding === "object"
-        ? (raw.embedding as Record<string, unknown>)
-        : {};
-    const emb: Record<string, unknown> = { ...embRaw };
-    const dim = parseNum(f.dim);
-    if (dim !== null) emb.dim = Math.round(dim);
-    const nameWeight = parseNum(f.nameWeight);
-    if (nameWeight !== null) emb.nameWeight = nameWeight;
-    emb.backend = f.backend;
-    emb.ollamaModel = f.ollamaModel;
-    emb.enabled = f.enabled;
-    const patch: Record<string, unknown> = { ...raw, embedding: emb };
+    // Read-modify-write: keys the app no longer owns (e.g. a stale
+    // `embedding` object in old files) are left untouched on disk; the
+    // backend ignores them.
+    const patch: Record<string, unknown> = { ...raw };
     const mb = parseNum(f.maxMb);
     if (mb !== null) patch.maxFileSizeBytes = Math.round(mb * MB);
     const chars = parseNum(f.maxChars);
@@ -535,7 +514,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
         ),
       ),
     );
-    track(ipc.onEmbedModelProgress((p) => setEmbedProgress(p)));
     track(ipc.onSkillsChanged(() => loadSkills()));
     track(ipc.onMemoryChanged(() => loadMemory()));
     return () => {
@@ -576,19 +554,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
       })
       .catch((e) => setError(errMsg(e)))
       .finally(() => setReindexBusy(false));
-  };
-
-  const downloadModel = () => {
-    setEmbedBusy(true);
-    setEmbedProgress(null);
-    void ipc
-      .downloadEmbedModel()
-      .then(setEmbed)
-      .catch((e) => setError(errMsg(e)))
-      .finally(() => {
-        setEmbedBusy(false);
-        setEmbedProgress(null);
-      });
   };
 
   const clearTmp = () => {
@@ -1198,86 +1163,23 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
               </button>
               {reindexNote && <div className="set-hint">{reindexNote}</div>}
 
-              <div className="set-row switch-row">
-                <label>Семантический поиск (эмбеддинги)</label>
-                <label className="switch">
-                  <input
-                    type="checkbox"
-                    checked={form?.enabled ?? false}
-                    onChange={(e) => updateForm({ enabled: e.target.checked })}
-                  />
-                  <span className="track"></span>
-                </label>
-              </div>
-              <div className="set-row">
-                <label>Бэкенд эмбеддингов</label>
-                <select
-                  value={form?.backend ?? "noop"}
-                  onChange={(e) => updateForm({ backend: e.target.value })}
-                  onFocus={focusField("backend")}
-                  onBlur={blurField}
-                >
-                  <option value="noop">noop (без эмбеддингов)</option>
-                  <option value="ollama">ollama</option>
-                  <option value="ort">ort (локальная модель)</option>
-                </select>
-              </div>
-              {form?.backend === "ollama" && (
-                <div className="set-row">
-                  <label>Модель Ollama</label>
-                  <input
-                    type="text"
-                    value={form?.ollamaModel ?? ""}
-                    onChange={(e) => updateForm({ ollamaModel: e.target.value })}
-                    onFocus={focusField("ollamaModel")}
-                    onBlur={blurField}
-                  />
-                </div>
-              )}
-              <div className="set-row">
-                <label>Размерность векторов (dim)</label>
-                <input
-                  className="narrow"
-                  type="text"
-                  inputMode="numeric"
-                  value={form?.dim ?? ""}
-                  onChange={(e) => updateForm({ dim: e.target.value })}
-                  onFocus={focusField("dim")}
-                  onBlur={blurField}
-                />
-              </div>
-              <div className="set-row">
-                <label>Вес совпадения по имени (nameWeight)</label>
-                <input
-                  className="narrow"
-                  type="text"
-                  inputMode="decimal"
-                  value={form?.nameWeight ?? ""}
-                  onChange={(e) => updateForm({ nameWeight: e.target.value })}
-                  onFocus={focusField("nameWeight")}
-                  onBlur={blurField}
-                />
+              <div className="schedule-group-title">Семантический поиск</div>
+              <div className="set-hint">
+                Семантический поиск включён всегда: поиск по словам и по смыслу работают вместе
+                (локальная модель EmbeddingGemma 2, векторы 768). Отключить или подстроить его
+                нельзя.
               </div>
               {embed && (
                 <div className="set-hint">
-                  Статус эмбеддингов: {embed.backend} ·{" "}
-                  {embed.available ? "доступен" : "недоступен"}
-                  {embed.backend === "ort" &&
-                    ` · модель ${embed.modelPresent ? "скачана" : "не скачана"}`}{" "}
-                  · dim {embed.dim}
+                  Статус модели:{" "}
+                  {embed.available
+                    ? "скачана, активна"
+                    : embed.modelPresent
+                      ? "файлы на месте, но модель недоступна"
+                      : "не скачана — сейчас поиск только по словам"}
                 </div>
               )}
               {embed?.reason && <div className="set-hint">{embed.reason}</div>}
-              {form?.backend === "ort" && (
-                <button className="ghost-btn" disabled={embedBusy} onClick={downloadModel}>
-                  {embedBusy ? "Скачивание…" : "Скачать модель"}
-                </button>
-              )}
-              {embedProgress && (
-                <div className="set-hint">
-                  {embedProgress.file}: {fmtMb(embedProgress.done)} из {fmtMb(embedProgress.total)} МБ
-                </div>
-              )}
               {error && <div className="set-error">{error}</div>}
             </>
           )}

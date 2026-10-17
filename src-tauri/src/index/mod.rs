@@ -44,7 +44,7 @@ pub fn index_project(state: &AppState, project_id: i64) -> Result<IndexStats> {
     let conn = db::open(&paths::db_path(&wd))?;
     let root = projects::project_root(&conn, &wd, project_id)?;
     let cfg = indexing_config(&wd)?;
-    let embedder = embed::select_embedder(&cfg.embedding, &wd);
+    let embedder = embed::select_embedder(&wd);
     index_root(&conn, project_id, &root, &cfg, embedder.as_ref())
 }
 
@@ -52,7 +52,7 @@ pub fn index_all(state: &AppState) -> Result<Vec<(i64, IndexStats)>> {
     let wd = state.working_dir()?;
     let conn = db::open(&paths::db_path(&wd))?;
     let cfg = indexing_config(&wd)?;
-    let embedder = embed::select_embedder(&cfg.embedding, &wd);
+    let embedder = embed::select_embedder(&wd);
     let mut ids = Vec::new();
     {
         let mut stmt = conn.prepare("SELECT id FROM projects ORDER BY id")?;
@@ -379,15 +379,14 @@ pub fn semantic_search(
 ) -> Result<Vec<SemanticHit>> {
     let wd = state.working_dir()?;
     let conn = db::open(&paths::db_path(&wd))?;
-    let cfg = indexing_config(&wd)?;
-    let embedder = embed::select_embedder(&cfg.embedding, &wd);
+    let embedder = embed::select_embedder(&wd);
     if embedder.backend_id() == "noop" {
         return Ok(Vec::new());
     }
     semantic_search_with(
         &conn,
         embedder.as_ref(),
-        cfg.embedding.name_weight,
+        embed::NAME_WEIGHT,
         project_id,
         query,
         limit,

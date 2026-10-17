@@ -368,7 +368,6 @@ fn append_inbox(inbox_md: &Path, line: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::IndexingConfig;
     use crate::db;
     use crate::embed;
     use crate::index;
@@ -668,11 +667,10 @@ mod tests {
 
     #[test]
     fn noop_embedder_path_is_used_by_index_project() {
-        // Sanity: the default config selects the noop embedder, so indexing a
-        // freshly attached file stays offline.
+        // Sanity: a working dir without model files selects the noop
+        // embedder, so indexing a freshly attached file stays offline.
         let (wd, _conn, _pid, _state) = setup("att-noop");
-        let cfg = IndexingConfig::default();
-        assert_eq!(embed::select_embedder(&cfg.embedding, &wd).backend_id(), "noop");
+        assert_eq!(embed::select_embedder(&wd).backend_id(), "noop");
         fs::remove_dir_all(&wd).unwrap();
     }
 }

@@ -551,8 +551,7 @@ fn index_status(state: State<AppState>, project_id: i64) -> Result<index::IndexS
 #[tauri::command]
 fn embed_status(state: State<AppState>) -> Result<embed::EmbedStatus> {
     let wd = state.working_dir()?;
-    let cfg = index::indexing_config(&wd)?;
-    Ok(embed::status(&cfg.embedding, &wd))
+    Ok(embed::status(&wd))
 }
 
 // Downloads the EmbeddingGemma 2 text encoder from Hugging Face (needs the
@@ -576,8 +575,7 @@ async fn download_embed_model(
     })
     .await
     .map_err(|e| AppError::Io(format!("embed model download task: {e}")))??;
-    let cfg = index::indexing_config(&wd)?;
-    Ok(embed::status(&cfg.embedding, &wd))
+    Ok(embed::status(&wd))
 }
 
 #[tauri::command]

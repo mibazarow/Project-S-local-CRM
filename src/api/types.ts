@@ -144,22 +144,18 @@ export interface ConnectionTest {
   modelCount: number;
 }
 
-// Shape of indexing.json (config.rs IndexingConfig / EmbeddingConfig).
-export interface EmbeddingConfig {
-  enabled: boolean;
-  backend: string; // "noop" | "ollama" | "ort"
-  ollamaModel: string;
-  dim: number;
-  nameWeight: number;
-}
-
+// Shape of indexing.json (config.rs IndexingConfig). The old `embedding`
+// object is gone: semantic search is always on (in-app ORT +
+// EmbeddingGemma 2, dim 768) and not configurable; old files that still
+// carry that key load unchanged.
 export interface IndexingConfig {
   maxFileSizeBytes: number;
   maxTextChars: number;
   excludeDirs: string[];
-  embedding: EmbeddingConfig;
 }
 
+// Result of embed_status: "ort" when the model files are on disk, "noop"
+// only as the internal fallback (FTS-only search).
 export interface EmbedStatus {
   backend: string;
   dim: number;
@@ -184,12 +180,6 @@ export interface ProjectIndexStats {
 export interface IndexChanged {
   projectId: number;
   stats: IndexStats;
-}
-
-export interface EmbedModelProgress {
-  file: string;
-  done: number;
-  total: number;
 }
 
 // AppError is serialized by the backend as { code, message }.

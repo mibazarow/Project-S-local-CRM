@@ -45,12 +45,11 @@ pub fn search_project(
     }
     let wd = state.working_dir()?;
     let conn = db::open(&paths::db_path(&wd))?;
-    let cfg = index::indexing_config(&wd)?;
-    let embedder = embed::select_embedder(&cfg.embedding, &wd);
+    let embedder = embed::select_embedder(&wd);
     search_with(
         &conn,
         embedder.as_ref(),
-        cfg.embedding.name_weight,
+        embed::NAME_WEIGHT,
         project_id,
         query,
         limit,
