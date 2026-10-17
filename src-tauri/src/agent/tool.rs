@@ -26,6 +26,9 @@ pub struct ToolCtx {
     // session that created them (SPEC 5.3 related/independent origin).
     pub session_id: Option<i64>,
     pub working_dir: Option<std::path::PathBuf>,
+    // Canonical Notes/ vault root, set only for notes-agent runs: the notes
+    // tools refuse to work without it (SPEC notes chat slice).
+    pub notes_root: Option<std::path::PathBuf>,
     // Shared app state handle: search opens its own DB connection through it,
     // fs/task tools borrow the UI connection from state.db.
     pub state: Option<std::sync::Arc<crate::state::AppState>>,

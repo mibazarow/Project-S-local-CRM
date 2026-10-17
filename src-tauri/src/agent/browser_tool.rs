@@ -226,6 +226,7 @@ mod tests {
             session_id: None,
             working_dir: Some(wd.to_path_buf()),
             state: Some(Arc::new(AppState::new())),
+            notes_root: None,
         }
     }
 

@@ -187,6 +187,8 @@ pub struct AgentRunConfig {
     // run thread's DB connection and working dir through it.
     pub state: Option<Arc<crate::state::AppState>>,
     pub working_dir: Option<std::path::PathBuf>,
+    // Canonical Notes/ vault root for notes-agent runs (notes tools only).
+    pub notes_root: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -243,6 +245,7 @@ fn run_inner(
         session_id: config.session_id,
         working_dir: config.working_dir.clone(),
         state: config.state.clone(),
+        notes_root: config.notes_root.clone(),
     };
     let mut fallback = String::new();
     let mut always_allow: BTreeSet<String> = BTreeSet::new();
@@ -716,6 +719,7 @@ mod tests {
             cancel: None,
             state: None,
             working_dir: None,
+            notes_root: None,
         }
     }
 

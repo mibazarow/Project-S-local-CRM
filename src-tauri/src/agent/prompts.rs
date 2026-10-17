@@ -101,6 +101,42 @@ to the user; if the work is impossible or interrupted — action=stop with the r
     base + &skills_prompt_block(skills)
 }
 
+// Notes agent (SPEC notes chat slice): one continuous chat over the personal
+// Notes/ markdown vault. vault_summary is a heuristic one-liner computed by
+// the notes module (no LLM): the agent must still read/search before quoting.
+pub fn notes_system_prompt(
+    skills: &[(String, String)],
+    tools_block: &str,
+    vault_summary: &str,
+) -> String {
+    let base = format!(
+        "You are the Project-S notes agent. These are the user's PERSONAL NOTES \
+(a Markdown vault in the Notes/ folder of the working directory). Help the user \
+find, connect, summarize and write notes.\n\
+\n\
+Always respond to the user in Russian (correct, natural Russian). Do not translate product names, \
+technical terms, file names, or quoted content.\n\
+\n\
+{vault_summary}\n\
+\n\
+{tools_block}\n\
+\n\
+Rules:\n\
+- never invent note contents: read or search the notes first;\n\
+- {SKILLS_RULE}\n\
+- all note paths are relative to the Notes/ vault; write, create and rename only inside it;\n\
+- notes_delete is a dangerous operation, executed only with user confirmation;\n\
+- answer in Russian, briefly and to the point;\n\
+- Always address the user informally with «ты» (correct Russian). Do not ask \
+the user for their gender. Infer it from the conversation or from the user's \
+own words and persist it with `set_user_gender`. Until it is known, use \
+gender-neutral phrasing;\n\
+- end every answer with a finish_task call: action=finish, answer — the final \
+answer to the user; if the work is impossible or interrupted — action=stop with the reason in answer."
+    );
+    base + &skills_prompt_block(skills)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,6 +220,49 @@ mod tests {
         assert_eq!(block.trim().lines().count(), 1 + skills.len());
         let p = project_system_prompt(&sample(), &skills, &project_tools_block());
         assert!(p.contains("- ponytail — Lazy senior dev mode."));
+    }
+
+    #[test]
+    fn notes_prompt_carries_vault_rules_tools_and_skills_rule() {
+        let tools = crate::agent::notes_tools::notes_catalog().summary_prompt_block();
+        let p = notes_system_prompt(
+            &[],
+            &tools,
+            "Notes vault summary: 3 markdown notes; top-level folders: Рабочие.",
+        );
+        assert!(p.contains("PERSONAL NOTES"), "{p}");
+        assert!(p.contains("Notes/"), "{p}");
+        assert!(p.contains("never invent note contents: read or search the notes first"), "{p}");
+        assert!(p.contains("notes_delete is a dangerous operation"), "{p}");
+        assert!(p.contains("Notes vault summary: 3 markdown notes"), "{p}");
+        for token in [
+            "notes_list",
+            "notes_read",
+            "notes_write",
+            "notes_create",
+            "notes_rename",
+            "search_notes",
+            "finish_task",
+            "remember",
+            "recall",
+            "set_user_gender",
+        ] {
+            assert!(p.contains(token), "missing tool guidance: {token}");
+        }
+        assert!(p.contains("Always respond to the user in Russian"), "{p}");
+        assert!(p.contains("Always address the user informally with «ты» (correct Russian)"), "{p}");
+        assert!(p.contains("Before starting work, scan the Available skills list"), "{p}");
+        assert!(!p.contains("Available skills (short list"), "empty skills add no block");
+
+        let skills = vec![("ponytail".to_string(), "Lazy senior dev mode.".to_string())];
+        let p = notes_system_prompt(&skills, &tools, "Notes vault: currently empty.");
+        assert!(p.contains("- ponytail — Lazy senior dev mode."), "{p}");
+    }
+
+    #[test]
+    fn notes_tool_block_fits_the_prompt_cap() {
+        let notes = crate::agent::notes_tools::notes_catalog().summary_prompt_block();
+        assert!(notes.len() < crate::agent::catalog::SUMMARY_BLOCK_CAP);
     }
 
     #[test]

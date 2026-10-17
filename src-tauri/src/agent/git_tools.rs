@@ -586,6 +586,7 @@ mod tests {
             session_id: None,
             working_dir: Some(wd.clone()),
             state: Some(state),
+            notes_root: None,
         };
         (paths::projects_dir(&wd).join("proj"), ctx)
     }

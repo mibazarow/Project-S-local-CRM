@@ -348,6 +348,7 @@ pub fn run_session_on(
             system_prompt,
             user_query: text.to_string(),
             catalog,
+            notes_root: None,
         },
     );
     Ok(chat_id)
@@ -667,6 +668,7 @@ mod tests {
             cancel: None,
             state: None,
             working_dir: None,
+            notes_root: None,
         };
         let mut on_message = |msg: &ChatMessage| {
             append_message(

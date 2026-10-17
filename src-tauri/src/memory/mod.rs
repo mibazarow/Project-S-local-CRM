@@ -499,6 +499,7 @@ mod tests {
             session_id: None,
             working_dir: Some(wd.clone()),
             state: Some(Arc::clone(&state)),
+            notes_root: None,
         };
 
         for (i, catalog) in [
@@ -573,6 +574,7 @@ mod tests {
             session_id: None,
             working_dir: None,
             state: Some(Arc::clone(&state)),
+            notes_root: None,
         };
 
         for catalog in [

@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 17;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -324,6 +324,32 @@ DROP TABLE indexed_files;
 ALTER TABLE indexed_files_new RENAME TO indexed_files;
 ";
 
+// Notes chat (SPEC notes chat slice): chats.kind gains 'notes' — one
+// continuous notes chat per working dir. SQLite cannot widen a CHECK in
+// place, so the table is rebuilt (identical columns/FKs, widened CHECK),
+// every row is copied, the old table is dropped, the rename is followed by
+// recreating both partial unique indexes (DROP TABLE took them with it).
+// chats is a PARENT of messages/summaries: with FK enforcement on, that
+// DROP would cascade-delete every transcript, so run_migrations turns
+// foreign_keys off around this rebuild and restores the previous setting.
+const MIGRATION_17: &str = "
+CREATE TABLE chats_new (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('project','harness','notes')),
+    title TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE
+);
+INSERT INTO chats_new (id, project_id, kind, title, created_at, updated_at, session_id)
+    SELECT id, project_id, kind, title, created_at, updated_at, session_id FROM chats;
+DROP TABLE chats;
+ALTER TABLE chats_new RENAME TO chats;
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_chats_one_project_chat ON chats(project_id) WHERE kind = 'project';
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_chats_one_notes_chat ON chats(kind) WHERE kind = 'notes';
+";
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -398,6 +424,17 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     }
     if version < 16 {
         conn.execute_batch(MIGRATION_16)?;
+        conn.pragma_update(None, "user_version", 16)?;
+    }
+    if version < 17 {
+        // db::open enables foreign_keys before migrations run, and chats is
+        // the parent of messages/summaries: the rebuild's DROP TABLE would
+        // cascade-delete every transcript. Standard SQLite recipe: FK
+        // enforcement off for the rebuild, previous setting restored after.
+        let fk_on: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+        conn.pragma_update(None, "foreign_keys", "OFF")?;
+        conn.execute_batch(MIGRATION_17)?;
+        conn.pragma_update(None, "foreign_keys", if fk_on { "ON" } else { "OFF" })?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
     Ok(())
@@ -1019,6 +1056,85 @@ CREATE TABLE indexed_files (
             .query_row("SELECT count(*) FROM indexed_files WHERE project_id = -1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(notes_rows, 1);
+    }
+
+    #[test]
+    fn migration_v17_widens_chats_check_keeps_transcript_and_notes_singleton() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        // Simulate a pre-v17 database: chats with the old CHECK (no 'notes').
+        // FKs are off here (in-memory default), so the transcript survives
+        // the drop/recreate of the parent table.
+        conn.execute_batch("DROP TABLE chats;").unwrap();
+        conn.execute_batch(
+            "
+CREATE TABLE chats (
+    id INTEGER PRIMARY KEY,
+    project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL CHECK(kind IN ('project','harness')),
+    title TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    session_id INTEGER REFERENCES sessions(id) ON DELETE CASCADE
+);
+CREATE UNIQUE INDEX uniq_chats_one_project_chat ON chats(project_id) WHERE kind = 'project';
+",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projects (name, path, created_at) VALUES ('p', '/tmp/p', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO chats (project_id, kind, created_at, updated_at) VALUES (1, 'project', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let project_chat = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO messages (chat_id, role, content, created_at, position) VALUES (?1, 'user', 'hi', '2026-01-01', 1)",
+            params![project_chat],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 16).unwrap();
+
+        // FKs ON during the migration: the rebuild must NOT cascade-delete
+        // the transcript (the migration toggles FK enforcement itself).
+        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        run_migrations(&conn).unwrap();
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let kept: i64 = conn
+            .query_row("SELECT count(*) FROM messages WHERE chat_id = ?1", params![project_chat], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 1, "v17 rebuild cascade-deleted the transcript");
+
+        // 'notes' now passes the CHECK and the partial unique index keeps it
+        // a singleton; project/harness rules are unchanged.
+        conn.execute(
+            "INSERT INTO chats (kind, created_at, updated_at) VALUES ('notes', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let second_notes = conn.execute(
+            "INSERT INTO chats (kind, created_at, updated_at) VALUES ('notes', '2026-01-01', '2026-01-01')",
+            [],
+        );
+        assert!(second_notes.is_err(), "second notes chat accepted");
+        let dup_project = conn.execute(
+            "INSERT INTO chats (project_id, kind, created_at, updated_at) VALUES (1, 'project', '2026-01-01', '2026-01-01')",
+            [],
+        );
+        assert!(dup_project.is_err(), "second project chat for the same project accepted");
+        let bad_kind = conn.execute(
+            "INSERT INTO chats (kind, created_at, updated_at) VALUES ('bogus', '2026-01-01', '2026-01-01')",
+            [],
+        );
+        assert!(bad_kind.is_err());
     }
 
     #[test]

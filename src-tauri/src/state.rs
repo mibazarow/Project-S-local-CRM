@@ -60,21 +60,28 @@ impl AppState {
 pub enum RunKey {
     Project(i64),
     Session(i64),
+    // The singleton notes chat: no project or session id, the key itself
+    // identifies the run (SPEC notes chat slice).
+    Notes,
 }
 
 impl RunKey {
     pub fn project_id(self) -> Option<i64> {
         match self {
             RunKey::Project(id) => Some(id),
-            RunKey::Session(_) => None,
+            RunKey::Session(_) | RunKey::Notes => None,
         }
     }
 
     pub fn session_id(self) -> Option<i64> {
         match self {
             RunKey::Session(id) => Some(id),
-            RunKey::Project(_) => None,
+            RunKey::Project(_) | RunKey::Notes => None,
         }
+    }
+
+    pub fn is_notes(self) -> bool {
+        matches!(self, RunKey::Notes)
     }
 }
 

@@ -549,6 +549,37 @@ fn notes_delete(app: AppHandle, state: State<AppState>, rel: String) -> Result<(
     Ok(())
 }
 
+// Notes chat (SPEC notes chat slice): one continuous chat per working dir.
+// Get-or-creates the singleton and returns its chat id.
+#[tauri::command]
+fn ensure_notes_chat(state: State<AppState>) -> Result<i64> {
+    with_db(&state, notes::ensure_notes_chat)
+}
+
+#[tauri::command]
+fn notes_chat_history(state: State<AppState>) -> Result<Vec<chat::MessageDto>> {
+    with_db(&state, notes::chat_history)
+}
+
+// Persists the user turn into the notes chat and starts the notes agent on a
+// background thread; progress arrives as "agent-event" /
+// "agent-confirmation" events carrying { chatId, notes: true }. Returns the
+// notes chat id.
+#[tauri::command]
+fn send_notes_message(
+    app: AppHandle,
+    state: State<AppState>,
+    registry: State<'_, Arc<AgentRegistry>>,
+    text: String,
+) -> Result<i64> {
+    notes::run_notes_chat(&app, &state, registry.inner(), &text)
+}
+
+#[tauri::command]
+fn cancel_notes_run(registry: State<'_, Arc<AgentRegistry>>) -> Result<bool> {
+    Ok(registry.request_cancel(RunKey::Notes))
+}
+
 #[tauri::command]
 fn search_notes(
     state: State<AppState>,
@@ -1291,6 +1322,10 @@ pub fn run() {
             notes_create,
             notes_rename,
             notes_delete,
+            ensure_notes_chat,
+            notes_chat_history,
+            send_notes_message,
+            cancel_notes_run,
             search_notes,
             index_notes,
             attach_files,

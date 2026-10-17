@@ -68,6 +68,10 @@ struct AgentEventPayload {
     project_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     session_id: Option<i64>,
+    // Set only for notes-chat runs: { chatId, notes: true, event }; the
+    // project/harness payloads keep their exact previous shape.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notes: Option<bool>,
     event: agent_loop::AgentEvent,
 }
 
@@ -81,6 +85,9 @@ pub struct ConfirmationRequestPayload {
     pub project_id: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<i64>,
+    // Routed to the notes chat UI (see AgentEventPayload.notes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<bool>,
     pub tool: String,
     pub args: Value,
     pub danger_reason: Option<String>,
@@ -355,6 +362,7 @@ impl Confirmer for ChannelConfirmer {
             id,
             project_id: self.run.project_id(),
             session_id: self.run.session_id(),
+            notes: self.run.is_notes().then_some(true),
             tool: req.tool.clone(),
             args: req.args.clone(),
             danger_reason: req.danger_reason.clone(),
@@ -416,6 +424,7 @@ pub fn start_project_run(
             system_prompt,
             user_query: text.to_string(),
             catalog,
+            notes_root: None,
         },
     );
     Ok(chat_id)
@@ -447,6 +456,9 @@ pub(crate) struct RunBridge {
     // run's "[Memory]" block (SPEC 6.3).
     pub user_query: String,
     pub catalog: Catalog,
+    // Canonical Notes/ vault root for notes-agent runs (None otherwise):
+    // handed to the notes tools through ToolCtx.notes_root.
+    pub notes_root: Option<PathBuf>,
 }
 
 // Spawns the shared agent run on a background thread for either agent.
@@ -478,6 +490,7 @@ fn run_agent_bridge(
                 chat_id,
                 project_id: run.project_id(),
                 session_id: run.session_id(),
+                notes: run.is_notes().then_some(true),
                 event: agent_loop::AgentEvent::Error {
                     code: "run".into(),
                     message: e.to_string(),
@@ -500,6 +513,7 @@ fn run_agent_inner(
         mut system_prompt,
         user_query,
         mut catalog,
+        notes_root,
     } = bridge;
     // The run thread owns its DB connection: a long agent turn must not
     // hold the UI connection's mutex; WAL + busy_timeout keeps both safe.
@@ -583,6 +597,7 @@ fn run_agent_inner(
         // thread state (fs/task/memory tools borrow this connection).
         state: Some(Arc::clone(&thread_state)),
         working_dir: Some(wd.to_path_buf()),
+        notes_root,
     };
 
     let emit_app = app.clone();
@@ -625,6 +640,7 @@ fn run_agent_inner(
                 chat_id,
                 project_id: run.project_id(),
                 session_id: run.session_id(),
+                notes: run.is_notes().then_some(true),
                 event,
             },
         );
@@ -774,6 +790,7 @@ mod tests {
             cancel: None,
             state: None,
             working_dir: None,
+            notes_root: None,
         }
     }
 
@@ -1293,22 +1310,39 @@ mod tests {
             chat_id: 7,
             project_id: RunKey::Project(3).project_id(),
             session_id: RunKey::Project(3).session_id(),
+            notes: RunKey::Project(3).is_notes().then_some(true),
             event: ev.clone(),
         })
         .unwrap();
         assert_eq!(project["chatId"], 7);
         assert_eq!(project["projectId"], 3);
         assert!(project.get("sessionId").is_none(), "project run leaked sessionId");
+        assert!(project.get("notes").is_none(), "project run leaked notes flag");
 
         let session = serde_json::to_value(AgentEventPayload {
             chat_id: 8,
             project_id: RunKey::Session(4).project_id(),
             session_id: RunKey::Session(4).session_id(),
-            event: ev,
+            notes: RunKey::Session(4).is_notes().then_some(true),
+            event: ev.clone(),
         })
         .unwrap();
         assert_eq!(session["sessionId"], 4);
         assert!(session.get("projectId").is_none(), "session run leaked projectId");
+        assert!(session.get("notes").is_none(), "session run leaked notes flag");
+
+        let notes = serde_json::to_value(AgentEventPayload {
+            chat_id: 9,
+            project_id: RunKey::Notes.project_id(),
+            session_id: RunKey::Notes.session_id(),
+            notes: RunKey::Notes.is_notes().then_some(true),
+            event: ev,
+        })
+        .unwrap();
+        assert_eq!(notes["chatId"], 9);
+        assert_eq!(notes["notes"], true);
+        assert!(notes.get("projectId").is_none(), "notes run leaked projectId");
+        assert!(notes.get("sessionId").is_none(), "notes run leaked sessionId");
     }
 
     #[test]
