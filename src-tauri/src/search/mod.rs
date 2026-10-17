@@ -56,6 +56,13 @@ pub fn search_project(
     )
 }
 
+// Notes vault search: the same hybrid pipeline scoped to the notes sentinel
+// id. The task legs find nothing for it (no tasks carry project_id = -1), so
+// results are note files only.
+pub fn search_notes(state: &AppState, query: &str, limit: usize) -> Result<Vec<SearchHit>> {
+    search_project(state, crate::index::NOTES_SCOPE_ID, query, limit)
+}
+
 fn search_with(
     conn: &Connection,
     embedder: &dyn embed::Embedder,

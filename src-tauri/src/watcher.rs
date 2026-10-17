@@ -20,10 +20,11 @@ struct ConfigChanged {
     which: &'static str,
 }
 
-// (Re)starts the watcher on Settings/config/, Settings/skills/ and every
-// project folder for a working dir. Restarting re-attaches watches after
-// project create/rename. Skills are re-read from disk on every use, so the
-// watcher only needs to notify (hand edits land without a restart).
+// (Re)starts the watcher on Settings/config/, Settings/skills/, the Notes/
+// vault and every project folder for a working dir. Restarting re-attaches
+// watches after project create/rename. Skills are re-read from disk on every
+// use, so the watcher only needs to notify (hand edits land without a
+// restart).
 pub fn start(app: &tauri::AppHandle, state: &AppState, wd: &Path) {
     let (tx, rx) = mpsc::channel();
     let mut watcher: RecommendedWatcher = match notify::recommended_watcher(move |res| {
@@ -39,6 +40,10 @@ pub fn start(app: &tauri::AppHandle, state: &AppState, wd: &Path) {
     }
     let skills_root = paths::skills_dir(wd);
     if skills_root.is_dir() && watcher.watch(&skills_root, RecursiveMode::Recursive).is_ok() {
+        watching = true;
+    }
+    let notes_root = paths::notes_dir(wd);
+    if notes_root.is_dir() && watcher.watch(&notes_root, RecursiveMode::Recursive).is_ok() {
         watching = true;
     }
     if let Ok(conn) = crate::db::open(&paths::db_path(wd)) {
@@ -62,16 +67,31 @@ pub fn start(app: &tauri::AppHandle, state: &AppState, wd: &Path) {
             let mut changed = changed_kinds(&event);
             let mut dirty = dirty_projects(&state, &event);
             let mut skills_dirty = touched(&skills_root, &event);
+            let mut notes_dirty = touched(&notes_root, &event);
             while let Ok(Ok(event)) = rx.recv_timeout(DEBOUNCE) {
                 changed.extend(changed_kinds(&event));
                 dirty.extend(dirty_projects(&state, &event));
                 skills_dirty |= touched(&skills_root, &event);
+                notes_dirty |= touched(&notes_root, &event);
             }
             for kind in changed {
                 let _ = app.emit("config-changed", ConfigChanged { which: kind.which() });
             }
             if skills_dirty {
                 let _ = app.emit("skills-changed", serde_json::json!({}));
+            }
+            if notes_dirty {
+                if let Ok(wd) = state.working_dir() {
+                    if let Ok(stats) = index::index_notes(&wd) {
+                        let _ = app.emit(
+                            "index-changed",
+                            index::IndexChanged {
+                                project_id: index::NOTES_SCOPE_ID,
+                                stats,
+                            },
+                        );
+                    }
+                }
             }
             for project_id in dirty {
                 if let Ok(stats) = index::index_project(&state, project_id) {

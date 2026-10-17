@@ -36,22 +36,32 @@ pub fn list_dir(conn: &Connection, wd: &Path, project_id: i64, rel_path: &str) -
     if !dir.is_dir() {
         return Err(AppError::Invalid(format!("\"{rel_path}\" is not a folder")));
     }
+    list_dir_at(&root, &dir)
+}
+
+// One level of `dir` as FsEntry relative to `root`, skipping macOS noise and
+// sorted dirs-first case-insensitive. Shared by project and notes listings.
+pub(crate) fn list_dir_at(root: &Path, dir: &Path) -> Result<Vec<FsEntry>> {
     let mut entries = Vec::new();
-    for item in fs::read_dir(&dir)? {
+    for item in fs::read_dir(dir)? {
         let item = item?;
         // macOS folder noise, not user data; everything else stays visible.
         if item.file_name() == ".DS_Store" {
             continue;
         }
-        entries.push(entry(&root, &item.path())?);
+        entries.push(entry(root, &item.path())?);
     }
+    sort_entries(&mut entries);
+    Ok(entries)
+}
+
+pub(crate) fn sort_entries(entries: &mut [FsEntry]) {
     entries.sort_by(|a, b| {
         let dir_rank = |e: &FsEntry| if e.kind == "dir" { 0 } else { 1 };
         dir_rank(a)
             .cmp(&dir_rank(b))
             .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
     });
-    Ok(entries)
 }
 
 pub fn read_text(conn: &Connection, wd: &Path, project_id: i64, rel_path: &str) -> Result<String> {
@@ -59,11 +69,17 @@ pub fn read_text(conn: &Connection, wd: &Path, project_id: i64, rel_path: &str) 
     if path.is_dir() {
         return Err(AppError::Invalid(format!("\"{rel_path}\" is a folder")));
     }
-    let bytes = fs::read(&path)?;
+    read_text_at(&path, rel_path)
+}
+
+// Reads a file as UTF-8 text, rejecting binary content. `label` names the
+// file in errors. Shared by project read_text and the notes vault.
+pub(crate) fn read_text_at(path: &Path, label: &str) -> Result<String> {
+    let bytes = fs::read(path)?;
     if bytes.contains(&0) {
-        return Err(AppError::Invalid(format!("\"{rel_path}\" is binary, not text")));
+        return Err(AppError::Invalid(format!("\"{label}\" is binary, not text")));
     }
-    String::from_utf8(bytes).map_err(|_| AppError::Invalid(format!("\"{rel_path}\" is not valid UTF-8")))
+    String::from_utf8(bytes).map_err(|_| AppError::Invalid(format!("\"{label}\" is not valid UTF-8")))
 }
 
 // Canonicalized absolute path of an existing project entry (same safe
@@ -300,19 +316,53 @@ pub(crate) fn binary_data_url(path: &Path, max_bytes: u64, label: &str) -> Resul
     ))
 }
 
-// Canonical project root plus the canonical target of rel_path, rejecting
-// absolute paths, "..", and symlink escapes (resolved target must stay inside).
-fn existing(conn: &Connection, wd: &Path, project_id: i64, rel: &str) -> Result<(PathBuf, PathBuf)> {
-    let root = projects::project_root(conn, wd, project_id)?;
-    let joined = join_rel(&root, rel)?;
+// Canonical root plus the canonical target of rel_path inside it, rejecting
+// absolute paths, "..", and symlink escapes (resolved target must stay
+// inside). `label` names the containing folder in errors ("project", "Notes").
+// Shared by the project resolvers below and the notes vault (notes/mod.rs).
+pub(crate) fn contain_existing(root: &Path, rel: &str, label: &str) -> Result<PathBuf> {
+    let joined = join_rel(root, rel)?;
     let canon = joined
         .canonicalize()
         .map_err(|_| AppError::Invalid(format!("\"{rel}\" not found")))?;
-    if !canon.starts_with(&root) {
+    if !canon.starts_with(root) {
         return Err(AppError::Invalid(format!(
-            "\"{rel}\" escapes the project folder"
+            "\"{rel}\" escapes the {label} folder"
         )));
     }
+    Ok(canon)
+}
+
+// Refuses symlink entries for mutating operations.
+pub(crate) fn reject_symlink(joined: &Path, rel: &str) -> Result<()> {
+    if fs::symlink_metadata(joined)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+    {
+        return Err(AppError::Invalid(format!(
+            "\"{rel}\" is a symlink; symlink operations are not supported"
+        )));
+    }
+    Ok(())
+}
+
+// Refuses a path when any existing component below root is a symlink, so a
+// target created through auto-created parents cannot land outside root.
+pub(crate) fn reject_symlink_chain(root: &Path, joined: &Path, rel: &str) -> Result<()> {
+    let Ok(rest) = joined.strip_prefix(root) else {
+        return Ok(());
+    };
+    let mut path = root.to_path_buf();
+    for part in rest.components() {
+        path.push(part.as_os_str());
+        reject_symlink(&path, rel)?;
+    }
+    Ok(())
+}
+
+fn existing(conn: &Connection, wd: &Path, project_id: i64, rel: &str) -> Result<(PathBuf, PathBuf)> {
+    let root = projects::project_root(conn, wd, project_id)?;
+    let canon = contain_existing(&root, rel, "project")?;
     Ok((root, canon))
 }
 
@@ -331,14 +381,7 @@ fn existing_for_mutation(
     }
     let (root, canon) = existing(conn, wd, project_id, rel)?;
     let joined = join_rel(&root, rel)?;
-    if fs::symlink_metadata(&joined)
-        .map(|m| m.file_type().is_symlink())
-        .unwrap_or(false)
-    {
-        return Err(AppError::Invalid(format!(
-            "\"{rel}\" is a symlink; symlink operations are not supported"
-        )));
-    }
+    reject_symlink(&joined, rel)?;
     Ok((root, canon))
 }
 
@@ -363,7 +406,7 @@ fn new_target(
     Ok((root, target))
 }
 
-fn join_rel(root: &Path, rel: &str) -> Result<PathBuf> {
+pub(crate) fn join_rel(root: &Path, rel: &str) -> Result<PathBuf> {
     let mut out = root.to_path_buf();
     for part in Path::new(rel).components() {
         match part {
@@ -391,7 +434,7 @@ pub(crate) fn check_name(raw: &str) -> Result<String> {
     Ok(name.to_owned())
 }
 
-fn entry(root: &Path, path: &Path) -> Result<FsEntry> {
+pub(crate) fn entry(root: &Path, path: &Path) -> Result<FsEntry> {
     let meta = fs::metadata(path)?;
     let is_dir = meta.is_dir();
     let ext = if is_dir {

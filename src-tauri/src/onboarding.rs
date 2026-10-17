@@ -65,6 +65,10 @@ pub fn status(app_config_dir: &Path) -> OnboardingStatus {
 // Safe to run repeatedly.
 pub fn init_working_dir(app_config_dir: &Path, wd: &Path) -> Result<(WorkingDirInfo, Connection)> {
     fs::create_dir_all(wd)?;
+    // Notes vault first: ensure() detects a freshly created folder to seed
+    // the welcome note, so it must run before the scaffold loop re-creates
+    // Notes/ (idempotent there).
+    crate::notes::ensure(wd)?;
     for dir in paths::scaffold_dirs(wd) {
         fs::create_dir_all(dir)?;
     }
@@ -127,9 +131,16 @@ mod tests {
             "Settings/.db",
             "Settings/logs",
             "Settings/backups",
+            "Notes",
         ] {
             assert!(wd.join(dir).is_dir(), "missing dir: {dir}");
         }
+        // The fresh vault gets exactly the seeded welcome note, and a second
+        // init must not duplicate or re-seed it.
+        assert!(paths::notes_dir(&wd)
+            .join(crate::notes::WELCOME_NOTE)
+            .is_file());
+        assert_eq!(fs::read_dir(paths::notes_dir(&wd)).unwrap().count(), 1);
         for file in ["llm.json", "app.json", "indexing.json", "mcp.json"] {
             assert!(paths::config_dir(&wd).join(file).is_file(), "missing file: {file}");
         }
@@ -141,13 +152,13 @@ mod tests {
         assert!(st.configured);
         assert_eq!(st.working_dir, Some(wd.display().to_string()));
 
-        // Nothing is created in the working-dir root besides the three top folders.
+        // Nothing is created in the working-dir root besides the four top folders.
         let mut root_entries: Vec<String> = fs::read_dir(&wd)
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
             .collect();
         root_entries.sort();
-        assert_eq!(root_entries, ["Harness", "Projects", "Settings"]);
+        assert_eq!(root_entries, ["Harness", "Notes", "Projects", "Settings"]);
 
         fs::remove_dir_all(&root).unwrap();
     }

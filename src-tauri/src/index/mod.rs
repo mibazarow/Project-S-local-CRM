@@ -23,6 +23,12 @@ pub struct IndexStats {
     pub errors: Vec<String>,
 }
 
+// Reserved scope id for the Notes vault rows in indexed_files/files_fts/
+// file_vectors/vec_items. Real project ids come from an AUTOINCREMENT-style
+// rowid and are always positive, so -1 can never collide; the indexed_files
+// FK to projects(id) was dropped in schema v16 to allow the sentinel.
+pub const NOTES_SCOPE_ID: i64 = -1;
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexStatus {
@@ -74,6 +80,16 @@ pub fn index_all(state: &AppState) -> Result<Vec<(i64, IndexStats)>> {
         }
     }
     Ok(out)
+}
+
+// Indexes the Notes/ vault under NOTES_SCOPE_ID. index_root is already
+// root-agnostic (any folder + scope id), so notes reuse the exact walk,
+// incremental upsert and stale-row pruning of project indexing.
+pub fn index_notes(wd: &Path) -> Result<IndexStats> {
+    let conn = db::open(&paths::db_path(wd))?;
+    let cfg = indexing_config(wd)?;
+    let embedder = embed::select_embedder(wd);
+    index_root(&conn, NOTES_SCOPE_ID, &paths::notes_dir(wd), &cfg, embedder.as_ref())
 }
 
 pub fn index_status(state: &AppState, project_id: i64) -> Result<IndexStatus> {

@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -299,6 +299,31 @@ CREATE TABLE IF NOT EXISTS todos (
 CREATE INDEX IF NOT EXISTS idx_todos_scope ON todos(scope_kind, scope_id, position);
 ";
 
+// Notes vault (SPEC notes slice): notes are indexed under the reserved
+// scope id NOTES_SCOPE_ID = -1, which has no projects row, so the
+// indexed_files FK to projects(id) must go. SQLite cannot drop a column
+// constraint in place: rebuild the table (identical columns/PK, no FK),
+// copy every row, drop, rename. The lost ON DELETE CASCADE is unused (no
+// project-delete command exists); the indexer walk prunes stale rows.
+// files_fts/file_vectors/vec_items never had that FK, so they stay as is.
+const MIGRATION_16: &str = "
+CREATE TABLE indexed_files_new (
+    project_id INTEGER NOT NULL,
+    rel_path TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    mtime INTEGER NOT NULL,
+    content_hash TEXT,
+    indexed_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, rel_path)
+);
+INSERT INTO indexed_files_new (project_id, rel_path, name, kind, size, mtime, content_hash, indexed_at)
+    SELECT project_id, rel_path, name, kind, size, mtime, content_hash, indexed_at FROM indexed_files;
+DROP TABLE indexed_files;
+ALTER TABLE indexed_files_new RENAME TO indexed_files;
+";
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -369,6 +394,10 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     }
     if version < 15 {
         conn.execute_batch(MIGRATION_15)?;
+        conn.pragma_update(None, "user_version", 15)?;
+    }
+    if version < 16 {
+        conn.execute_batch(MIGRATION_16)?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
     Ok(())
@@ -930,6 +959,66 @@ CREATE VIRTUAL TABLE vec_items USING vec0(
 
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_v16_drops_indexed_files_fk_for_the_notes_scope_id() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        // Simulate a pre-v16 database: indexed_files with the projects FK.
+        conn.execute_batch("DROP TABLE indexed_files;").unwrap();
+        conn.execute_batch(
+            "
+CREATE TABLE indexed_files (
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    rel_path TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    mtime INTEGER NOT NULL,
+    content_hash TEXT,
+    indexed_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, rel_path)
+);
+",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO projects (name, path, created_at) VALUES ('p', '/tmp/p', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO indexed_files (project_id, rel_path, name, kind, size, mtime, indexed_at) VALUES (1, 'a.md', 'a.md', 'text', 1, 1, '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 15).unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        // The row survived the create/copy/drop/rename rebuild.
+        let kept: i64 = conn
+            .query_row("SELECT count(*) FROM indexed_files WHERE project_id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(kept, 1);
+
+        // With FKs on, the sentinel notes scope id (-1, no projects row) is
+        // now accepted; before v16 this insert failed.
+        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        conn.execute(
+            "INSERT INTO indexed_files (project_id, rel_path, name, kind, size, mtime, indexed_at) VALUES (-1, 'нота.md', 'нота.md', 'text', 1, 1, '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let notes_rows: i64 = conn
+            .query_row("SELECT count(*) FROM indexed_files WHERE project_id = -1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(notes_rows, 1);
     }
 
     #[test]

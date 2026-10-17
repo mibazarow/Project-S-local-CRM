@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 pub const PROJECTS_DIR: &str = "Projects";
 pub const HARNESS_DIR: &str = "Harness";
 pub const SETTINGS_DIR: &str = "Settings";
+pub const NOTES_DIR: &str = "Notes";
 
 pub const SETTINGS_CONFIG: &str = "config";
 pub const SETTINGS_SKILLS: &str = "skills";
@@ -54,6 +55,12 @@ pub fn harness_inbox_dir(wd: &Path) -> PathBuf {
 
 pub fn settings_dir(wd: &Path) -> PathBuf {
     wd.join(SETTINGS_DIR)
+}
+
+// Notes vault: top-level folder of markdown notes, indexed under the
+// reserved NOTES_SCOPE_ID (SPEC notes vault).
+pub fn notes_dir(wd: &Path) -> PathBuf {
+    wd.join(NOTES_DIR)
 }
 
 pub fn config_dir(wd: &Path) -> PathBuf {
@@ -115,6 +122,7 @@ pub fn scaffold_dirs(wd: &Path) -> Vec<PathBuf> {
         db_dir(wd),
         logs_dir(wd),
         backups_dir(wd),
+        notes_dir(wd),
     ]
 }
 
@@ -137,14 +145,16 @@ mod tests {
         );
         assert_eq!(logs_dir(wd), PathBuf::from("/tmp/wd/Settings/logs"));
         assert_eq!(backups_dir(wd), PathBuf::from("/tmp/wd/Settings/backups"));
+        assert_eq!(notes_dir(wd), PathBuf::from("/tmp/wd/Notes"));
         assert_eq!(db_path(wd), PathBuf::from("/tmp/wd/Settings/.db/project-s.db"));
     }
 
     #[test]
     fn scaffold_dirs_cover_full_layout() {
         let dirs = scaffold_dirs(Path::new("/tmp/wd"));
-        assert_eq!(dirs.len(), 9);
+        assert_eq!(dirs.len(), 10);
         assert!(dirs.contains(&db_dir(Path::new("/tmp/wd"))));
         assert!(dirs.contains(&harness_tmp_dir(Path::new("/tmp/wd"))));
+        assert!(dirs.contains(&notes_dir(Path::new("/tmp/wd"))));
     }
 }

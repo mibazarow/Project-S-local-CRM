@@ -15,6 +15,7 @@ mod journal;
 mod llm;
 mod mcp;
 mod memory;
+mod notes;
 mod onboarding;
 mod ops;
 mod paths;
@@ -111,6 +112,21 @@ fn emit_projects_changed(app: &AppHandle) {
     let _ = app.emit("projects-changed", ProjectsChanged {});
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NotesChanged {
+    rel_path: String,
+}
+
+fn emit_notes_changed(app: &AppHandle, rel_path: impl Into<String>) {
+    let _ = app.emit(
+        "notes-changed",
+        NotesChanged {
+            rel_path: rel_path.into(),
+        },
+    );
+}
+
 #[tauri::command]
 fn ping() -> String {
     "pong".into()
@@ -141,6 +157,7 @@ fn choose_working_dir(
     *state.working_dir.lock().unwrap() = Some(wd.clone());
     open_journal(&state, &wd)?;
     watcher::start(&app, &state, &wd);
+    let _ = index::index_notes(&wd);
     *state.mcp.lock().unwrap() = mcp::McpRegistry::start(&wd);
     scheduler::start(app.clone());
     Ok(info)
@@ -462,6 +479,97 @@ fn fs_read_binary_data_url(
     with_db(&state, |conn| {
         fs_ops::read_binary_data_url(conn, &wd, project_id, &rel_path, max_bytes)
     })
+}
+
+// Notes vault (top-level Notes/ folder): browse, edit and search markdown
+// notes. Paths are vault-relative; the watcher reindexes Notes/ debounced,
+// mutations notify the UI with "notes-changed" (and "index-changed" with
+// project_id = NOTES_SCOPE_ID once the reindex lands).
+#[tauri::command]
+fn notes_ensure(state: State<AppState>) -> Result<String> {
+    let dir = notes::ensure(&state.working_dir()?)?;
+    Ok(dir.display().to_string())
+}
+
+#[tauri::command]
+fn notes_tree(state: State<AppState>) -> Result<Vec<FsEntry>> {
+    notes::tree(&state.working_dir()?)
+}
+
+#[tauri::command]
+fn notes_list(state: State<AppState>, rel: Option<String>) -> Result<Vec<FsEntry>> {
+    notes::list(&state.working_dir()?, rel.as_deref().unwrap_or(""))
+}
+
+#[tauri::command]
+fn notes_read(state: State<AppState>, rel: String) -> Result<String> {
+    notes::read(&state.working_dir()?, &rel)
+}
+
+#[tauri::command]
+fn notes_write(
+    app: AppHandle,
+    state: State<AppState>,
+    rel: String,
+    content: String,
+) -> Result<FsEntry> {
+    let item = notes::write(&state.working_dir()?, &rel, &content)?;
+    emit_notes_changed(&app, item.rel_path.clone());
+    Ok(item)
+}
+
+#[tauri::command]
+fn notes_create(
+    app: AppHandle,
+    state: State<AppState>,
+    rel: String,
+    content: Option<String>,
+) -> Result<FsEntry> {
+    let item = notes::create(&state.working_dir()?, &rel, content.as_deref())?;
+    emit_notes_changed(&app, item.rel_path.clone());
+    Ok(item)
+}
+
+#[tauri::command]
+fn notes_rename(
+    app: AppHandle,
+    state: State<AppState>,
+    rel: String,
+    new_name: String,
+) -> Result<FsEntry> {
+    let item = notes::rename(&state.working_dir()?, &rel, &new_name)?;
+    emit_notes_changed(&app, item.rel_path.clone());
+    Ok(item)
+}
+
+#[tauri::command]
+fn notes_delete(app: AppHandle, state: State<AppState>, rel: String) -> Result<()> {
+    notes::delete(&state.working_dir()?, &rel)?;
+    emit_notes_changed(&app, rel);
+    Ok(())
+}
+
+#[tauri::command]
+fn search_notes(
+    state: State<AppState>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<search::SearchHit>> {
+    let limit = limit.unwrap_or(30).clamp(1, 100);
+    search::search_notes(&state, &query, limit)
+}
+
+#[tauri::command]
+fn index_notes(app: AppHandle, state: State<AppState>) -> Result<index::IndexStats> {
+    let stats = index::index_notes(&state.working_dir()?)?;
+    let _ = app.emit(
+        "index-changed",
+        index::IndexChanged {
+            project_id: index::NOTES_SCOPE_ID,
+            stats: stats.clone(),
+        },
+    );
+    Ok(stats)
 }
 
 // Chat attachments (SPEC 6.1): copy files into the project's `Входящие/` (or
@@ -1130,8 +1238,13 @@ pub fn run() {
                     let _ = harness::purge_inactive_sessions(conn, ttl);
                 }
                 drop(guard);
+                // Notes vault: create/seed Notes/ before the watcher attaches
+                // to it, then index it so notes are searchable right away.
+                // Best-effort: a vault failure must never block startup.
+                let _ = notes::ensure(&wd);
                 open_journal(&state, &wd)?;
                 watcher::start(app.handle(), &state, &wd);
+                let _ = index::index_notes(&wd);
                 *state.mcp.lock().unwrap() = mcp::McpRegistry::start(&wd);
                 scheduler::start(app.handle().clone());
             }
@@ -1170,6 +1283,16 @@ pub fn run() {
             fs_import,
             fs_open_external,
             fs_read_binary_data_url,
+            notes_ensure,
+            notes_tree,
+            notes_list,
+            notes_read,
+            notes_write,
+            notes_create,
+            notes_rename,
+            notes_delete,
+            search_notes,
+            index_notes,
             attach_files,
             attachment_data_url,
             attachment_open,
