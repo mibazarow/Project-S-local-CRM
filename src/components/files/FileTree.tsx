@@ -1,0 +1,294 @@
+import { useEffect, useRef, useState, type DragEvent } from "react";
+import * as ipc from "../../api/ipc";
+import type { FsEntry } from "../../api/types";
+import { toMessage, useFileOps } from "./fileOps";
+import FileRow from "./FileRow";
+import RenameInput from "./RenameInput";
+import { useOsFileDrag } from "./useOsFileDrag";
+import { IconFile, IconFilePlus, IconFolder, IconFolderPlus } from "./icons";
+
+interface Props {
+  projectId: number;
+  treeVersion: number;
+  selectedRelPath: string | null;
+  selectedDirRel: string;
+  onSelect: (entry: FsEntry) => void;
+}
+
+export default function FileTree({
+  projectId,
+  treeVersion,
+  selectedRelPath,
+  selectedDirRel,
+  onSelect,
+}: Props) {
+  const [childrenByDir, setChildrenByDir] = useState<Record<string, FsEntry[]>>({});
+  const [openPaths, setOpenPaths] = useState<Record<string, boolean>>({});
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [renamingPath, setRenamingPath] = useState<string | null>(null);
+  const [creating, setCreating] = useState<{ parentRel: string; kind: "dir" | "file" } | null>(
+    null,
+  );
+  const [dragRel, setDragRel] = useState<string | null>(null);
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const openRef = useRef<Set<string>>(new Set());
+  const ops = useFileOps(projectId);
+  const osHover = useOsFileDrag(
+    () => selectedDirRel,
+    (dest, paths) => void ops.importFiles(dest, paths),
+  );
+
+  useEffect(() => {
+    openRef.current = new Set();
+    setOpenPaths({});
+    setRenamingPath(null);
+    setCreating(null);
+  }, [projectId]);
+
+  // Refetch root plus every open folder on project switch and fs-changed.
+  // A renamed/removed open folder may fail to list; drop it instead of failing the tree.
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    const dirs = ["", ...openRef.current];
+    void (async () => {
+      const results = await Promise.allSettled(dirs.map((d) => ipc.fsListDir(projectId, d)));
+      if (cancelled) return;
+      const next: Record<string, FsEntry[]> = {};
+      let rootError: string | null = null;
+      results.forEach((res, i) => {
+        if (res.status === "fulfilled") next[dirs[i]] = res.value;
+        else if (dirs[i] === "") rootError = toMessage(res.reason);
+      });
+      setChildrenByDir(next);
+      setError(rootError);
+      setLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, treeVersion]);
+
+  const toggle = async (entry: FsEntry) => {
+    const path = entry.relPath;
+    if (openPaths[path]) {
+      openRef.current.delete(path);
+      setOpenPaths((prev) => {
+        const next = { ...prev };
+        delete next[path];
+        return next;
+      });
+      return;
+    }
+    if (!childrenByDir[path]) {
+      try {
+        const list = await ipc.fsListDir(projectId, path);
+        setChildrenByDir((prev) => ({ ...prev, [path]: list }));
+      } catch (e) {
+        setError(toMessage(e));
+        return;
+      }
+    }
+    openRef.current.add(path);
+    setOpenPaths((prev) => ({ ...prev, [path]: true }));
+  };
+
+  const commitRename = async (entry: FsEntry, newName: string) => {
+    setRenamingPath(null);
+    if (newName === entry.name) return;
+    const result = await ops.rename(entry.relPath, newName);
+    if (!result) return;
+    const oldPath = entry.relPath;
+    if (openRef.current.has(oldPath)) {
+      openRef.current.delete(oldPath);
+      openRef.current.add(result.relPath);
+      setOpenPaths((prev) => {
+        const next = { ...prev };
+        delete next[oldPath];
+        next[result.relPath] = true;
+        return next;
+      });
+      setChildrenByDir((prev) => {
+        const kids = prev[oldPath];
+        if (!kids) return prev;
+        const next = { ...prev };
+        delete next[oldPath];
+        next[result.relPath] = kids;
+        return next;
+      });
+    }
+    if (selectedRelPath === oldPath) onSelect(result);
+  };
+
+  const confirmDelete = async (entry: FsEntry) => {
+    const what =
+      entry.kind === "dir"
+        ? `папку «${entry.name}» со всем содержимым`
+        : `файл «${entry.name}»`;
+    if (!window.confirm(`Удалить ${what}?`)) return;
+    await ops.remove(entry.relPath);
+  };
+
+  const startCreate = async (kind: "dir" | "file") => {
+    setRenamingPath(null);
+    const parent = selectedDirRel;
+    if (parent && !openPaths[parent]) {
+      if (!childrenByDir[parent]) {
+        try {
+          const list = await ipc.fsListDir(projectId, parent);
+          setChildrenByDir((prev) => ({ ...prev, [parent]: list }));
+        } catch (e) {
+          setError(toMessage(e));
+          return;
+        }
+      }
+      openRef.current.add(parent);
+      setOpenPaths((prev) => ({ ...prev, [parent]: true }));
+    }
+    setCreating({ parentRel: parent, kind });
+  };
+
+  const commitCreate = async (kind: "dir" | "file", parentRel: string, name: string) => {
+    setCreating(null);
+    if (kind === "dir") await ops.createFolder(parentRel, name);
+    else await ops.createFile(parentRel, name);
+  };
+
+  // Backend also rejects these moves; the UI guard only prevents the attempt.
+  const canDrop = (src: string | null, dest: string) =>
+    !!src && dest !== src && !dest.startsWith(`${src}/`);
+
+  const endDrag = () => {
+    setDragRel(null);
+    setDropTarget(null);
+  };
+
+  const handleDirDragOver = (dirRel: string, e: DragEvent<HTMLDivElement>) => {
+    if (canDrop(dragRel, dirRel)) e.preventDefault();
+    setDropTarget(dirRel);
+  };
+
+  const handleDirDrop = (dirRel: string, e: DragEvent<HTMLDivElement>) => {
+    const rel = e.dataTransfer.getData("text/plain");
+    endDrag();
+    if (rel && canDrop(rel, dirRel)) void ops.move(rel, dirRel);
+  };
+
+  const handleRootDragOver = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    setDropTarget("");
+  };
+
+  const handleRootDrop = (e: DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const rel = e.dataTransfer.getData("text/plain");
+    endDrag();
+    if (rel) void ops.move(rel, "");
+  };
+
+  const createRow = () => (
+    <li className="tree-node" key="__creating">
+      <div className="tree-row">
+        <span className={creating?.kind === "dir" ? "icon folder-icon" : "icon"}>
+          {creating?.kind === "dir" ? <IconFolder /> : <IconFile />}
+        </span>
+        <RenameInput
+          value=""
+          placeholder={creating?.kind === "dir" ? "Имя новой папки…" : "Имя нового файла…"}
+          onCommit={(name) => void commitCreate(creating!.kind, creating!.parentRel, name)}
+          onCancel={() => setCreating(null)}
+        />
+      </div>
+    </li>
+  );
+
+  const renderNode = (entry: FsEntry) => {
+    const open = !!openPaths[entry.relPath];
+    return (
+      <li className="tree-node" key={entry.relPath}>
+        <FileRow
+          entry={entry}
+          open={open}
+          selected={selectedRelPath === entry.relPath}
+          renaming={renamingPath === entry.relPath}
+          dropOver={dropTarget === entry.relPath || osHover === entry.relPath}
+          noDrop={dropTarget === entry.relPath && !canDrop(dragRel, entry.relPath)}
+          onToggle={toggle}
+          onSelect={onSelect}
+          onStartRename={(e) => {
+            setCreating(null);
+            setRenamingPath(e.relPath);
+          }}
+          onRename={(e, name) => void commitRename(e, name)}
+          onRenameCancel={() => setRenamingPath(null)}
+          onDuplicate={(e) => void ops.duplicate(e.relPath)}
+          onDelete={(e) => void confirmDelete(e)}
+          onDragStart={(e) => setDragRel(e.relPath)}
+          onDragEnd={endDrag}
+          onDirDragOver={handleDirDragOver}
+          onDirDrop={handleDirDrop}
+          onOpenExternal={(e) => void ops.openExternal(e.relPath)}
+        />
+        {entry.kind === "dir" && open && (
+          <ul className="tree-children nested">
+            {(childrenByDir[entry.relPath] ?? []).map(renderNode)}
+            {creating?.parentRel === entry.relPath && createRow()}
+          </ul>
+        )}
+      </li>
+    );
+  };
+
+  const root = childrenByDir[""] ?? [];
+  const rootDropOver = dropTarget === "" || osHover === "";
+  let body;
+  if (loading && !childrenByDir[""]) {
+    body = <div className="empty-note">Загрузка…</div>;
+  } else if (error) {
+    body = <div className="empty-note">{error}</div>;
+  } else if (root.length === 0 && !creating) {
+    body = (
+      <div
+        className={osHover === "" ? "empty-note drop-over" : "empty-note"}
+        data-drop-dir=""
+      >
+        Проект пуст
+      </div>
+    );
+  } else {
+    body = (
+      <div
+        className={rootDropOver ? "file-tree drop-over" : "file-tree"}
+        data-drop-dir=""
+        onDragOver={handleRootDragOver}
+        onDrop={handleRootDrop}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropTarget(null);
+        }}
+      >
+        <ul className="tree-children root">
+          {root.map(renderNode)}
+          {creating?.parentRel === "" && createRow()}
+        </ul>
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="tree-toolbar">
+        <button className="ghost-btn" onClick={() => void startCreate("dir")}>
+          <IconFolderPlus />
+          Новая папка
+        </button>
+        <button className="ghost-btn" onClick={() => void startCreate("file")}>
+          <IconFilePlus />
+          Новый файл
+        </button>
+      </div>
+      {ops.error && <div className="tree-error">{ops.error}</div>}
+      {body}
+    </>
+  );
+}

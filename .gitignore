@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Референсный клон Ouroboros (read-only справочник, клонируется заново)
+ouroboros/
+
+# Node / фронтенд
+node_modules/
+dist/
+dist-ssr/
+.vite/
+coverage/
+*.local
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Rust / Tauri
+target/
+src-tauri/target/
+src-tauri/gen/
+
+# Прочее
+*.log
+*.tmp
+__pycache__/
+.venv/
+.idea/
+.vscode/

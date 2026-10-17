@@ -1,0 +1,211 @@
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  type ReactNode,
+} from "react";
+import * as ipc from "../api/ipc";
+import type { FsChanged, OnboardingStatus, ProjectDto, TasksChanged } from "../api/types";
+
+interface AppState {
+  onboarding: OnboardingStatus;
+  projects: ProjectDto[];
+  activeProjectId: number | null;
+  loading: boolean;
+  error: string | null;
+  // Bumped on fs-changed for the active project; file views refetch on it.
+  treeVersion: number;
+  // Bumped on tasks-changed for the active project; the kanban refetches on it.
+  tasksVersion: number;
+}
+
+type Action =
+  | { type: "loading"; value: boolean }
+  | { type: "onboarding"; status: OnboardingStatus }
+  | { type: "projects"; projects: ProjectDto[] }
+  | { type: "activeProject"; id: number | null }
+  | { type: "error"; message: string | null }
+  | { type: "fsChanged"; projectId: number }
+  | { type: "tasksChanged"; projectId: number };
+
+const initialState: AppState = {
+  onboarding: { configured: false, workingDir: null },
+  projects: [],
+  activeProjectId: null,
+  loading: true,
+  error: null,
+  treeVersion: 0,
+  tasksVersion: 0,
+};
+
+function reducer(state: AppState, action: Action): AppState {
+  switch (action.type) {
+    case "loading":
+      return { ...state, loading: action.value };
+    case "onboarding":
+      return { ...state, onboarding: action.status };
+    case "projects":
+      return { ...state, projects: action.projects };
+    case "activeProject":
+      return { ...state, activeProjectId: action.id };
+    case "error":
+      return { ...state, error: action.message };
+    case "fsChanged":
+      return action.projectId === state.activeProjectId
+        ? { ...state, treeVersion: state.treeVersion + 1 }
+        : state;
+    case "tasksChanged":
+      return action.projectId === state.activeProjectId
+        ? { ...state, tasksVersion: state.tasksVersion + 1 }
+        : state;
+  }
+}
+
+// The backend rejects with { code, message }; normalize to a display string.
+function toMessage(e: unknown): string {
+  if (e && typeof e === "object" && "message" in e) {
+    const m = (e as { message?: unknown }).message;
+    if (typeof m === "string" && m) return m;
+  }
+  return typeof e === "string" ? e : "Неизвестная ошибка";
+}
+
+interface AppActions {
+  chooseWorkingDir: (path: string) => Promise<void>;
+  createProject: (name: string) => Promise<void>;
+  renameProject: (id: number, newName: string) => Promise<void>;
+  openProject: (id: number) => Promise<void>;
+  refreshProjects: () => Promise<void>;
+}
+
+interface AppContextValue {
+  state: AppState;
+  actions: AppActions;
+}
+
+const AppContext = createContext<AppContextValue | null>(null);
+
+export function AppProvider({ children }: { children: ReactNode }) {
+  const [state, dispatch] = useReducer(reducer, initialState);
+  const configuredRef = useRef(false);
+
+  const loadProjects = useCallback(async () => {
+    if (!configuredRef.current) return;
+    try {
+      dispatch({ type: "projects", projects: await ipc.listProjects() });
+    } catch (e) {
+      dispatch({ type: "error", message: toMessage(e) });
+    }
+  }, []);
+
+  const boot = useCallback(async () => {
+    dispatch({ type: "loading", value: true });
+    try {
+      const status = await ipc.onboardingStatus();
+      dispatch({ type: "onboarding", status });
+      if (status.configured) {
+        configuredRef.current = true;
+        dispatch({ type: "projects", projects: await ipc.listProjects() });
+      }
+    } catch (e) {
+      dispatch({ type: "error", message: toMessage(e) });
+    } finally {
+      dispatch({ type: "loading", value: false });
+    }
+  }, []);
+
+  const chooseWorkingDir = useCallback(async (path: string) => {
+    dispatch({ type: "error", message: null });
+    try {
+      const info = await ipc.chooseWorkingDir(path);
+      configuredRef.current = true;
+      dispatch({ type: "onboarding", status: { configured: true, workingDir: info.workingDir } });
+      dispatch({ type: "projects", projects: await ipc.listProjects() });
+    } catch (e) {
+      dispatch({ type: "error", message: toMessage(e) });
+    }
+  }, []);
+
+  const createProject = useCallback(async (name: string) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    dispatch({ type: "error", message: null });
+    try {
+      const dto = await ipc.createProject(trimmed);
+      await ipc.touchProjectOpened(dto.id);
+      configuredRef.current = true;
+      dispatch({ type: "projects", projects: await ipc.listProjects() });
+      dispatch({ type: "activeProject", id: dto.id });
+    } catch (e) {
+      dispatch({ type: "error", message: toMessage(e) });
+    }
+  }, []);
+
+  const renameProject = useCallback(async (id: number, newName: string) => {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    dispatch({ type: "error", message: null });
+    try {
+      await ipc.renameProject(id, trimmed);
+      dispatch({ type: "projects", projects: await ipc.listProjects() });
+    } catch (e) {
+      dispatch({ type: "error", message: toMessage(e) });
+    }
+  }, []);
+
+  const openProject = useCallback(async (id: number) => {
+    dispatch({ type: "activeProject", id });
+    try {
+      await ipc.touchProjectOpened(id);
+      dispatch({ type: "projects", projects: await ipc.listProjects() });
+    } catch (e) {
+      dispatch({ type: "error", message: toMessage(e) });
+    }
+  }, []);
+
+  useEffect(() => {
+    void boot();
+  }, [boot]);
+
+  // Refresh the project list when the backend reports fs/task changes.
+  useEffect(() => {
+    if (!state.onboarding.configured) return;
+    let cancelled = false;
+    let unFs: (() => void) | undefined;
+    let unTasks: (() => void) | undefined;
+    const refresh = () => void loadProjects();
+    const onFs = (payload: FsChanged) => {
+      refresh();
+      dispatch({ type: "fsChanged", projectId: payload.projectId });
+    };
+    const onTasks = (payload: TasksChanged) => {
+      refresh();
+      dispatch({ type: "tasksChanged", projectId: payload.projectId });
+    };
+    void ipc.onFsChanged(onFs).then((u) => (cancelled ? u() : (unFs = u)));
+    void ipc.onTasksChanged(onTasks).then((u) => (cancelled ? u() : (unTasks = u)));
+    return () => {
+      cancelled = true;
+      unFs?.();
+      unTasks?.();
+    };
+  }, [state.onboarding.configured, loadProjects]);
+
+  const actions = useMemo<AppActions>(
+    () => ({ chooseWorkingDir, createProject, renameProject, openProject, refreshProjects: loadProjects }),
+    [chooseWorkingDir, createProject, renameProject, openProject, loadProjects],
+  );
+
+  const value = useMemo(() => ({ state, actions }), [state, actions]);
+  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+}
+
+export function useApp(): AppContextValue {
+  const ctx = useContext(AppContext);
+  if (!ctx) throw new Error("useApp must be used within AppProvider");
+  return ctx;
+}

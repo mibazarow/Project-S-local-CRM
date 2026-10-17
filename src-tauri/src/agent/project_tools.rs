@@ -1,0 +1,1053 @@
+// Project-agent tool set (SPEC 4.6): search/read/write inside the project
+// folder, task CRUD, and datas.md maintenance, on top of the agent core.
+// Every path argument is resolved strictly inside the project root by the
+// fs_ops resolvers; absolute OS paths are never exposed to the model.
+use super::catalog::Catalog;
+use super::result::{ToolErrorCode, ToolResult};
+use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
+use crate::error::{AppError, Result};
+use crate::{fs_ops, paths, search, tasks};
+use rusqlite::{params, Connection};
+use serde_json::{json, Value};
+use std::path::Path;
+use std::sync::Arc;
+
+// All project tools are core: the project agent's whole tool set is active
+// from the first round (lazy discovery stays for the harness agent, 5.2).
+pub fn project_catalog() -> Catalog {
+    let mut catalog = Catalog::new();
+    let tools: Vec<Arc<dyn Tool>> = vec![
+        Arc::new(SearchTool),
+        Arc::new(ReadFileTool),
+        Arc::new(ListTreeTool),
+        Arc::new(WriteFileTool),
+        Arc::new(CreateFolderTool),
+        Arc::new(RenamePathTool),
+        Arc::new(DeletePathTool),
+        Arc::new(TaskListTool),
+        Arc::new(TaskCreateTool),
+        Arc::new(TaskUpdateTool),
+        Arc::new(TaskMoveTool),
+        Arc::new(TaskDeleteTool),
+        Arc::new(DatasAddTool),
+        Arc::new(DatasReadTool),
+        Arc::new(crate::skills::SkillTool),
+        // Global memory is shared with the harness agent (SPEC 6.3).
+        Arc::new(crate::memory::RememberTool),
+        Arc::new(crate::memory::RecallTool),
+    ];
+    for tool in tools {
+        // Names are statically unique; a failure here is a programming bug.
+        catalog.register(tool, true).expect("unique tool names");
+    }
+    catalog
+}
+
+fn require_project(ctx: &ToolCtx) -> Result<i64> {
+    ctx.project_id
+        .ok_or_else(|| AppError::Invalid("no project bound to this agent run".into()))
+}
+
+pub(crate) fn require_wd(ctx: &ToolCtx) -> Result<std::path::PathBuf> {
+    ctx.working_dir.clone().ok_or(AppError::NotConfigured)
+}
+
+pub(crate) fn state_of(ctx: &ToolCtx) -> Result<&crate::state::AppState> {
+    ctx.state.as_deref().ok_or(AppError::NotConfigured)
+}
+
+// Borrows the shared UI connection for one domain call.
+pub(crate) fn with_conn<T>(ctx: &ToolCtx, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+    let guard = state_of(ctx)?.db.lock().unwrap();
+    f(guard.as_ref().ok_or(AppError::NotConfigured)?)
+}
+
+// Maps a domain AppError to the envelope code (SPEC 6.4): missing entities are
+// not_found, path escapes and symlink refusals are permission_denied, the rest
+// (binary files, bad names, IO/DB faults) are execution_error.
+fn fail(e: AppError) -> ToolResult {
+    let msg = e.to_string();
+    let code = if msg.contains("not found") {
+        ToolErrorCode::NotFound
+    } else if msg.contains("not project-relative")
+        || msg.contains("escapes the project")
+        || msg.contains("symlink")
+    {
+        ToolErrorCode::PermissionDenied
+    } else {
+        ToolErrorCode::ExecutionError
+    };
+    ToolResult::err(code, msg)
+}
+
+fn is_missing(e: &AppError) -> bool {
+    matches!(e, AppError::Invalid(_)) && e.to_string().contains("not found")
+}
+
+pub(crate) fn envelope<T: serde::Serialize>(r: Result<T>) -> ToolResult {
+    match r {
+        Ok(v) => ToolResult::ok(serde_json::to_value(v).unwrap_or(Value::Null)),
+        Err(e) => fail(e),
+    }
+}
+
+// Task ids are global in SQLite; the project agent may only touch its own
+// project's tasks, and a foreign id reports as not_found (no existence leak).
+fn task_owner(conn: &Connection, id: i64) -> Result<i64> {
+    conn.query_row(
+        "SELECT project_id FROM tasks WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )
+    .map_err(|_| AppError::Invalid(format!("task {id} not found")))
+}
+
+fn require_own_task(conn: &Connection, id: i64, pid: i64) -> Result<()> {
+    if task_owner(conn, id)? == pid {
+        Ok(())
+    } else {
+        Err(AppError::Invalid(format!("task {id} not found")))
+    }
+}
+
+pub struct SearchTool;
+
+impl Tool for SearchTool {
+    fn name(&self) -> &str {
+        "search"
+    }
+    fn description(&self) -> &str {
+        "Search this project's index (FTS + semantic) and return hits with relPath, name, snippet and matchTypes."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" },
+                "limit": { "type": "number" }
+            },
+            "required": ["query"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::ReadOnly
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let pid = require_project(ctx)?;
+        let state = state_of(ctx)?;
+        let query = args["query"].as_str().unwrap_or_default();
+        let limit = args
+            .get("limit")
+            .and_then(Value::as_f64)
+            .unwrap_or(10.0)
+            .clamp(1.0, 50.0) as usize;
+        match search::search_project(state, pid, query, limit) {
+            Ok(hits) => Ok(ToolResult::ok(json!({ "hits": hits })).capped(self.max_result_len())),
+            Err(e) => Ok(fail(e)),
+        }
+    }
+}
+
+pub struct ReadFileTool;
+
+impl Tool for ReadFileTool {
+    fn name(&self) -> &str {
+        "read_file"
+    }
+    fn description(&self) -> &str {
+        "Read a text file inside the project by project-relative path. Binary files are rejected."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "rel_path": { "type": "string" } },
+            "required": ["rel_path"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::ReadOnly
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let pid = require_project(ctx)?;
+        let wd = require_wd(ctx)?;
+        let rel = args["rel_path"].as_str().unwrap_or_default();
+        let r = with_conn(ctx, |conn| fs_ops::read_text(conn, &wd, pid, rel));
+        Ok(match r {
+            Ok(text) => {
+                ToolResult::ok(json!({ "relPath": rel, "content": text })).capped(self.max_result_len())
+            }
+            Err(e) => fail(e),
+        })
+    }
+}
+
+pub struct ListTreeTool;
+
+impl Tool for ListTreeTool {
+    fn name(&self) -> &str {
+        "list_tree"
+    }
+    fn description(&self) -> &str {
+        "List a project folder (empty rel_path = project root): name, kind, ext, size per entry."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "rel_path": { "type": "string" } },
+            "required": [],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::ReadOnly
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let pid = require_project(ctx)?;
+        let wd = require_wd(ctx)?;
+        let rel = args.get("rel_path").and_then(Value::as_str).unwrap_or("");
+        let r = with_conn(ctx, |conn| fs_ops::list_dir(conn, &wd, pid, rel));
+        Ok(match r {
+            Ok(entries) => {
+                ToolResult::ok(json!({ "relPath": rel, "entries": entries })).capped(self.max_result_len())
+            }
+            Err(e) => fail(e),
+        })
+    }
+}
+
+pub struct WriteFileTool;
+
+impl Tool for WriteFileTool {
+    fn name(&self) -> &str {
+        "write_file"
+    }
+    fn description(&self) -> &str {
+        "Create or overwrite a text file inside the project. The parent folder must already exist."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "rel_path": { "type": "string" },
+                "content": { "type": "string" }
+            },
+            "required": ["rel_path", "content"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let pid = require_project(ctx)?;
+        let wd = require_wd(ctx)?;
+        let rel = args["rel_path"].as_str().unwrap_or_default();
+        let content = args["content"].as_str().unwrap_or_default();
+        let path = Path::new(rel);
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let parent = path
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let attempt = with_conn(ctx, |conn| fs_ops::write_text(conn, &wd, pid, rel, content));
+        let result = match attempt {
+            // fs_ops::write_text only overwrites; create the file first when missing.
+            Err(e) if is_missing(&e) => with_conn(ctx, |conn| {
+                fs_ops::create_file(conn, &wd, pid, &parent, &name)?;
+                fs_ops::write_text(conn, &wd, pid, rel, content)
+            }),
+            other => other,
+        };
+        Ok(match result {
+            Ok(entry) => ToolResult::ok(json!({ "entry": entry })),
+            Err(e) => fail(e),
+        })
+    }
+}
+
+pub struct CreateFolderTool;
+
+impl Tool for CreateFolderTool {
+    fn name(&self) -> &str {
+        "create_folder"
+    }
+    fn description(&self) -> &str {
+        "Create a folder inside the project under parent_rel (empty parent_rel = project root)."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "parent_rel": { "type": "string" },
+                "name": { "type": "string" }
+            },
+            "required": ["parent_rel", "name"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let pid = require_project(ctx)?;
+        let wd = require_wd(ctx)?;
+        let parent = args["parent_rel"].as_str().unwrap_or("");
+        let name = args["name"].as_str().unwrap_or("");
+        let r = with_conn(ctx, |conn| fs_ops::create_folder(conn, &wd, pid, parent, name));
+        Ok(envelope(r))
+    }
+}
+
+pub struct RenamePathTool;
+
+impl Tool for RenamePathTool {
+    fn name(&self) -> &str {
+        "rename_path"
+    }
+    fn description(&self) -> &str {
+        "Rename a file or folder inside the project to new_name (stays in the same parent)."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "rel_path": { "type": "string" },
+                "new_name": { "type": "string" }
+            },
+            "required": ["rel_path", "new_name"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Check
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let pid = require_project(ctx)?;
+        let wd = require_wd(ctx)?;
+        let rel = args["rel_path"].as_str().unwrap_or_default();
+        let new_name = args["new_name"].as_str().unwrap_or_default();
+        let r = with_conn(ctx, |conn| fs_ops::rename(conn, &wd, pid, rel, new_name));
+        Ok(envelope(r))
+    }
+}
+
+pub struct DeletePathTool;
+
+impl Tool for DeletePathTool {
+    fn name(&self) -> &str {
+        "delete_path"
+    }
+    fn description(&self) -> &str {
+        "Delete a file or folder (recursively) inside the project. Dangerous: always confirmed."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "rel_path": { "type": "string" } },
+            "required": ["rel_path"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Check
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let pid = require_project(ctx)?;
+        let wd = require_wd(ctx)?;
+        let rel = args["rel_path"].as_str().unwrap_or_default();
+        let r = with_conn(ctx, |conn| fs_ops::delete(conn, &wd, pid, rel));
+        Ok(match r {
+            Ok(()) => ToolResult::ok(json!({ "deleted": rel })),
+            Err(e) => fail(e),
+        })
+    }
+}
+
+pub struct TaskListTool;
+
+impl Tool for TaskListTool {
+    fn name(&self) -> &str {
+        "task_list"
+    }
+    fn description(&self) -> &str {
+        "List this project's tasks in kanban order; optional status filter (new|progress|done)."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "status": { "type": "string", "enum": ["new", "progress", "done"] }
+            },
+            "required": [],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::ReadOnly
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let pid = require_project(ctx)?;
+        let status = args.get("status").and_then(Value::as_str);
+        let r = with_conn(ctx, |conn| {
+            let all = tasks::tasks_list(conn, pid)?;
+            Ok::<Vec<tasks::TaskDto>, AppError>(
+                all.into_iter()
+                    .filter(|t| status.map_or(true, |s| t.status == s))
+                    .collect(),
+            )
+        });
+        Ok(match r {
+            Ok(list) => ToolResult::ok(json!({ "tasks": list })).capped(self.max_result_len()),
+            Err(e) => fail(e),
+        })
+    }
+}
+
+pub struct TaskCreateTool;
+
+impl Tool for TaskCreateTool {
+    fn name(&self) -> &str {
+        "task_create"
+    }
+    fn description(&self) -> &str {
+        "Create a task in this project; optional status (new|progress|done, default new)."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "title": { "type": "string" },
+                "status": { "type": "string", "enum": ["new", "progress", "done"] }
+            },
+            "required": ["title"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let pid = require_project(ctx)?;
+        let title = args["title"].as_str().unwrap_or_default();
+        let status = args.get("status").and_then(Value::as_str).map(str::to_owned);
+        let r = with_conn(ctx, |conn| tasks::task_create(conn, pid, title, status));
+        Ok(envelope(r))
+    }
+}
+
+pub struct TaskUpdateTool;
+
+impl Tool for TaskUpdateTool {
+    fn name(&self) -> &str {
+        "task_update"
+    }
+    fn description(&self) -> &str {
+        "Update fields of one of this project's tasks; absent fields stay unchanged, explicit null clears comment/dueDate/remindAt. Dates: YYYY-MM-DD, remindAt: YYYY-MM-DDTHH:MM."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "number" },
+                "title": { "type": "string" },
+                "comment": { "type": ["string", "null"] },
+                "dueDate": { "type": ["string", "null"] },
+                "remindAt": { "type": ["string", "null"] },
+                "tags": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["id"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let pid = require_project(ctx)?;
+        let id = args.get("id").and_then(Value::as_i64).unwrap_or(0);
+        // TaskPatch ignores the extra "id" key; its opt fields keep absent
+        // fields unchanged and treat explicit null as "clear".
+        let patch: tasks::TaskPatch = match serde_json::from_value(args.clone()) {
+            Ok(p) => p,
+            Err(e) => {
+                return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, e.to_string()));
+            }
+        };
+        let r = with_conn(ctx, |conn| {
+            require_own_task(conn, id, pid)?;
+            tasks::task_update(conn, id, patch)
+        });
+        Ok(envelope(r))
+    }
+}
+
+pub struct TaskMoveTool;
+
+impl Tool for TaskMoveTool {
+    fn name(&self) -> &str {
+        "task_move"
+    }
+    fn description(&self) -> &str {
+        "Move one of this project's tasks to a kanban column (new|progress|done); optional position, appended at the column end when absent."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "number" },
+                "status": { "type": "string", "enum": ["new", "progress", "done"] },
+                "position": { "type": "number" }
+            },
+            "required": ["id", "status"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let pid = require_project(ctx)?;
+        let id = args.get("id").and_then(Value::as_i64).unwrap_or(0);
+        let status = args["status"].as_str().unwrap_or_default();
+        let r = with_conn(ctx, |conn| {
+            require_own_task(conn, id, pid)?;
+            let position = match args.get("position").and_then(Value::as_f64) {
+                Some(p) => p,
+                None => conn.query_row(
+                    "SELECT COALESCE(MAX(position), 0) + 1 FROM tasks WHERE project_id = ?1 AND status = ?2",
+                    params![pid, status],
+                    |row| row.get(0),
+                )?,
+            };
+            tasks::task_move(conn, id, status, position)
+        });
+        Ok(envelope(r))
+    }
+}
+
+pub struct TaskDeleteTool;
+
+impl Tool for TaskDeleteTool {
+    fn name(&self) -> &str {
+        "task_delete"
+    }
+    fn description(&self) -> &str {
+        "Delete one of this project's tasks. Dangerous: always confirmed."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "id": { "type": "number" } },
+            "required": ["id"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Check
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let pid = require_project(ctx)?;
+        let id = args.get("id").and_then(Value::as_i64).unwrap_or(0);
+        let r = with_conn(ctx, |conn| {
+            require_own_task(conn, id, pid)?;
+            tasks::task_delete(conn, id)
+        });
+        Ok(match r {
+            Ok(_) => ToolResult::ok(json!({ "deleted": id })),
+            Err(e) => fail(e),
+        })
+    }
+}
+
+// Structured datas.md edit: a section is "## <title>" up to the next "## "
+// heading; an existing section is replaced in place, otherwise appended.
+pub(crate) fn upsert_section(md: &str, title: &str, body: &str) -> (bool, String) {
+    let heading = format!("## {title}");
+    let section = format!("{heading}\n\n{}\n\n", body.trim());
+    let mut out = String::new();
+    let mut updated = false;
+    let mut skipping = false;
+    for line in md.lines() {
+        if skipping {
+            if line.starts_with("## ") {
+                skipping = false;
+            } else {
+                continue;
+            }
+        }
+        if !updated && line.trim_end() == heading {
+            out.push_str(&section);
+            updated = true;
+            skipping = true;
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    if !updated {
+        if !out.is_empty() && !out.ends_with("\n\n") {
+            out.push('\n');
+        }
+        out.push_str(&section);
+    }
+    (updated, out)
+}
+
+// datas.md may be missing on hand-created project folders; treat it as empty.
+pub(crate) fn read_datas(conn: &Connection, wd: &std::path::Path, pid: i64) -> Result<String> {
+    match fs_ops::read_text(conn, wd, pid, paths::DATAS_MD) {
+        Ok(text) => Ok(text),
+        Err(e) if is_missing(&e) => Ok(String::new()),
+        Err(e) => Err(e),
+    }
+}
+
+pub(crate) fn write_datas(conn: &Connection, wd: &std::path::Path, pid: i64, content: &str) -> Result<fs_ops::FsEntry> {
+    match fs_ops::write_text(conn, wd, pid, paths::DATAS_MD, content) {
+        Err(e) if is_missing(&e) => {
+            fs_ops::create_file(conn, wd, pid, "", paths::DATAS_MD)?;
+            fs_ops::write_text(conn, wd, pid, paths::DATAS_MD, content)
+        }
+        other => other,
+    }
+}
+
+pub struct DatasAddTool;
+
+impl Tool for DatasAddTool {
+    fn name(&self) -> &str {
+        "datas_add"
+    }
+    fn description(&self) -> &str {
+        "Add or update a \"## <title>\" section in the project's datas.md (access notes); an existing section is replaced, otherwise appended."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "title": { "type": "string" },
+                "body": { "type": "string" }
+            },
+            "required": ["title", "body"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let pid = require_project(ctx)?;
+        let wd = require_wd(ctx)?;
+        let title = args["title"].as_str().unwrap_or_default().trim().to_owned();
+        if title.is_empty() || title.starts_with('#') || title.contains('\n') {
+            return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, "title must be a single plain line"));
+        }
+        let body = args["body"].as_str().unwrap_or_default();
+        let r = with_conn(ctx, |conn| {
+            let current = read_datas(conn, &wd, pid)?;
+            let (updated, new_md) = upsert_section(&current, &title, body);
+            write_datas(conn, &wd, pid, &new_md).map(|entry| (updated, entry))
+        });
+        Ok(match r {
+            Ok((updated, entry)) => ToolResult::ok(json!({ "title": title, "updated": updated, "entry": entry })),
+            Err(e) => fail(e),
+        })
+    }
+}
+
+pub struct DatasReadTool;
+
+impl Tool for DatasReadTool {
+    fn name(&self) -> &str {
+        "datas_read"
+    }
+    fn description(&self) -> &str {
+        "Read the project's datas.md (access notes file); empty string when the file is missing."
+    }
+    fn parameters(&self) -> Value {
+        json!({ "type": "object", "properties": {}, "required": [], "additionalProperties": false })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::ReadOnly
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, _args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let pid = require_project(ctx)?;
+        let wd = require_wd(ctx)?;
+        let r = with_conn(ctx, |conn| read_datas(conn, &wd, pid));
+        Ok(match r {
+            Ok(text) => {
+                ToolResult::ok(json!({ "relPath": paths::DATAS_MD, "content": text })).capped(self.max_result_len())
+            }
+            Err(e) => fail(e),
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::catalog::Resolution;
+    use crate::agent::tool::validate_args;
+    use crate::db;
+    use crate::index;
+    use crate::onboarding::temp_test_dir;
+    use crate::projects;
+    use crate::state::AppState;
+    use std::fs;
+    use std::path::PathBuf;
+
+    struct Env {
+        wd: PathBuf,
+        ctx: ToolCtx,
+    }
+
+    fn setup(tag: &str) -> Env {
+        let wd = temp_test_dir(tag);
+        fs::create_dir_all(paths::projects_dir(&wd)).unwrap();
+        let conn = db::open(&paths::db_path(&wd)).unwrap();
+        let dto = projects::create_project(&conn, &wd, "proj").unwrap();
+        let state = Arc::new(AppState::new());
+        *state.working_dir.lock().unwrap() = Some(wd.clone());
+        *state.db.lock().unwrap() = Some(conn);
+        let ctx = ToolCtx {
+            project_id: Some(dto.id),
+            session_id: None,
+            working_dir: Some(wd.clone()),
+            state: Some(state),
+        };
+        Env { wd, ctx }
+    }
+
+    fn root(wd: &Path) -> PathBuf {
+        paths::projects_dir(wd).join("proj")
+    }
+
+    fn tool(name: &str) -> Arc<dyn Tool> {
+        let catalog = project_catalog();
+        match catalog.resolve(name) {
+            Resolution::Found(t) => t.clone(),
+            _ => panic!("tool {name} missing from project catalog"),
+        }
+    }
+
+    fn exec(name: &str, args: Value, ctx: &ToolCtx) -> ToolResult {
+        tool(name).execute(&args, ctx).unwrap()
+    }
+
+    const TOOL_NAMES: [&str; 17] = [
+        "search",
+        "read_file",
+        "list_tree",
+        "write_file",
+        "create_folder",
+        "rename_path",
+        "delete_path",
+        "task_list",
+        "task_create",
+        "task_update",
+        "task_move",
+        "task_delete",
+        "datas_add",
+        "datas_read",
+        "skill",
+        "remember",
+        "recall",
+    ];
+
+    #[test]
+    fn catalog_registers_unique_tools_with_object_schemas() {
+        let specs = project_catalog().to_specs();
+        let mut names: Vec<String> = specs.iter().map(|s| s.name.clone()).collect();
+        let mut unique = names.clone();
+        unique.dedup();
+        assert_eq!(names.len(), unique.len(), "duplicate tool names in specs");
+        names.sort();
+        for expected in TOOL_NAMES {
+            assert!(names.iter().any(|n| n == expected), "missing {expected}");
+        }
+        assert_eq!(specs.len(), TOOL_NAMES.len() + 2); // + discovery tools
+        for spec in specs.iter().filter(|s| TOOL_NAMES.contains(&s.name.as_str())) {
+            let p = &spec.parameters;
+            assert_eq!(p["type"], "object", "{} schema type", spec.name);
+            assert_eq!(p["additionalProperties"], false, "{} extras", spec.name);
+            assert!(p["properties"].is_object(), "{} properties", spec.name);
+            assert!(p["required"].is_array(), "{} required", spec.name);
+        }
+    }
+
+    #[test]
+    fn validator_accepts_good_call_and_rejects_bad_calls() {
+        let schema = tool("write_file").parameters();
+        assert!(validate_args(&schema, &json!({ "rel_path": "a.md", "content": "x" })).is_ok());
+        let err = validate_args(&schema, &json!({ "rel_path": "a.md" })).unwrap_err();
+        assert!(err.contains("content"), "{err}");
+        let err = validate_args(&schema, &json!({ "rel_path": 1, "content": "x" })).unwrap_err();
+        assert!(err.contains("string"), "{err}");
+        let err = validate_args(&schema, &json!({ "rel_path": "a", "content": "x", "extra": 1 }))
+            .unwrap_err();
+        assert!(err.contains("extra"), "{err}");
+    }
+
+    #[test]
+    fn search_read_and_list_round_trip() {
+        let env = setup("pt-search");
+        fs::create_dir_all(root(&env.wd).join("notes")).unwrap();
+        fs::write(
+            root(&env.wd).join("notes/plan.md"),
+            "access data for the staging server example.ru",
+        )
+        .unwrap();
+        index::index_project(env.ctx.state.as_deref().unwrap(), env.ctx.project_id.unwrap())
+            .unwrap();
+
+        let r = exec("search", json!({ "query": "staging" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let hits = r.data.unwrap()["hits"].as_array().unwrap().clone();
+        assert_eq!(hits[0]["relPath"], "notes/plan.md");
+        assert!(hits[0]["matchTypes"].as_array().unwrap().contains(&json!("fts")));
+        assert!(hits[0]["snippet"].as_str().unwrap().contains("staging"));
+
+        let r = exec("read_file", json!({ "rel_path": "notes/plan.md" }), &env.ctx);
+        assert!(r.ok);
+        assert!(r.data.unwrap()["content"]
+            .as_str()
+            .unwrap()
+            .contains("example.ru"));
+
+        let r = exec("list_tree", json!({}), &env.ctx);
+        assert!(r.ok);
+        let entries = r.data.unwrap()["entries"].as_array().unwrap().clone();
+        let names: Vec<&str> = entries.iter().map(|e| e["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"notes"));
+        assert!(names.contains(&"datas.md"));
+
+        // binary files are refused with execution_error
+        fs::write(root(&env.wd).join("bin.dat"), [1u8, 2, 0, 3]).unwrap();
+        let r = exec("read_file", json!({ "rel_path": "bin.dat" }), &env.ctx);
+        assert!(!r.ok);
+        assert_eq!(r.error.unwrap().code, "execution_error");
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn write_create_folder_rename_delete_round_trip() {
+        let env = setup("pt-fs");
+        let r = exec("create_folder", json!({ "parent_rel": "", "name": "docs" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["kind"], "dir");
+
+        // create via write_file, then overwrite
+        let r = exec(
+            "write_file",
+            json!({ "rel_path": "docs/note.md", "content": "v1" }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["entry"]["relPath"], "docs/note.md");
+        let r = exec(
+            "write_file",
+            json!({ "rel_path": "docs/note.md", "content": "v2" }),
+            &env.ctx,
+        );
+        assert!(r.ok);
+        assert_eq!(fs::read_to_string(root(&env.wd).join("docs/note.md")).unwrap(), "v2");
+
+        let r = exec(
+            "rename_path",
+            json!({ "rel_path": "docs/note.md", "new_name": "renamed.md" }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["relPath"], "docs/renamed.md");
+
+        let r = exec("delete_path", json!({ "rel_path": "docs/renamed.md" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert!(!root(&env.wd).join("docs/renamed.md").exists());
+
+        // missing file reads back as not_found
+        let r = exec("read_file", json!({ "rel_path": "docs/renamed.md" }), &env.ctx);
+        assert!(!r.ok);
+        assert_eq!(r.error.unwrap().code, "not_found");
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn path_escapes_are_rejected_with_permission_denied() {
+        let env = setup("pt-escape");
+        for bad in ["../x", "/etc/passwd", "a/../../x", ".."] {
+            for name in ["read_file", "write_file", "delete_path", "list_tree"] {
+                let args = if name == "write_file" {
+                    json!({ "rel_path": bad, "content": "x" })
+                } else {
+                    json!({ "rel_path": bad })
+                };
+                let r = exec(name, args, &env.ctx);
+                assert!(!r.ok, "{name} accepted {bad:?}");
+                assert_eq!(
+                    r.error.unwrap().code,
+                    "permission_denied",
+                    "{name} on {bad:?}"
+                );
+            }
+        }
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn task_tools_round_trip_and_project_scoping() {
+        let env = setup("pt-tasks");
+        let r = exec("task_create", json!({ "title": "  first  " }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let id = r.data.unwrap()["id"].as_i64().unwrap();
+
+        let r = exec("task_list", json!({}), &env.ctx);
+        assert_eq!(r.data.unwrap()["tasks"].as_array().unwrap().len(), 1);
+
+        let r = exec(
+            "task_update",
+            json!({ "id": id, "title": "renamed", "comment": "note", "dueDate": "2099-01-02", "tags": ["a", ""] }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["title"], "renamed");
+        assert_eq!(data["comment"], "note");
+        assert_eq!(data["dueDate"], "2099-01-02");
+        assert_eq!(data["tags"], json!(["a"]));
+
+        // explicit null clears the comment
+        let r = exec("task_update", json!({ "id": id, "comment": null }), &env.ctx);
+        assert_eq!(r.data.unwrap()["comment"], Value::Null);
+
+        let r = exec("task_move", json!({ "id": id, "status": "done" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.clone().unwrap()["status"], "done");
+        assert!(r.data.unwrap()["closedAt"].as_str().is_some());
+
+        let r = exec("task_list", json!({ "status": "done" }), &env.ctx);
+        assert_eq!(r.data.unwrap()["tasks"].as_array().unwrap().len(), 1);
+        let r = exec("task_list", json!({ "status": "new" }), &env.ctx);
+        assert!(r.data.unwrap()["tasks"].as_array().unwrap().is_empty());
+
+        // foreign task ids are not_found for this project
+        let r = exec("task_delete", json!({ "id": 9999 }), &env.ctx);
+        assert_eq!(r.error.unwrap().code, "not_found");
+
+        let r = exec("task_delete", json!({ "id": id }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let r = exec("task_list", json!({}), &env.ctx);
+        assert!(r.data.unwrap()["tasks"].as_array().unwrap().is_empty());
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn datas_add_updates_sections_and_read_returns_them() {
+        let env = setup("pt-datas");
+        let r = exec(
+            "datas_add",
+            json!({ "title": "FTP example.ru", "body": "login: user-1\npass: s3cret" }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["updated"], false);
+
+        let r = exec("datas_read", json!({}), &env.ctx);
+        let content = r.data.unwrap()["content"].as_str().unwrap().to_owned();
+        assert!(content.contains("## FTP example.ru"));
+        assert!(content.contains("user-1"));
+
+        // same title updates in place instead of duplicating
+        let r = exec(
+            "datas_add",
+            json!({ "title": "FTP example.ru", "body": "login: user-2" }),
+            &env.ctx,
+        );
+        assert_eq!(r.data.unwrap()["updated"], true);
+        let r = exec("datas_read", json!({}), &env.ctx);
+        let content = r.data.unwrap()["content"].as_str().unwrap().to_owned();
+        assert_eq!(content.matches("## FTP example.ru").count(), 1);
+        assert!(content.contains("user-2") && !content.contains("user-1"));
+
+        // a second title appends a second section
+        exec(
+            "datas_add",
+            json!({ "title": "Admin panel", "body": "https://admin.example.ru" }),
+            &env.ctx,
+        );
+        let r = exec("datas_read", json!({}), &env.ctx);
+        let content = r.data.unwrap()["content"].as_str().unwrap().to_owned();
+        assert!(content.contains("## FTP example.ru") && content.contains("## Admin panel"));
+        assert_eq!(content.matches("## ").count(), 2);
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn policies_and_classes_match_the_spec() {
+        for name in ["search", "read_file", "list_tree", "task_list", "datas_read", "skill", "recall"] {
+            assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
+            assert_eq!(tool(name).class(), ToolClass::ReadOnly, "{name} class");
+        }
+        for name in [
+            "write_file",
+            "create_folder",
+            "task_create",
+            "task_update",
+            "task_move",
+            "datas_add",
+            "remember",
+        ] {
+            assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
+            assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
+        }
+        for name in ["rename_path", "delete_path", "task_delete"] {
+            assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
+        }
+    }
+}

@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Project S — прототип интерфейса</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ===== Верхняя панель ===== -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="traffic" aria-hidden="true"><span class="tl red"></span><span class="tl yellow"></span><span class="tl green"></span></div>
+      <img class="logo" src="LOGO.svg" alt="Project S">
+    </div>
+    <nav class="tabs" id="mainTabs">
+      <button class="tab active" data-tab="projects">Проекты</button>
+      <button class="tab" data-tab="harness">Харнес</button>
+    </nav>
+    <div class="topbar-right">
+      <button class="icon-btn" title="Настройки">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- ===== Вкладка: Проекты ===== -->
+  <main class="view view-projects active">
+
+    <!-- Список проектов -->
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <span class="sidebar-title">Проекты</span>
+        <button class="icon-btn small" id="addProject" title="Добавить проект">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+      <div class="project-list" id="projectList"></div>
+      <div class="sidebar-foot">
+        <button class="ghost-btn" id="backupBtn">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+          Резервная копия
+        </button>
+      </div>
+    </aside>
+
+    <!-- Файлы / задачи -->
+    <section class="center">
+      <div class="center-head">
+        <h2 id="projectTitle">example.ru</h2>
+        <div class="segmented" id="centerTabs">
+          <button class="seg active" data-center="files">Файлы</button>
+          <button class="seg" data-center="tasks">Задачи</button>
+        </div>
+        <div class="view-toggle" id="fileViewToggle" title="Вид файлов">
+          <button class="vt active" data-view="list" title="Список"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg></button>
+          <button class="vt" data-view="grid" title="Плитка"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.5"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.5"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.5"/></svg></button>
+        </div>
+        <div class="search">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+          <input type="text" placeholder="Поиск по проекту…" id="searchInput">
+        </div>
+      </div>
+
+      <div class="center-body" id="centerFiles">
+        <div class="file-tree" id="fileTree"></div>
+        <div class="file-preview" id="filePreview" hidden>
+          <div class="preview-head">
+            <span id="previewName">datas.md</span>
+            <div class="preview-actions">
+              <button class="ghost-btn small" id="previewEdit">Редактировать</button>
+              <button class="icon-btn small" id="previewClose" title="Закрыть">
+                <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+              </button>
+            </div>
+          </div>
+          <pre id="previewBody" class="preview-body"></pre>
+          <textarea id="previewTextarea" class="preview-textarea" hidden></textarea>
+        </div>
+      </div>
+
+      <div class="center-body" id="centerTasks" hidden>
+        <div class="task-board">
+          <div class="task-col">
+            <div class="task-col-head">Новые <span class="count" id="cntNew">0</span></div>
+            <div class="task-list" data-status="new"></div>
+          </div>
+          <div class="task-col">
+            <div class="task-col-head">В работе <span class="count" id="cntProgress">0</span></div>
+            <div class="task-list" data-status="progress"></div>
+          </div>
+          <div class="task-col">
+            <div class="task-col-head">Готово <span class="count" id="cntDone">0</span></div>
+            <div class="task-list" data-status="done"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Чат-агент проекта -->
+    <aside class="chat">
+      <div class="chat-head">
+        <span class="chat-title">Агент проекта</span>
+        <span class="chat-sub" id="chatProject">example.ru</span>
+      </div>
+      <div class="chat-messages" id="projectChat"></div>
+      <div class="attach-bar" id="projectAttachBar" hidden></div>
+      <div class="chat-input">
+        <textarea id="projectChatInput" rows="3" placeholder="Спроси агента о проекте…"></textarea>
+        <div class="chat-tools">
+          <button class="icon-btn attach-btn" id="projectAttachBtn" title="Приложить файл или картинку">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.49-8.48"/></svg>
+          </button>
+          <input type="file" id="projectFileInput" multiple hidden>
+          <span class="chat-hint">Shift+Enter — перенос строки, Enter — отправить</span>
+          <button class="icon-btn clear-btn" id="projectChatClear" title="Очистить">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6"/></svg>
+          </button>
+          <button class="icon-btn send-btn" id="projectChatSend" title="Отправить">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4 20-7z"/></svg>
+          </button>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- ===== Вкладка: Харнес ===== -->
+  <main class="view view-harness">
+
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <span class="sidebar-title">Сессии</span>
+        <button class="icon-btn small" id="addSession" title="Новая сессия">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+      <div class="session-list" id="sessionList"></div>
+      <div class="sidebar-foot muted-note">Сессии без активности 30 дней удаляются автоматически</div>
+    </aside>
+
+    <section class="center center-harness">
+      <div class="center-head">
+        <h2 id="sessionTitle">Курсы валют и закупки</h2>
+        <span class="badge" id="sessionBadge">активна 3 дня</span>
+      </div>
+      <div class="chat-messages harness-messages" id="harnessChat"></div>
+      <div class="attach-bar" id="harnessAttachBar" hidden></div>
+      <div class="chat-input">
+        <textarea id="harnessChatInput" rows="3" placeholder="Поручение общему агенту…"></textarea>
+        <div class="chat-tools">
+          <button class="icon-btn attach-btn" id="harnessAttachBtn" title="Приложить файл или картинку">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.49-8.48"/></svg>
+          </button>
+          <input type="file" id="harnessFileInput" multiple hidden>
+          <span class="chat-hint">Shift+Enter — перенос строки, Enter — отправить</span>
+          <button class="icon-btn clear-btn" id="harnessChatClear" title="Очистить">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6"/></svg>
+          </button>
+          <button class="icon-btn send-btn" id="harnessChatSend" title="Отправить">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4 20-7z"/></svg>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="chat">
+      <div class="chat-head">
+        <span class="chat-title">Расписания</span>
+        <button class="icon-btn small" title="Добавить расписание">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        </button>
+      </div>
+      <div class="schedule-list" id="scheduleList"></div>
+      <div class="chat-head sub-head">
+        <span class="chat-title">Память агента</span>
+        <button class="ghost-btn small" id="memoryOpen">Открыть</button>
+      </div>
+      <div class="memory-list" id="memoryList"></div>
+    </aside>
+  </main>
+
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<!-- ===== Настройки ===== -->
+<div class="modal-backdrop" id="settingsModal" hidden>
+  <div class="modal settings-modal">
+    <nav class="settings-nav">
+      <div class="settings-title">Настройки</div>
+      <button class="settings-tab active" data-sec="llm">Модель</button>
+      <button class="settings-tab" data-sec="agent">Агент</button>
+      <button class="settings-tab" data-sec="index">Индексация</button>
+      <button class="settings-tab" data-sec="skills">Скиллы</button>
+      <button class="settings-tab" data-sec="mcp">MCP</button>
+      <button class="settings-tab" data-sec="memory">Память</button>
+      <button class="settings-tab" data-sec="other">Прочее</button>
+    </nav>
+    <div class="settings-body">
+      <button class="icon-btn small settings-close" id="settingsClose" title="Закрыть">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+
+      <div class="settings-sec active" data-sec="llm">
+        <div class="set-row"><label>Endpoint (OpenAI-совместимый)</label><input type="text" value="https://api.example-llm.ru/v1"><div class="set-hint">Адрес API твоего провайдера, обычно заканчивается на /v1.</div></div>
+        <div class="set-row"><label>API-ключ</label><input type="password" value="sk-example-key-0000"><div class="set-hint">Хранится открыто в Settings/config/llm.json — папку можно переносить на другую машину.</div></div>
+        <div class="set-row"><label>Модель</label>
+          <select id="modelSelect">
+            <option>gpt-4o-mini</option>
+            <option>gpt-4o</option>
+            <option>o3-mini</option>
+            <option>llama-3.3-70b</option>
+          </select>
+          <div class="set-hint">Список подтянут с endpoint'а (/models). Если endpoint список не вернул — впиши название модели вручную, узнай у провайдера.</div>
+        </div>
+        <div class="set-row"><label>Окно контекста, токенов</label><input type="text" value="100000" class="narrow"><div class="set-hint">Подтянулось автоматически для выбранной модели. Если модель не сообщила — 100 000 по умолчанию; можно исправить руками.</div></div>
+        <button class="ghost-btn" id="llmCheck">Проверить подключение</button>
+      </div>
+
+      <div class="settings-sec" data-sec="agent">
+        <div class="set-row"><label>Имя агента</label><input type="text" value="Вася" class="narrow"><div class="set-hint">Так агента будут звать в чатах проектов и харнеса.</div></div>
+        <div class="set-row"><label>Как обращаться к тебе</label><input type="text" value="Миха, на ты" class="narrow"><div class="set-hint">Агент будет называть себя и обращаться к тебе именно так.</div></div>
+        <div class="set-row switch-row"><label>Полный автопилот (без подтверждений)</label><span class="switch"></span></div>
+        <div class="set-note">Выключено: опасные действия (терминал, запись вне папок проекта, браузер) агент делает только после твоего подтверждения. Включено: делает всё молча — на твоё усмотрение.</div>
+      </div>
+
+      <div class="settings-sec" data-sec="index">
+        <div class="set-row"><label>Максимальный размер файла, МБ</label><input type="text" value="20" class="narrow"><div class="set-hint">Файлы больше этого размера в индекс не попадают.</div></div>
+        <div class="set-row"><label>Лимит извлечённого текста, символов</label><input type="text" value="200000" class="narrow"><div class="set-hint">Из одного большого файла берётся не больше этого куска текста.</div></div>
+        <div class="set-row"><label>Исключать из индекса</label><input type="text" value=".git, node_modules, .DS_Store, кэш"><div class="set-hint">Папки и файлы, которые поиск по проекту никогда не увидит.</div></div>
+        <button class="ghost-btn" id="reindexBtn">Переиндексировать</button>
+      </div>
+
+      <div class="settings-sec" data-sec="skills">
+        <div class="set-hint">Скиллы — короткие инструкции для агента. Встроенные обновляются вместе с приложением, свои можно импортировать или создать.</div>
+        <div class="set-list" id="skillList"></div>
+        <button class="ghost-btn" id="skillImport">Импорт из папки / .zip / git…</button>
+      </div>
+
+      <div class="settings-sec" data-sec="mcp">
+        <div class="set-hint">MCP-серверы дают агенту внешние инструменты (например, доступ к Google Диску). Настраиваются в Settings/config/mcp.json.</div>
+        <div class="set-list" id="mcpList"></div>
+        <button class="ghost-btn" id="mcpAdd">Добавить MCP-сервер…</button>
+      </div>
+
+      <div class="settings-sec" data-sec="memory">
+        <div class="set-hint">Общая память всех чатов: агент запоминает важное и помнит это в любой новой сессии. Здесь можно смотреть, править и удалять записи.</div>
+        <div class="set-list" id="memorySettings"></div>
+        <button class="ghost-btn" id="memoryAdd">Добавить запись</button>
+      </div>
+
+      <div class="settings-sec" data-sec="other">
+        <div class="set-row switch-row"><label>Автоудалять сессии харнеса без активности (30 дней)</label><span class="switch on"></span></div>
+        <div class="set-hint">Старые незакрытые разговоры харнеса чистятся сами; порог можно менять или выключить.</div>
+        <div class="set-row switch-row"><label>Запускаться с системой</label><span class="switch"></span></div>
+        <div class="set-hint">Нужно, чтобы расписания (напоминания, задачи по cron) работали, даже когда приложение не открыто.</div>
+        <div class="set-row"><label>Автостирание Harness/tmp/ старше, дней</label><input type="text" value="14" class="narrow"><div class="set-hint">Временные файлы агента удаляются сами, если старше этого срока.</div></div>
+        <div class="set-btns">
+          <button class="ghost-btn" id="tmpClearBtn">Очистить Harness/tmp</button>
+          <button class="ghost-btn" id="settingsBackupBtn">Резервная копия…</button>
+        </div>
+        <div class="set-hint">Резервная копия — один архив .zip со всей базой и файлами проектов.</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

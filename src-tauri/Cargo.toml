@@ -1,0 +1,57 @@
+[package]
+name = "project-s"
+version = "0.1.0"
+description = "Project S"
+authors = ["mb"]
+license = ""
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "project_s_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+rusqlite = { version = "0.37", features = ["bundled"] }
+notify = "8"
+base64 = "0.22"
+zip = "8"
+quick-xml = "0.42"
+pdf-extract = "0.12"
+# static C extension compiled locally by `cc`; no network at build time.
+# 0.1.10-alpha.4 is unusable: its published package omits sqlite-vec-diskann.c.
+sqlite-vec = "=0.1.9"
+# blocking pure-Rust HTTP (no async runtime); rustls TLS on by default because
+# LLM endpoints are HTTPS (Ollama http:// still works through the same agent)
+ureq = { version = "2.12", default-features = false, features = ["json", "tls"] }
+# In-process ONNX inference for EmbeddingGemma 2 (text encoder). Opt-in only:
+# `ort` downloads ONNX Runtime binaries at build time, so it must stay out of
+# the default build (default `cargo build/test` must work with no network).
+ort = { version = "=2.0.0-rc.14", optional = true }
+tokenizers = { version = "0.22", optional = true }
+# sha256 verification of downloaded model files (ort-backend only)
+sha2 = { version = "0.10", optional = true }
+chrono = { version = "0.4.45", features = ["serde"] }
+chrono-tz = "0.10.4"
+cron = "0.17.0"
+iana-time-zone = "0.1.65"
+tauri-plugin-notification = "2.4.0"
+# macOS LaunchAgent autostart (SPEC 5.3)
+tauri-plugin-autostart = "2"
+# blocking WebSocket client for the CDP browser bridge (SPEC 5.2 #3); default
+# features are handshake-only (no TLS stack) because ws:// targets localhost.
+tungstenite = "0.29"
+
+[features]
+# ONNX text embedder + model provisioning. ureq TLS is now a default feature,
+# so this feature only adds the ONNX stack.
+ort-backend = ["dep:ort", "dep:tokenizers", "dep:sha2"]

@@ -1,0 +1,301 @@
+use crate::error::{AppError, Result};
+use crate::paths;
+use rusqlite::{params, Connection};
+use serde::Serialize;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectDto {
+    pub id: i64,
+    pub name: String,
+    pub path: String,
+    pub created_at: String,
+    pub opened_at: Option<String>,
+    pub file_count: i64,
+    pub task_count: i64,
+    pub overdue_count: i64,
+}
+
+const TASK_COUNT_SQL: &str = "SELECT count(*) FROM tasks WHERE project_id = ?1";
+const OVERDUE_SQL: &str = "SELECT count(*) FROM tasks WHERE project_id = ?1 AND status != 'done' AND due_date IS NOT NULL AND due_date < date('now','localtime')";
+
+// Project names double as folder names, so keep them filesystem-safe.
+pub fn sanitize_project_name(raw: &str) -> Result<String> {
+    let name = raw.trim();
+    if name.is_empty() {
+        return Err(AppError::Invalid("project name is empty".into()));
+    }
+    if name.starts_with('.') {
+        return Err(AppError::Invalid("project name must not start with a dot".into()));
+    }
+    if name.contains(['/', '\\', ':', '*', '?', '"', '<', '>', '|'])
+        || name.chars().any(char::is_control)
+    {
+        return Err(AppError::Invalid("project name contains forbidden characters".into()));
+    }
+    Ok(name.to_owned())
+}
+
+// Canonical project folder, guaranteed to stay under Projects/ of the working dir.
+pub(crate) fn project_root(conn: &Connection, wd: &Path, id: i64) -> Result<PathBuf> {
+    let stored: String = conn
+        .query_row("SELECT path FROM projects WHERE id = ?1", params![id], |r| r.get(0))
+        .map_err(|_| AppError::Invalid(format!("project {id} not found")))?;
+    let projects = paths::projects_dir(wd).canonicalize()?;
+    let root = PathBuf::from(stored)
+        .canonicalize()
+        .map_err(|_| AppError::Invalid(format!("project {id} folder is missing on disk")))?;
+    if !root.starts_with(&projects) {
+        return Err(AppError::Invalid(format!(
+            "project {id} path escapes the Projects folder"
+        )));
+    }
+    Ok(root)
+}
+
+pub fn project_path(conn: &Connection, wd: &Path, id: i64) -> Result<String> {
+    Ok(project_root(conn, wd, id)?.display().to_string())
+}
+
+pub fn list_projects(conn: &Connection) -> Result<Vec<ProjectDto>> {
+    let mut ids = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT id FROM projects ORDER BY opened_at IS NULL, opened_at DESC, name COLLATE NOCASE",
+        )?;
+        let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+        for row in rows {
+            ids.push(row?);
+        }
+    }
+    ids.iter().map(|id| dto(conn, *id)).collect()
+}
+
+pub fn create_project(conn: &Connection, wd: &Path, raw_name: &str) -> Result<ProjectDto> {
+    let name = sanitize_project_name(raw_name)?;
+    let projects = paths::projects_dir(wd);
+    fs::create_dir_all(&projects)?;
+    let root = projects.join(&name);
+    if root.exists() {
+        return Err(AppError::Invalid(format!("project \"{name}\" already exists")));
+    }
+    fs::create_dir_all(root.join(paths::PROJECT_TASKS))?;
+    fs::create_dir_all(root.join(paths::PROJECT_INBOX))?;
+    fs::write(root.join(paths::DATAS_MD), "")?;
+    conn.execute(
+        "INSERT INTO projects (name, path, created_at) VALUES (?1, ?2, datetime('now','localtime'))",
+        params![name, root.display().to_string()],
+    )?;
+    dto(conn, conn.last_insert_rowid())
+}
+
+// Renames the folder on disk first, then updates the DB row in one statement.
+pub fn rename_project(conn: &Connection, wd: &Path, id: i64, raw_name: &str) -> Result<ProjectDto> {
+    let name = sanitize_project_name(raw_name)?;
+    let old_root = project_root(conn, wd, id)?;
+    let new_root = paths::projects_dir(wd).canonicalize()?.join(&name);
+    if new_root.exists() {
+        return Err(AppError::Invalid(format!("project \"{name}\" already exists")));
+    }
+    fs::rename(&old_root, &new_root)?;
+    let updated = conn.execute(
+        "UPDATE projects SET name = ?1, path = ?2 WHERE id = ?3",
+        params![name, new_root.display().to_string(), id],
+    )?;
+    if updated != 1 {
+        let _ = fs::rename(&new_root, &old_root);
+        return Err(AppError::Db(format!("project {id} not found")));
+    }
+    dto(conn, id)
+}
+
+pub fn touch_project_opened(conn: &Connection, id: i64) -> Result<()> {
+    let updated = conn.execute(
+        "UPDATE projects SET opened_at = datetime('now','localtime') WHERE id = ?1",
+        params![id],
+    )?;
+    if updated != 1 {
+        return Err(AppError::Invalid(format!("project {id} not found")));
+    }
+    Ok(())
+}
+
+pub fn get_project(conn: &Connection, id: i64) -> Result<ProjectDto> {
+    let exists: i64 = conn.query_row("SELECT count(*) FROM projects WHERE id = ?1", params![id], |r| r.get(0))?;
+    if exists == 0 {
+        return Err(AppError::Invalid(format!("project {id} not found")));
+    }
+    dto(conn, id)
+}
+
+fn dto(conn: &Connection, id: i64) -> Result<ProjectDto> {
+    let (name, path, created_at, opened_at) = conn.query_row(
+        "SELECT name, path, created_at, opened_at FROM projects WHERE id = ?1",
+        params![id],
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?)),
+    )?;
+    let task_count = conn.query_row(TASK_COUNT_SQL, params![id], |r| r.get(0))?;
+    let overdue_count = conn.query_row(OVERDUE_SQL, params![id], |r| r.get(0))?;
+    Ok(ProjectDto {
+        id,
+        name,
+        path: path.clone(),
+        created_at,
+        opened_at,
+        file_count: count_files(Path::new(&path)),
+        task_count,
+        overdue_count,
+    })
+}
+
+fn count_files(root: &Path) -> i64 {
+    let mut total = 0;
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() {
+                stack.push(entry.path());
+            } else if entry.file_name() != ".DS_Store" {
+                total += 1;
+            }
+        }
+    }
+    total
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::schema;
+    use crate::onboarding::temp_test_dir;
+
+    fn setup(tag: &str) -> (PathBuf, Connection) {
+        let wd = temp_test_dir(tag);
+        fs::create_dir_all(paths::projects_dir(&wd)).unwrap();
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        schema::run_migrations(&conn).unwrap();
+        (wd, conn)
+    }
+
+    #[test]
+    fn create_project_makes_folder_datas_tasks_inbox_and_db_row() {
+        let (wd, conn) = setup("proj-create");
+        let dto = create_project(&conn, &wd, "  example.ru  ").unwrap();
+        assert_eq!(dto.name, "example.ru");
+        let root = paths::projects_dir(&wd).join("example.ru");
+        assert!(root.is_dir());
+        assert!(root.join(paths::DATAS_MD).is_file());
+        assert!(root.join(paths::PROJECT_TASKS).is_dir());
+        assert!(root.join(paths::PROJECT_INBOX).is_dir());
+        assert_eq!(dto.file_count, 1); // datas.md
+        assert_eq!(dto.task_count, 0);
+        assert_eq!(dto.overdue_count, 0);
+        assert!(dto.created_at.len() >= 10);
+        assert_eq!(dto.opened_at, None);
+
+        let again = create_project(&conn, &wd, "example.ru");
+        assert!(matches!(again, Err(AppError::Invalid(_))));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn invalid_project_names_are_rejected() {
+        let (wd, conn) = setup("proj-names");
+        for bad in ["", "   ", "a/b", "a\\b", "..", ".hidden", "a:b", "a*b"] {
+            assert!(
+                matches!(create_project(&conn, &wd, bad), Err(AppError::Invalid(_))),
+                "accepted: {bad:?}"
+            );
+        }
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM projects", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn rename_project_updates_folder_and_db_row() {
+        let (wd, conn) = setup("proj-rename");
+        let dto = create_project(&conn, &wd, "old").unwrap();
+        let renamed = rename_project(&conn, &wd, dto.id, "new").unwrap();
+        assert_eq!(renamed.name, "new");
+        assert!(!paths::projects_dir(&wd).join("old").exists());
+        assert!(paths::projects_dir(&wd).join("new").is_dir());
+        assert!(paths::projects_dir(&wd)
+            .join("new")
+            .join(paths::DATAS_MD)
+            .is_file());
+        let stored: String = conn
+            .query_row("SELECT name FROM projects WHERE id = ?1", params![dto.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, "new");
+        assert_eq!(project_path(&conn, &wd, dto.id).unwrap(), renamed.path);
+
+        let clash = create_project(&conn, &wd, "taken").unwrap();
+        assert!(matches!(
+            rename_project(&conn, &wd, dto.id, "taken"),
+            Err(AppError::Invalid(_))
+        ));
+        assert!(matches!(
+            rename_project(&conn, &wd, 999, "x"),
+            Err(AppError::Invalid(_))
+        ));
+        fs::remove_dir_all(&wd).unwrap();
+        let _ = clash;
+    }
+
+    #[test]
+    fn list_projects_counts_tasks_and_overdue() {
+        let (wd, conn) = setup("proj-list");
+        let dto = create_project(&conn, &wd, "p1").unwrap();
+        fs::write(paths::projects_dir(&wd).join("p1").join("a.txt"), "x").unwrap();
+        fs::create_dir_all(paths::projects_dir(&wd).join("p1").join("sub/deep")).unwrap();
+        fs::write(
+            paths::projects_dir(&wd)
+                .join("p1")
+                .join("sub/deep/b.md"),
+            "",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (project_id, title, status, due_date, created_at) VALUES
+             (?1, 'past', 'new', date('now','-5 day'), '2026-01-01'),
+             (?1, 'past-done', 'done', date('now','-5 day'), '2026-01-01'),
+             (?1, 'future', 'progress', date('now','+5 day'), '2026-01-01'),
+             (?1, 'no-due', 'new', NULL, '2026-01-01')",
+            params![dto.id],
+        )
+        .unwrap();
+        let list = list_projects(&conn).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].file_count, 3); // datas.md + a.txt + b.md
+        assert_eq!(list[0].task_count, 4);
+        assert_eq!(list[0].overdue_count, 1);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn touch_project_opened_sets_opened_at() {
+        let (wd, conn) = setup("proj-touch");
+        let dto = create_project(&conn, &wd, "p").unwrap();
+        assert!(dto.opened_at.is_none());
+        touch_project_opened(&conn, dto.id).unwrap();
+        let opened: Option<String> = conn
+            .query_row("SELECT opened_at FROM projects WHERE id = ?1", params![dto.id], |r| r.get(0))
+            .unwrap();
+        assert!(opened.is_some());
+        assert!(matches!(touch_project_opened(&conn, 999), Err(AppError::Invalid(_))));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+}
