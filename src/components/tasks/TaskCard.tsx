@@ -8,6 +8,7 @@ type Mode = "title" | "comment" | "due" | null;
 interface Props {
   task: TaskDto;
   dragging: boolean;
+  highlight?: boolean;
   onDragStart: (e: DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
   onPatch: (patch: TaskPatch) => void;
@@ -123,18 +124,25 @@ function DueEditor({
 export default function TaskCard({
   task,
   dragging,
+  highlight,
   onDragStart,
   onDragEnd,
   onPatch,
   onDelete,
 }: Props) {
   const [mode, setMode] = useState<Mode>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (highlight) cardRef.current?.scrollIntoView({ block: "center" });
+  }, [highlight]);
 
   const classes = ["task-card"];
   if (task.status === "done") classes.push("done");
   if (task.overdue) classes.push("overdue");
   if (dragging) classes.push("dragging");
   if (mode) classes.push("editing");
+  if (highlight) classes.push("highlight");
 
   const commitTitle = (title: string) => {
     setMode(null);
@@ -163,6 +171,7 @@ export default function TaskCard({
 
   return (
     <div
+      ref={cardRef}
       className={classes.join(" ")}
       data-id={task.id}
       draggable={mode === null}

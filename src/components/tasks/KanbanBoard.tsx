@@ -15,9 +15,10 @@ const COLUMNS = [
 interface Props {
   projectId: number;
   tasksVersion: number;
+  highlightTaskId: number | null;
 }
 
-export default function KanbanBoard({ projectId, tasksVersion }: Props) {
+export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }: Props) {
   const [tasks, setTasks] = useState<TaskDto[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<number | null>(null);
@@ -169,6 +170,7 @@ export default function KanbanBoard({ projectId, tasksVersion }: Props) {
                     key={t.id}
                     task={t}
                     dragging={draggingId === t.id}
+                    highlight={highlightTaskId === t.id}
                     onDragStart={(e) => {
                       e.dataTransfer.setData("text/plain", String(t.id));
                       e.dataTransfer.effectAllowed = "move";

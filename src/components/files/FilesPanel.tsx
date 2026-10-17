@@ -20,6 +20,7 @@ export default function FilesPanel({ project }: Props) {
   const [selected, setSelected] = useState<FsEntry | null>(null);
   const [query, setQuery] = useState("");
   const [activeQuery, setActiveQuery] = useState("");
+  const [highlightTaskId, setHighlightTaskId] = useState<number | null>(null);
   const dirtyRef = useRef(false);
   const setDirty = useCallback((dirty: boolean) => {
     dirtyRef.current = dirty;
@@ -29,6 +30,12 @@ export default function FilesPanel({ project }: Props) {
     const timer = setTimeout(() => setActiveQuery(query.trim()), 250);
     return () => clearTimeout(timer);
   }, [query]);
+
+  useEffect(() => {
+    if (highlightTaskId === null) return;
+    const timer = setTimeout(() => setHighlightTaskId(null), 2000);
+    return () => clearTimeout(timer);
+  }, [highlightTaskId]);
 
   const confirmDiscard = () =>
     !dirtyRef.current ||
@@ -47,6 +54,14 @@ export default function FilesPanel({ project }: Props) {
   const switchTab = (next: "files" | "tasks") => {
     if (next !== tab && !confirmDiscard()) return;
     setTab(next);
+    setHighlightTaskId(null);
+  };
+
+  // SearchResults only renders on the files tab, so this always switches tabs.
+  const openTaskFromSearch = (taskId: number | null) => {
+    if (!confirmDiscard()) return;
+    setTab("tasks");
+    setHighlightTaskId(taskId);
   };
 
   return (
@@ -108,7 +123,11 @@ export default function FilesPanel({ project }: Props) {
       </div>
 
       {tab === "tasks" ? (
-        <KanbanBoard projectId={project.id} tasksVersion={state.tasksVersion} />
+        <KanbanBoard
+          projectId={project.id}
+          tasksVersion={state.tasksVersion}
+          highlightTaskId={highlightTaskId}
+        />
       ) : (
         <>
           <Breadcrumbs projectName={project.name} selected={selected} />
@@ -119,7 +138,7 @@ export default function FilesPanel({ project }: Props) {
                 projectId={project.id}
                 query={activeQuery}
                 onSelect={handleSelect}
-                onOpenTask={() => switchTab("tasks")}
+                onOpenTask={openTaskFromSearch}
               />
             ) : view === "list" ? (
               <FileTree

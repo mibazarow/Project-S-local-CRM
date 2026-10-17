@@ -7,7 +7,7 @@ interface Props {
   projectId: number;
   query: string;
   onSelect: (entry: FsEntry) => void;
-  onOpenTask: () => void;
+  onOpenTask: (taskId: number | null) => void;
 }
 
 const MATCH_LABELS: Record<string, string> = { fts: "слова", semantic: "смысл" };
@@ -79,7 +79,7 @@ export default function SearchResults({ projectId, query, onSelect, onOpenTask }
           <div
             className={isTask ? "search-hit search-hit-task" : "search-hit"}
             key={isTask ? `task:${hit.taskId}` : hit.relPath}
-            onClick={() => (isTask ? onOpenTask() : void openHit(hit))}
+            onClick={() => (isTask ? onOpenTask(hit.taskId ?? null) : void openHit(hit))}
           >
             <div className="search-hit-head">
               <span className="search-hit-name">{hit.name}</span>
