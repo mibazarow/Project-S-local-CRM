@@ -196,7 +196,8 @@ pub struct McpServerConfig {
 }
 
 // SPEC 6.2: stdio (command + args + env) or http/sse (url + headers).
-// The http/sse variants parse now; their transport lands in a later slice.
+// The http variant speaks the streamable HTTP transport (mcp::http), the
+// sse variant the legacy HTTP+SSE one (mcp::sse).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "lowercase")]
 pub enum McpTransportConfig {

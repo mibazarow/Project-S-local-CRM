@@ -1,6 +1,6 @@
 // Newline-delimited JSON-RPC 2.0 framing plus an id-correlated request
-// channel over a transport-agnostic seam (SPEC 6.2). A later HTTP/SSE
-// transport implements the same trait over POST bodies instead of pipes.
+// channel over a transport-agnostic seam (SPEC 6.2). The stdio transport
+// speaks it over pipes; the http/sse transports over POST bodies.
 use crate::error::{AppError, Result};
 use serde_json::{json, Value};
 use std::time::Duration;

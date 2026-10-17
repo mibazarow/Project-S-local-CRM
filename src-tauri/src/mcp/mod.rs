@@ -3,7 +3,11 @@
 // them into the agent catalog as mcp_<server>__<tool>. Everything a server
 // sends (descriptions, results) is untrusted data, never instructions;
 // configured secrets are masked in every message leaving this module.
+pub mod http;
 pub mod jsonrpc;
+#[cfg(test)]
+pub(crate) mod mock_server;
+pub mod sse;
 pub mod stdio;
 
 use crate::agent::result::{ToolErrorCode, ToolResult};
@@ -284,6 +288,7 @@ impl Tool for McpToolBridge {
 pub struct McpServerStatus {
     pub name: String,
     pub enabled: bool,
+    pub transport: &'static str,
     pub status: &'static str,
     pub error: Option<String>,
     pub tool_count: usize,
@@ -292,6 +297,7 @@ pub struct McpServerStatus {
 struct ServerHandle {
     name: String,
     enabled: bool,
+    transport: &'static str,
     error: Option<String>,
     client: Option<Arc<Mutex<McpClient>>>,
     tools: Vec<McpTool>,
@@ -355,6 +361,7 @@ impl McpRegistry {
             .map(|server| McpServerStatus {
                 name: server.name.clone(),
                 enabled: server.enabled,
+                transport: server.transport,
                 status: if server.error.is_some() {
                     "error"
                 } else if !server.enabled {
@@ -405,6 +412,7 @@ fn config_error_row(name: &str, error: String) -> ServerHandle {
     ServerHandle {
         name: name.to_string(),
         enabled: false,
+        transport: "unknown",
         error: Some(error),
         client: None,
         tools: Vec::new(),
@@ -412,9 +420,30 @@ fn config_error_row(name: &str, error: String) -> ServerHandle {
     }
 }
 
-// One server entry from mcp.json: validate, spawn, handshake, list tools.
-// Any failure is recorded on the row; the tools of a failed server are
-// simply skipped (SPEC 6.2 "don't break the app").
+fn transport_label(transport: &McpTransportConfig) -> &'static str {
+    match transport {
+        McpTransportConfig::Stdio { .. } => "stdio",
+        McpTransportConfig::Http { .. } => "http",
+        McpTransportConfig::Sse { .. } => "sse",
+    }
+}
+
+// Remote servers must be plain http(s) URLs whose host passes the SSRF
+// denylist; anything else is refused before a single packet is sent.
+fn check_url(url: &str) -> Result<()> {
+    let scheme_ok = url.starts_with("http://") || url.starts_with("https://");
+    match url_host(url) {
+        Some(host) if scheme_ok && !ssrf_denied_host(&host) => Ok(()),
+        _ => Err(AppError::Invalid(format!(
+            "refused: {url} is not a plain http(s) url or its host is on the ssrf deny list"
+        ))),
+    }
+}
+
+// One server entry from mcp.json: validate, connect (spawn for stdio,
+// streamable HTTP or legacy SSE for remote), handshake, list tools. Any
+// failure is recorded on the row; the tools of a failed server are simply
+// skipped (SPEC 6.2 "don't break the app").
 fn start_server(entry: &Value, wd: &Path) -> ServerHandle {
     let config = match serde_json::from_value::<McpServerConfig>(entry.clone()) {
         Ok(config) => config,
@@ -426,6 +455,7 @@ fn start_server(entry: &Value, wd: &Path) -> ServerHandle {
                     .unwrap_or("<unnamed>")
                     .to_string(),
                 enabled: entry.get("enabled").and_then(Value::as_bool).unwrap_or(false),
+                transport: "unknown",
                 error: Some(format!("invalid server config: {e}")),
                 client: None,
                 tools: Vec::new(),
@@ -433,10 +463,12 @@ fn start_server(entry: &Value, wd: &Path) -> ServerHandle {
             }
         }
     };
+    let transport_kind = transport_label(&config.transport);
     if !config.enabled {
         return ServerHandle {
             name: config.name,
             enabled: false,
+            transport: transport_kind,
             error: None,
             client: None,
             tools: Vec::new(),
@@ -450,21 +482,20 @@ fn start_server(entry: &Value, wd: &Path) -> ServerHandle {
                 .map_err(|e| AppError::Io(format!("failed to spawn {command}: {e}"))),
             env.values().cloned().collect(),
         ),
-        McpTransportConfig::Http { url, headers } | McpTransportConfig::Sse { url, headers } => {
-            let secrets: Vec<String> = headers.values().cloned().collect();
-            let denied = match url_host(url) {
-                Some(host) => ssrf_denied_host(&host),
-                None => true,
-            };
-            let error = if denied {
-                format!("refused: url host is on the ssrf deny list ({url})")
-            } else {
-                // The HTTP/SSE transport lands in a later slice; the config
-                // shape and the transport seam are already in place for it.
-                "http/sse transport is not implemented yet".to_string()
-            };
-            (Err(AppError::Invalid(error)), secrets)
-        }
+        McpTransportConfig::Http { url, headers } => (
+            check_url(url).and_then(|_| {
+                http::HttpTransport::new(url, headers)
+                    .map(|transport| Box::new(transport) as Box<dyn McpTransport>)
+            }),
+            headers.values().cloned().collect(),
+        ),
+        McpTransportConfig::Sse { url, headers } => (
+            check_url(url).and_then(|_| {
+                sse::SseTransport::connect(url, headers)
+                    .map(|transport| Box::new(transport) as Box<dyn McpTransport>)
+            }),
+            headers.values().cloned().collect(),
+        ),
     };
     let outcome = transport.and_then(|transport| {
         let mut client = McpClient::connect(transport)?;
@@ -475,6 +506,7 @@ fn start_server(entry: &Value, wd: &Path) -> ServerHandle {
         Ok((client, tools)) => ServerHandle {
             name: config.name,
             enabled: true,
+            transport: transport_kind,
             error: None,
             client: Some(Arc::new(Mutex::new(client))),
             tools,
@@ -483,6 +515,7 @@ fn start_server(entry: &Value, wd: &Path) -> ServerHandle {
         Err(e) => ServerHandle {
             name: config.name,
             enabled: true,
+            transport: transport_kind,
             error: Some(mask_secrets(&e.to_string(), &secrets)),
             client: None,
             tools: Vec::new(),
@@ -623,18 +656,64 @@ mod tests {
     }
 
     #[test]
-    fn http_transport_is_validated_against_the_denylist_but_not_started_yet() {
+    fn remote_urls_are_validated_against_denylist_scheme_and_connectivity() {
         let registry = McpRegistry::start_from(
             &[
                 json!({ "name": "meta", "enabled": true, "transport": { "type": "http", "url": "http://169.254.169.254/mcp" } }),
-                json!({ "name": "lan", "enabled": true, "transport": { "type": "sse", "url": "http://192.168.1.10:9000/sse", "headers": { "Authorization": "Bearer s3cret-token" } } }),
+                json!({ "name": "refused", "enabled": true, "transport": { "type": "sse", "url": "http://127.0.0.1:1/sse", "headers": { "Authorization": "Bearer s3cret-token" } } }),
+                json!({ "name": "bad-scheme", "enabled": true, "transport": { "type": "http", "url": "ftp://mcp.example.ru/mcp" } }),
             ],
             Path::new("/nonexistent-wd"),
         );
         let status = registry.status();
         assert_eq!(status[0].status, "error");
+        assert_eq!(status[0].transport, "http");
         assert!(status[0].error.as_ref().unwrap().contains("ssrf"));
-        assert!(status[1].error.as_ref().unwrap().contains("not implemented"));
+        assert_eq!(status[1].status, "error");
+        assert_eq!(status[1].transport, "sse");
+        assert!(status[1].error.as_ref().unwrap().contains("connection error"));
+        assert!(!status[1].error.as_ref().unwrap().contains("s3cret-token"));
+        assert_eq!(status[2].status, "error");
+        assert!(status[2].error.as_ref().unwrap().contains("not a plain http(s) url"));
+    }
+
+    #[test]
+    fn http_server_tools_are_bridged_and_status_reports_transport() {
+        let wd = temp_test_dir("mcp-http-bridge");
+        let handler: mock_server::Handler = std::sync::Arc::new(
+            |stream: &mut std::net::TcpStream, req: &mock_server::CapturedRequest| {
+                let body: Value = serde_json::from_str(&req.body).unwrap();
+                if body["method"].as_str() == Some("notifications/initialized") {
+                    return mock_server::respond(stream, 202, "application/json", "", &[]);
+                }
+                let answer = mock_server::mcp_answer(body["method"].as_str().unwrap_or(""), &body["id"]);
+                mock_server::respond(stream, 200, "application/json", &answer.to_string(), &[("Mcp-Session-Id", "sess-7")])
+            },
+        );
+        let server = mock_server::MockServer::start(handler);
+        let registry = McpRegistry::start_from(
+            &[json!({ "name": "Remote", "enabled": true,
+                      "transport": { "type": "http", "url": format!("{}/mcp", server.url_base) } })],
+            &wd,
+        );
+        let status = registry.status();
+        assert_eq!(status[0].status, "running");
+        assert_eq!(status[0].transport, "http");
+        assert_eq!(status[0].tool_count, 1);
+        let tools = registry.tools();
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name(), "mcp_remote__echo");
+        let result = tools[0]
+            .execute(&json!({ "text": "hi" }), &ToolCtx::default())
+            .unwrap();
+        assert!(result.ok);
+        assert!(result.data.unwrap()["text"]
+            .as_str()
+            .unwrap()
+            .contains("echo: hi"));
+        let log = server.request_log();
+        assert!(log.iter().any(|r| r.headers.get("mcp-session-id").map(String::as_str) == Some("sess-7")));
+        fs::remove_dir_all(&wd).unwrap();
     }
 
     #[test]
