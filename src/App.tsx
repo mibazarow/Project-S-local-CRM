@@ -7,6 +7,7 @@ import ProjectList from "./components/projects/ProjectList";
 import FilesPanel from "./components/files/FilesPanel";
 import ProjectChat from "./components/chat/ProjectChat";
 import HarnessView from "./components/harness/HarnessView";
+import JournalView from "./components/journal/JournalView";
 
 export default function App() {
   const { state } = useApp();
@@ -53,8 +54,10 @@ export default function App() {
 
           <ProjectChat projectId={activeProject?.id ?? null} projectName={activeProject?.name ?? null} />
         </main>
-      ) : (
+      ) : tab === "harness" ? (
         <HarnessView />
+      ) : (
+        <JournalView />
       )}
 
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}

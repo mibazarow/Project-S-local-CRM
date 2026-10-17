@@ -5,8 +5,12 @@
 // the in-flight line. Previews are short and secret-masked: the journal must
 // never carry full file contents or credentials.
 use crate::error::Result;
+use crate::paths;
 use chrono::{Local, NaiveDate};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::cmp::Ordering;
+use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -146,6 +150,165 @@ impl Journal {
     pub fn prune_old(&self, days: u32) -> Result<usize> {
         self.prune(Local::now().date_naive(), days)
     }
+}
+
+// ---------- Reading (the "Журнал" section, SPEC 3.3) ----------
+
+pub const DEFAULT_DAYS: u32 = 7;
+const DEFAULT_LIMIT: usize = 200;
+const MAX_LIMIT: usize = 1000;
+
+// One parsed journal line. A line missing any required field fails to
+// deserialize and is skipped, so malformed lines never reach the UI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JournalEntry {
+    pub ts: String,
+    pub kind: String,
+    pub chat_id: i64,
+    #[serde(default)]
+    pub project_id: Option<i64>,
+    #[serde(default)]
+    pub session_id: Option<i64>,
+    pub step: usize,
+    pub tool: String,
+    pub ok: bool,
+    #[serde(default)]
+    pub code: Option<String>,
+    pub ms: u64,
+    pub args: String,
+    pub result: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct JournalFilter {
+    pub days: u32,
+    pub kind: Option<String>,
+    pub tool: Option<String>,
+    pub ok: Option<bool>,
+    pub project_id: Option<i64>,
+    pub session_id: Option<i64>,
+    pub limit: Option<usize>,
+}
+
+impl Default for JournalFilter {
+    fn default() -> Self {
+        JournalFilter {
+            days: DEFAULT_DAYS,
+            kind: None,
+            tool: None,
+            ok: None,
+            project_id: None,
+            session_id: None,
+            limit: None,
+        }
+    }
+}
+
+// One journal_list payload: filtered entries plus the day/tool options the
+// UI filter bar offers.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JournalListResult {
+    pub entries: Vec<JournalEntry>,
+    pub days: Vec<String>,
+    pub tools: Vec<String>,
+}
+// Date from a `runs-YYYY-MM-DD.jsonl` file name.
+fn file_date(name: &str) -> Option<NaiveDate> {
+    NaiveDate::parse_from_str(
+        name.strip_prefix(FILE_PREFIX)?.strip_suffix(FILE_SUFFIX)?,
+        "%Y-%m-%d",
+    )
+    .ok()
+}
+
+fn ts_key(entry: &JournalEntry) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    chrono::DateTime::parse_from_rfc3339(&entry.ts).ok()
+}
+
+// All entries from files whose filename date is within the last `days` days,
+// sorted newest first (unparseable ts last), plus the distinct tool names
+// seen in the scanned range. Malformed lines are skipped, never fatal.
+fn scan_range(wd: &Path, days: u32) -> Result<(Vec<JournalEntry>, Vec<String>)> {
+    let cutoff = Local::now().date_naive() - chrono::Duration::days(i64::from(days));
+    let mut entries: Vec<JournalEntry> = Vec::new();
+    let mut tools: BTreeSet<String> = BTreeSet::new();
+    if let Ok(read_dir) = fs::read_dir(paths::logs_dir(wd)) {
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
+                continue;
+            };
+            let Some(date) = file_date(&name) else {
+                continue;
+            };
+            if date < cutoff {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            for line in text.lines() {
+                let Ok(parsed) = serde_json::from_str::<JournalEntry>(line) else {
+                    continue;
+                };
+                tools.insert(parsed.tool.clone());
+                entries.push(parsed);
+            }
+        }
+    }
+    entries.sort_by(|a, b| match (ts_key(a), ts_key(b)) {
+        (Some(x), Some(y)) => y.cmp(&x),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => b.ts.cmp(&a.ts),
+    });
+    Ok((entries, tools.into_iter().collect()))
+}
+
+fn matches(entry: &JournalEntry, filter: &JournalFilter) -> bool {
+    filter.kind.as_ref().map_or(true, |k| &entry.kind == k)
+        && filter.tool.as_ref().map_or(true, |t| &entry.tool == t)
+        && filter.ok.map_or(true, |ok| entry.ok == ok)
+        && filter.project_id.map_or(true, |id| entry.project_id == Some(id))
+        && filter.session_id.map_or(true, |id| entry.session_id == Some(id))
+}
+
+// Filtered entries (limit applied after filtering and sorting), newest first.
+pub fn list_entries(wd: &Path, filter: &JournalFilter) -> Result<Vec<JournalEntry>> {
+    let (entries, _) = scan_range(wd, filter.days)?;
+    let limit = filter.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT);
+    Ok(entries
+        .into_iter()
+        .filter(|e| matches(e, filter))
+        .take(limit)
+        .collect())
+}
+
+// Distinct tool names seen in the scanned range (UI tool filter options).
+pub fn journal_tools(wd: &Path, days: u32) -> Result<Vec<String>> {
+    Ok(scan_range(wd, days)?.1)
+}
+
+// Dates that have run-log files, newest first (UI filter hints).
+pub fn journal_days(wd: &Path) -> Result<Vec<String>> {
+    let mut dates: Vec<String> = Vec::new();
+    if let Ok(read_dir) = fs::read_dir(paths::logs_dir(wd)) {
+        for entry in read_dir.flatten() {
+            let Some(name) = entry.path().file_name().map(|n| n.to_string_lossy().to_string())
+            else {
+                continue;
+            };
+            if let Some(date) = file_date(&name) {
+                dates.push(date.format("%Y-%m-%d").to_string());
+            }
+        }
+    }
+    dates.sort();
+    dates.dedup();
+    dates.reverse();
+    Ok(dates)
 }
 
 // Short, masked preview of tool args/results for one journal line.
@@ -381,5 +544,170 @@ mod tests {
             .collect::<String>();
         assert_eq!(text.lines().count(), 1);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn line(
+        ts: &str,
+        kind: &str,
+        tool: &str,
+        ok: bool,
+        project: Option<i64>,
+        session: Option<i64>,
+        code: Option<&str>,
+    ) -> String {
+        let mut record = json!({
+            "ts": ts, "kind": kind, "chatId": 7, "step": 1,
+            "tool": tool, "ok": ok, "ms": 5, "args": "a", "result": "r",
+        });
+        let obj = record.as_object_mut().unwrap();
+        if let Some(id) = project {
+            obj.insert("projectId".into(), json!(id));
+        }
+        if let Some(id) = session {
+            obj.insert("sessionId".into(), json!(id));
+        }
+        if let Some(code) = code {
+            obj.insert("code".into(), json!(code));
+        }
+        record.to_string()
+    }
+
+    // Three log files: today (two entries + malformed lines), yesterday, and
+    // one 30 days back (outside the default 7-day range).
+    fn seed_journal(wd: &Path) -> (NaiveDate, NaiveDate, NaiveDate) {
+        let logs = paths::logs_dir(wd);
+        fs::create_dir_all(&logs).unwrap();
+        let today = Local::now().date_naive();
+        let yday = today - chrono::Duration::days(1);
+        let old = today - chrono::Duration::days(30);
+        fs::write(
+            logs.join(format!("runs-{today}.jsonl")),
+            format!(
+                "{}\nnot-json at all\n{}\n{{\"ts\": \"broken\n",
+                line(
+                    &format!("{today}T10:00:00+00:00"),
+                    "project",
+                    "fs_write_text",
+                    true,
+                    Some(3),
+                    None,
+                    None,
+                ),
+                line(
+                    &format!("{today}T12:00:00+00:00"),
+                    "harness",
+                    "echo",
+                    false,
+                    None,
+                    Some(9),
+                    Some("boom"),
+                ),
+            ),
+        )
+        .unwrap();
+        fs::write(
+            logs.join(format!("runs-{yday}.jsonl")),
+            line(
+                &format!("{yday}T23:00:00+00:00"),
+                "schedule",
+                "echo",
+                true,
+                None,
+                None,
+                None,
+            ),
+        )
+        .unwrap();
+        fs::write(
+            logs.join(format!("runs-{old}.jsonl")),
+            line(
+                &format!("{old}T09:00:00+00:00"),
+                "project",
+                "old_tool",
+                true,
+                Some(3),
+                None,
+                None,
+            ),
+        )
+        .unwrap();
+        (today, yday, old)
+    }
+
+    #[test]
+    fn list_entries_parses_sorts_newest_first_and_skips_malformed() {
+        let wd = temp_test_dir("journal-list");
+        let (today, yday, old) = seed_journal(&wd);
+
+        let entries = list_entries(&wd, &JournalFilter::default()).unwrap();
+        assert_eq!(
+            entries.len(),
+            3,
+            "malformed lines skipped, file older than the range excluded"
+        );
+        assert_eq!(entries[0].ts, format!("{today}T12:00:00+00:00"));
+        assert_eq!(entries[0].kind, "harness");
+        assert_eq!(entries[0].code.as_deref(), Some("boom"));
+        assert_eq!(entries[0].session_id, Some(9));
+        assert_eq!(entries[0].project_id, None);
+        assert_eq!(entries[1].ts, format!("{today}T10:00:00+00:00"));
+        assert_eq!(entries[1].project_id, Some(3));
+        assert_eq!(entries[2].ts, format!("{yday}T23:00:00+00:00"));
+        assert_eq!(entries[2].kind, "schedule");
+        assert_eq!(entries[2].chat_id, 7);
+        assert_eq!(entries[2].step, 1);
+        assert_eq!(entries[2].ms, 5);
+        assert_eq!(entries[2].args, "a");
+        assert_eq!(entries[2].result, "r");
+        assert!(list_entries(&wd, &JournalFilter { days: 60, ..Default::default() })
+            .unwrap()
+            .iter()
+            .any(|e| e.ts.starts_with(&old.to_string())));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn list_entries_applies_each_filter_and_limit() {
+        let wd = temp_test_dir("journal-filters");
+        seed_journal(&wd);
+
+        let by_tool = list_entries(&wd, &JournalFilter { tool: Some("echo".into()), ..Default::default() }).unwrap();
+        assert_eq!(by_tool.len(), 2);
+        let by_kind = list_entries(&wd, &JournalFilter { kind: Some("project".into()), ..Default::default() }).unwrap();
+        assert_eq!(by_kind.len(), 1);
+        assert_eq!(by_kind[0].tool, "fs_write_text");
+        let only_errors = list_entries(&wd, &JournalFilter { ok: Some(false), ..Default::default() }).unwrap();
+        assert_eq!(only_errors.len(), 1);
+        assert_eq!(only_errors[0].code.as_deref(), Some("boom"));
+        let only_ok = list_entries(&wd, &JournalFilter { ok: Some(true), ..Default::default() }).unwrap();
+        assert_eq!(only_ok.len(), 2);
+        let by_session = list_entries(&wd, &JournalFilter { session_id: Some(9), ..Default::default() }).unwrap();
+        assert_eq!(by_session.len(), 1);
+        assert_eq!(by_session[0].tool, "echo");
+        let no_session = list_entries(&wd, &JournalFilter { session_id: Some(42), ..Default::default() }).unwrap();
+        assert!(no_session.is_empty());
+        let by_project = list_entries(&wd, &JournalFilter { project_id: Some(3), ..Default::default() }).unwrap();
+        assert_eq!(by_project.len(), 1);
+        let limited = list_entries(&wd, &JournalFilter { limit: Some(1), ..Default::default() }).unwrap();
+        assert_eq!(limited.len(), 1);
+        assert_eq!(limited[0].tool, "echo", "limit keeps the newest entries");
+
+        // The tool options for the UI filter bar cover the scanned range.
+        assert_eq!(
+            journal_tools(&wd, DEFAULT_DAYS).unwrap(),
+            vec!["echo".to_string(), "fs_write_text".to_string()]
+        );
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn journal_days_lists_dates_newest_first() {
+        let wd = temp_test_dir("journal-days");
+        let (today, yday, old) = seed_journal(&wd);
+        assert_eq!(
+            journal_days(&wd).unwrap(),
+            vec![today.to_string(), yday.to_string(), old.to_string()]
+        );
+        fs::remove_dir_all(&wd).unwrap();
     }
 }

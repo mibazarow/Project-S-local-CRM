@@ -13,6 +13,7 @@ import type {
   FsEntry,
   IndexChanged,
   ImportResult,
+  JournalListResult,
   McpServerStatus,
   MemoryChanged,
   MemoryDto,
@@ -64,6 +65,29 @@ export const backupsDir = () => invoke<string>("backups_dir");
 export const getAutostart = () => invoke<boolean>("get_autostart");
 
 export const setAutostart = (enabled: boolean) => invoke<boolean>("set_autostart", { enabled });
+
+// Run journal (SPEC 3.3): read-only feed over Settings/logs/runs-*.jsonl.
+// Empty-string filters are sent as null (no filter).
+export interface JournalQuery {
+  days?: number;
+  kind?: string;
+  tool?: string;
+  ok?: boolean;
+  projectId?: number;
+  sessionId?: number;
+  limit?: number;
+}
+
+export const journalList = (q: JournalQuery) =>
+  invoke<JournalListResult>("journal_list", {
+    days: q.days ?? null,
+    kind: q.kind || null,
+    tool: q.tool || null,
+    ok: q.ok ?? null,
+    projectId: q.projectId ?? null,
+    sessionId: q.sessionId ?? null,
+    limit: q.limit ?? null,
+  });
 
 export const listProjects = () => invoke<ProjectDto[]>("list_projects");
 

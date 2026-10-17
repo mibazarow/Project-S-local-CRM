@@ -336,3 +336,27 @@ export interface ScheduleDto {
   timezone: string | null;
   error: string | null;
 }
+
+// journal::JournalEntry — one parsed line from Settings/logs/runs-*.jsonl.
+export interface JournalEntryDto {
+  ts: string;
+  kind: string;
+  chatId: number;
+  projectId: number | null;
+  sessionId: number | null;
+  step: number;
+  tool: string;
+  ok: boolean;
+  code: string | null;
+  ms: number;
+  args: string;
+  result: string;
+}
+
+// journal::JournalListResult — result of journal_list: filtered entries plus
+// the day/tool options for the "Журнал" filter bar.
+export interface JournalListResult {
+  entries: JournalEntryDto[];
+  days: string[];
+  tools: string[];
+}
