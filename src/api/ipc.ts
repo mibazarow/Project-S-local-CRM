@@ -100,6 +100,9 @@ export const projectPath = (id: number) => invoke<string>("project_path", { id }
 export const touchProjectOpened = (id: number) =>
   invoke<void>("touch_project_opened", { id });
 
+export const moveProject = (id: number, position: number) =>
+  invoke<void>("move_project", { id, position });
+
 export const tasksList = (projectId: number) => invoke<TaskDto[]>("tasks_list", { projectId });
 
 export const taskCreate = (projectId: number, title: string, status?: string) =>
@@ -338,6 +341,9 @@ export const onSessionsChanged = (handler: () => void) =>
 
 export const onSkillsChanged = (handler: () => void) =>
   listen<unknown>("skills-changed", () => handler());
+
+export const onProjectsChanged = (handler: () => void) =>
+  listen<unknown>("projects-changed", () => handler());
 
 export const onMemoryChanged = (handler: (payload: MemoryChanged) => void) =>
   listen<MemoryChanged>("memory-changed", (e) => handler(e.payload));

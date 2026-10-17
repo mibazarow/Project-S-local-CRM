@@ -13,6 +13,7 @@ pub struct ProjectDto {
     pub path: String,
     pub created_at: String,
     pub opened_at: Option<String>,
+    pub position: f64,
     pub file_count: i64,
     pub task_count: i64,
     pub overdue_count: i64,
@@ -62,9 +63,7 @@ pub fn project_path(conn: &Connection, wd: &Path, id: i64) -> Result<String> {
 pub fn list_projects(conn: &Connection) -> Result<Vec<ProjectDto>> {
     let mut ids = Vec::new();
     {
-        let mut stmt = conn.prepare(
-            "SELECT id FROM projects ORDER BY opened_at IS NULL, opened_at DESC, name COLLATE NOCASE",
-        )?;
+        let mut stmt = conn.prepare("SELECT id FROM projects ORDER BY position, id")?;
         let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
         for row in rows {
             ids.push(row?);
@@ -85,7 +84,9 @@ pub fn create_project(conn: &Connection, wd: &Path, raw_name: &str) -> Result<Pr
     fs::create_dir_all(root.join(paths::PROJECT_INBOX))?;
     fs::write(root.join(paths::DATAS_MD), "")?;
     conn.execute(
-        "INSERT INTO projects (name, path, created_at) VALUES (?1, ?2, datetime('now','localtime'))",
+        "INSERT INTO projects (name, path, created_at, position)
+         VALUES (?1, ?2, datetime('now','localtime'),
+                 (SELECT COALESCE(MAX(position), 0) + 1 FROM projects))",
         params![name, root.display().to_string()],
     )?;
     dto(conn, conn.last_insert_rowid())
@@ -122,6 +123,19 @@ pub fn touch_project_opened(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+// Manual list ordering: the frontend sends a fractional position (midpoint
+// between neighbors), so a move never renumbers the whole list.
+pub fn move_project(conn: &Connection, id: i64, position: f64) -> Result<()> {
+    let updated = conn.execute(
+        "UPDATE projects SET position = ?2 WHERE id = ?1",
+        params![id, position],
+    )?;
+    if updated != 1 {
+        return Err(AppError::Invalid(format!("project {id} not found")));
+    }
+    Ok(())
+}
+
 pub fn get_project(conn: &Connection, id: i64) -> Result<ProjectDto> {
     let exists: i64 = conn.query_row("SELECT count(*) FROM projects WHERE id = ?1", params![id], |r| r.get(0))?;
     if exists == 0 {
@@ -131,10 +145,10 @@ pub fn get_project(conn: &Connection, id: i64) -> Result<ProjectDto> {
 }
 
 fn dto(conn: &Connection, id: i64) -> Result<ProjectDto> {
-    let (name, path, created_at, opened_at) = conn.query_row(
-        "SELECT name, path, created_at, opened_at FROM projects WHERE id = ?1",
+    let (name, path, created_at, opened_at, position) = conn.query_row(
+        "SELECT name, path, created_at, opened_at, position FROM projects WHERE id = ?1",
         params![id],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?)),
+        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, f64>(4)?)),
     )?;
     let task_count = conn.query_row(TASK_COUNT_SQL, params![id], |r| r.get(0))?;
     let overdue_count = conn.query_row(OVERDUE_SQL, params![id], |r| r.get(0))?;
@@ -144,6 +158,7 @@ fn dto(conn: &Connection, id: i64) -> Result<ProjectDto> {
         path: path.clone(),
         created_at,
         opened_at,
+        position,
         file_count: count_files(Path::new(&path)),
         task_count,
         overdue_count,
@@ -296,6 +311,44 @@ mod tests {
             .unwrap();
         assert!(opened.is_some());
         assert!(matches!(touch_project_opened(&conn, 999), Err(AppError::Invalid(_))));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    fn list_ids(conn: &Connection) -> Vec<i64> {
+        list_projects(conn).unwrap().into_iter().map(|p| p.id).collect()
+    }
+
+    #[test]
+    fn opening_a_project_does_not_reorder_and_create_appends() {
+        let (wd, conn) = setup("proj-order");
+        let p1 = create_project(&conn, &wd, "p1").unwrap();
+        let p2 = create_project(&conn, &wd, "p2").unwrap();
+        assert_eq!((p1.position, p2.position), (1.0, 2.0));
+        touch_project_opened(&conn, p2.id).unwrap();
+        touch_project_opened(&conn, p1.id).unwrap();
+        let p3 = create_project(&conn, &wd, "p3").unwrap();
+        assert_eq!(p3.position, 3.0);
+        assert_eq!(list_ids(&conn), vec![p1.id, p2.id, p3.id]);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn move_project_reorders_by_fractional_position() {
+        let (wd, conn) = setup("proj-move");
+        let p1 = create_project(&conn, &wd, "p1").unwrap();
+        let p2 = create_project(&conn, &wd, "p2").unwrap();
+        let p3 = create_project(&conn, &wd, "p3").unwrap();
+        // drop p3 between p1 and p2 (midpoint of their positions)
+        move_project(&conn, p3.id, (p1.position + p2.position) / 2.0).unwrap();
+        assert_eq!(list_ids(&conn), vec![p1.id, p3.id, p2.id]);
+        // move p2 to the top: one step before the current first
+        move_project(&conn, p2.id, p1.position - 1.0).unwrap();
+        assert_eq!(list_ids(&conn), vec![p2.id, p1.id, p3.id]);
+        // move p2 to the end: one step after the current last
+        let last = list_projects(&conn).unwrap().pop().unwrap();
+        move_project(&conn, p2.id, last.position + 1.0).unwrap();
+        assert_eq!(list_ids(&conn), vec![p1.id, p3.id, p2.id]);
+        assert!(matches!(move_project(&conn, 999, 1.0), Err(AppError::Invalid(_))));
         fs::remove_dir_all(&wd).unwrap();
     }
 }

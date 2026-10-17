@@ -102,6 +102,14 @@ fn emit_skills_changed(app: &AppHandle) {
     let _ = app.emit("skills-changed", SkillsChanged {});
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ProjectsChanged {}
+
+fn emit_projects_changed(app: &AppHandle) {
+    let _ = app.emit("projects-changed", ProjectsChanged {});
+}
+
 #[tauri::command]
 fn ping() -> String {
     "pong".into()
@@ -173,6 +181,7 @@ fn create_project(app: AppHandle, state: State<AppState>, name: String) -> Resul
     let dto = with_db(&state, |conn| projects::create_project(conn, &wd, &name))?;
     watcher::start(&app, &state, &wd);
     emit_fs_changed(&app, dto.id, "");
+    emit_projects_changed(&app);
     Ok(dto)
 }
 
@@ -187,6 +196,7 @@ fn rename_project(
     let dto = with_db(&state, |conn| projects::rename_project(conn, &wd, id, &new_name))?;
     watcher::start(&app, &state, &wd);
     emit_fs_changed(&app, dto.id, "");
+    emit_projects_changed(&app);
     Ok(dto)
 }
 
@@ -199,6 +209,13 @@ fn project_path(state: State<AppState>, id: i64) -> Result<String> {
 #[tauri::command]
 fn touch_project_opened(state: State<AppState>, id: i64) -> Result<()> {
     with_db(&state, |conn| projects::touch_project_opened(conn, id))
+}
+
+#[tauri::command]
+fn move_project(app: AppHandle, state: State<AppState>, id: i64, position: f64) -> Result<()> {
+    with_db(&state, |conn| projects::move_project(conn, id, position))?;
+    emit_projects_changed(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -1114,6 +1131,7 @@ pub fn run() {
             rename_project,
             project_path,
             touch_project_opened,
+            move_project,
             tasks_list,
             task_create,
             task_update,

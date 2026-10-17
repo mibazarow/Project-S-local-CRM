@@ -157,6 +157,20 @@ input, textarea { font-family: inherit; }
 .project-item.active .mini-btn { color: rgba(255, 255, 255, .85); }
 .project-item.active .mini-btn:hover { background: rgba(255, 255, 255, .2); color: #fff; }
 
+.project-item.dragging { opacity: .45; }
+.project-item.drop-before::before,
+.project-item.drop-after::after {
+  content: "";
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+.project-item.drop-before::before { top: -2px; }
+.project-item.drop-after::after { bottom: -2px; }
+
 .empty-note {
   font-size: 11.5px;
   color: var(--text-muted);

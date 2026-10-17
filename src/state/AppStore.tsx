@@ -79,6 +79,7 @@ interface AppActions {
   createProject: (name: string) => Promise<void>;
   renameProject: (id: number, newName: string) => Promise<void>;
   openProject: (id: number) => Promise<void>;
+  moveProject: (id: number, position: number) => Promise<void>;
   refreshProjects: () => Promise<void>;
 }
 
@@ -167,6 +168,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const moveProject = useCallback(async (id: number, position: number) => {
+    dispatch({ type: "error", message: null });
+    try {
+      await ipc.moveProject(id, position);
+      dispatch({ type: "projects", projects: await ipc.listProjects() });
+    } catch (e) {
+      dispatch({ type: "error", message: toMessage(e) });
+    }
+  }, []);
+
   useEffect(() => {
     void boot();
   }, [boot]);
@@ -177,6 +188,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     let unFs: (() => void) | undefined;
     let unTasks: (() => void) | undefined;
+    let unProjects: (() => void) | undefined;
     const refresh = () => void loadProjects();
     const onFs = (payload: FsChanged) => {
       refresh();
@@ -188,16 +200,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
     void ipc.onFsChanged(onFs).then((u) => (cancelled ? u() : (unFs = u)));
     void ipc.onTasksChanged(onTasks).then((u) => (cancelled ? u() : (unTasks = u)));
+    void ipc.onProjectsChanged(refresh).then((u) => (cancelled ? u() : (unProjects = u)));
     return () => {
       cancelled = true;
       unFs?.();
       unTasks?.();
+      unProjects?.();
     };
   }, [state.onboarding.configured, loadProjects]);
 
   const actions = useMemo<AppActions>(
-    () => ({ chooseWorkingDir, createProject, renameProject, openProject, refreshProjects: loadProjects }),
-    [chooseWorkingDir, createProject, renameProject, openProject, loadProjects],
+    () => ({ chooseWorkingDir, createProject, renameProject, openProject, moveProject, refreshProjects: loadProjects }),
+    [chooseWorkingDir, createProject, renameProject, openProject, moveProject, loadProjects],
   );
 
   const value = useMemo(() => ({ state, actions }), [state, actions]);

@@ -4,11 +4,24 @@ import type { ProjectDto } from "../../api/types";
 interface Props {
   project: ProjectDto;
   active: boolean;
+  dragging: boolean;
+  dropCls: string;
   onOpen: (id: number) => void;
   onRename: (id: number, newName: string) => void;
+  onDragStart: (e: React.DragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
 }
 
-export default function ProjectItem({ project, active, onOpen, onRename }: Props) {
+export default function ProjectItem({
+  project,
+  active,
+  dragging,
+  dropCls,
+  onOpen,
+  onRename,
+  onDragStart,
+  onDragEnd,
+}: Props) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(project.name);
 
@@ -23,11 +36,20 @@ export default function ProjectItem({ project, active, onOpen, onRename }: Props
     if (next && next !== project.name) onRename(project.id, next);
   };
 
+  const classes = ["project-item"];
+  if (active) classes.push("active");
+  if (dragging) classes.push("dragging");
+  if (dropCls) classes.push(dropCls);
+
   return (
     <div
-      className={active ? "project-item active" : "project-item"}
+      className={classes.join(" ")}
       role="button"
       tabIndex={0}
+      data-id={project.id}
+      draggable={!renaming}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
       onClick={() => !renaming && onOpen(project.id)}
     >
       {renaming ? (

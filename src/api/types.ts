@@ -16,6 +16,7 @@ export interface ProjectDto {
   path: string;
   createdAt: string;
   openedAt: string | null;
+  position: number;
   fileCount: number;
   taskCount: number;
   overdueCount: number;

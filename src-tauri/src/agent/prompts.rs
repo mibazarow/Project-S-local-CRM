@@ -103,6 +103,7 @@ mod tests {
             path: "/wd/Projects/example.ru".into(),
             created_at: "2026-01-01".into(),
             opened_at: None,
+            position: 1.0,
             file_count: 0,
             task_count: 0,
             overdue_count: 0,

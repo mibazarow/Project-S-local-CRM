@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 13;
+pub const SCHEMA_VERSION: i64 = 14;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -270,6 +270,14 @@ DROP TABLE IF EXISTS file_vectors;
     )
 }
 
+// Manual project ordering: projects are listed by position, not opened_at, so
+// opening a project no longer reorders the list. Backfill position = id so
+// existing rows keep a stable creation-order sequence.
+const MIGRATION_14: &str = "
+ALTER TABLE projects ADD COLUMN position REAL NOT NULL DEFAULT 0;
+UPDATE projects SET position = id;
+";
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -323,6 +331,19 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     }
     if version < 13 {
         conn.execute_batch(&migration_13())?;
+        conn.pragma_update(None, "user_version", 13)?;
+    }
+    if version < 14 {
+        // Guarded so a re-run after an interrupted v14 (or a test that rolls
+        // user_version back on an already-migrated db) does not re-ALTER.
+        let has_position: i64 = conn.query_row(
+            "SELECT count(*) FROM pragma_table_info('projects') WHERE name = 'position'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_position == 0 {
+            conn.execute_batch(MIGRATION_14)?;
+        }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
     Ok(())
@@ -815,6 +836,48 @@ CREATE VIRTUAL TABLE vec_items USING vec0(
             params![blob512],
         );
         assert!(wrong_dim.is_err(), "512-d vector accepted into the 768-d vec0 table");
+    }
+
+    #[test]
+    fn migration_v14_backfills_project_positions_from_id() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        // Simulate a pre-v14 database: projects without the position column.
+        conn.execute_batch("ALTER TABLE projects DROP COLUMN position")
+            .unwrap();
+        for name in ["a", "b", "c"] {
+            conn.execute(
+                "INSERT INTO projects (name, path, created_at) VALUES (?1, ?2, '2026-01-01')",
+                params![name, format!("/tmp/{name}")],
+            )
+            .unwrap();
+        }
+        conn.pragma_update(None, "user_version", 13).unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let positions: Vec<f64> = {
+            let mut stmt = conn
+                .prepare("SELECT position FROM projects ORDER BY position, id")
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let ids: Vec<i64> = {
+            let mut stmt = conn.prepare("SELECT id FROM projects ORDER BY position, id").unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(positions, vec![1.0, 2.0, 3.0]);
+        assert_eq!(ids, vec![1, 2, 3], "backfill must keep id order stable");
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
     }
 
     #[test]
