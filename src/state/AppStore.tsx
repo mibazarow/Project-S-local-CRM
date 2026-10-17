@@ -21,6 +21,13 @@ interface AppState {
   treeVersion: number;
   // Bumped on tasks-changed for the active project; the kanban refetches on it.
   tasksVersion: number;
+  // Cross-view navigation intents (command palette): set globally, consumed
+  // and cleared by the target view even when it mounts after the request.
+  pendingNotePath: string | null;
+  pendingSessionId: number | null;
+  settingsRequested: boolean;
+  newProjectRequested: boolean;
+  newNoteRequested: boolean;
 }
 
 type Action =
@@ -30,7 +37,12 @@ type Action =
   | { type: "activeProject"; id: number | null }
   | { type: "error"; message: string | null }
   | { type: "fsChanged"; projectId: number }
-  | { type: "tasksChanged"; projectId: number };
+  | { type: "tasksChanged"; projectId: number }
+  | { type: "pendingNote"; path: string | null }
+  | { type: "pendingSession"; id: number | null }
+  | { type: "settingsRequested"; value: boolean }
+  | { type: "newProjectRequested"; value: boolean }
+  | { type: "newNoteRequested"; value: boolean };
 
 const initialState: AppState = {
   onboarding: { configured: false, workingDir: null },
@@ -40,6 +52,11 @@ const initialState: AppState = {
   error: null,
   treeVersion: 0,
   tasksVersion: 0,
+  pendingNotePath: null,
+  pendingSessionId: null,
+  settingsRequested: false,
+  newProjectRequested: false,
+  newNoteRequested: false,
 };
 
 function reducer(state: AppState, action: Action): AppState {
@@ -62,6 +79,16 @@ function reducer(state: AppState, action: Action): AppState {
       return action.projectId === state.activeProjectId
         ? { ...state, tasksVersion: state.tasksVersion + 1 }
         : state;
+    case "pendingNote":
+      return { ...state, pendingNotePath: action.path };
+    case "pendingSession":
+      return { ...state, pendingSessionId: action.id };
+    case "settingsRequested":
+      return { ...state, settingsRequested: action.value };
+    case "newProjectRequested":
+      return { ...state, newProjectRequested: action.value };
+    case "newNoteRequested":
+      return { ...state, newNoteRequested: action.value };
   }
 }
 
@@ -81,6 +108,17 @@ interface AppActions {
   openProject: (id: number) => Promise<void>;
   moveProject: (id: number, position: number) => Promise<void>;
   refreshProjects: () => Promise<void>;
+  // Command-palette navigation intents; each target view clears its own.
+  requestNote: (relPath: string) => void;
+  requestSession: (id: number) => void;
+  requestSettings: () => void;
+  requestNewProject: () => void;
+  requestNewNote: () => void;
+  clearPendingNote: () => void;
+  clearPendingSession: () => void;
+  clearSettingsRequested: () => void;
+  clearNewProject: () => void;
+  clearNewNote: () => void;
 }
 
 interface AppContextValue {
@@ -178,6 +216,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const requestNote = useCallback((relPath: string) => dispatch({ type: "pendingNote", path: relPath }), []);
+  const requestSession = useCallback((id: number) => dispatch({ type: "pendingSession", id }), []);
+  const requestSettings = useCallback(() => dispatch({ type: "settingsRequested", value: true }), []);
+  const requestNewProject = useCallback(() => dispatch({ type: "newProjectRequested", value: true }), []);
+  const requestNewNote = useCallback(() => dispatch({ type: "newNoteRequested", value: true }), []);
+  const clearPendingNote = useCallback(() => dispatch({ type: "pendingNote", path: null }), []);
+  const clearPendingSession = useCallback(() => dispatch({ type: "pendingSession", id: null }), []);
+  const clearSettingsRequested = useCallback(() => dispatch({ type: "settingsRequested", value: false }), []);
+  const clearNewProject = useCallback(() => dispatch({ type: "newProjectRequested", value: false }), []);
+  const clearNewNote = useCallback(() => dispatch({ type: "newNoteRequested", value: false }), []);
+
   useEffect(() => {
     void boot();
   }, [boot]);
@@ -210,8 +259,42 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [state.onboarding.configured, loadProjects]);
 
   const actions = useMemo<AppActions>(
-    () => ({ chooseWorkingDir, createProject, renameProject, openProject, moveProject, refreshProjects: loadProjects }),
-    [chooseWorkingDir, createProject, renameProject, openProject, moveProject, loadProjects],
+    () => ({
+      chooseWorkingDir,
+      createProject,
+      renameProject,
+      openProject,
+      moveProject,
+      refreshProjects: loadProjects,
+      requestNote,
+      requestSession,
+      requestSettings,
+      requestNewProject,
+      requestNewNote,
+      clearPendingNote,
+      clearPendingSession,
+      clearSettingsRequested,
+      clearNewProject,
+      clearNewNote,
+    }),
+    [
+      chooseWorkingDir,
+      createProject,
+      renameProject,
+      openProject,
+      moveProject,
+      loadProjects,
+      requestNote,
+      requestSession,
+      requestSettings,
+      requestNewProject,
+      requestNewNote,
+      clearPendingNote,
+      clearPendingSession,
+      clearSettingsRequested,
+      clearNewProject,
+      clearNewNote,
+    ],
   );
 
   const value = useMemo(() => ({ state, actions }), [state, actions]);

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type FormEvent } from "react";
 import * as ipc from "../../api/ipc";
+import { useApp } from "../../state/AppStore";
 import type {
   AgentEventPayload,
   ChatHit,
@@ -219,6 +220,7 @@ function ScheduleItem({
 }
 
 export default function HarnessView() {
+  const { state, actions } = useApp();
   const [sessions, setSessions] = useState<SessionDto[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
@@ -280,6 +282,17 @@ export default function HarnessView() {
     void loadSessions();
     void loadSchedules();
   }, [loadSessions, loadSchedules]);
+
+  // Command-palette intent: switch to a session requested before this view
+  // mounted. loadSessions keeps an activeId that exists in the list, so the
+  // pending id survives the initial load; a vanished id falls back to the
+  // first session.
+  useEffect(() => {
+    const id = state.pendingSessionId;
+    if (id == null) return;
+    actions.clearPendingSession();
+    setActiveId(id);
+  }, [state.pendingSessionId, actions]);
 
   // Chat search: the query is debounced into activeQuery (one request per
   // pause, no polling); an empty query restores the plain session list.

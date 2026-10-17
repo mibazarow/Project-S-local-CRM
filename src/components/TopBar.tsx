@@ -1,12 +1,15 @@
+import { IconSearch } from "./files/icons";
+
 export type Tab = "projects" | "harness" | "journal" | "notes";
 
 interface Props {
   tab: Tab;
   onTab: (tab: Tab) => void;
   onSettings: () => void;
+  onSearch: () => void;
 }
 
-export default function TopBar({ tab, onTab, onSettings }: Props) {
+export default function TopBar({ tab, onTab, onSettings, onSearch }: Props) {
   return (
     <header className="topbar">
       <div className="topbar-left">
@@ -39,6 +42,9 @@ export default function TopBar({ tab, onTab, onSettings }: Props) {
         </button>
       </nav>
       <div className="topbar-right">
+        <button className="icon-btn" title="Поиск (⌘K)" onClick={onSearch}>
+          <IconSearch />
+        </button>
         <button className="icon-btn" title="Настройки" onClick={onSettings}>
           <svg
             viewBox="0 0 24 24"

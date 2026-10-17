@@ -100,6 +100,8 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(super::git_tools::GitLogTool),
         Arc::new(super::git_tools::GitBranchTool),
         Arc::new(super::git_tools::GitCommitTool),
+        Arc::new(super::git_tools::GitPullTool),
+        Arc::new(super::git_tools::GitPushTool),
         // SSH tools via the system ssh/scp CLI with keys/ssh-agent; lazy
         // discovered like the rest of the machine-wide set; see ssh_tools.rs.
         Arc::new(super::ssh_tools::SshListProfilesTool),
@@ -1453,7 +1455,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const DEFERRED_NAMES: [&str; 40] = [
+    const DEFERRED_NAMES: [&str; 42] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -1486,6 +1488,8 @@ mod tests {
         "git_log",
         "git_branch",
         "git_commit",
+        "git_pull",
+        "git_push",
         "ssh_list_profiles",
         "ssh_exec",
         "ssh_upload",
@@ -1525,7 +1529,7 @@ mod tests {
         }
         assert_eq!(tool("fs_write").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("create_skill").policy(), PermissionPolicy::Skip);
-        for name in ["fs_delete", "bash", "crm_task_delete", "git_commit", "apply_patch", "ssh_exec", "ssh_upload", "ssh_download"] {
+        for name in ["fs_delete", "bash", "crm_task_delete", "git_commit", "git_pull", "git_push", "apply_patch", "ssh_exec", "ssh_upload", "ssh_download"] {
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
             assert!(tool(name).danger_reason(&json!({}), &ToolCtx::default()).is_some(), "{name} danger_reason");

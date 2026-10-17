@@ -20,6 +20,9 @@ interface Props {
   treeVersion: number;
   selectedRelPath: string | null;
   selectedDirRel: string;
+  // Bumped by the command palette's «Новая заметка» action: opens the inline
+  // create input for a file under the selected folder.
+  createTick?: number;
   onSelect: (entry: FsEntry) => void;
   onDeleted: (rel: string) => void;
   onRenamed: (oldRel: string, entry: FsEntry) => void;
@@ -118,6 +121,7 @@ export default function NotesTree({
   treeVersion,
   selectedRelPath,
   selectedDirRel,
+  createTick,
   onSelect,
   onDeleted,
   onRenamed,
@@ -196,6 +200,13 @@ export default function NotesTree({
     setRenamingPath(null);
     setCreating({ parentRel: selectedDirRel, kind });
   };
+
+  useEffect(() => {
+    if (!createTick) return;
+    startCreate("file");
+    // selectedDirRel is intentionally not a dep: only a bumped tick opens the
+    // create input, folder selection changes must not.
+  }, [createTick]);
 
   const commitCreate = async (kind: "dir" | "file", parentRel: string, name: string) => {
     setCreating(null);

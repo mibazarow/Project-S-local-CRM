@@ -1210,6 +1210,82 @@ input, textarea { font-family: inherit; }
 .notes-editor-body .preview-body { flex: 1; overflow: auto; }
 .notes-editor-body .preview-textarea { flex: 1; min-height: 0; resize: none; }
 
+/* ---------- Командная палитра (⌘K) ---------- */
+
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .25);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  z-index: 70;
+  padding: 12vh 16px 16px;
+}
+.palette {
+  width: 560px;
+  max-height: 62vh;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .35);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.palette-search {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+}
+.palette-search input { border: none; background: transparent; outline: none; font-size: 14px; width: 100%; color: var(--text); }
+.palette-list { flex: 1; overflow-y: auto; min-height: 0; padding: 6px; }
+.palette-group + .palette-group { margin-top: 2px; }
+.palette-group-title {
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-muted);
+  padding: 8px 10px 4px;
+}
+.palette-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  color: var(--text);
+  transition: background .12s;
+}
+.palette-item:hover { background: rgba(0, 0, 0, .045); }
+.palette-item.active { background: var(--accent); color: #fff; }
+.palette-item-name { font-size: 12.5px; font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-item-hint {
+  margin-left: auto;
+  flex-shrink: 0;
+  max-width: 40%;
+  font-size: 11px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette-item.active .palette-item-hint { color: rgba(255, 255, 255, .75); }
+.palette-foot {
+  display: flex;
+  gap: 14px;
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 /* ---------- Скроллбары (overlay, как в macOS) ---------- */
 
 ::-webkit-scrollbar { width: 8px; }

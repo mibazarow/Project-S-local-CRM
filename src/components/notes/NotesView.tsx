@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
+import { useApp } from "../../state/AppStore";
 import NoteEditor from "./NoteEditor";
 import NotesChat from "./NotesChat";
 import NotesSearchResults from "./NotesSearchResults";
@@ -12,10 +13,12 @@ import { IconClose, IconSearch } from "../files/icons";
 const NOTES_SCOPE_ID = -1;
 
 export default function NotesView() {
+  const { state, actions } = useApp();
   const [treeVersion, setTreeVersion] = useState(0);
   const [selected, setSelected] = useState<FsEntry | null>(null);
   const [query, setQuery] = useState("");
   const [activeQuery, setActiveQuery] = useState("");
+  const [createTick, setCreateTick] = useState(0);
   const dirtyRef = useRef(false);
   const setDirty = useCallback((dirty: boolean) => {
     dirtyRef.current = dirty;
@@ -79,6 +82,33 @@ export default function NotesView() {
     else if (selected.relPath.startsWith(`${oldRel}/`)) setSelected(null);
   };
 
+  // Command-palette intent: open a note by vault-relative path (resolved to a
+  // real FsEntry through the folder listing, like the search results do).
+  useEffect(() => {
+    const path = state.pendingNotePath;
+    if (!path) return;
+    actions.clearPendingNote();
+    if (!confirmDiscard()) return;
+    void (async () => {
+      const slash = path.lastIndexOf("/");
+      const dir = slash === -1 ? "" : path.slice(0, slash);
+      try {
+        const entries = await ipc.notesList(dir);
+        const entry = entries.find((e) => e.relPath === path);
+        if (entry) setSelected(entry);
+      } catch {
+        // The note vanished between palette load and open: stay put.
+      }
+    })();
+  }, [state.pendingNotePath, actions]);
+
+  // Command-palette intent: focus the tree's "Новая заметка" create input.
+  useEffect(() => {
+    if (!state.newNoteRequested) return;
+    actions.clearNewNote();
+    setCreateTick((v) => v + 1);
+  }, [state.newNoteRequested, actions]);
+
   return (
     <main className="view active notes-view">
       <aside className="sidebar">
@@ -114,6 +144,7 @@ export default function NotesView() {
             treeVersion={treeVersion}
             selectedRelPath={selected?.relPath ?? null}
             selectedDirRel={selected && selected.kind === "dir" ? selected.relPath : ""}
+            createTick={createTick}
             onSelect={handleSelect}
             onDeleted={handleDeleted}
             onRenamed={handleRenamed}

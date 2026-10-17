@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useApp } from "../../state/AppStore";
 import ProjectItem from "./ProjectItem";
 
@@ -10,6 +10,14 @@ export default function ProjectList() {
   const [dropIndex, setDropIndex] = useState<number | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const lastDragEndRef = useRef(0);
+
+  // Command-palette intent: open the inline "new project" input.
+  useEffect(() => {
+    if (!state.newProjectRequested) return;
+    actions.clearNewProject();
+    setDraft("");
+    setAdding(true);
+  }, [state.newProjectRequested, actions]);
 
   const submitAdd = async () => {
     const name = draft.trim();

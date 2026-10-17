@@ -1,8 +1,9 @@
 // Agent git tools via the system `git` CLI (no new crates). status/diff/log are
 // ReadOnly/Skip in both modes; branch create/switch and commit are Mutating and
 // confirmed (branch list skips confirmation through CheckConditional). Only the
-// subcommands used here ever run: push, reset --hard, clean and force operations
-// are not reachable from this module. Project mode keeps every path inside the
+// subcommands used here ever run: pull defaults to --ff-only and push is never
+// forced; reset --hard, clean and force operations are not reachable from this
+// module. Project mode keeps every path inside the
 // project root; harness mode accepts absolute/~/working-dir-relative paths.
 // All output is secret-masked (journal heuristic) and capped.
 use super::project_tools::{envelope, require_wd, with_conn};
@@ -164,14 +165,25 @@ fn ensure_repo(dir: &Path) -> Result<()> {
     }
 }
 
+// Shared static guard for every remote/branch argument: empty names, option
+// lookalikes (leading "-") and force-push refspecs (leading "+") never reach
+// the git option parser; whitespace and control bytes break argv quoting.
+fn ref_arg_error(label: &str, name: &str) -> Option<String> {
+    if name.is_empty()
+        || name.starts_with('-')
+        || name.starts_with('+')
+        || name.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return Some(format!("invalid {label} name \"{name}\""));
+    }
+    None
+}
+
 // Cheap static guard first (also keeps the name out of git's option parser),
 // then git's own authoritative ref-format check.
 fn branch_name_error(dir: &Path, name: &str) -> Option<String> {
-    if name.is_empty()
-        || name.starts_with('-')
-        || name.chars().any(|c| c.is_whitespace() || c.is_control())
-    {
-        return Some(format!("invalid branch name \"{name}\""));
+    if let Some(msg) = ref_arg_error("branch", name) {
+        return Some(msg);
     }
     match run_git(dir, &["check-ref-format", "--branch", name]) {
         Ok(out) if out.code == 0 => None,
@@ -182,6 +194,26 @@ fn branch_name_error(dir: &Path, name: &str) -> Option<String> {
                 out.stderr.trim()
             };
             Some(format!("invalid branch name \"{name}\": {detail}"))
+        }
+        Err(e) => Some(e.to_string()),
+    }
+}
+
+// Remote names are validated the same way: static guard plus git's ref-format
+// check applied to the refs/remotes/<name> ref the remote maps to.
+fn remote_name_error(dir: &Path, name: &str) -> Option<String> {
+    if let Some(msg) = ref_arg_error("remote", name) {
+        return Some(msg);
+    }
+    match run_git(dir, &["check-ref-format", &format!("refs/remotes/{name}")]) {
+        Ok(out) if out.code == 0 => None,
+        Ok(out) => {
+            let detail = if out.stderr.trim().is_empty() {
+                out.stdout.trim()
+            } else {
+                out.stderr.trim()
+            };
+            Some(format!("invalid remote name \"{name}\": {detail}"))
         }
         Err(e) => Some(e.to_string()),
     }
@@ -522,8 +554,190 @@ impl Tool for GitCommitTool {
     }
 }
 
+pub struct GitPullTool;
+
+impl Tool for GitPullTool {
+    fn name(&self) -> &str {
+        "git_pull"
+    }
+    fn description(&self) -> &str {
+        "git pull in a repository, fast-forward only by default (--ff-only); allowMerge=true permits a merge pull. remote and branch are optional validated names."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "remote": { "type": "string" },
+                "branch": { "type": "string" },
+                "allowMerge": { "type": "boolean" }
+            },
+            "required": [],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Check
+    }
+    fn danger_reason(&self, _args: &Value, _ctx: &ToolCtx) -> Option<String> {
+        Some("git pull: обновление рабочей копии из удалённого репозитория".to_string())
+    }
+    fn max_result_len(&self) -> usize {
+        GIT_RESULT_CAP
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let dir = match resolve_dir(args, ctx) {
+            Ok(d) => d,
+            Err(e) => return Ok(envelope::<()>(Err(e))),
+        };
+        if let Err(e) = ensure_repo(&dir) {
+            return Ok(envelope::<()>(Err(e)));
+        }
+        let remote = args.get("remote").and_then(Value::as_str).unwrap_or("");
+        let branch = args.get("branch").and_then(Value::as_str).unwrap_or("");
+        if !remote.is_empty() {
+            if let Some(msg) = remote_name_error(&dir, remote) {
+                return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, msg));
+            }
+        }
+        if !branch.is_empty() {
+            if let Some(msg) = branch_name_error(&dir, branch) {
+                return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, msg));
+            }
+        }
+        let allow_merge = args.get("allowMerge").and_then(Value::as_bool).unwrap_or(false);
+        let mut cmd: Vec<&str> = vec!["pull"];
+        if !allow_merge {
+            cmd.push("--ff-only");
+        }
+        if !remote.is_empty() {
+            cmd.push(remote);
+        }
+        if !branch.is_empty() {
+            cmd.push(branch);
+        }
+        let before = run_git(&dir, &["rev-parse", "HEAD"])?;
+        if before.code != 0 {
+            return Ok(git_fail("rev-parse", &before));
+        }
+        let out = run_git(&dir, &cmd)?;
+        if out.code != 0 {
+            return Ok(git_fail("pull", &out));
+        }
+        let after = run_git(&dir, &["rev-parse", "HEAD"])?;
+        if after.code != 0 {
+            return Ok(git_fail("rev-parse", &after));
+        }
+        let first_line = out.stdout.lines().next().unwrap_or("").trim();
+        let summary = if first_line.starts_with("Already up to date") {
+            first_line.to_string()
+        } else {
+            out.stdout.trim().to_string()
+        };
+        let mut data = json!({
+            "summary": summary,
+            "stdout": out.stdout,
+            "truncated": out.truncated,
+        });
+        if before.stdout.trim() == after.stdout.trim() {
+            data["alreadyUpToDate"] = json!(true);
+        }
+        Ok(ToolResult::ok(data).capped(self.max_result_len()))
+    }
+}
+
+pub struct GitPushTool;
+
+impl Tool for GitPushTool {
+    fn name(&self) -> &str {
+        "git_push"
+    }
+    fn description(&self) -> &str {
+        "git push of the current or named branch to a remote (default remote when omitted). Never force-pushes; setUpstream=true adds -u and needs branch."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "remote": { "type": "string" },
+                "branch": { "type": "string" },
+                "setUpstream": { "type": "boolean" }
+            },
+            "required": [],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Check
+    }
+    fn danger_reason(&self, _args: &Value, _ctx: &ToolCtx) -> Option<String> {
+        Some("git push: публикация коммитов в удалённый репозиторий".to_string())
+    }
+    fn max_result_len(&self) -> usize {
+        GIT_RESULT_CAP
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let dir = match resolve_dir(args, ctx) {
+            Ok(d) => d,
+            Err(e) => return Ok(envelope::<()>(Err(e))),
+        };
+        if let Err(e) = ensure_repo(&dir) {
+            return Ok(envelope::<()>(Err(e)));
+        }
+        let remote = args.get("remote").and_then(Value::as_str).unwrap_or("");
+        let branch = args.get("branch").and_then(Value::as_str).unwrap_or("");
+        if !remote.is_empty() {
+            if let Some(msg) = remote_name_error(&dir, remote) {
+                return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, msg));
+            }
+        }
+        if !branch.is_empty() {
+            if let Some(msg) = branch_name_error(&dir, branch) {
+                return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, msg));
+            }
+        }
+        let set_upstream = args.get("setUpstream").and_then(Value::as_bool).unwrap_or(false);
+        let mut cmd: Vec<&str> = vec!["push"];
+        if set_upstream && !branch.is_empty() {
+            cmd.push("-u");
+        }
+        if !remote.is_empty() {
+            cmd.push(remote);
+        }
+        if !branch.is_empty() {
+            cmd.push(branch);
+        }
+        let out = run_git(&dir, &cmd)?;
+        if out.code != 0 {
+            return Ok(git_fail("push", &out));
+        }
+        let detail = if out.stderr.trim().is_empty() {
+            out.stdout.trim()
+        } else {
+            out.stderr.trim()
+        };
+        let mut data = json!({
+            "summary": detail,
+            "stdout": out.stdout,
+            "truncated": out.truncated,
+        });
+        if detail.contains("Everything up-to-date") {
+            data["upToDate"] = json!(true);
+        }
+        Ok(ToolResult::ok(data).capped(self.max_result_len()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::super::tool::validate_args;
     use super::*;
     use crate::db;
     use crate::onboarding::temp_test_dir;
@@ -554,14 +768,34 @@ mod tests {
     }
 
     // Local config keeps commits working regardless of the user's global git
-    // settings (identity, gpg signing).
+    // settings (identity, gpg signing); pull.rebase=false keeps merge pulls
+    // deterministic on top of user config.
     fn init_repo(tag: &str) -> PathBuf {
         let dir = temp_test_dir(tag);
         git_ok(&dir, &["init", "-q"]);
         git_ok(&dir, &["config", "user.email", "test@example.com"]);
         git_ok(&dir, &["config", "user.name", "Test User"]);
         git_ok(&dir, &["config", "commit.gpgsign", "false"]);
+        git_ok(&dir, &["config", "pull.rebase", "false"]);
         dir
+    }
+
+    // Bare local remote for pull/push tests (file:// URL keeps paths with
+    // spaces safe and never looks like an option).
+    fn bare_remote(tag: &str) -> PathBuf {
+        let dir = temp_test_dir(tag);
+        git_ok(&dir, &["init", "-q", "--bare"]);
+        dir
+    }
+
+    fn clone_with_config(url: &str, dest: &Path) {
+        let parent = dest.parent().unwrap();
+        fs::create_dir_all(parent).unwrap();
+        git_ok(parent, &["clone", "-q", url, &dest.to_string_lossy()]);
+        git_ok(dest, &["config", "user.email", "test@example.com"]);
+        git_ok(dest, &["config", "user.name", "Test User"]);
+        git_ok(dest, &["config", "commit.gpgsign", "false"]);
+        git_ok(dest, &["config", "pull.rebase", "false"]);
     }
 
     // Harness mode: working dir is the repo, paths may be absolute.
@@ -813,6 +1047,221 @@ mod tests {
     }
 
     #[test]
+    fn push_and_pull_round_trip_with_bare_remote() {
+        if !git_available() {
+            eprintln!("git not available, skipping");
+            return;
+        }
+        let remote = bare_remote("gt-sync-remote");
+        let url = format!("file://{}", remote.display());
+        let clone = temp_test_dir("gt-sync-clone").join("work");
+        clone_with_config(&url, &clone);
+        let ctx = harness_ctx(&clone);
+
+        fs::write(clone.join("a.txt"), "a\n").unwrap();
+        git_ok(&clone, &["add", "a.txt"]);
+        git_ok(&clone, &["commit", "-m", "first"]);
+        let branch = git_ok(&clone, &["rev-parse", "--abbrev-ref", "HEAD"]).trim().to_owned();
+        let r = exec(&GitPushTool, json!({}), &ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let summary = r.data.unwrap()["summary"].as_str().unwrap().to_owned();
+        assert!(
+            summary.contains("[new branch]") && summary.contains(&format!("{branch} -> {branch}")),
+            "{summary}"
+        );
+
+        // second clone sees only the first commit, then pulls the second
+        let other = temp_test_dir("gt-sync-other").join("work");
+        clone_with_config(&url, &other);
+        let other_ctx = harness_ctx(&other);
+
+        fs::write(clone.join("b.txt"), "b\n").unwrap();
+        git_ok(&clone, &["add", "b.txt"]);
+        git_ok(&clone, &["commit", "-m", "second"]);
+        let r = exec(&GitPushTool, json!({ "remote": "origin" }), &ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let summary = r.data.unwrap()["summary"].as_str().unwrap().to_owned();
+        assert!(summary.contains(&format!("{branch} -> {branch}")), "{summary}");
+
+        let r = exec(&GitPullTool, json!({}), &other_ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert!(data.get("alreadyUpToDate").is_none(), "{data}");
+        assert_eq!(
+            git_ok(&other, &["rev-parse", "HEAD"]).trim(),
+            git_ok(&clone, &["rev-parse", "HEAD"]).trim()
+        );
+
+        // nothing new to pull: alreadyUpToDate flag
+        let branch = git_ok(&other, &["rev-parse", "--abbrev-ref", "HEAD"]).trim().to_owned();
+        let r = exec(&GitPullTool, json!({ "remote": "origin", "branch": branch }), &other_ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["alreadyUpToDate"], true);
+        assert!(data["summary"].as_str().unwrap().contains("Already up to date"));
+
+        // push with nothing to publish
+        let r = exec(&GitPushTool, json!({}), &ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["upToDate"], true);
+
+        // setUpstream needs a branch and sets the tracking ref
+        git_ok(&clone, &["branch", "feature"]);
+        let r = exec(
+            &GitPushTool,
+            json!({ "remote": "origin", "branch": "feature", "setUpstream": true }),
+            &ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(
+            git_ok(&clone, &["rev-parse", "--abbrev-ref", "feature@{upstream}"]).trim(),
+            "origin/feature"
+        );
+        fs::remove_dir_all(remote).unwrap();
+        fs::remove_dir_all(clone.parent().unwrap()).unwrap();
+        fs::remove_dir_all(other.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn pull_ff_only_refuses_divergence_and_allow_merge_merges() {
+        if !git_available() {
+            eprintln!("git not available, skipping");
+            return;
+        }
+        let remote = bare_remote("gt-diverge-remote");
+        let url = format!("file://{}", remote.display());
+        let c1 = temp_test_dir("gt-diverge-c1").join("work");
+        clone_with_config(&url, &c1);
+        fs::write(c1.join("a.txt"), "a\n").unwrap();
+        git_ok(&c1, &["add", "a.txt"]);
+        git_ok(&c1, &["commit", "-m", "base"]);
+        git_ok(&c1, &["push", "-q", "origin", "HEAD"]);
+
+        let c2 = temp_test_dir("gt-diverge-c2").join("work");
+        clone_with_config(&url, &c2);
+        let ctx2 = harness_ctx(&c2);
+
+        fs::write(c1.join("a.txt"), "remote\n").unwrap();
+        git_ok(&c1, &["commit", "-aqm", "remote"]);
+        git_ok(&c1, &["push", "-q", "origin", "HEAD"]);
+        // different file: the merge pull must succeed cleanly
+        fs::write(c2.join("b.txt"), "local\n").unwrap();
+        git_ok(&c2, &["add", "b.txt"]);
+        git_ok(&c2, &["commit", "-m", "local"]);
+
+        // default pull is --ff-only and refuses with a clear git error
+        let r = exec(&GitPullTool, json!({}), &ctx2);
+        assert!(!r.ok);
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "execution_error");
+        assert!(
+            err.message.contains("Not possible to fast-forward")
+                || err.message.contains("not allow fast-forward")
+                || err.message.contains("Must be fast-forward"),
+            "{}",
+            err.message
+        );
+        assert!(
+            !err.message.contains("--force"),
+            "force flag leaked: {}",
+            err.message
+        );
+
+        // allowMerge=true performs a real merge pull
+        let r = exec(&GitPullTool, json!({ "allowMerge": true }), &ctx2);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(
+            git_ok(&c2, &["rev-list", "--count", "HEAD"]).trim(),
+            "4",
+            "merge pull must combine both sides (base + remote + local + merge)"
+        );
+        assert_eq!(
+            git_ok(&c2, &["rev-parse", "HEAD^2"]).trim(),
+            git_ok(&c1, &["rev-parse", "HEAD"]).trim()
+        );
+        fs::remove_dir_all(remote).unwrap();
+        fs::remove_dir_all(c1.parent().unwrap()).unwrap();
+        fs::remove_dir_all(c2.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn sync_tools_never_build_force_flags_and_validate_names() {
+        if !git_available() {
+            eprintln!("git not available, skipping");
+            return;
+        }
+        let repo = init_repo("gt-sync-guard");
+        let ctx = harness_ctx(&repo);
+        fs::write(repo.join("a.txt"), "a\n").unwrap();
+        git_ok(&repo, &["add", "a.txt"]);
+        git_ok(&repo, &["commit", "-m", "first"]);
+
+        // force/mirror/delete lookalikes are not in the schema and are
+        // rejected as unknown properties before execute ever runs
+        for tool in [&GitPullTool as &dyn Tool, &GitPushTool] {
+            for extra in ["force", "forceWithLease", "mirror", "delete", "flags"] {
+                let err = validate_args(&tool.parameters(), &json!({ extra: true })).unwrap_err();
+                assert!(err.contains(extra), "{extra}: {err}");
+            }
+        }
+
+        // option lookalikes and force-push refspecs are rejected as invalid
+        // names before any network command is built
+        for bad in ["--force", "--force-with-lease", "--mirror", "--delete"] {
+            let r = exec(&GitPushTool, json!({ "remote": bad }), &ctx);
+            assert_eq!(r.error.unwrap().code, "invalid_args", "{bad:?}");
+            let r = exec(&GitPullTool, json!({ "remote": bad }), &ctx);
+            assert_eq!(r.error.unwrap().code, "invalid_args", "{bad:?}");
+        }
+        for bad in ["+main", "+main:main", "+HEAD"] {
+            let r = exec(&GitPushTool, json!({ "branch": bad }), &ctx);
+            assert_eq!(r.error.unwrap().code, "invalid_args", "{bad:?}");
+        }
+        for bad in ["bad name", "-x", "a..b"] {
+            let r = exec(&GitPullTool, json!({ "branch": bad }), &ctx);
+            assert_eq!(r.error.unwrap().code, "invalid_args", "{bad:?}");
+            let r = exec(&GitPushTool, json!({ "branch": bad }), &ctx);
+            assert_eq!(r.error.unwrap().code, "invalid_args", "{bad:?}");
+        }
+        for bad in ["bad name", "-x", ".."] {
+            let r = exec(&GitPullTool, json!({ "remote": bad }), &ctx);
+            assert_eq!(r.error.unwrap().code, "invalid_args", "{bad:?}");
+            let r = exec(&GitPushTool, json!({ "remote": bad }), &ctx);
+            assert_eq!(r.error.unwrap().code, "invalid_args", "{bad:?}");
+        }
+        fs::remove_dir_all(&repo).unwrap();
+    }
+
+    #[test]
+    fn sync_tools_report_non_repo_and_project_escapes() {
+        if !git_available() {
+            eprintln!("git not available, skipping");
+            return;
+        }
+        let dir = temp_test_dir("gt-sync-nonrepo");
+        let ctx = harness_ctx(&dir);
+        for tool in [&GitPullTool as &dyn Tool, &GitPushTool] {
+            let r = exec(tool, json!({}), &ctx);
+            assert!(!r.ok);
+            assert!(
+                r.error.unwrap().message.contains("not a git repository"),
+                "not a git repository"
+            );
+        }
+        fs::remove_dir_all(&dir).unwrap();
+
+        let (root, ctx) = project_env("gt-sync-project");
+        git_ok(&root, &["init", "-q"]);
+        for bad in ["../x", "/etc", ".."] {
+            for tool in [&GitPullTool as &dyn Tool, &GitPushTool] {
+                let r = exec(tool, json!({ "path": bad }), &ctx);
+                assert_eq!(r.error.unwrap().code, "permission_denied", "{bad:?}");
+            }
+        }
+        fs::remove_dir_all(ctx.working_dir.unwrap()).unwrap();
+    }
+
+    #[test]
     fn classes_and_policies_match_the_spec() {
         let read_only: [&dyn Tool; 3] = [&GitStatusTool, &GitDiffTool, &GitLogTool];
         for t in read_only {
@@ -826,5 +1275,15 @@ mod tests {
         assert!(GitCommitTool
             .danger_reason(&json!({ "message": "m" }), &ToolCtx::default())
             .is_some());
+        for t in [&GitPullTool as &dyn Tool, &GitPushTool] {
+            assert_eq!(t.class(), ToolClass::Mutating, "{} class", t.name());
+            assert_eq!(t.policy(), PermissionPolicy::Check, "{} policy", t.name());
+            assert!(
+                t.danger_reason(&json!({}), &ToolCtx::default())
+                    .is_some(),
+                "{} danger_reason",
+                t.name()
+            );
+        }
     }
 }

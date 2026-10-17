@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useApp } from "./state/AppStore";
 import Onboarding from "./components/onboarding/Onboarding";
 import TopBar, { type Tab } from "./components/TopBar";
+import CommandPalette from "./components/CommandPalette";
 import SettingsModal from "./components/SettingsModal";
 import ProjectList from "./components/projects/ProjectList";
 import FilesPanel from "./components/files/FilesPanel";
@@ -11,9 +12,27 @@ import JournalView from "./components/journal/JournalView";
 import NotesView from "./components/notes/NotesView";
 
 export default function App() {
-  const { state } = useApp();
+  const { state, actions } = useApp();
   const [tab, setTab] = useState<Tab>("projects");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.code === "KeyK") {
+        e.preventDefault();
+        setPaletteOpen((v) => !v);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  useEffect(() => {
+    if (!state.settingsRequested) return;
+    setSettingsOpen(true);
+    actions.clearSettingsRequested();
+  }, [state.settingsRequested, actions]);
 
   if (state.loading) {
     return (
@@ -34,7 +53,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <TopBar tab={tab} onTab={setTab} onSettings={() => setSettingsOpen(true)} />
+      <TopBar tab={tab} onTab={setTab} onSettings={() => setSettingsOpen(true)} onSearch={() => setPaletteOpen(true)} />
 
       {tab === "projects" ? (
         <main className="view active">
@@ -64,6 +83,7 @@ export default function App() {
       )}
 
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {paletteOpen && <CommandPalette onTab={setTab} onClose={() => setPaletteOpen(false)} />}
     </div>
   );
 }

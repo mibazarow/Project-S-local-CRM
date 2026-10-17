@@ -51,6 +51,8 @@ pub fn project_catalog() -> Catalog {
         Arc::new(crate::agent::git_tools::GitLogTool),
         Arc::new(crate::agent::git_tools::GitBranchTool),
         Arc::new(crate::agent::git_tools::GitCommitTool),
+        Arc::new(crate::agent::git_tools::GitPullTool),
+        Arc::new(crate::agent::git_tools::GitPushTool),
         // SSH tools via the system ssh/scp CLI with keys/ssh-agent; every
         // mutating call is confirmed; see ssh_tools.rs for the safety rules.
         Arc::new(crate::agent::ssh_tools::SshListProfilesTool),
@@ -853,7 +855,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 36] = [
+    const TOOL_NAMES: [&str; 38] = [
         "search",
         "read_file",
         "list_tree",
@@ -877,6 +879,8 @@ mod tests {
         "git_log",
         "git_branch",
         "git_commit",
+        "git_pull",
+        "git_push",
         "ssh_list_profiles",
         "ssh_exec",
         "ssh_upload",
@@ -1252,7 +1256,7 @@ mod tests {
             assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
         }
-        for name in ["rename_path", "delete_path", "task_delete", "git_commit", "apply_patch"] {
+        for name in ["rename_path", "delete_path", "task_delete", "git_commit", "git_pull", "git_push", "apply_patch"] {
             assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
         }
         assert_eq!(tool("git_branch").class(), ToolClass::Mutating);
