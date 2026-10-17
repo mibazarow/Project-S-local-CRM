@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+  type KeyboardEvent,
+} from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import * as ipc from "../api/ipc";
 import type {
@@ -161,6 +168,130 @@ async function patchMcpServers(
   return ipc.mcpReload();
 }
 
+// Searchable model combobox: free-text id + filtered dropdown of ids loaded
+// from the endpoint. ↑/↓ move the highlight, Enter picks it, Esc closes.
+interface ModelComboboxProps {
+  value: string;
+  models: string[] | null;
+  onChange: (value: string) => void;
+  onFocus: () => void;
+  onBlur: () => void;
+}
+
+function ModelCombobox({ value, models, onChange, onFocus, onBlur }: ModelComboboxProps) {
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(-1);
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  const query = value.trim().toLowerCase();
+  const filtered = (models ?? []).filter((id) => id.toLowerCase().includes(query));
+
+  useEffect(() => {
+    if (!open || active < 0) return;
+    const node = listRef.current?.children[active] as HTMLElement | undefined;
+    node?.scrollIntoView({ block: "nearest" });
+  }, [open, active]);
+
+  const pick = (id: string) => {
+    onChange(id);
+    setOpen(false);
+    setActive(-1);
+  };
+
+  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!open) {
+        if (filtered.length > 0) setOpen(true);
+        return;
+      }
+      const next =
+        e.key === "ArrowDown"
+          ? (active + 1) % filtered.length
+          : (active - 1 + filtered.length) % filtered.length;
+      setActive(filtered.length ? next : -1);
+    } else if (e.key === "Enter") {
+      if (open && active >= 0 && active < filtered.length) {
+        e.preventDefault();
+        pick(filtered[active]);
+      } else {
+        setOpen(false);
+      }
+    } else if (e.key === "Escape") {
+      e.stopPropagation();
+      setOpen(false);
+      setActive(-1);
+    }
+  };
+
+  return (
+    <div className="model-combobox">
+      <input
+        type="text"
+        role="combobox"
+        aria-expanded={open}
+        autoComplete="off"
+        spellCheck={false}
+        placeholder="gpt-4o-mini или впиши название вручную"
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+          setOpen(true);
+          setActive(-1);
+        }}
+        onFocus={() => {
+          onFocus();
+          setOpen(true);
+          setActive(-1);
+        }}
+        onBlur={() => {
+          onBlur();
+          setOpen(false);
+          setActive(-1);
+        }}
+        onKeyDown={onKeyDown}
+      />
+      {open && (
+        <div className="model-dropdown" ref={listRef}>
+          {filtered.length === 0 ? (
+            <div className="model-empty">
+              {models && models.length > 0
+                ? "Ничего не найдено — можно вписать вручную"
+                : "Список моделей ещё не загружен"}
+            </div>
+          ) : (
+            filtered.map((id, i) => (
+              <div
+                key={id}
+                className={i === active ? "model-option active" : "model-option"}
+                // mousedown keeps focus in the input so blur does not close
+                // the dropdown before click lands
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => setActive(i)}
+                onClick={() => pick(id)}
+              >
+                {id}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Context size token in a model id ("gpt-4o-128k", "…-200k", "…-1m"):
+// separator + 2+ digits + k/m, so version numbers ("llama3.1", "gpt-4.1")
+// never match. Returns the token text and the token count in tokens.
+function detectContextToken(model: string): { token: string; tokens: number } | null {
+  const m = model.toLowerCase().match(/(?:^|[^a-z0-9])(\d{2,})([km])(?:[^a-z0-9]|$)/);
+  if (!m) return null;
+  const num = parseInt(m[1], 10);
+  return { token: m[0].slice(1), tokens: num * (m[2] === "m" ? 1_000_000 : 1_000) };
+}
+
+const DEFAULT_CONTEXT_WINDOW = 100_000;
+
 export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<"llm" | "agent" | "skills" | "mcp" | "other">("llm");
   const [workingDir, setWorkingDir] = useState<string | null>(null);
@@ -175,6 +306,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [llmModelsError, setLlmModelsError] = useState<string | null>(null);
   const [llmTest, setLlmTest] = useState<ConnectionTest | null>(null);
   const [llmBusy, setLlmBusy] = useState<"test" | "models" | null>(null);
+  const [ctxAutoFilled, setCtxAutoFilled] = useState<{ token: string; tokens: number } | null>(null);
   const [revealKey, setRevealKey] = useState(false);
   const [vision, setVision] = useState<VisionStatus | null>(null);
   const [visionBusy, setVisionBusy] = useState(false);
@@ -217,6 +349,13 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const llmFormRef = useRef<LlmForm | null>(null);
   const llmFocusedRef = useRef<keyof LlmForm | null>(null);
   const llmSaveTimer = useRef<number | undefined>(undefined);
+  // Context window: true once the user typed in the field; auto-fill never
+  // overrides a hand-edited value. Reset when the model id itself changes.
+  const ctxUserEditedRef = useRef(false);
+  const lastModelIdRef = useRef<string | null>(null);
+  // One-shot auto-load of the model list once endpoint+key are filled in.
+  const modelsAutoLoadedRef = useRef(false);
+  const modelsAutoTimer = useRef<number | undefined>(undefined);
 
   const appRawRef = useRef<Record<string, unknown> | null>(null);
   const appFormRef = useRef<AppForm | null>(null);
@@ -325,6 +464,12 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
         if (focused && llmFormRef.current) {
           (next as unknown as Record<string, unknown>)[focused] = llmFormRef.current[focused];
         }
+        // A new model id re-arms the context-window auto-fill; edits of the
+        // field itself (same model) keep the "user edited" flag.
+        if (lastModelIdRef.current !== null && lastModelIdRef.current !== next.model) {
+          ctxUserEditedRef.current = false;
+        }
+        lastModelIdRef.current = next.model;
         llmFormRef.current = next;
         setLlmForm(next);
       })
@@ -403,7 +548,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
 
   // test_connection/list_models read llm.json from disk, so the pending form
   // must be written first and the write must land before the command runs.
-  const runLlmAction = (action: "test" | "models") => {
+  const runLlmAction = useCallback((action: "test" | "models") => {
     setLlmBusy(action);
     flushLlmSave()
       .then(() =>
@@ -414,11 +559,12 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
               .then((ms) => {
                 setLlmModels(ms.map((m) => m.id));
                 setLlmModelsError(null);
+                modelsAutoLoadedRef.current = true;
               })
               .catch(() => {
                 setLlmModels(null);
                 setLlmModelsError(
-                  "Endpoint не вернул список моделей — впиши название вручную, узнай у провайдера",
+                  "Endpoint не вернул список моделей — впиши название вручную (уточни у провайдера)",
                 );
               }),
       )
@@ -426,7 +572,35 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
         if (action === "test") setLlmTest({ ok: false, message: errMsg(e), modelCount: 0 });
       })
       .finally(() => setLlmBusy(null));
-  };
+  }, [flushLlmSave]);
+
+  // Auto-load the model list once, debounced, after endpoint+key are filled
+  // in and nothing is loaded yet; a failure leaves the manual retry button.
+  useEffect(() => {
+    const f = llmForm;
+    if (!f || modelsAutoLoadedRef.current) return;
+    if (!f.baseUrl.trim() || !f.apiKey.trim()) return;
+    if (llmModels !== null || llmBusy !== null) return;
+    window.clearTimeout(modelsAutoTimer.current);
+    modelsAutoTimer.current = window.setTimeout(() => {
+      if (!modelsAutoLoadedRef.current) runLlmAction("models");
+    }, 800);
+    return () => window.clearTimeout(modelsAutoTimer.current);
+  }, [llmForm?.baseUrl, llmForm?.apiKey, llmModels, llmBusy, runLlmAction]);
+
+  // Auto-fill the context window from a size token in the model id
+  // ("…-128k", "…-1m") while the field is still empty or on the default.
+  useEffect(() => {
+    const f = llmForm;
+    if (!f || llmFocusedRef.current === "contextWindow") return;
+    const hit = detectContextToken(f.model);
+    if (!hit || ctxUserEditedRef.current) return;
+    const cur = parseNum(f.contextWindow);
+    if (cur !== null && cur !== DEFAULT_CONTEXT_WINDOW) return;
+    if (cur !== null && Math.round(cur) === hit.tokens) return;
+    setCtxAutoFilled(hit);
+    updateLlmForm({ contextWindow: String(hit.tokens) });
+  }, [llmForm, updateLlmForm]);
 
   const loadSkills = useCallback(() => {
     void ipc
@@ -899,33 +1073,28 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                 </div>
                 <div className="set-hint">Хранится в llm.json в открытом виде (см. ТЗ 3.4).</div>
               </div>
-              {llmModels && llmModels.length > 0 && (
-                <div className="set-row">
-                  <label>Модель из списка endpoint’а</label>
-                  <select
-                    value={llmModels.includes(llmForm?.model ?? "") ? (llmForm?.model ?? "") : ""}
-                    onChange={(e) => updateLlmForm({ model: e.target.value })}
-                  >
-                    {!llmModels.includes(llmForm?.model ?? "") && (
-                      <option value="">— выбрать модель —</option>
-                    )}
-                    {llmModels.map((id) => (
-                      <option key={id} value={id}>
-                        {id}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
               <div className="set-row">
                 <label>Модель</label>
-                <input
-                  type="text"
-                  value={llmForm?.model ?? ""}
-                  onChange={(e) => updateLlmForm({ model: e.target.value })}
-                  onFocus={focusLlmField("model")}
-                  onBlur={blurLlmField}
-                />
+                <div className="model-row">
+                  <ModelCombobox
+                    value={llmForm?.model ?? ""}
+                    models={llmModels}
+                    onChange={(model) => updateLlmForm({ model })}
+                    onFocus={focusLlmField("model")}
+                    onBlur={blurLlmField}
+                  />
+                  <button
+                    className="ghost-btn small"
+                    disabled={llmBusy !== null}
+                    onClick={() => runLlmAction("models")}
+                  >
+                    {llmBusy === "models" && <span className="spinner"></span>}
+                    {llmBusy === "models" ? "Загрузка…" : "Загрузить модели"}
+                  </button>
+                </div>
+                <div className="set-hint">
+                  Список подтягивается с endpoint’а; можно вписать любое название вручную.
+                </div>
                 {llmModelsError && <div className="set-error">{llmModelsError}</div>}
               </div>
               <div className="set-row">
@@ -935,13 +1104,20 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                   type="text"
                   inputMode="numeric"
                   value={llmForm?.contextWindow ?? ""}
-                  onChange={(e) => updateLlmForm({ contextWindow: e.target.value })}
+                  onChange={(e) => {
+                    ctxUserEditedRef.current = true;
+                    setCtxAutoFilled(null);
+                    updateLlmForm({ contextWindow: e.target.value });
+                  }}
                   onFocus={focusLlmField("contextWindow")}
                   onBlur={blurLlmField}
                 />
                 <div className="set-hint">
-                  Для выбранной модели подтягивается автоматически, если модель его сообщает;
-                  иначе — дефолт 100 000, можно исправить руками.
+                  {ctxAutoFilled
+                    ? `Заполнено по названию модели (${ctxAutoFilled.token}) — можно исправить руками.`
+                    : detectContextToken(llmForm?.model ?? "")
+                      ? "В поле уже вписано значение — оно не меняется автоматически."
+                      : "Размер не угадывается по названию модели — заполни вручную."}
                 </div>
               </div>
               <div className="set-row">
@@ -1017,18 +1193,15 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                   disabled={llmBusy !== null}
                   onClick={() => runLlmAction("test")}
                 >
+                  {llmBusy === "test" && <span className="spinner"></span>}
                   {llmBusy === "test" ? "Проверка…" : "Проверить подключение"}
-                </button>
-                <button
-                  className="ghost-btn"
-                  disabled={llmBusy !== null}
-                  onClick={() => runLlmAction("models")}
-                >
-                  {llmBusy === "models" ? "Загрузка…" : "Загрузить модели"}
                 </button>
               </div>
               {llmTest && (
-                <div className={llmTest.ok ? "set-hint" : "set-error"}>{llmTest.message}</div>
+                <div className={llmTest.ok ? "llm-test ok" : "llm-test err"}>
+                  <span className="mark">{llmTest.ok ? "✓" : "✕"}</span>
+                  {llmTest.message}
+                </div>
               )}
               {error && <div className="set-error">{error}</div>}
             </>
