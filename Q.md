@@ -22,7 +22,6 @@
 - [TODO] **`screenshot`** (рабочий стол/регион) — S.
 - [TODO] **`undo_last` / `undo_list` + корзина для удалений** — сеть безопасности. M.
 - [TODO] **`image_transform`** (resize/crop/convert/thumbnail). M.
-- [TODO] **`clipboard_get` / `clipboard_set`** — S.
 - [TODO] **`compact_context`** — агентский вызов сжатия контекста. M.
 ### Моделирование / фиксы
 - [TODO] **`browser`: политика по действию** — read-only (`text`, `screenshot`, `tab_list`, `extract`?) без подтверждения, изменяющие — Check.

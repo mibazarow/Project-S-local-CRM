@@ -213,7 +213,7 @@ impl Tool for ClipboardGetTool {
         "clipboard_get"
     }
     fn description(&self) -> &str {
-        "Read the macOS general clipboard as UTF-8 text (pbpaste); an empty or non-text clipboard yields an empty string. maxChars caps the returned text (default 50000, max 200000).\nClipboard contents never appear in error messages."
+        "Read the macOS clipboard text as UTF-8 (pbpaste); maxChars 50000 default, 200000 max.\nAn empty or non-text board yields an empty string; clipboard contents never appear in error messages."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -277,7 +277,7 @@ impl Tool for ClipboardSetTool {
         "clipboard_set"
     }
     fn description(&self) -> &str {
-        "Replace the macOS general clipboard with the given UTF-8 text (pbcopy); the previous content is lost. Input is capped at 1000000 bytes.\nNothing is echoed back and clipboard contents never appear in error messages."
+        "Set the macOS clipboard to UTF-8 text (pbcopy); input cap 1 MB.\nPrevious content is lost; nothing is echoed back and clipboard contents never appear in error messages."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -410,13 +410,13 @@ mod tests {
         let data = r.data.unwrap();
         assert_eq!(data["text"].as_str().unwrap().chars().count(), 100);
         assert_eq!(data["chars"].as_u64().unwrap(), 100);
-        assert_eq!(data["truncated"].as_bool().unwrap(), true);
+        assert!(data["truncated"].as_bool().unwrap());
 
         // Default cap: 50k of the 60k stored.
         let r = get.execute(&json!({}), &ToolCtx::default()).unwrap();
         let data = r.data.unwrap();
         assert_eq!(data["chars"].as_u64().unwrap(), 50_000);
-        assert_eq!(data["truncated"].as_bool().unwrap(), true);
+        assert!(data["truncated"].as_bool().unwrap());
 
         // maxChars above the hard limit clamps to 200k.
         fs::write(board_text(&dir, "general"), "y".repeat(210_000)).unwrap();
@@ -425,7 +425,7 @@ mod tests {
             .unwrap();
         let data = r.data.unwrap();
         assert_eq!(data["chars"].as_u64().unwrap(), 200_000);
-        assert_eq!(data["truncated"].as_bool().unwrap(), true);
+        assert!(data["truncated"].as_bool().unwrap());
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -439,7 +439,7 @@ mod tests {
         assert!(r.ok, "{:?}", r.error);
         let data = r.data.unwrap();
         assert_eq!(data["text"].as_str().unwrap(), "");
-        assert_eq!(data["truncated"].as_bool().unwrap(), false);
+        assert!(!data["truncated"].as_bool().unwrap());
         fs::remove_dir_all(&dir).unwrap();
     }
 
