@@ -49,6 +49,7 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(FsWriteTool),
         Arc::new(FsDeleteTool),
         Arc::new(FsGrepTool),
+        Arc::new(crate::skills::CreateSkillTool),
         Arc::new(BashTool::default()),
         Arc::new(super::browser_tool::BrowserTool),
         Arc::new(CrmListProjectsTool),
@@ -1236,12 +1237,13 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const DEFERRED_NAMES: [&str; 20] = [
+    const DEFERRED_NAMES: [&str; 21] = [
         "fs_read",
         "fs_list",
         "fs_write",
         "fs_delete",
         "fs_grep",
+        "create_skill",
         "bash",
         "browser",
         "crm_list_projects",
@@ -1283,10 +1285,11 @@ mod tests {
             assert_eq!(tool(name).class(), ToolClass::ReadOnly, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
         }
-        for name in ["fs_write", "crm_task_create", "crm_task_update", "crm_task_move", "datas_add"] {
+        for name in ["fs_write", "crm_task_create", "crm_task_update", "crm_task_move", "datas_add", "create_skill"] {
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
         }
         assert_eq!(tool("fs_write").policy(), PermissionPolicy::CheckConditional);
+        assert_eq!(tool("create_skill").policy(), PermissionPolicy::Skip);
         for name in ["fs_delete", "bash", "crm_task_delete"] {
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");

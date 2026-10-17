@@ -749,28 +749,54 @@ pub fn import(wd: &Path, source: &str, target: &str, overwrite: bool) -> Result<
 // Builtin skill set (SPEC 6.2 "копируется полный набор скиллов coding-агента
 // ... обновляются с приложением"): copies skill folders into
 // Settings/skills/builtin/, refreshing existing builtin copies. Source
-// resolution: `skills/builtin` next to the executable (the packaged
-// resource dir) first, then the standard kilo dev skill folders
-// ~/.config/kilo/skills and ~/.kilocode/skills as a dev fallback for debug
-// builds. Never writes into the user dir, so user skills are never clobbered.
+// resolution order: the repo resources under src-tauri/resources/skills/builtin
+// (dev and test builds), then the packaged resources relative to the
+// executable, then the standard kilo dev skill folders ~/.config/kilo/skills
+// and ~/.kilocode/skills as a last-resort fallback. Never writes into the
+// user dir, so user skills are never clobbered.
 pub fn install_builtin(wd: &Path) -> Result<Vec<String>> {
     let src = resolve_builtin_source().ok_or_else(|| {
         AppError::Invalid(
-            "no builtin skill source found (expected skills/builtin next to the executable, or ~/.config/kilo/skills, or ~/.kilocode/skills)".into(),
+            "no builtin skill source found (expected resources/skills/builtin in the repo or packaged resources, or ~/.config/kilo/skills, or ~/.kilocode/skills)".into(),
         )
     })?;
     install_builtin_from(wd, &src)
 }
 
 fn resolve_builtin_source() -> Option<PathBuf> {
+    // 1. Repo resources (dev/test builds): src-tauri/resources/skills/builtin.
+    //    In a packaged app this build-machine path does not exist, so the
+    //    check simply falls through.
+    let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("resources")
+        .join("skills")
+        .join(paths::SKILLS_BUILTIN);
+    if repo.is_dir() {
+        return Some(repo);
+    }
+    // 2. Packaged resources relative to the executable.
     if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let cand = dir.join("skills").join(paths::SKILLS_BUILTIN);
+        if let Some(exe_dir) = exe.parent() {
+            // macOS app bundle: Contents/MacOS/<exe> sits next to
+            // Contents/Resources, where bundle.resources "resources/skills" lands.
+            if let Some(contents) = exe_dir.parent() {
+                let bundled = contents
+                    .join("Resources")
+                    .join("resources")
+                    .join("skills")
+                    .join(paths::SKILLS_BUILTIN);
+                if bundled.is_dir() {
+                    return Some(bundled);
+                }
+            }
+            // Flat layout: skills/builtin directly next to the executable.
+            let cand = exe_dir.join("skills").join(paths::SKILLS_BUILTIN);
             if cand.is_dir() {
                 return Some(cand);
             }
         }
     }
+    // 3. Dev fallback: the standard kilo skill folders.
     let home = std::env::var_os("HOME").map(PathBuf::from);
     home_skill_source(home.as_deref())
 }
@@ -821,13 +847,16 @@ fn valid_skill_name(name: &str) -> bool {
 
 // Creates a user skill (SPEC 6.2 "создание скиллов"): writes
 // Settings/skills/user/<name>/SKILL.md and returns it once the loader
-// confirms it parses.
+// confirms it parses. An existing user skill is only replaced with
+// `overwrite`; a builtin of the same name is always refused (the user dir
+// would shadow it, which the conflict rules already surface as an error).
 pub fn create(
     wd: &Path,
     name: &str,
     description: &str,
     kind: Option<&str>,
     body: Option<&str>,
+    overwrite: bool,
 ) -> Result<SkillInfo> {
     if !valid_skill_name(name) {
         return Err(AppError::Invalid(format!(
@@ -854,7 +883,12 @@ pub fn create(
     }
     let dest = paths::skills_user_dir(wd).join(name);
     if dest.exists() {
-        return Err(AppError::Invalid(format!("skill \"{name}\" already exists")));
+        if !overwrite {
+            return Err(AppError::Invalid(format!(
+                "skill \"{name}\" already exists (pass overwrite to replace)"
+            )));
+        }
+        fs::remove_dir_all(&dest)?;
     }
     let mut fm = format!("---\nname: {name}\ndescription: {description}\n");
     if let Some(k) = kind {
@@ -934,6 +968,67 @@ impl Tool for SkillTool {
             }))
             .capped(self.max_result_len()),
         )
+    }
+}
+
+// The `create_skill` agent tool: creates a user skill through the same
+// `create` logic the UI uses. Mutating but Skip: it only ever writes inside
+// Settings/skills/user/. An existing user skill is replaced only with an
+// explicit overwrite=true; builtin names are always refused.
+pub struct CreateSkillTool;
+
+impl Tool for CreateSkillTool {
+    fn name(&self) -> &str {
+        "create_skill"
+    }
+    fn description(&self) -> &str {
+        "Create a user skill saved to Settings/skills/user/<name>/SKILL.md; it then appears in the skills list and loads via the skill tool. Name: lowercase letters, digits and hyphens. kind defaults to instruction. Fails if the name exists or clashes with a builtin; pass overwrite=true to replace an existing user skill (builtins are never replaced)."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "description": { "type": "string" },
+                "kind": { "type": "string", "enum": ["instruction", "script", "extension"] },
+                "body": { "type": "string" },
+                "overwrite": { "type": "boolean" }
+            },
+            "required": ["name", "description"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let wd = ctx.working_dir.clone().ok_or(AppError::NotConfigured)?;
+        let name = args["name"].as_str().unwrap_or_default();
+        let description = args["description"].as_str().unwrap_or_default();
+        let kind = args.get("kind").and_then(Value::as_str);
+        let body = args.get("body").and_then(Value::as_str);
+        let overwrite = args.get("overwrite").and_then(Value::as_bool).unwrap_or(false);
+        match create(&wd, name, description, kind, body, overwrite) {
+            Ok(info) => Ok(ToolResult::ok(json!({ "skill": info }))),
+            Err(e) => {
+                let msg = e.to_string();
+                let code = if msg.contains("conflicts with a builtin") {
+                    ToolErrorCode::PermissionDenied
+                } else if msg.contains("invalid skill name")
+                    || msg.contains("description")
+                    || msg.contains("unknown skill type")
+                    || msg.contains("already exists")
+                {
+                    ToolErrorCode::InvalidArgs
+                } else {
+                    ToolErrorCode::ExecutionError
+                };
+                Ok(ToolResult::err(code, msg))
+            }
+        }
     }
 }
 
@@ -1318,7 +1413,7 @@ mod tests {
     #[test]
     fn create_writes_a_skill_the_loader_discovers() {
         let wd = scaffold("skills-create");
-        let info = create(&wd, "my-skill", "My new skill", None, Some("# Guide\n\nDo it.")).unwrap();
+        let info = create(&wd, "my-skill", "My new skill", None, Some("# Guide\n\nDo it."), false).unwrap();
         assert_eq!(info.name, "my-skill");
         assert_eq!(info.kind, "instruction");
         assert!(!info.builtin && info.enabled);
@@ -1326,10 +1421,22 @@ mod tests {
         assert!(text.contains("name: my-skill"));
         assert_eq!(load_full(&wd, "my-skill").unwrap(), "# Guide\n\nDo it.");
         assert!(short_list(&wd).contains(&("my-skill".to_string(), "My new skill".to_string())));
-        assert!(create(&wd, "Bad Name", "x", None, None).is_err());
-        assert!(create(&wd, "-lead", "x", None, None).is_err());
-        assert!(create(&wd, "my-skill", "dup", None, None).is_err());
-        assert!(create(&wd, "other", "d", Some("magic"), None).is_err());
+        assert!(create(&wd, "Bad Name", "x", None, None, false).is_err());
+        assert!(create(&wd, "-lead", "x", None, None, false).is_err());
+        let err = create(&wd, "my-skill", "dup", None, None, false).unwrap_err().to_string();
+        assert!(err.contains("already exists"), "{err}");
+        // overwrite=true replaces the user copy
+        create(&wd, "my-skill", "Replaced", None, Some("New body."), true).unwrap();
+        assert_eq!(load_full(&wd, "my-skill").unwrap(), "New body.");
+        // a builtin name is refused even with overwrite
+        write_skill(
+            &paths::skills_builtin_dir(&wd),
+            "builtin-one",
+            "---\nname: builtin-one\ndescription: b\n---\nB.\n",
+        );
+        let err = create(&wd, "builtin-one", "x", None, None, true).unwrap_err().to_string();
+        assert!(err.contains("conflicts with a builtin"), "{err}");
+        assert!(create(&wd, "other", "d", Some("magic"), None, false).is_err());
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -1376,5 +1483,111 @@ mod tests {
         fs::create_dir_all(&config).unwrap();
         assert_eq!(home_skill_source(Some(&home)), Some(config));
         fs::remove_dir_all(&home).unwrap();
+    }
+
+    fn bundled_repo_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join("skills")
+            .join(paths::SKILLS_BUILTIN)
+    }
+
+    #[test]
+    fn bundled_repo_resources_are_non_empty_and_all_parse() {
+        let src = bundled_repo_dir();
+        assert!(src.is_dir(), "missing bundled resources at {}", src.display());
+        // the resolver must pick the repo resources in dev/test builds
+        assert_eq!(resolve_builtin_source().as_deref(), Some(src.as_path()));
+        let dirs = find_skill_dirs(&src);
+        assert!(!dirs.is_empty(), "bundled skill set is empty");
+        for dir in &dirs {
+            validate_skill_dir(dir)
+                .unwrap_or_else(|e| panic!("{}: {e}", dir.display()));
+        }
+    }
+
+    #[test]
+    fn install_builtin_copies_bundled_set_idempotently_and_keeps_user_skills() {
+        let wd = scaffold("skills-install-bundled");
+        let installed = install_builtin(&wd).unwrap();
+        assert!(!installed.is_empty());
+        // every copied skill parses through the loader and lands in the lists
+        let set = discover(&wd);
+        assert!(set.errors.is_empty(), "{:?}", set.errors);
+        assert_eq!(set.skills.len(), installed.len());
+        assert_eq!(short_list(&wd).len(), installed.len());
+        // idempotent: a second run installs the same set
+        assert_eq!(install_builtin(&wd).unwrap(), installed);
+        // a user skill with a bundled name is never overwritten by installs
+        let name = installed[0].clone();
+        write_skill(
+            &paths::skills_user_dir(&wd),
+            &name,
+            &format!("---\nname: {name}\ndescription: mine\n---\nMine.\n"),
+        );
+        install_builtin(&wd).unwrap();
+        assert_eq!(load_full(&wd, &name).unwrap(), "Mine.");
+        // and the bundled copy stays loadable under its own name
+        assert!(paths::skills_builtin_dir(&wd)
+            .join(&name)
+            .join(paths::SKILL_FILE)
+            .is_file());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn create_skill_tool_creates_skill_and_returns_error_envelopes() {
+        let wd = scaffold("skills-create-tool");
+        let ctx = ToolCtx {
+            working_dir: Some(wd.clone()),
+            ..Default::default()
+        };
+        let tool = CreateSkillTool;
+
+        let r = tool
+            .execute(
+                &json!({ "name": "agent-guide", "description": "Guide", "body": "Do it." }),
+                &ctx,
+            )
+            .unwrap();
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["skill"]["name"], "agent-guide");
+        assert_eq!(load_full(&wd, "agent-guide").unwrap(), "Do it.");
+        assert!(short_list(&wd).contains(&("agent-guide".to_string(), "Guide".to_string())));
+
+        let r = tool
+            .execute(&json!({ "name": "Bad Name", "description": "x" }), &ctx)
+            .unwrap();
+        assert_eq!(r.error.unwrap().code, "invalid_args");
+
+        let r = tool
+            .execute(&json!({ "name": "agent-guide", "description": "dup" }), &ctx)
+            .unwrap();
+        assert_eq!(r.error.unwrap().code, "invalid_args");
+
+        // overwrite=true replaces the user copy
+        let r = tool
+            .execute(
+                &json!({ "name": "agent-guide", "description": "Guide v2", "body": "New.", "overwrite": true }),
+                &ctx,
+            )
+            .unwrap();
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(load_full(&wd, "agent-guide").unwrap(), "New.");
+
+        // a builtin name is refused even with overwrite
+        write_skill(
+            &paths::skills_builtin_dir(&wd),
+            "builtin-one",
+            "---\nname: builtin-one\ndescription: b\n---\nB.\n",
+        );
+        let r = tool
+            .execute(
+                &json!({ "name": "builtin-one", "description": "x", "overwrite": true }),
+                &ctx,
+            )
+            .unwrap();
+        assert_eq!(r.error.unwrap().code, "permission_denied");
+        fs::remove_dir_all(&wd).unwrap();
     }
 }

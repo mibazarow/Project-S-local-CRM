@@ -69,6 +69,11 @@ pub fn init_working_dir(app_config_dir: &Path, wd: &Path) -> Result<(WorkingDirI
         fs::create_dir_all(dir)?;
     }
     config::ensure_defaults(wd)?;
+    // SPEC 6.2: the builtin coding-agent skill set ships with the app, so
+    // Settings/skills/builtin/ is populated out of the box. Idempotent and
+    // best-effort: a missing source never blocks onboarding, and user skills
+    // are never touched.
+    let _ = crate::skills::install_builtin(wd);
     save_working_dir(app_config_dir, wd)?;
     let conn = db::open(&paths::db_path(wd))?;
     let info = WorkingDirInfo {
@@ -118,6 +123,7 @@ mod tests {
             "Settings",
             "Settings/config",
             "Settings/skills",
+            "Settings/skills/builtin",
             "Settings/.db",
             "Settings/logs",
             "Settings/backups",

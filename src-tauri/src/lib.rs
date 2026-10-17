@@ -953,6 +953,7 @@ fn skills_create(
     description: String,
     kind: Option<String>,
     body: Option<String>,
+    overwrite: Option<bool>,
 ) -> Result<skills::SkillInfo> {
     let info = skills::create(
         &state.working_dir()?,
@@ -960,6 +961,7 @@ fn skills_create(
         &description,
         kind.as_deref(),
         body.as_deref(),
+        overwrite.unwrap_or(false),
     )?;
     emit_skills_changed(&app);
     Ok(info)
