@@ -23,6 +23,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tauri::Emitter;
 
 const MAX_READ_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_GREP_FILE_BYTES: u64 = 1024 * 1024;
@@ -43,6 +44,8 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(crate::memory::RememberTool),
         Arc::new(crate::memory::RecallTool),
         Arc::new(crate::memory::SetUserGenderTool),
+        Arc::new(ListChatsTool),
+        Arc::new(RenameChatTool),
     ];
     let deferred: Vec<Arc<dyn Tool>> = vec![
         Arc::new(FsReadTool),
@@ -1193,6 +1196,109 @@ impl Tool for ScheduleDeleteTool {
     }
 }
 
+// Harness session self-management: the agent sees its own session list and
+// can rename sessions. rename_chat defaults to the session the run belongs
+// to (ToolCtx session_id) and emits "sessions-changed" so the sidebar
+// follows the new title without a manual reload.
+pub struct ListChatsTool;
+
+impl Tool for ListChatsTool {
+    fn name(&self) -> &str {
+        "list_chats"
+    }
+    fn description(&self) -> &str {
+        "List harness sessions (id, title, lastActive), most recently active first."
+    }
+    fn parameters(&self) -> Value {
+        json!({ "type": "object", "properties": {}, "required": [], "additionalProperties": false })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::ReadOnly
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, _args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let r = with_conn(ctx, crate::harness::list_sessions);
+        Ok(match r {
+            Ok(list) => {
+                let chats: Vec<Value> = list
+                    .into_iter()
+                    .map(|s| json!({ "id": s.id, "title": s.title, "lastActive": s.last_active_at }))
+                    .collect();
+                ToolResult::ok(json!({ "chats": chats })).capped(self.max_result_len())
+            }
+            Err(e) => envelope_r(e),
+        })
+    }
+}
+
+const RENAME_CHAT_MAX_TITLE_CHARS: usize = 120;
+
+pub struct RenameChatTool;
+
+impl Tool for RenameChatTool {
+    fn name(&self) -> &str {
+        "rename_chat"
+    }
+    fn description(&self) -> &str {
+        "Rename a harness session: sessionId picks it explicitly, absent means the session this run belongs to. Title is a short single-line name."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "sessionId": { "type": "number" },
+                "title": { "type": "string" }
+            },
+            "required": ["title"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let title = args["title"].as_str().unwrap_or_default().trim().to_owned();
+        if title.is_empty() {
+            return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, "title is empty"));
+        }
+        if title.contains('\n') {
+            return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, "title must be a single line"));
+        }
+        if title.chars().count() > RENAME_CHAT_MAX_TITLE_CHARS {
+            return Ok(ToolResult::err(
+                ToolErrorCode::InvalidArgs,
+                format!("title is over {RENAME_CHAT_MAX_TITLE_CHARS} characters"),
+            ));
+        }
+        let session_id = match args.get("sessionId").and_then(Value::as_i64) {
+            Some(id) => id,
+            None => match ctx.session_id {
+                Some(id) => id,
+                None => {
+                    return Ok(ToolResult::err(
+                        ToolErrorCode::InvalidArgs,
+                        "sessionId is required outside a session run",
+                    ))
+                }
+            },
+        };
+        let r = with_conn(ctx, |conn| crate::harness::rename_session(conn, session_id, &title));
+        if r.is_ok() {
+            if let Ok(state) = state_of(ctx) {
+                if let Some(app) = state.emitter.lock().unwrap().as_ref() {
+                    let _ = app.emit("sessions-changed", json!({}));
+                }
+            }
+        }
+        Ok(envelope(r))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1266,7 +1372,7 @@ mod tests {
     fn catalog_registers_everything_without_duplicate_names() {
         let mut catalog = harness_catalog();
         let active: Vec<String> = catalog.to_specs().into_iter().map(|s| s.name).collect();
-        for expected in ["finish_task", "skill", "remember", "recall", "set_user_gender", LIST_TOOLS, ENABLE_TOOLS] {
+        for expected in ["finish_task", "skill", "remember", "recall", "set_user_gender", "list_chats", "rename_chat", LIST_TOOLS, ENABLE_TOOLS] {
             assert!(active.iter().any(|n| n == expected), "missing active {expected}");
         }
         let summary = catalog.list_summary();
@@ -1305,6 +1411,10 @@ mod tests {
         assert_eq!(tool("schedule_list").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("schedule_pause").class(), ToolClass::Mutating);
         assert_eq!(tool("schedule_pause").policy(), PermissionPolicy::Skip);
+        assert_eq!(tool("list_chats").class(), ToolClass::ReadOnly);
+        assert_eq!(tool("list_chats").policy(), PermissionPolicy::Skip);
+        assert_eq!(tool("rename_chat").class(), ToolClass::Mutating);
+        assert_eq!(tool("rename_chat").policy(), PermissionPolicy::Skip);
 
         let env = setup("ht-policy");
         let write = tool("fs_write");
@@ -1362,6 +1472,61 @@ mod tests {
         let r = exec("schedule_list", json!({}), &env.ctx);
         let items = r.data.unwrap()["schedules"].as_array().unwrap().clone();
         assert_eq!(items[0]["sessionId"], Value::Null);
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn list_and_rename_chat_tools_round_trip() {
+        let env = setup("ht-chats");
+        let a = with_conn(&env.ctx, |conn| crate::harness::create_session(conn, Some("a"))).unwrap();
+        let b = with_conn(&env.ctx, |conn| crate::harness::create_session(conn, None)).unwrap();
+
+        let r = exec("list_chats", json!({}), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let chats = r.data.unwrap()["chats"].as_array().unwrap().clone();
+        assert_eq!(chats.len(), 2);
+        // Same-second creation ties on last_active_at: the id DESC tiebreak
+        // puts the newer session first, matching the UI list order.
+        assert_eq!(chats[0]["id"], b.id);
+        assert_eq!(chats[0]["title"], Value::Null);
+        assert!(chats[0]["lastActive"].is_string());
+        assert_eq!(chats[1]["id"], a.id);
+        assert_eq!(chats[1]["title"], "a");
+
+        // Explicit sessionId renames that session.
+        let r = exec("rename_chat", json!({ "sessionId": a.id, "title": " Переименована " }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["title"], "Переименована");
+
+        // No sessionId: the ToolCtx session of the run is renamed.
+        let ctx = ToolCtx {
+            session_id: Some(b.id),
+            ..env.ctx
+        };
+        let r = exec("rename_chat", json!({ "title": "Текущая" }), &ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["title"], "Текущая");
+
+        // Empty / multiline / overlong titles are rejected before touching DB.
+        for bad in [json!({ "title": "   " }), json!({ "title": "a\nb" }), json!({ "title": "я".repeat(121) })] {
+            let r = exec("rename_chat", bad, &ctx);
+            assert_eq!(r.error.unwrap().code, "invalid_args");
+        }
+
+        // Unknown session id maps to not_found; no session in ctx and no
+        // sessionId is an argument error.
+        let r = exec("rename_chat", json!({ "sessionId": 999, "title": "x" }), &ctx);
+        assert_eq!(r.error.unwrap().code, "not_found");
+        let r = exec("rename_chat", json!({ "title": "x" }), &ToolCtx::default());
+        assert_eq!(r.error.unwrap().code, "invalid_args");
+
+        let titles: Vec<Option<String>> = with_conn(&ctx, |conn| {
+            let list = crate::harness::list_sessions(conn)?;
+            Ok::<Vec<Option<String>>, AppError>(list.into_iter().map(|s| s.title).collect())
+        })
+        .unwrap();
+        assert!(titles.contains(&Some("Переименована".to_string())));
+        assert!(titles.contains(&Some("Текущая".to_string())));
         fs::remove_dir_all(&env.wd).unwrap();
     }
 

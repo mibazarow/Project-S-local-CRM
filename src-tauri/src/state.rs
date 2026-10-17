@@ -19,6 +19,10 @@ pub struct AppState {
     // Run/tool journal (SPEC 3.3): opened with the working dir, shared by
     // every run thread through the app state.
     pub journal: Mutex<Option<crate::journal::Journal>>,
+    // App handle for background emitters that only hold AppState (the
+    // rename_chat tool): set once in setup and cloned into every run
+    // thread's state so tools can emit UI events like "sessions-changed".
+    pub emitter: Mutex<Option<tauri::AppHandle>>,
 }
 
 impl AppState {

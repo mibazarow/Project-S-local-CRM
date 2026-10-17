@@ -496,6 +496,8 @@ fn run_agent_inner(
     let thread_state = Arc::new(AppState::new());
     *thread_state.working_dir.lock().unwrap() = Some(wd.to_path_buf());
     *thread_state.db.lock().unwrap() = Some(db::open(&paths::db_path(wd))?);
+    // Tools that notify the UI (rename_chat) emit through this handle.
+    *thread_state.emitter.lock().unwrap() = Some(app.clone());
 
     let llm_cfg: LlmConfig = serde_json::from_value(config::read_config(wd, ConfigKind::Llm)?)?;
     let params = ChatParams::from(&llm_cfg);

@@ -10,13 +10,18 @@ use crate::agent::catalog::Catalog;
 use crate::agent::prompts::harness_system_prompt;
 use crate::attachments::{self, AttachmentRef};
 use crate::chat::{self, RunBridge};
+use crate::config::{self, ConfigKind, LlmConfig};
+use crate::db;
 use crate::error::{AppError, Result};
-use crate::llm::Role;
+use crate::llm::{self, ChatParams, Role};
+use crate::paths;
 use crate::state::{AgentRegistry, AppState, RunKey};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
+use serde_json::json;
+use std::path::Path;
 use std::sync::Arc;
-use tauri::AppHandle;
+use tauri::{AppHandle, Emitter};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -124,6 +129,127 @@ pub fn touch_session(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+// Auto-title (SPEC 5.1): a session gets its title from the first user turn.
+// Rule: the title is written only while sessions.title is NULL/empty. The
+// frontend placeholder "Новая сессия" is never stored, and every manual
+// rename (UI command and the rename_chat tool) requires a non-empty title,
+// so a manual title is never overwritten; the guarded UPDATE below makes
+// even a rename racing the auto-title pass win (0 rows updated). Sessions
+// created with a meaningful default title (scheduler fires) are left alone.
+const AUTOTITLE_MAX_TOKENS: u32 = 24;
+const AUTOTITLE_LLM_MAX_CHARS: usize = 60;
+const AUTOTITLE_FALLBACK_MAX_CHARS: usize = 40;
+
+// First non-empty line cut to `max` chars: shared shape of the LLM answer
+// cleanup and the no-LLM fallback.
+fn first_line_cut(text: &str, max: usize) -> String {
+    let line = text
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let cut: String = line.chars().take(max).collect();
+    cut.trim().to_string()
+}
+
+// No-LLM fallback: the first ~40 chars of the message, single line.
+pub(crate) fn fallback_title(text: &str) -> String {
+    first_line_cut(text, AUTOTITLE_FALLBACK_MAX_CHARS)
+}
+
+// LLM answers arrive quoted or with trailing punctuation: keep one plain
+// line without quotes, cut to the cap; None when nothing usable is left.
+pub(crate) fn sanitize_title(raw: &str) -> Option<String> {
+    let line = first_line_cut(raw, AUTOTITLE_LLM_MAX_CHARS + 8);
+    let line = line.trim_matches(|c: char| {
+        matches!(c, '"' | '\'' | '«' | '»' | '`' | '.')
+    });
+    let cut: String = line.chars().take(AUTOTITLE_LLM_MAX_CHARS).collect();
+    let title = cut.trim().to_string();
+    (!title.is_empty()).then_some(title)
+}
+
+// Cheap one-shot LLM completion over the first user text; any failure
+// (no config, no endpoint, empty answer) yields None so the caller falls
+// back to truncation.
+pub(crate) fn llm_title(wd: &Path, text: &str) -> Option<String> {
+    let cfg: LlmConfig =
+        serde_json::from_value(config::read_config(wd, ConfigKind::Llm).ok()?).ok()?;
+    if cfg.base_url.trim().is_empty() {
+        return None;
+    }
+    let client = llm::LlmClient::new(&cfg.base_url, &cfg.api_key);
+    let params = ChatParams {
+        model: cfg.model.clone(),
+        temperature: None,
+        max_tokens: Some(AUTOTITLE_MAX_TOKENS),
+    };
+    let prompt = format!("Give a short Russian title (2–5 words), no quotes\n\n{text}");
+    let out = client
+        .chat(&[llm::ChatMessage::user(&prompt)], None, &params)
+        .ok()?;
+    sanitize_title(out.content.as_deref()?)
+}
+
+// True while the session has no title yet (NULL/empty): the auto-title pass
+// is only ever started for such sessions.
+fn session_needs_title(conn: &Connection, session_id: i64) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT title IS NULL OR trim(title) = '' FROM sessions WHERE id = ?1",
+            params![session_id],
+            |r| r.get::<_, bool>(0),
+        )
+        .optional()?
+        .unwrap_or(false))
+}
+
+// Write the auto-title only while the session is still untitled; returns
+// the applied title, or None when a (manual) title already exists.
+pub(crate) fn apply_auto_title(conn: &Connection, session_id: i64, title: &str) -> Result<Option<String>> {
+    let updated = conn.execute(
+        "UPDATE sessions
+         SET title = ?1, updated_at = datetime('now','localtime')
+         WHERE id = ?2 AND (title IS NULL OR trim(title) = '')",
+        params![title, session_id],
+    )?;
+    if updated == 1 {
+        Ok(Some(title.to_string()))
+    } else {
+        Ok(None)
+    }
+}
+
+// One auto-title pass on a caller-supplied connection: LLM title when the
+// configured endpoint answers, truncation otherwise; applied only while the
+// session is still untitled.
+pub(crate) fn auto_title_now(conn: &Connection, wd: &Path, session_id: i64, text: &str) -> Result<Option<String>> {
+    if !session_needs_title(conn, session_id)? {
+        return Ok(None);
+    }
+    let title = llm_title(wd, text).unwrap_or_else(|| fallback_title(text));
+    if title.is_empty() {
+        return Ok(None);
+    }
+    apply_auto_title(conn, session_id, &title)
+}
+
+// Run the auto-title pass alongside the agent run: its own thread and DB
+// connection (the run never waits on it), then "sessions-changed" so the
+// sidebar picks the new title up as it arrives.
+fn spawn_auto_title(app: &AppHandle, wd: &Path, session_id: i64, text: String) {
+    let app = app.clone();
+    let wd = wd.to_path_buf();
+    std::thread::spawn(move || {
+        let Ok(conn) = db::open(&paths::db_path(&wd)) else {
+            return;
+        };
+        if let Ok(Some(_)) = auto_title_now(&conn, &wd, session_id, &text) {
+            let _ = app.emit("sessions-changed", json!({}));
+        }
+    });
+}
+
 // SPEC 5.1: sessions idle for `days` days are auto-deleted; 0 disables purging.
 // Returns the number of sessions removed (their chats/messages cascade; their
 // schedules detach and keep firing into fresh sessions).
@@ -189,14 +315,20 @@ pub fn run_session_on(
         return Err(AppError::Invalid("message text is empty".into()));
     }
     let wd = state.working_dir()?;
-    let chat_id = {
+    let (chat_id, needs_title) = {
         let chat_id = session_chat_id(conn, session_id)?;
+        let needs_title = session_needs_title(conn, session_id)?;
         touch_session(conn, session_id)?;
         let user_message =
             chat::append_message(conn, chat_id, Role::User, Some(text), &[], None, None)?;
         attachments::save_message_attachments(conn, user_message.id, attachments_in)?;
-        chat_id
+        (chat_id, needs_title)
     };
+    if needs_title {
+        // Auto-title from this first user turn, off the run path (own thread
+        // + connection); the sidebar follows it through "sessions-changed".
+        spawn_auto_title(app, &wd, session_id, text.to_string());
+    }
 
     let skills = crate::skills::short_list(&wd);
     let system_prompt = harness_system_prompt(&skills);
@@ -395,15 +527,109 @@ mod tests {
     }
 
     #[test]
-    fn harness_catalog_has_finish_skill_and_memory_tools_active() {
+    fn harness_catalog_has_finish_skill_memory_and_chat_tools_active() {
         let names: Vec<String> = harness_catalog()
             .to_specs()
             .into_iter()
             .map(|s| s.name)
             .collect();
-        for expected in ["finish_task", "skill", "remember", "recall", "set_user_gender"] {
+        for expected in [
+            "finish_task",
+            "skill",
+            "remember",
+            "recall",
+            "set_user_gender",
+            "list_chats",
+            "rename_chat",
+        ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }
+    }
+
+    #[test]
+    fn touch_session_moves_it_to_the_top_of_the_list() {
+        let (wd, conn) = setup("harness-touch-order");
+        let a = create_session(&conn, Some("a")).unwrap();
+        let b = create_session(&conn, Some("b")).unwrap();
+        // Both pushed into the past; touching a makes it the freshest again.
+        conn.execute(
+            "UPDATE sessions SET last_active_at = '2026-01-01' WHERE id IN (?1, ?2)",
+            params![a.id, b.id],
+        )
+        .unwrap();
+        assert_eq!(list_sessions(&conn).unwrap()[0].id, b.id);
+        touch_session(&conn, a.id).unwrap();
+        let order: Vec<i64> = list_sessions(&conn).unwrap().into_iter().map(|s| s.id).collect();
+        assert_eq!(order, vec![a.id, b.id]);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn auto_title_falls_back_to_truncation_without_llm() {
+        let (wd, conn) = setup("harness-autotitle-fallback");
+        // No llm.json in the temp working dir: the LLM path fails and the
+        // fallback (first ~40 chars, single line) applies.
+        let s = create_session(&conn, None).unwrap();
+        assert!(session_needs_title(&conn, s.id).unwrap());
+        let text = "проверить конкурентов и подготовить отчёт по ценам\nвторая строка не должна попасть в заголовок";
+        let applied = auto_title_now(&conn, &wd, s.id, text).unwrap();
+        let title = applied.expect("fallback title applied");
+        assert!(title.starts_with("проверить конкурентов"));
+        assert!(!title.contains('\n'));
+        assert!(title.chars().count() <= 40);
+        assert_eq!(session_dto(&conn, s.id).unwrap().title.as_deref(), Some(title.as_str()));
+        // A second pass never re-titles: the session already has a title.
+        assert!(auto_title_now(&conn, &wd, s.id, text).unwrap().is_none());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn auto_title_never_overwrites_a_manual_title() {
+        let (wd, conn) = setup("harness-autotitle-manual");
+        let s = create_session(&conn, Some("Вручную названа")).unwrap();
+        assert!(!session_needs_title(&conn, s.id).unwrap());
+        assert!(auto_title_now(&conn, &wd, s.id, "первое сообщение").unwrap().is_none());
+        assert_eq!(
+            session_dto(&conn, s.id).unwrap().title.as_deref(),
+            Some("Вручную названа")
+        );
+        // The guarded UPDATE is race-safe: a title set after the pre-check
+        // still wins (0 rows updated).
+        let fresh = create_session(&conn, None).unwrap();
+        rename_session(&conn, fresh.id, "Пользователь успел раньше").unwrap();
+        assert!(apply_auto_title(&conn, fresh.id, "Авто").unwrap().is_none());
+        assert_eq!(
+            session_dto(&conn, fresh.id).unwrap().title.as_deref(),
+            Some("Пользователь успел раньше")
+        );
+        // An empty-string title counts as untitled and gets auto-titled.
+        conn.execute("UPDATE sessions SET title = '   ' WHERE id = ?1", params![fresh.id])
+            .unwrap();
+        assert!(session_needs_title(&conn, fresh.id).unwrap());
+        assert!(apply_auto_title(&conn, fresh.id, "Авто").unwrap().is_some());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn sanitize_title_strips_quotes_punctuation_and_cuts_lines() {
+        assert_eq!(
+            sanitize_title("«Проверка сайта.»").as_deref(),
+            Some("Проверка сайта")
+        );
+        assert_eq!(
+            sanitize_title("  \"Отчёт по конкурентам\"  ").as_deref(),
+            Some("Отчёт по конкурентам")
+        );
+        assert_eq!(
+            sanitize_title("Заголовок\nлишний хвост").as_deref(),
+            Some("Заголовок")
+        );
+        assert_eq!(sanitize_title("   ").as_deref(), None);
+        assert_eq!(sanitize_title("«»").as_deref(), None);
+        let long = "а".repeat(80);
+        let cut = sanitize_title(&long).unwrap();
+        assert_eq!(cut.chars().count(), 60);
+        assert_eq!(fallback_title("одна строка"), "одна строка");
     }
 
     #[test]

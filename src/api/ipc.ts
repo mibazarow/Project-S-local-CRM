@@ -333,9 +333,9 @@ export const onAgentConfirmation = (handler: (payload: ConfirmationRequestPayloa
 export const onSchedulesChanged = (handler: () => void) =>
   listen<unknown>("schedules-changed", () => handler());
 
-// Emitted by the scheduler after a fired tick: the session list may have a
-// new session (a schedule whose session was deleted creates one on fire) and
-// the fired session's lastActiveAt changed.
+// Emitted when the session list may have changed: the scheduler after a
+// fired tick (a fire touches lastActiveAt and may create a fresh session),
+// the session auto-title after the first message, and the rename_chat tool.
 export const onSessionsChanged = (handler: () => void) =>
   listen<unknown>("sessions-changed", () => handler());
 

@@ -1099,8 +1099,11 @@ pub fn run() {
         .manage(Arc::new(AgentRegistry::new()))
         .setup(|app| {
             let app_cfg = app_config_dir(app.handle())?;
+            let state = app.state::<AppState>();
+            // Background emitters (the rename_chat tool) reach the windows
+            // through the app state handle.
+            *state.emitter.lock().unwrap() = Some(app.handle().clone());
             if let Some(wd) = onboarding::load_working_dir(&app_cfg) {
-                let state = app.state::<AppState>();
                 *state.db.lock().unwrap() = Some(db::open(&paths::db_path(&wd))?);
                 *state.working_dir.lock().unwrap() = Some(wd.clone());
                 // SPEC 5.1: drop harness sessions idle past the TTL on start.

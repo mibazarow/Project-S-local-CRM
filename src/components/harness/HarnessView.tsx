@@ -334,8 +334,9 @@ export default function HarnessView() {
       })
       .then((u) => (cancelled ? u() : (unConfirm = u)));
     void ipc.onSchedulesChanged(() => void loadSchedules()).then((u) => (cancelled ? u() : (unSchedules = u)));
-    // A fired schedule can create a fresh session (its origin was deleted):
-    // the new session appears in the list without a manual reload.
+    // A fired schedule can create a fresh session (its origin was deleted),
+    // and the backend emits this event after a session auto-title or an
+    // agent rename_chat: the list (order and titles) refreshes as it changes.
     void ipc.onSessionsChanged(() => void loadSessions()).then((u) => (cancelled ? u() : (unSessions = u)));
     return () => {
       cancelled = true;
@@ -419,10 +420,14 @@ export default function HarnessView() {
       grow();
       att.clear();
       dispatch({ type: "send", key: activeId, text: trimmed, attachments: refs });
-      void ipc.sendSessionMessage(activeId, trimmed, refs).catch((e) =>
-        dispatch({ type: "sendFailed", key: activeId, message: toMessage(e) }),
-      );
-      void loadSessions();
+      // send_session_message touches the session before it returns: reload
+      // the list right after the command lands so the active chat visibly
+      // rises to the top immediately, not only when the answer completes.
+      // Auto-titles and rename_chat arrive later via "sessions-changed".
+      void ipc
+        .sendSessionMessage(activeId, trimmed, refs)
+        .then(() => loadSessions())
+        .catch((e) => dispatch({ type: "sendFailed", key: activeId, message: toMessage(e) }));
     })();
   };
 
