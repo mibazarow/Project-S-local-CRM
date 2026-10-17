@@ -14,7 +14,7 @@ use rusqlite::{params, Connection};
 // Compaction trigger defaults to 80% of the model context window (SPEC 4.6);
 // the value lives in app.json `compactionThresholdPercent` (AppConfig).
 // Header of the synthetic message that replaces a summarized range.
-pub const SUMMARY_PREFIX: &str = "[Сводка предыдущей части диалога]";
+pub const SUMMARY_PREFIX: &str = "[Summary of the earlier conversation]";
 
 // Cap on what the summarizer itself receives, so the compaction call cannot
 // overflow the window it is trying to protect.
@@ -198,7 +198,7 @@ fn render_transcript(messages: &[ChatMessage]) -> String {
                     })
                     .collect();
                 let has_image = parts.iter().any(|p| matches!(p, ContentPart::ImageUrl { .. }));
-                let suffix = if has_image { " (изображение)" } else { "" };
+                let suffix = if has_image { " (image)" } else { "" };
                 out.push_str(&format!("{role}: {}{suffix}\n", text.join(" ")));
             }
             None => {}
@@ -211,7 +211,7 @@ fn render_transcript(messages: &[ChatMessage]) -> String {
         let keep = SUMMARIZER_MAX_CHARS / 2;
         let head: String = out.chars().take(keep).collect();
         let tail: String = out.chars().skip(out.chars().count() - keep).collect();
-        out = format!("{head}\n[…часть диалога пропущена…]\n{tail}");
+        out = format!("{head}\n[…part of the conversation skipped…]\n{tail}");
     }
     out
 }
@@ -219,9 +219,9 @@ fn render_transcript(messages: &[ChatMessage]) -> String {
 fn summarize(backend: &dyn ChatBackend, params: &ChatParams, transcript: &str) -> Result<String> {
     let messages = vec![
         ChatMessage::system(
-            "Ты — суммаризатор диалога агента. Сожми переданную часть диалога в краткую \
-связную сводку на русском: сохрани решения, важные факты, вызовы инструментов и их \
-результаты, ошибки и незакрытые вопросы. Не отвечай пользователю, пиши только сводку.",
+            "You are a summarizer of an agent conversation. Compress the given part of the \
+conversation into a brief coherent summary in Russian: keep the decisions, important facts, tool \
+calls and their results, errors, and open questions. Do not answer the user, write only the summary.",
         ),
         ChatMessage::user(transcript),
     ];

@@ -227,7 +227,7 @@ pub struct UserTurn {
 // Builds the model-facing user turn: the user's text followed by one clearly
 // delimited block per document attachment (carrying its extracted text).
 // Images: with vision supported they become data-URL content parts (no text
-// block); otherwise the turn carries an honest Russian note and the image is
+// block); otherwise the turn carries an honest note and the image is
 // not sent. load_history applies it when rebuilding the transcript for a run.
 pub fn build_user_content(
     text: &str,
@@ -244,22 +244,22 @@ pub fn build_user_content(
                 match llm::image_data_url(&path) {
                     Ok(url) => images.push(url),
                     Err(e) => out.push_str(&format!(
-                        "\n\n[Изображение «{}» не отправлено: {}]",
+                        "\n\n[Image \"{}\" not sent: {}]",
                         attachment.name, e
                     )),
                 }
             } else {
                 out.push_str(&format!(
-                    "\n\n[Изображение «{}» не отправлено: модель не поддерживает vision]",
+                    "\n\n[Image \"{}\" not sent: the model does not support vision]",
                     attachment.name
                 ));
             }
             continue;
         }
-        out.push_str(&format!("\n\n[Вложение: {}]", attachment.name));
+        out.push_str(&format!("\n\n[Attachment: {}]", attachment.name));
         match attachment_text(attachment, base, ATTACHMENT_MAX_CHARS) {
             Some(body) => out.push_str(&format!("\n{body}")),
-            None => out.push_str("\n(формат файла не разбирается)"),
+            None => out.push_str("\n(file format not parseable)"),
         }
     }
     UserTurn {
@@ -495,7 +495,7 @@ mod tests {
         assert!(turn.images.is_empty());
         assert!(turn
             .text
-            .contains("[Изображение «pic.png» не отправлено: модель не поддерживает vision]"));
+            .contains("[Image \"pic.png\" not sent: the model does not support vision]"));
         fs::remove_dir_all(&wd).unwrap();
         fs::remove_dir_all(&src).unwrap();
     }
@@ -567,7 +567,7 @@ mod tests {
             attach_project(&conn, &wd, pid, &[src.join("a.md").display().to_string()]).unwrap();
         let turn = build_user_content("проверь счёт", &items, &root(&wd), false);
         assert!(turn.text.starts_with("проверь счёт"));
-        assert!(turn.text.contains("[Вложение: a.md]\nданные проекта"));
+        assert!(turn.text.contains("[Attachment: a.md]\nданные проекта"));
         fs::remove_dir_all(&wd).unwrap();
         fs::remove_dir_all(&src).unwrap();
     }
@@ -582,7 +582,7 @@ mod tests {
         let items =
             attach_project(&conn, &wd, pid, &[src.join("big.md").display().to_string()]).unwrap();
         let turn = build_user_content("x", &items, &root(&wd), false);
-        assert!(turn.text.contains("[Вложение: big.md]"));
+        assert!(turn.text.contains("[Attachment: big.md]"));
         assert!(!turn.text.contains("ХВОСТ"));
         fs::remove_dir_all(&wd).unwrap();
         fs::remove_dir_all(&src).unwrap();
@@ -611,8 +611,8 @@ mod tests {
         assert!(turn.images[0].starts_with("data:image/png;base64,"));
         // ...while the document still contributes its extracted text.
         assert!(turn.text.starts_with("что на картинке?"));
-        assert!(turn.text.contains("[Вложение: a.md]\nданные проекта"));
-        assert!(!turn.text.contains("не отправлено"));
+        assert!(turn.text.contains("[Attachment: a.md]\nданные проекта"));
+        assert!(!turn.text.contains("not sent"));
         fs::remove_dir_all(&wd).unwrap();
         fs::remove_dir_all(&src).unwrap();
     }
@@ -636,10 +636,10 @@ mod tests {
 
         let turn = build_user_content("проверь", &items, &root(&wd), false);
         assert!(turn.images.is_empty());
-        assert!(turn.text.contains("[Вложение: a.md]\nданные проекта"));
+        assert!(turn.text.contains("[Attachment: a.md]\nданные проекта"));
         assert!(turn
             .text
-            .contains("[Изображение «pic.png» не отправлено: модель не поддерживает vision]"));
+            .contains("[Image \"pic.png\" not sent: the model does not support vision]"));
         fs::remove_dir_all(&wd).unwrap();
         fs::remove_dir_all(&src).unwrap();
     }

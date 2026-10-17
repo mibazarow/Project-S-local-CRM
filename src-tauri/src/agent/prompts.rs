@@ -11,7 +11,7 @@ pub fn skills_prompt_block(skills: &[(String, String)]) -> String {
         return String::new();
     }
     let mut out = String::from(
-        "\n\nДоступные скиллы (краткий список; полный текст скилла загружается инструментом skill по имени — прочитай его перед применением):\n",
+        "\n\nAvailable skills (short list; the full skill text is loaded by the skill tool by name — read it before applying):\n",
     );
     for (name, description) in skills {
         out.push_str(&format!("- {name} — {description}\n"));
@@ -21,29 +21,32 @@ pub fn skills_prompt_block(skills: &[(String, String)]) -> String {
 
 pub fn project_system_prompt(project: &ProjectDto, skills: &[(String, String)]) -> String {
     let base = format!(
-        "Ты — агент проекта «{name}» в CRM Project S. Проект живёт в папке {path}; \
-все пути в инструментах — относительные от корня проекта.\n\
+        "You are the agent of project \"{name}\" in the Project S CRM. The project lives in the folder {path}; \
+all paths in tools are relative to the project root.\n\
 \n\
-Ты ведёшь этот проект: держишь его контекст, ретроллишь ход работ по истории чата, \
-файлам и задачам, ведёшь файл доступов datas.md и отвечаешь пользователю по материалам проекта.\n\
+Always respond to the user in Russian (correct, natural Russian). Do not translate product names, \
+technical terms, file names, or quoted content.\n\
 \n\
-Инструменты:\n\
-- search — гибридный поиск по индексу проекта (включая закрытые задачи);\n\
-- read_file, list_tree, datas_read — чтение файлов, дерева и datas.md;\n\
-- write_file, create_folder — запись внутри проекта;\n\
-- task_list, task_create, task_update, task_move — задачи проекта;\n\
-- datas_add — добавление/обновление записей в datas.md;\n\
-- remember, recall — глобальная память о пользователе и общих фактах (обща \
-для всех чатов и сессий); блок «Память» уже подмешан ниже;\n\
-- rename_path, delete_path, task_delete — опасные операции, выполняются только \
-с подтверждением пользователя.\n\
+You run this project: you hold its context, retell the course of work from the chat history, \
+files and tasks, maintain the access file datas.md, and answer the user from the project materials.\n\
 \n\
-Правила:\n\
-- не выдумывай содержимое файлов и задач: сначала ищи и читай;\n\
-- пиши и удаляй только внутри папки проекта;\n\
-- отвечай по-русски, кратко и по делу;\n\
-- завершай каждый ответ вызовом finish_task: action=finish, answer — итоговый \
-ответ пользователю; если работа невозможна или прервана — action=stop с причиной в answer.",
+Tools:\n\
+- search — hybrid search over the project index (including closed tasks);\n\
+- read_file, list_tree, datas_read — reading files, the tree, and datas.md;\n\
+- write_file, create_folder — writing inside the project;\n\
+- task_list, task_create, task_update, task_move — project tasks;\n\
+- datas_add — adding/updating entries in datas.md;\n\
+- remember, recall — global memory about the user and shared facts (shared \
+by all chats and sessions); the \"[Memory]\" block is already injected below;\n\
+- rename_path, delete_path, task_delete — dangerous operations, executed only \
+with user confirmation.\n\
+\n\
+Rules:\n\
+- do not invent file or task contents: search and read first;\n\
+- write and delete only inside the project folder;\n\
+- answer in Russian, briefly and to the point;\n\
+- end every answer with a finish_task call: action=finish, answer — the final \
+answer to the user; if the work is impossible or interrupted — action=stop with the reason in answer.",
         name = project.name,
         path = project.path
     );
@@ -56,25 +59,27 @@ pub fn project_system_prompt(project: &ProjectDto, skills: &[(String, String)]) 
 // tool set grows in later slices, so the prompt names only the rules that hold
 // regardless of which tools are wired in.
 pub fn harness_system_prompt(skills: &[(String, String)]) -> String {
-    let base = "Ты — агент-харнес Project S: управляешь компьютером по запросам пользователя \
-и можешь ставить расписания (одноразовые и повторяющиеся), которые срабатывают, пока \
-приложение открыто.\n\
+    let base = "You are the Project S harness agent: you control the computer on user requests \
+and can set schedules (one-time and recurring) that fire while the app is open.\n\
 \n\
-Рабочая территория по умолчанию — папка Harness/ в рабочей директории: пиши файлы, скрипты \
-и артефакты туда, если пользователь явно не укажет другой путь. Пути вне Harness/ и Projects/ \
-требуют подтверждения пользователя.\n\
+Always respond to the user in Russian (correct, natural Russian). Do not translate product names, \
+technical terms, file names, or quoted content.\n\
 \n\
-Временные файлы — только в Harness/tmp/: не используй системный /tmp; подпапки создавай по задачам.\n\
+The default working territory is the Harness/ folder in the working directory: write files, scripts \
+and artifacts there unless the user explicitly names another path. Paths outside Harness/ and Projects/ \
+require user confirmation.\n\
 \n\
-Правила:\n\
-- не выдумывай содержимое файлов и результаты команд: сначала читай и проверяй;\n\
-- помни важное и сверяйся с глобальной памятью: remember / recall (обща для \
-всех чатов и сессий); блок «Память» уже подмешан ниже;\n\
-- опасные операции (запись вне CRM-папок, bash, браузер) выполняются только с подтверждением \
-пользователя;\n\
-- отвечай по-русски, кратко и по делу;\n\
-- завершай каждый ответ вызовом finish_task: action=finish, answer — итоговый ответ \
-пользователю; если работа невозможна или прервана — action=stop с причиной в answer.";
+Temporary files — only in Harness/tmp/: do not use the system /tmp; create subfolders per task.\n\
+\n\
+Rules:\n\
+- do not invent file contents or command results: read and verify first;\n\
+- remember important things and check the global memory: remember / recall (shared \
+by all chats and sessions); the \"[Memory]\" block is already injected below;\n\
+- dangerous operations (writing outside CRM folders, bash, browser) are executed only with user \
+confirmation;\n\
+- answer in Russian, briefly and to the point;\n\
+- end every answer with a finish_task call: action=finish, answer — the final answer \
+to the user; if the work is impossible or interrupted — action=stop with the reason in answer.";
     base.to_string() + &skills_prompt_block(skills)
 }
 
@@ -103,8 +108,10 @@ mod tests {
         for token in ["search", "read_file", "task_create", "datas_add", "finish_task", "remember", "recall"] {
             assert!(p.contains(token), "missing tool guidance: {token}");
         }
-        assert!(p.contains("подтверждением"));
-        assert!(!p.contains("Доступные скиллы"), "empty skills add no block");
+        assert!(p.contains("confirmation"));
+        assert!(p.contains("Always respond to the user in Russian"));
+        assert!(p.contains("answer in Russian, briefly and to the point"));
+        assert!(!p.contains("Available skills"), "empty skills add no block");
     }
 
     #[test]
@@ -114,7 +121,7 @@ mod tests {
             ("research".to_string(), "Investigate a question.".to_string()),
         ];
         let block = skills_prompt_block(&skills);
-        assert!(block.contains("Доступные скиллы"));
+        assert!(block.contains("Available skills"));
         assert!(block.contains("- ponytail — Lazy senior dev mode."));
         assert!(block.contains("- research — Investigate a question."));
         // Header plus exactly one line per skill: no bodies, no extra keys.
@@ -126,14 +133,15 @@ mod tests {
     #[test]
     fn harness_prompt_carries_territory_tmp_schedules_and_skills() {
         let p = harness_system_prompt(&[]);
-        assert!(p.contains("управляешь компьютером"), "{p}");
-        assert!(p.contains("расписания"), "{p}");
+        assert!(p.contains("control the computer"), "{p}");
+        assert!(p.contains("schedules"), "{p}");
         assert!(p.contains("Harness/"), "{p}");
         assert!(p.contains("Harness/tmp/"), "{p}");
         assert!(p.contains("finish_task"), "{p}");
         assert!(p.contains("remember"), "{p}");
-        assert!(p.contains("подтверждением"), "{p}");
-        assert!(!p.contains("Доступные скиллы"), "empty skills add no block");
+        assert!(p.contains("Always respond to the user in Russian"), "{p}");
+        assert!(p.contains("confirmation"), "{p}");
+        assert!(!p.contains("Available skills"), "empty skills add no block");
 
         let skills = vec![("ponytail".to_string(), "Lazy senior dev mode.".to_string())];
         let p = harness_system_prompt(&skills);

@@ -30,7 +30,7 @@ pub const IDENTITY_NAME_SOURCE: &str = "identity:name";
 pub const IDENTITY_ADDRESS_SOURCE: &str = "identity:address";
 
 // Header of the block appended to every run's system prompt.
-pub const MEMORY_BLOCK_PREFIX: &str = "[Память]";
+pub const MEMORY_BLOCK_PREFIX: &str = "[Memory]";
 
 // The injected block stays short: at most this many records and this many
 // characters of record lines (the identity line itself is always kept).
@@ -160,14 +160,14 @@ fn search_preferring(
 
 // The explicit identity sentence carried by every memory block (SPEC 6.3).
 pub fn identity_line(agent_name: &str, user_address: &str) -> String {
-    format!("Тебя зовут {agent_name}; обращайся к пользователю {user_address}")
+    format!("Your name is {agent_name}; address the user: {user_address}")
 }
 
 // Identity is part of memory: settings edits land in the identity records on
 // the next context build, so the injected block always follows app.json.
 pub fn sync_identity(conn: &Connection, agent_name: &str, user_address: &str) -> Result<()> {
-    upsert_identity(conn, IDENTITY_NAME_SOURCE, &format!("Имя агента: {agent_name}"))?;
-    upsert_identity(conn, IDENTITY_ADDRESS_SOURCE, &format!("Как обращаться к пользователю: {user_address}"))
+    upsert_identity(conn, IDENTITY_NAME_SOURCE, &format!("Agent name: {agent_name}"))?;
+    upsert_identity(conn, IDENTITY_ADDRESS_SOURCE, &format!("How to address the user: {user_address}"))
 }
 
 fn upsert_identity(conn: &Connection, source: &str, content: &str) -> Result<()> {
@@ -193,7 +193,7 @@ fn upsert_identity(conn: &Connection, source: &str, content: &str) -> Result<()>
     Ok(())
 }
 
-// Builds the "[Память]" block for one run: the identity line, then the
+// Builds the "[Memory]" block for one run: the identity line, then the
 // identity records (always), then records relevant to the fresh user query
 // (keyword search — works with the Noop embedder). Records attached to the
 // current project are marked for that chat (SPEC 6.3 "подсвечиваются").
@@ -231,7 +231,7 @@ pub fn context_block(
     for record in records {
         let mut line = format!("\n- {}", record.content.replace('\n', " "));
         if record.project_id.is_some() && record.project_id == project_id {
-            line.push_str(" [этот проект]");
+            line.push_str(" [this project]");
         }
         if chars + line.chars().count() > MAX_BLOCK_CHARS {
             break;
@@ -489,8 +489,8 @@ mod tests {
             .filter(|m| m.source.as_deref().unwrap_or_default().starts_with("identity:"))
             .collect();
         assert_eq!(identity.len(), 2);
-        assert!(identity.iter().any(|m| m.content == "Имя агента: Вася Пупкин"));
-        assert!(identity.iter().any(|m| m.content == "Как обращаться к пользователю: на Вы"));
+        assert!(identity.iter().any(|m| m.content == "Agent name: Вася Пупкин"));
+        assert!(identity.iter().any(|m| m.content == "How to address the user: на Вы"));
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -501,16 +501,16 @@ mod tests {
         add(&conn, "Совсем про другое", None, None, None).unwrap();
 
         let block = context_block(&conn, None, "кофе", "Агент", "на ты").unwrap();
-        assert!(block.starts_with(&format!("{MEMORY_BLOCK_PREFIX}\nТебя зовут Агент; обращайся к пользователю на ты")));
+        assert!(block.starts_with(&format!("{MEMORY_BLOCK_PREFIX}\nYour name is Агент; address the user: на ты")));
         assert!(block.contains("Любит кофе по утрам"));
         assert!(!block.contains("Совсем про другое"));
-        assert!(block.contains("Имя агента: Агент"), "identity records always injected");
-        assert_eq!(block.matches("Имя агента").count(), 1, "identity record injected once");
+        assert!(block.contains("Agent name: Агент"), "identity records always injected");
+        assert_eq!(block.matches("Agent name").count(), 1, "identity record injected once");
 
         // settings change lands in the next block
         let block = context_block(&conn, None, "кофе", "Вася Пупкин", "на Вы").unwrap();
-        assert!(block.contains("Тебя зовут Вася Пупкин; обращайся к пользователю на Вы"));
-        assert!(block.contains("Имя агента: Вася Пупкин"));
+        assert!(block.contains("Your name is Вася Пупкин; address the user: на Вы"));
+        assert!(block.contains("Agent name: Вася Пупкин"));
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -524,7 +524,7 @@ mod tests {
         }
 
         let block = context_block(&conn, Some(project.id), "кофе", "Агент", "на ты").unwrap();
-        assert!(block.contains("факт про этот проект кофе [этот проект]"));
+        assert!(block.contains("факт про этот проект кофе [this project]"));
         let lines = block.lines().count();
         assert!(lines <= 1 + 1 + MAX_BLOCK_RECORDS, "record cap exceeded: {lines}");
         assert!(block.chars().count() <= MEMORY_BLOCK_PREFIX.len() + 1 + 80 + MAX_BLOCK_CHARS);
@@ -532,7 +532,7 @@ mod tests {
         // the same record is not marked for a different (or no) project
         let block = context_block(&conn, None, "факт про этот", "Агент", "на ты").unwrap();
         assert!(block.contains("факт про этот проект кофе"));
-        assert!(!block.contains("[этот проект]"));
+        assert!(!block.contains("[this project]"));
         fs::remove_dir_all(&wd).unwrap();
     }
 }

@@ -431,7 +431,7 @@ pub(crate) struct RunBridge {
     pub chat_id: i64,
     pub system_prompt: String,
     // The fresh user turn: drives which memory records are relevant for this
-    // run's "[Память]" block (SPEC 6.3).
+    // run's "[Memory]" block (SPEC 6.3).
     pub user_query: String,
     pub catalog: Catalog,
 }
@@ -908,9 +908,9 @@ mod tests {
         let turn = hist[0].text_content().unwrap();
         assert!(turn.starts_with("что тут?"));
         // Documents contribute their extracted text to the model turn...
-        assert!(turn.contains("[Вложение: a.md]\nданные проекта"));
+        assert!(turn.contains("[Attachment: a.md]\nданные проекта"));
         // ...images are honestly noted and not sent (no base64 in the turn).
-        assert!(turn.contains("[Изображение «pic.png» не отправлено: модель не поддерживает vision]"));
+        assert!(turn.contains("[Image \"pic.png\" not sent: the model does not support vision]"));
         assert!(!turn.contains("base64"));
 
         // The stored row keeps the plain user text: the UI renders the
@@ -961,14 +961,14 @@ mod tests {
         assert!(parts[0]["text"]
             .as_str()
             .unwrap()
-            .contains("[Вложение: a.md]\nданные проекта"));
+            .contains("[Attachment: a.md]\nданные проекта"));
         assert_eq!(parts[1]["type"], "image_url");
         assert!(parts[1]["image_url"]["url"]
             .as_str()
             .unwrap()
             .starts_with("data:image/png;base64,"));
         // No honest "not sent" note when the image is actually sent.
-        assert!(!serde_json::to_string(&hist[0]).unwrap().contains("не отправлено"));
+        assert!(!serde_json::to_string(&hist[0]).unwrap().contains("not sent"));
         fs::remove_dir_all(&wd).unwrap();
     }
 

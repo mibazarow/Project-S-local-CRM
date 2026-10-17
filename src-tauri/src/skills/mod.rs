@@ -416,7 +416,7 @@ pub fn body(skill: &SkillManifest) -> Result<String> {
             })
             .unwrap_or("scripts/");
         return Ok(format!(
-            "> Скилл-скрипт: точка входа — {entry}, timeout {timeout_sec}s. Ниже — полный текст инструкции.\n\n{body}"
+            "> Skill script: entrypoint — {entry}, timeout {timeout_sec}s. Below is the full instruction text.\n\n{body}"
         ));
     }
     Ok(body)
