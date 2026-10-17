@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -211,6 +211,22 @@ CREATE TABLE IF NOT EXISTS message_attachments (
 CREATE INDEX IF NOT EXISTS idx_message_attachments_message ON message_attachments(message_id);
 ";
 
+// Embedding vector dim 256 -> 512 (EmbeddingGemma 2 MRL truncation): a vec0
+// table cannot be resized in place, so drop and recreate it with the current
+// EMBED_DIM. Every stored vector is invalid afterwards, so file_vectors is
+// cleared too: a full reindex/backfill (reindex_all) is required after this
+// migration; FTS rows in indexed_files/files_fts are untouched.
+fn migration_11() -> String {
+    format!(
+        "
+DROP TABLE IF EXISTS vec_items;
+DROP TABLE IF EXISTS file_vectors;
+{}
+",
+        migration_3()
+    )
+}
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -252,6 +268,10 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     }
     if version < 10 {
         conn.execute_batch(MIGRATION_10)?;
+        conn.pragma_update(None, "user_version", 10)?;
+    }
+    if version < 11 {
+        conn.execute_batch(&migration_11())?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
     Ok(())
@@ -548,6 +568,73 @@ mod tests {
 
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_v11_recreates_vec_items_at_512_dims_and_clears_vectors() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        // Simulate a pre-v11 database: vec0 at float[256] with stale rows.
+        conn.execute_batch("DROP TABLE vec_items; DROP TABLE file_vectors;")
+            .unwrap();
+        conn.execute_batch(
+            "
+CREATE TABLE file_vectors (
+    project_id INTEGER NOT NULL,
+    rel_path TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('text','name')),
+    dim INTEGER NOT NULL,
+    backend TEXT NOT NULL,
+    text_hash TEXT,
+    vec_rowid INTEGER,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (project_id, rel_path, kind)
+);
+CREATE INDEX idx_file_vectors_rowid ON file_vectors(vec_rowid);
+CREATE VIRTUAL TABLE vec_items USING vec0(
+    project_id INTEGER PARTITION KEY,
+    embedding float[256]
+);
+",
+        )
+        .unwrap();
+        let blob256: Vec<u8> = vec![0.0f32; 256].iter().flat_map(|x| x.to_le_bytes()).collect();
+        conn.execute(
+            "INSERT INTO vec_items (project_id, embedding) VALUES (1, ?1)",
+            params![blob256],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO file_vectors (project_id, rel_path, kind, dim, backend, vec_rowid, updated_at) VALUES (1, 'a', 'text', 256, 'ort', 1, '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 10).unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let stale: i64 = conn
+            .query_row("SELECT count(*) FROM file_vectors", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stale, 0, "stale 256-d vector rows survived v11");
+        let blob512: Vec<u8> = vec![0.0f32; crate::embed::EMBED_DIM]
+            .iter()
+            .flat_map(|x| x.to_le_bytes())
+            .collect();
+        conn.execute(
+            "INSERT INTO vec_items (project_id, embedding) VALUES (1, ?1)",
+            params![blob512],
+        )
+        .unwrap();
+        let wrong_dim = conn.execute(
+            "INSERT INTO vec_items (project_id, embedding) VALUES (1, ?1)",
+            params![blob256],
+        );
+        assert!(wrong_dim.is_err(), "256-d vector accepted into a 512-d vec0 table");
     }
 
     #[test]

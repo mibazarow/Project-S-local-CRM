@@ -766,7 +766,7 @@ mod tests {
     fn semantic_search_returns_empty_list_with_noop_backend() {
         let (wd, _conn, id, state) = setup("idx-noop");
         fs::write(root(&wd).join("a.txt"), "раз").unwrap();
-        index_project(&state, id).unwrap(); // default config: backend noop
+        index_project(&state, id).unwrap(); // default config: ort, but no model files here -> noop
         let hits = semantic_search(&state, id, "раз", 5).unwrap();
         assert!(hits.is_empty());
         fs::remove_dir_all(&wd).unwrap();

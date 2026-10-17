@@ -33,9 +33,10 @@ sqlite-vec = "=0.1.9"
 # blocking pure-Rust HTTP (no async runtime); rustls TLS on by default because
 # LLM endpoints are HTTPS (Ollama http:// still works through the same agent)
 ureq = { version = "2.12", default-features = false, features = ["json", "tls"] }
-# In-process ONNX inference for EmbeddingGemma 2 (text encoder). Opt-in only:
-# `ort` downloads ONNX Runtime binaries at build time, so it must stay out of
-# the default build (default `cargo build/test` must work with no network).
+# In-process ONNX inference for EmbeddingGemma 2 (text encoder), now the
+# default backend. `ort` downloads ONNX Runtime binaries once at build time
+# and caches them under ~/Library/Caches/ort.pyke.io, so rebuilds after the
+# first online build work offline.
 ort = { version = "=2.0.0-rc.14", optional = true }
 tokenizers = { version = "0.22", optional = true }
 # sha256 verification of downloaded model files (ort-backend only)
@@ -52,6 +53,9 @@ tauri-plugin-autostart = "2"
 tungstenite = "0.29"
 
 [features]
-# ONNX text embedder + model provisioning. ureq TLS is now a default feature,
-# so this feature only adds the ONNX stack.
+# ONNX text embedder + model provisioning is the default embedding backend.
+# Note: the Tauri CLI always builds with --no-default-features, so the app
+# build gets this feature via tauri.conf.json build.features.
+default = ["ort-backend"]
+# ureq TLS is now a default feature, so this feature only adds the ONNX stack.
 ort-backend = ["dep:ort", "dep:tokenizers", "dep:sha2"]

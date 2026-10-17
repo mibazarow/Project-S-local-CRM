@@ -198,6 +198,15 @@ fn download_one(
     Ok(())
 }
 
+// The working dir the real app uses: PROJECT_S_WD env override, otherwise
+// the default onboarding dir (~/Documents/PROJECT-S).
+#[cfg(test)]
+pub(crate) fn real_working_dir() -> PathBuf {
+    std::env::var_os("PROJECT_S_WD")
+        .map(PathBuf::from)
+        .unwrap_or_else(crate::onboarding::default_working_dir)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,5 +245,24 @@ mod tests {
         .unwrap();
         assert!(model_present(&wd));
         fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // Maintenance entry point: provisions the four text-encoder files into
+    // the REAL app working dir (idempotent; files already present with the
+    // expected size are skipped, downloads are sha256-verified):
+    //   cargo test provision_real_working_dir -- --ignored
+    #[test]
+    #[ignore]
+    fn provision_real_working_dir() {
+        let wd = real_working_dir();
+        download_text_model(&wd, |name, done, total| {
+            eprintln!("{name}: {done}/{total}");
+        })
+        .unwrap();
+        assert!(
+            model_present(&wd),
+            "model files missing in {}",
+            model_dir(&wd).display()
+        );
     }
 }

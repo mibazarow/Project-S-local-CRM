@@ -12,7 +12,7 @@ pub mod model_store;
 mod ort_backend;
 
 // Storage dimension for every vector (MRL truncation of the model's 768-d).
-pub const EMBED_DIM: usize = 256;
+pub const EMBED_DIM: usize = 512;
 
 pub const OLLAMA_BASE_URL: &str = "http://127.0.0.1:11434";
 
@@ -136,12 +136,19 @@ fn ort_embedder(cfg: &EmbeddingConfig, wd: &Path) -> Arc<dyn Embedder> {
     if model_store::model_present(wd) {
         Arc::new(ort_backend::OrtEmbedder::new(model_store::model_dir(wd), cfg.dim))
     } else {
+        eprintln!(
+            "embedding: backend \"ort\" requested but model files are missing in {}; falling back to noop (FTS only). Download via settings or `cargo test provision_real_working_dir -- --ignored`.",
+            model_store::model_dir(wd).display()
+        );
         Arc::new(NoopEmbedder)
     }
 }
 
 #[cfg(not(feature = "ort-backend"))]
 fn ort_embedder(_cfg: &EmbeddingConfig, _wd: &Path) -> Arc<dyn Embedder> {
+    eprintln!(
+        "embedding: backend \"ort\" requested but the ort-backend feature is not compiled; falling back to noop (FTS only)"
+    );
     Arc::new(NoopEmbedder)
 }
 

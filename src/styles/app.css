@@ -31,12 +31,15 @@ input, textarea { font-family: inherit; }
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  padding: 0 14px;
+  padding: 0 14px 0 var(--traffic-light-inset);
   background: #182533;
   border-bottom: 1px solid #182533;
   flex-shrink: 0;
   z-index: 10;
+  -webkit-app-region: drag;
 }
+
+.topbar button, .topbar .tabs { -webkit-app-region: no-drag; }
 
 .topbar-left { display: flex; align-items: center; gap: 16px; }
 .topbar-right { display: flex; justify-content: flex-end; }
@@ -688,9 +691,11 @@ input, textarea { font-family: inherit; }
   align-items: center;
   justify-content: center;
   background: var(--surface-2);
-  padding: 24px;
+  padding: calc(24px + var(--titlebar-inset)) 24px 24px;
+  -webkit-app-region: drag;
 }
 .onboarding-card {
+  -webkit-app-region: no-drag;
   width: 460px;
   background: var(--surface);
   border: 1px solid var(--border);

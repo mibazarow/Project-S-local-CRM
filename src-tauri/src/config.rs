@@ -119,9 +119,10 @@ impl Default for EmbeddingConfig {
     fn default() -> Self {
         EmbeddingConfig {
             enabled: true,
-            // Noop by default so the app never probes the network unasked;
-            // switch to "ollama"/"ort" in indexing.json or the settings UI.
-            backend: "noop".into(),
+            // ORT (EmbeddingGemma 2, in-app ONNX) is the default backend; if
+            // the model files are missing, select_embedder falls back to noop
+            // (FTS only) instead of probing the network unasked.
+            backend: "ort".into(),
             ollama_model: "nomic-embed-text".into(),
             dim: crate::embed::EMBED_DIM,
             name_weight: 0.3,
