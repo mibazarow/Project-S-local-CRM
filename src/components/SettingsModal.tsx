@@ -182,7 +182,7 @@ async function patchMcpServers(
 }
 
 export default function SettingsModal({ onClose }: { onClose: () => void }) {
-  const [tab, setTab] = useState<"llm" | "index" | "agent" | "skills" | "mcp" | "memory" | "other">("llm");
+  const [tab, setTab] = useState<"llm" | "agent" | "skills" | "mcp" | "memory" | "other">("llm");
   const [workingDir, setWorkingDir] = useState<string | null>(null);
   const [configDir, setConfigDir] = useState("");
   const [form, setForm] = useState<Form | null>(null);
@@ -945,12 +945,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
             Модель
           </button>
           <button
-            className={tab === "index" ? "settings-tab active" : "settings-tab"}
-            onClick={() => setTab("index")}
-          >
-            Индексация
-          </button>
-          <button
             className={tab === "agent" ? "settings-tab active" : "settings-tab"}
             onClick={() => setTab("agent")}
           >
@@ -1145,8 +1139,23 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
               {error && <div className="set-error">{error}</div>}
             </>
           )}
-          {tab === "index" && (
+          {tab === "agent" && (
             <>
+              <div className="set-row switch-row">
+                <label>Полный автопилот (все разрешения без подтверждений)</label>
+                <label className="switch">
+                  <input
+                    type="checkbox"
+                    checked={appForm?.autopilot ?? false}
+                    onChange={(e) => updateAppForm({ autopilot: e.target.checked })}
+                  />
+                  <span className="track"></span>
+                </label>
+              </div>
+              <div className="set-hint">
+                Опасно: агент выполняет любые действия без подтверждений. По умолчанию выключено.
+              </div>
+              <div className="schedule-group-title">Индексация</div>
               <div className="set-row">
                 <label>Максимальный размер файла, МБ</label>
                 <input
@@ -1269,25 +1278,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                   {embedProgress.file}: {fmtMb(embedProgress.done)} из {fmtMb(embedProgress.total)} МБ
                 </div>
               )}
-              {error && <div className="set-error">{error}</div>}
-            </>
-          )}
-          {tab === "agent" && (
-            <>
-              <div className="set-row switch-row">
-                <label>Полный автопилот (все разрешения без подтверждений)</label>
-                <label className="switch">
-                  <input
-                    type="checkbox"
-                    checked={appForm?.autopilot ?? false}
-                    onChange={(e) => updateAppForm({ autopilot: e.target.checked })}
-                  />
-                  <span className="track"></span>
-                </label>
-              </div>
-              <div className="set-hint">
-                Опасно: агент выполняет любые действия без подтверждений. По умолчанию выключено.
-              </div>
               {error && <div className="set-error">{error}</div>}
             </>
           )}
