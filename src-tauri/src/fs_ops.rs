@@ -66,6 +66,22 @@ pub fn read_text(conn: &Connection, wd: &Path, project_id: i64, rel_path: &str) 
     String::from_utf8(bytes).map_err(|_| AppError::Invalid(format!("\"{rel_path}\" is not valid UTF-8")))
 }
 
+// Canonicalized absolute path of an existing project entry (same safe
+// resolver as read_text: rejects escapes and symlink escapes). Used by the
+// agent read tools to hand the real path to the document extractor.
+pub fn resolve_existing(
+    conn: &Connection,
+    wd: &Path,
+    project_id: i64,
+    rel_path: &str,
+) -> Result<PathBuf> {
+    let (_, path) = existing(conn, wd, project_id, rel_path)?;
+    if path.is_dir() {
+        return Err(AppError::Invalid(format!("\"{rel_path}\" is a folder")));
+    }
+    Ok(path)
+}
+
 pub fn write_text(
     conn: &Connection,
     wd: &Path,

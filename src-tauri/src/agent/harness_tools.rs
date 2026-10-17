@@ -14,7 +14,7 @@ use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
 use crate::scheduler::{self, CreateIn};
-use crate::{paths, projects, search, tasks};
+use crate::{extract, fs_ops, paths, projects, search, tasks};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::fs;
@@ -31,6 +31,15 @@ const GREP_SKIP_DIRS: [&str; 3] = ["node_modules", "target", ".git"];
 const LIST_MAX_ENTRIES: usize = 500;
 const BASH_TIMEOUT_SECS: u64 = 120;
 const BASH_OUTPUT_CAP: usize = 30_000;
+
+// Shared by fs_read and the project read_file: images are not text and must
+// not be base64-inlined into the tool result (SPEC: attach in chat instead).
+pub(crate) const IMAGE_READ_HINT: &str = "Image files cannot be read as text; attach the image in the chat so a vision-capable model can see it.";
+
+// Envelope headroom for extracted documents: the JSON wrapper around the
+// content (keys, path, escaping) costs a little, so the extracted text is
+// capped below max_result_len to keep the capped envelope inside the limit.
+const EXTRACT_ENVELOPE_RESERVE: usize = 512;
 
 // Core (finish/skill/memory) stays active from the first round; the
 // machine-wide set is registered for lazy discovery (SPEC 6.4) so the
@@ -221,7 +230,7 @@ impl Tool for FsReadTool {
         "fs_read"
     }
     fn description(&self) -> &str {
-        "Read a text file anywhere on the machine (absolute, ~/ or working-dir-relative path). Binary and >2 MiB files are rejected."
+        "Read a file anywhere on the machine (absolute, ~/ or working-dir-relative path). Text files are returned as-is; docx/xlsx/xlsm/pdf are extracted to text (extracted: true). Images and other binary or >2 MiB files are rejected."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -252,6 +261,26 @@ impl Tool for FsReadTool {
                 ToolErrorCode::ExecutionError,
                 format!("{} is {} bytes, over the {}-byte read cap; use fs_grep or a narrower read", path.display(), meta.len(), MAX_READ_BYTES),
             ));
+        }
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
+        if fs_ops::IMAGE_EXTS.contains(&ext.as_str()) {
+            return Ok(ToolResult::err(ToolErrorCode::ExecutionError, IMAGE_READ_HINT));
+        }
+        if matches!(extract::kind(&path), Some("docx") | Some("xlsx") | Some("pdf")) {
+            let max_chars = self.max_result_len() - EXTRACT_ENVELOPE_RESERVE;
+            return match extract::extract_text(&path, max_chars) {
+                Ok(content) => Ok(ToolResult::ok(json!({
+                    "path": path.display().to_string(),
+                    "content": content,
+                    "extracted": true,
+                    "format": ext,
+                }))
+                .capped(self.max_result_len())),
+                Err(e) => Ok(envelope_r(e)),
+            };
         }
         let bytes = match fs::read(&path) {
             Ok(b) => b,
@@ -1323,6 +1352,7 @@ mod tests {
     use crate::onboarding::temp_test_dir;
     use crate::projects;
     use crate::state::AppState;
+    use std::io::Write as _;
     use std::path::PathBuf;
 
     struct Env {
@@ -1620,6 +1650,94 @@ mod tests {
         }
         let r = exec("fs_read", json!({ "path": "missing.md" }), &env.ctx);
         assert_eq!(r.error.unwrap().code, "not_found");
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    fn zip_bytes(entries: &[(&str, &str)]) -> Vec<u8> {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = zip::write::FileOptions::<()>::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        for (name, content) in entries {
+            zip.start_file(name, opts).unwrap();
+            zip.write_all(content.as_bytes()).unwrap();
+        }
+        zip.finish().unwrap().into_inner()
+    }
+
+    fn docx_bytes(text: &str) -> Vec<u8> {
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>{text}</w:t></w:r></w:p></w:body></w:document>"#
+        );
+        zip_bytes(&[("word/document.xml", &xml)])
+    }
+
+    fn xlsx_bytes(text: &str) -> Vec<u8> {
+        let shared = format!(
+            r#"<?xml version="1.0"?><sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="1" uniqueCount="1"><si><t>{text}</t></si></sst>"#
+        );
+        let sheet = r#"<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row></sheetData></worksheet>"#;
+        zip_bytes(&[("xl/sharedStrings.xml", &shared), ("xl/worksheets/sheet1.xml", sheet)])
+    }
+
+    #[test]
+    fn fs_read_extracts_documents_caps_and_rejects_images_and_binaries() {
+        let env = setup("ht-docs");
+        let dir = env.wd.join("Harness").join("docs");
+        fs::create_dir_all(&dir).unwrap();
+
+        // plain text keeps the old shape: no extracted/format keys
+        fs::write(dir.join("note.md"), "plain harness text").unwrap();
+        let r = exec("fs_read", json!({ "path": "Harness/docs/note.md" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["content"], "plain harness text");
+        assert!(data.get("extracted").is_none());
+        assert!(data.get("format").is_none());
+
+        // docx built in memory: extracted text plus the extracted/format keys
+        fs::write(dir.join("report.docx"), docx_bytes("Harness docx body")).unwrap();
+        let r = exec("fs_read", json!({ "path": "Harness/docs/report.docx" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["content"], "Harness docx body");
+        assert_eq!(data["extracted"], true);
+        assert_eq!(data["format"], "docx");
+
+        // xlsx likewise
+        fs::write(dir.join("sheet.xlsx"), xlsx_bytes("Q3 plan")).unwrap();
+        let r = exec("fs_read", json!({ "path": "Harness/docs/sheet.xlsx" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["content"], "Q3 plan");
+        assert_eq!(data["extracted"], true);
+        assert_eq!(data["format"], "xlsx");
+
+        // images get the vision hint instead of base64
+        fs::write(dir.join("pic.png"), [0x89u8, b'P', b'N', b'G', 0, 1]).unwrap();
+        let r = exec("fs_read", json!({ "path": "Harness/docs/pic.png" }), &env.ctx);
+        assert!(!r.ok);
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "execution_error");
+        assert!(err.message.contains("vision-capable"), "{}", err.message);
+
+        // unknown binary extensions keep the old clear rejection
+        fs::write(dir.join("blob.dat"), [1u8, 2, 0, 3]).unwrap();
+        let r = exec("fs_read", json!({ "path": "Harness/docs/blob.dat" }), &env.ctx);
+        assert!(!r.ok);
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "execution_error");
+        assert!(err.message.contains("binary"), "{}", err.message);
+
+        // max_chars cap: a long docx paragraph is cut to max_result_len
+        fs::write(dir.join("long.docx"), docx_bytes(&"y".repeat(9_000))).unwrap();
+        let r = exec("fs_read", json!({ "path": "Harness/docs/long.docx" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(
+            data["content"].as_str().unwrap().chars().count(),
+            8_000 - EXTRACT_ENVELOPE_RESERVE
+        );
+        assert_eq!(data["extracted"], true);
         fs::remove_dir_all(&env.wd).unwrap();
     }
 
