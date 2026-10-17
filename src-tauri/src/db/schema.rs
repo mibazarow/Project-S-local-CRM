@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 18;
+pub const SCHEMA_VERSION: i64 = 19;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -350,6 +350,43 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_chats_one_project_chat ON chats(project_i
 CREATE UNIQUE INDEX IF NOT EXISTS uniq_chats_one_notes_chat ON chats(kind) WHERE kind = 'notes';
 ";
 
+// Harness chat search: messages_fts mirrors user/assistant turns of
+// kind='harness' chats (message id as a plain column, session id for direct
+// session mapping), message_vectors tracks which messages already carry an
+// embedding, vec_messages stores one vector per message under rowid =
+// message_id (no partition key: harness transcripts stay small). Existing
+// transcripts are backfilled into messages_fts here; vectors are backfilled
+// on demand by the index_chat_messages command because the embedding model
+// may be missing at migration time.
+fn migration_19() -> String {
+    format!(
+        "
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    message_id UNINDEXED,
+    session_id UNINDEXED,
+    content,
+    tokenize = 'unicode61'
+);
+CREATE TABLE IF NOT EXISTS message_vectors (
+    message_id INTEGER PRIMARY KEY,
+    session_id INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS vec_messages USING vec0(
+    embedding float[{}]
+);
+INSERT INTO messages_fts (message_id, session_id, content)
+SELECT m.id, c.session_id, m.content
+FROM messages m
+JOIN chats c ON c.id = m.chat_id AND c.kind = 'harness'
+WHERE c.session_id IS NOT NULL
+  AND m.role IN ('user','assistant')
+  AND m.content IS NOT NULL AND trim(m.content) <> '';
+",
+        crate::embed::EMBED_DIM
+    )
+}
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -460,6 +497,10 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         if has_brief_updated_at == 0 {
             conn.execute("ALTER TABLE projects ADD COLUMN brief_updated_at TEXT", [])?;
         }
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    }
+    if version < 19 {
+        conn.execute_batch(&migration_19())?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
     Ok(())
@@ -1197,6 +1238,102 @@ CREATE UNIQUE INDEX uniq_chats_one_project_chat ON chats(project_id) WHERE kind 
                 .unwrap()
         };
         assert!(cols.iter().any(|c| c == "brief_updated_at"));
+    }
+
+    #[test]
+    fn migration_v19_creates_chat_index_tables_and_backfills_harness_messages() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        // Simulate a pre-v19 database: drop the three tables, add transcripts.
+        conn.execute_batch(
+            "DROP TABLE messages_fts; DROP TABLE message_vectors; DROP TABLE vec_messages;",
+        )
+        .unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        conn.execute(
+            "INSERT INTO projects (name, path, created_at) VALUES ('p', '/tmp/p', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO sessions (title, created_at, updated_at, last_active_at) VALUES ('s', '2026-01-01', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let session_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO chats (kind, session_id, created_at, updated_at) VALUES ('harness', ?1, '2026-01-01', '2026-01-01')",
+            params![session_id],
+        )
+        .unwrap();
+        let harness_chat = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO chats (project_id, kind, created_at, updated_at) VALUES (1, 'project', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let project_chat = conn.last_insert_rowid();
+        for (chat, role, content) in [
+            (harness_chat, "user", "ищем редизайн главной"),
+            (harness_chat, "assistant", "готово"),
+            (harness_chat, "tool", "редизайн tool"),
+            (harness_chat, "user", "   "),
+            (project_chat, "user", "редизайн проекта"),
+        ] {
+            conn.execute(
+                "INSERT INTO messages (chat_id, role, content, created_at, position) VALUES (?1, ?2, ?3, '2026-01-01', 1)",
+                params![chat, role, content],
+            )
+            .unwrap();
+        }
+        conn.pragma_update(None, "user_version", 18).unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+
+        // Only harness user/assistant turns with non-blank content were backfilled.
+        let mut stmt = conn
+            .prepare("SELECT message_id, session_id, content FROM messages_fts ORDER BY message_id")
+            .unwrap();
+        let rows: Vec<(i64, i64, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|(_, sid, _)| *sid == session_id));
+        let fts_hits: i64 = conn
+            .query_row("SELECT count(*) FROM messages_fts WHERE messages_fts MATCH '\"редизайн\"'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fts_hits, 1, "cyrillic FTS backfill missed the harness turn");
+
+        // vec_messages takes a 768-d vector under an explicit message rowid.
+        let blob: Vec<u8> = vec![0.0f32; crate::embed::EMBED_DIM]
+            .iter()
+            .flat_map(|x| x.to_le_bytes())
+            .collect();
+        conn.execute(
+            "INSERT INTO vec_messages (rowid, embedding) VALUES (?1, ?2)",
+            params![rows[0].0, blob],
+        )
+        .unwrap();
+        let knn: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM vec_messages WHERE embedding MATCH ?1 AND k = 1",
+                params![blob],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(knn, 1);
+        let wrong_dim = conn.execute(
+            "INSERT INTO vec_messages (rowid, embedding) VALUES (99, ?1)",
+            params![vec![0.0f32; 512].iter().flat_map(|x| x.to_le_bytes()).collect::<Vec<u8>>()],
+        );
+        assert!(wrong_dim.is_err(), "512-d vector accepted into the 768-d vec_messages");
     }
 
     #[test]

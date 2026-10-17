@@ -4,7 +4,7 @@ use crate::error::{AppError, Result};
 use crate::index;
 use crate::paths;
 use crate::state::AppState;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -159,6 +159,198 @@ fn search_with(
         }
     }
     Ok(hits)
+}
+
+// Harness chat search: FTS5 over messages_fts plus KNN over vec_messages,
+// merged per message with RRF, then aggregated per session. Session score =
+// SUM of its matched messages' RRF scores (a session with several matches
+// outranks a single-match one); the hit carries the session's best
+// (highest-RRF) message and its snippet. Index rows left by deleted sessions
+// or messages drop out when the session row is looked up.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatHit {
+    pub session_id: i64,
+    pub title: Option<String>,
+    pub last_active: String,
+    pub score: f64,
+    pub message_id: i64,
+    pub snippet: String,
+}
+
+pub fn search_chats(state: &AppState, query: &str, limit: usize) -> Result<Vec<ChatHit>> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let wd = state.working_dir()?;
+    let conn = db::open(&paths::db_path(&wd))?;
+    let embedder = embed::select_embedder(&wd);
+    search_chats_with(&conn, embedder.as_ref(), query, limit)
+}
+
+pub(crate) fn search_chats_with(
+    conn: &Connection,
+    embedder: &dyn embed::Embedder,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<ChatHit>> {
+    let terms = tokenize(query);
+    if terms.is_empty() || limit == 0 {
+        return Ok(Vec::new());
+    }
+    // Session aggregation collapses several messages into one hit, so each
+    // leg fetches headroom beyond the final limit.
+    let candidates = (limit * 5).clamp(10, 250);
+    let lowered: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
+    let fts_rows = chat_fts_search(conn, &fts_match_query(&terms), candidates)?;
+    // Noop embedder: skip the semantic leg entirely, FTS-only stays offline.
+    let semantic = if embedder.backend_id() == "noop" {
+        Vec::new()
+    } else {
+        chat_semantic_hits(conn, embedder, query, candidates)?
+    };
+
+    struct Msg {
+        message_id: i64,
+        session_id: i64,
+        score: f64,
+        snippet: String,
+    }
+    let mut merged: HashMap<i64, Msg> = HashMap::new();
+    for (rank, (message_id, session_id, snippet)) in fts_rows.into_iter().enumerate() {
+        let msg = merged.entry(message_id).or_insert(Msg {
+            message_id,
+            session_id,
+            score: 0.0,
+            snippet,
+        });
+        msg.score += 1.0 / (RRF_K + rank as f64 + 1.0);
+    }
+    for (rank, (message_id, session_id)) in semantic.into_iter().enumerate() {
+        let msg = merged.entry(message_id).or_insert(Msg {
+            message_id,
+            session_id,
+            score: 0.0,
+            snippet: String::new(),
+        });
+        msg.score += 1.0 / (RRF_K + rank as f64 + 1.0);
+    }
+
+    let mut per_session: HashMap<i64, (f64, Msg)> = HashMap::new();
+    for msg in merged.into_values() {
+        match per_session.get_mut(&msg.session_id) {
+            Some((score, best)) => {
+                *score += msg.score;
+                if msg.score > best.score {
+                    *best = msg;
+                }
+            }
+            None => {
+                per_session.insert(msg.session_id, (msg.score, msg));
+            }
+        }
+    }
+
+    let mut hits: Vec<ChatHit> = Vec::new();
+    for (session_id, (score, best)) in per_session {
+        let Some((title, last_active)) = session_info(conn, session_id)? else {
+            continue; // stale index row: the session is gone
+        };
+        let snippet = if best.snippet.is_empty() {
+            let content = message_content(conn, best.message_id).unwrap_or_default();
+            fallback_snippet(&content, &lowered)
+        } else {
+            best.snippet
+        };
+        hits.push(ChatHit {
+            session_id,
+            title,
+            last_active,
+            score,
+            message_id: best.message_id,
+            snippet,
+        });
+    }
+    hits.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| a.session_id.cmp(&b.session_id))
+    });
+    hits.truncate(limit);
+    Ok(hits)
+}
+
+fn chat_fts_search(
+    conn: &Connection,
+    match_query: &str,
+    limit: usize,
+) -> Result<Vec<(i64, i64, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT message_id, session_id, snippet(messages_fts, 2, '<<', '>>', '…', 12)
+         FROM messages_fts
+         WHERE messages_fts MATCH ?1
+         ORDER BY rank
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![match_query, limit as i64], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn chat_semantic_hits(
+    conn: &Connection,
+    embedder: &dyn embed::Embedder,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<(i64, i64)>> {
+    let mut query_vector = embedder
+        .embed_texts(&[embed::query_prefix(query)])?
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::Invalid("embedder returned no vector".into()))?;
+    if query_vector.len() < embedder.dim() {
+        return Err(AppError::Invalid(
+            "embedder returned too few dims".into(),
+        ));
+    }
+    embed::truncate_renorm(&mut query_vector, embedder.dim());
+    let blob: Vec<u8> = query_vector.iter().flat_map(|x| x.to_le_bytes()).collect();
+    // Join back to messages/chats: vectors left by deleted messages or
+    // sessions never surface as hits.
+    let mut stmt = conn.prepare(
+        "SELECT q.rowid, c.session_id
+         FROM (SELECT rowid, distance FROM vec_messages WHERE embedding MATCH ?1 AND k = ?2 ORDER BY distance) q
+         JOIN messages m ON m.id = q.rowid
+         JOIN chats c ON c.id = m.chat_id AND c.kind = 'harness'
+         WHERE c.session_id IS NOT NULL",
+    )?;
+    let rows = stmt.query_map(params![blob, limit as i64], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn session_info(conn: &Connection, session_id: i64) -> Result<Option<(Option<String>, String)>> {
+    Ok(conn
+        .query_row(
+            "SELECT title, last_active_at FROM sessions WHERE id = ?1",
+            params![session_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?)
+}
+
+fn message_content(conn: &Connection, message_id: i64) -> Option<String> {
+    conn.query_row(
+        "SELECT content FROM messages WHERE id = ?1",
+        params![message_id],
+        |r| r.get(0),
+    )
+    .ok()
 }
 
 // Task row joined into search: status/overdue come from tasks, so closed
@@ -661,6 +853,151 @@ mod tests {
             .expect("task semantic hit");
         assert_eq!(task.match_types, ["semantic"]);
         assert!(!task.snippet.is_empty());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    use crate::chat;
+    use crate::harness;
+    use crate::llm::Role;
+
+    fn harness_session(conn: &Connection, title: &str) -> (i64, i64) {
+        let s = harness::create_session(conn, Some(title)).unwrap();
+        (s.id, harness::session_chat_id(conn, s.id).unwrap())
+    }
+
+    fn say(conn: &Connection, chat_id: i64, role: Role, text: &str) {
+        chat::append_message(conn, chat_id, role, Some(text), &[], None, None).unwrap();
+    }
+
+    #[test]
+    fn chat_search_finds_harness_session_by_cyrillic_fts() {
+        let (wd, conn, _id, _state) = setup("chat-search-fts");
+        let (sid, chat_id) = harness_session(&conn, "редизайн витрины");
+        say(&conn, chat_id, Role::User, "нужен редизайн главной страницы");
+        say(&conn, chat_id, Role::Assistant, "собрал макет, ждём правки");
+
+        let hits = search_chats_with(&conn, &embed::NoopEmbedder, "редизайн", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        let hit = &hits[0];
+        assert_eq!(hit.session_id, sid);
+        assert_eq!(hit.title.as_deref(), Some("редизайн витрины"));
+        assert!(!hit.last_active.is_empty());
+        assert!(hit.snippet.contains("<<редизайн>>"), "{:?}", hit.snippet);
+        assert!(hit.score > 0.0);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn chat_search_groups_by_session_and_ranks_by_sum() {
+        let (wd, conn, _id, _state) = setup("chat-search-group");
+        let (a, chat_a) = harness_session(&conn, "a");
+        let (b, chat_b) = harness_session(&conn, "b");
+        say(&conn, chat_a, Role::User, "редизайн каталога");
+        say(&conn, chat_a, Role::Assistant, "редизайн корзины готов");
+        say(&conn, chat_b, Role::User, "редизайн ленты");
+
+        let hits = search_chats_with(&conn, &embed::NoopEmbedder, "редизайн", 10).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].session_id, a, "two matches must outrank one");
+        assert_eq!(hits[1].session_id, b);
+        assert!(hits[0].score > hits[1].score);
+        // Representative message belongs to session a.
+        let a_msgs: Vec<i64> = conn
+            .prepare("SELECT m.id FROM messages m JOIN chats c ON c.id = m.chat_id WHERE c.session_id = ?1")
+            .unwrap()
+            .query_map(params![a], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        assert!(a_msgs.contains(&hits[0].message_id));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn chat_search_excludes_project_and_notes_chats() {
+        let (wd, conn, pid, _state) = setup("chat-search-scope");
+        let project_chat = chat::ensure_project_chat(&conn, pid).unwrap();
+        say(&conn, project_chat, Role::User, "редизайн проекта");
+        conn.execute(
+            "INSERT INTO chats (kind, session_id, created_at, updated_at) VALUES ('notes', NULL, '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let notes_chat = conn.last_insert_rowid();
+        say(&conn, notes_chat, Role::User, "редизайн заметок");
+
+        assert!(search_chats_with(&conn, &embed::NoopEmbedder, "редизайн", 10)
+            .unwrap()
+            .is_empty());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn chat_search_semantic_only_hit_without_literal_match() {
+        let (wd, conn, _id, _state) = setup("chat-search-sem");
+        let (sid, chat_a) = harness_session(&conn, "a");
+        let (_, chat_b) = harness_session(&conn, "b");
+        say(&conn, chat_a, Role::User, "кошки кошки кошки");
+        say(&conn, chat_b, Role::User, "самолет летит над морем");
+        for (chat_id, text) in [(chat_a, "кошки кошки кошки"), (chat_b, "самолет летит над морем")] {
+            let message_id: i64 = conn
+                .query_row(
+                    "SELECT id FROM messages WHERE chat_id = ?1 AND role = 'user'",
+                    params![chat_id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            let session_id: i64 = conn
+                .query_row("SELECT session_id FROM chats WHERE id = ?1", params![chat_id], |r| r.get(0))
+                .unwrap();
+            chat::store_message_vector(&conn, &FakeEmbedder, message_id, session_id, text).unwrap();
+        }
+
+        let hits = search_chats_with(&conn, &FakeEmbedder, "кошечка", 10).unwrap();
+        // KNN has no distance threshold: both sessions surface, the cat one
+        // must rank first and carry the fallback snippet.
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].session_id, sid);
+        assert!(hits[0].score > hits[1].score);
+        assert!(hits[0].snippet.contains("кошки"), "{:?}", hits[0].snippet);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn chat_search_survives_injection_and_respects_limit() {
+        let (wd, conn, _id, _state) = setup("chat-search-inject");
+        for i in 0..3 {
+            let (_, chat_id) = harness_session(&conn, "s");
+            say(&conn, chat_id, Role::User, &format!("редизайн {i}"));
+        }
+        for evil in ["\"", "*", "NEAR/3", "a OR b", "\"unbalanced"] {
+            assert!(
+                search_chats_with(&conn, &embed::NoopEmbedder, evil, 10).is_ok(),
+                "errored on {evil:?}"
+            );
+        }
+        assert_eq!(search_chats_with(&conn, &embed::NoopEmbedder, "редизайн", 2).unwrap().len(), 2);
+        assert!(search_chats_with(&conn, &embed::NoopEmbedder, "   ", 10).unwrap().is_empty());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn chat_search_drops_index_rows_left_by_deleted_sessions() {
+        let (wd, conn, _id, _state) = setup("chat-search-stale");
+        let (sid, chat_id) = harness_session(&conn, "a");
+        say(&conn, chat_id, Role::User, "редизайн главной");
+        assert_eq!(
+            search_chats_with(&conn, &embed::NoopEmbedder, "редизайн", 10)
+                .unwrap()
+                .len(),
+            1
+        );
+        // Stale index state: FTS/vector rows survive, the session row does not.
+        conn.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
+        conn.execute("DELETE FROM sessions WHERE id = ?1", params![sid]).unwrap();
+        assert!(search_chats_with(&conn, &embed::NoopEmbedder, "редизайн", 10)
+            .unwrap()
+            .is_empty());
         fs::remove_dir_all(&wd).unwrap();
     }
 }

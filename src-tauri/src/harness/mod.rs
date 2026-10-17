@@ -544,6 +544,7 @@ mod tests {
             "set_user_gender",
             "list_chats",
             "rename_chat",
+            "search_chats",
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }

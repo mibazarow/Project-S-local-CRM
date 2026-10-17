@@ -815,6 +815,21 @@ fn search_project(
 }
 
 #[tauri::command]
+fn search_chats(
+    state: State<AppState>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<search::ChatHit>> {
+    let limit = limit.unwrap_or(10).clamp(1, 50);
+    search::search_chats(&state, &query, limit)
+}
+
+#[tauri::command]
+fn index_chat_messages(state: State<AppState>) -> Result<usize> {
+    chat::index_chat_messages(&state)
+}
+
+#[tauri::command]
 async fn list_models(state: State<'_, AppState>) -> Result<Vec<llm::ModelInfo>> {
     let wd = state.working_dir()?;
     tauri::async_runtime::spawn_blocking(move || llm::client_from_config(&wd)?.list_models())
@@ -1386,6 +1401,8 @@ pub fn run() {
             download_embed_model,
             semantic_search,
             search_project,
+            search_chats,
+            index_chat_messages,
             list_models,
             test_connection,
             detect_vision,

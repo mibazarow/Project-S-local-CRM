@@ -54,6 +54,7 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(crate::memory::SetUserGenderTool),
         Arc::new(ListChatsTool),
         Arc::new(RenameChatTool),
+        Arc::new(SearchChatsTool),
         // Per-conversation plan panel (SPEC: todowrite/todoread).
         Arc::new(crate::todos::TodoWriteTool),
         Arc::new(crate::todos::TodoReadTool),
@@ -1353,6 +1354,52 @@ impl Tool for RenameChatTool {
     }
 }
 
+// Hybrid search over past harness sessions (FTS + vectors, schema v19):
+// one hit per session with the best-matching message and its snippet.
+pub struct SearchChatsTool;
+
+impl Tool for SearchChatsTool {
+    fn name(&self) -> &str {
+        "search_chats"
+    }
+    fn description(&self) -> &str {
+        "Search past harness sessions by message text (keyword + semantic), best hits first."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "query": { "type": "string" },
+                "limit": { "type": "number", "minimum": 1, "maximum": 50 }
+            },
+            "required": ["query"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::ReadOnly
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let query = args["query"].as_str().unwrap_or_default().trim().to_owned();
+        if query.is_empty() {
+            return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, "query is empty"));
+        }
+        let limit = args["limit"].as_u64().unwrap_or(10).clamp(1, 50) as usize;
+        let state = match state_of(ctx) {
+            Ok(state) => state,
+            Err(e) => return Ok(envelope_r(e)),
+        };
+        let r = crate::search::search_chats(state, &query, limit);
+        Ok(match r {
+            Ok(hits) => ToolResult::ok(json!({ "hits": hits })).capped(self.max_result_len()),
+            Err(e) => envelope_r(e),
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1443,7 +1490,7 @@ mod tests {
     fn catalog_registers_everything_without_duplicate_names() {
         let mut catalog = harness_catalog();
         let active: Vec<String> = catalog.to_specs().into_iter().map(|s| s.name).collect();
-        for expected in ["finish_task", "skill", "remember", "recall", "set_user_gender", "list_chats", "rename_chat", LIST_TOOLS, ENABLE_TOOLS] {
+        for expected in ["finish_task", "skill", "remember", "recall", "set_user_gender", "list_chats", "rename_chat", "search_chats", LIST_TOOLS, ENABLE_TOOLS] {
             assert!(active.iter().any(|n| n == expected), "missing active {expected}");
         }
         let summary = catalog.list_summary();
@@ -1490,6 +1537,8 @@ mod tests {
         assert_eq!(tool("list_chats").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("rename_chat").class(), ToolClass::Mutating);
         assert_eq!(tool("rename_chat").policy(), PermissionPolicy::Skip);
+        assert_eq!(tool("search_chats").class(), ToolClass::ReadOnly);
+        assert_eq!(tool("search_chats").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("todowrite").class(), ToolClass::Mutating);
         assert_eq!(tool("todowrite").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("todoread").class(), ToolClass::ReadOnly);
@@ -1516,6 +1565,49 @@ mod tests {
         assert_eq!(tool("apply_patch").class(), ToolClass::Mutating);
         assert_eq!(tool("apply_patch").policy(), PermissionPolicy::Check);
         fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn search_chats_tool_finds_harness_messages_end_to_end() {
+        let env = setup("ht-search-chats");
+        let state = env.ctx.state.clone().unwrap();
+        {
+            let conn = state.db.lock().unwrap();
+            let conn = conn.as_ref().unwrap();
+            let session = crate::harness::create_session(conn, Some("витрина")).unwrap();
+            let chat_id = crate::harness::session_chat_id(conn, session.id).unwrap();
+            crate::chat::append_message(
+                conn,
+                chat_id,
+                crate::llm::Role::User,
+                Some("нужен редизайн главной страницы"),
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+        }
+
+        let res = exec("search_chats", json!({ "query": "редизайн" }), &env.ctx);
+        assert!(res.ok, "{:?}", res.error);
+        let hits = res.data.unwrap()["hits"].as_array().unwrap().clone();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["sessionId"], session_id_of(&state));
+        assert_eq!(hits[0]["title"], "витрина");
+        assert!(hits[0]["snippet"].as_str().unwrap().contains("<<редизайн>>"));
+
+        let empty = exec("search_chats", json!({ "query": "  " }), &env.ctx);
+        assert!(!empty.ok);
+        assert_eq!(empty.error.unwrap().code, "invalid_args");
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    fn session_id_of(state: &Arc<AppState>) -> i64 {
+        let conn = state.db.lock().unwrap();
+        conn.as_ref()
+            .unwrap()
+            .query_row("SELECT id FROM sessions LIMIT 1", [], |r| r.get(0))
+            .unwrap()
     }
 
     #[test]
