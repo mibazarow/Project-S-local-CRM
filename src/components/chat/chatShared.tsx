@@ -61,6 +61,9 @@ export interface ChatItem {
   key: number;
   role: "user" | "agent";
   text: string;
+  // Thinking trace of an agent turn (empty when thinking is off): shown in a
+  // collapsed «Размышления» block above the answer.
+  reasoning: string;
   // Saved attachment copies shown on the message (SPEC 6.1): user turns carry
   // files the user attached, agent turns carry files the agent sent.
   attachments: ChatAttachment[];
@@ -74,6 +77,8 @@ export interface ChatItem {
 
 export interface Run {
   text: string;
+  // Thinking trace streamed live for the running turn.
+  reasoning: string;
   steps: Step[];
   error: string | null;
   // True when this view started the run itself ("send"). A run that only
@@ -97,10 +102,11 @@ export type ChatAction =
   | { type: "send"; key: number; text: string; attachments: MessageAttachmentDto[] }
   | { type: "sendFailed"; key: number; message: string }
   | { type: "delta"; key: number; text: string }
+  | { type: "reasoningDelta"; key: number; text: string }
   | { type: "stepStart"; key: number; name: string; summary: string }
   | { type: "stepFinish"; key: number; ok: boolean }
   | { type: "runError"; key: number; message: string }
-  | { type: "done"; key: number; answer: string; reason: string }
+  | { type: "done"; key: number; answer: string; reason: string; reasoning: string | null }
   | { type: "confirm"; key: number; payload: ConfirmationRequestPayload }
   | { type: "confirmResolved"; key: number; id: number }
   | { type: "agentFile"; key: number; payload: AgentFileEvent };
@@ -139,6 +145,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             key: nextKey++,
             role: "user",
             text: action.text,
+            reasoning: "",
             attachments: action.attachments,
             messageIds: [],
             steps: [],
@@ -146,18 +153,29 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             error: null,
           },
         ],
-        run: { text: "", steps: [], error: null, local: true },
+        run: { text: "", reasoning: "", steps: [], error: null, local: true },
       }));
     case "sendFailed":
       return withSlice(state, action.key, (s) => ({ ...s, run: null, sendError: action.message }));
     case "delta":
+    case "reasoningDelta":
       // The first event of a run this view did not start (a fired schedule)
       // opens the run slice so the session streams live either way.
-      return withSlice(state, action.key, (s) =>
-        s.run
+      return withSlice(state, action.key, (s) => {
+        const open: Run = { text: "", reasoning: "", steps: [], error: null, local: false };
+        if (!s.run) {
+          return {
+            ...s,
+            run:
+              action.type === "delta"
+                ? { ...open, text: action.text }
+                : { ...open, reasoning: action.text },
+          };
+        }
+        return action.type === "delta"
           ? { ...s, run: { ...s.run, text: s.run.text + action.text } }
-          : { ...s, run: { text: action.text, steps: [], error: null, local: false } },
-      );
+          : { ...s, run: { ...s.run, reasoning: s.run.reasoning + action.text } };
+      });
     case "stepStart":
       return withSlice(state, action.key, (s) => {
         const step: Step = {
@@ -168,7 +186,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         };
         return s.run
           ? { ...s, run: { ...s.run, steps: [...s.run.steps, step] } }
-          : { ...s, run: { text: "", steps: [step], error: null, local: false } };
+          : { ...s, run: { text: "", reasoning: "", steps: [step], error: null, local: false } };
       });
     case "stepFinish":
       // Tool calls run sequentially, so the oldest open step is the match.
@@ -189,6 +207,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           key: nextKey++,
           role: "agent",
           text: s.run.text.trim(),
+          reasoning: s.run.reasoning.trim(),
           attachments: [],
           messageIds: [],
           steps: s.run.steps,
@@ -217,6 +236,9 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           key: nextKey++,
           role: "agent",
           text: parts.filter(Boolean).join("\n\n"),
+          // The Done event carries the trace accumulated over the whole run;
+          // fall back to what this view streamed live.
+          reasoning: (action.reasoning ?? s.run.reasoning).trim(),
           attachments: [],
           messageIds: [],
           steps: s.run.steps,
@@ -253,6 +275,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
                   key: nextKey++,
                   role: "agent",
                   text: p.caption,
+                  reasoning: "",
                   attachments: [
                     {
                       name: p.name,
@@ -321,7 +344,10 @@ export function historyToItems(dtos: MessageDto[]): ChatItem[] {
   const stepById = new Map<string, Step>();
   const attachIndex = new Map<number, number>();
   const flush = () => {
-    if (agent && (agent.text || agent.steps.length || agent.error || agent.attachments.length))
+    if (
+      agent &&
+      (agent.text || agent.reasoning || agent.steps.length || agent.error || agent.attachments.length)
+    )
       items.push(agent);
     agent = null;
     stepById.clear();
@@ -333,6 +359,7 @@ export function historyToItems(dtos: MessageDto[]): ChatItem[] {
         key: nextKey++,
         role: "user",
         text: m.content ?? "",
+        reasoning: "",
         attachments: m.attachments ?? [],
         messageIds: [m.id],
         steps: [],
@@ -345,6 +372,7 @@ export function historyToItems(dtos: MessageDto[]): ChatItem[] {
           key: nextKey++,
           role: "agent",
           text: "",
+          reasoning: "",
           attachments: [],
           messageIds: [],
           steps: [],
@@ -353,6 +381,7 @@ export function historyToItems(dtos: MessageDto[]): ChatItem[] {
         };
       agent.messageIds.push(m.id);
       if (m.content) agent.text += (agent.text ? "\n\n" : "") + m.content;
+      if (m.reasoning) agent.reasoning += (agent.reasoning ? "\n\n" : "") + m.reasoning;
       for (const a of m.attachments ?? []) {
         const index = attachIndex.get(m.id) ?? 0;
         attachIndex.set(m.id, index + 1);
@@ -392,6 +421,20 @@ export function StepsList({ steps }: { steps: Step[] }) {
       {steps.map((st) => (
         <StepRow key={st.key} step={st} />
       ))}
+    </details>
+  );
+}
+
+// Thinking trace of an agent turn: a collapsed «Размышления» block above the
+// answer, Markdown-rendered, live while the run streams.
+export function ReasoningBlock({ text }: { text: string }) {
+  if (!text.trim()) return null;
+  return (
+    <details className="reasoning">
+      <summary>Размышления</summary>
+      <div className="reasoning-body">
+        <MarkdownMessage text={text} />
+      </div>
     </details>
   );
 }
@@ -570,6 +613,7 @@ export function ChatTranscript({
           {slice.items.map((item) => (
             <div key={item.key} className={`msg ${item.role}`}>
               <span className="who">{item.role === "user" ? "Вы" : "Агент"}</span>
+              <ReasoningBlock text={item.reasoning} />
               {item.text &&
                 (item.role === "agent" ? (
                   <MarkdownMessage text={item.text} />
@@ -595,11 +639,14 @@ export function ChatTranscript({
           {slice.run && (
             <div className="msg agent">
               <span className="who">Агент</span>
+              <ReasoningBlock text={slice.run.reasoning} />
               {slice.run.text && <MarkdownMessage text={slice.run.text} />}
               <StepsList steps={slice.run.steps} />
-              {!slice.run.text && slice.run.steps.length === 0 && (
-                <span className="note">агент думает…</span>
-              )}
+              {!slice.run.text &&
+                !slice.run.reasoning &&
+                slice.run.steps.length === 0 && (
+                  <span className="note">агент думает…</span>
+                )}
             </div>
           )}
         </>

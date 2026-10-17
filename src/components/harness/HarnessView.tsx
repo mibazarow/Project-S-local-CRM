@@ -392,6 +392,9 @@ export default function HarnessView() {
         case "textDelta":
           dispatch({ type: "delta", key, text: p.event.text });
           break;
+        case "reasoningDelta":
+          dispatch({ type: "reasoningDelta", key, text: p.event.text });
+          break;
         case "toolCallStarted":
           dispatch({ type: "stepStart", key, name: p.event.name, summary: summarizeArgs(p.event.args) });
           break;
@@ -400,7 +403,13 @@ export default function HarnessView() {
           break;
         case "done": {
           const run = chatRef.current[key]?.run;
-          dispatch({ type: "done", key, answer: p.event.answer, reason: p.event.reason });
+          dispatch({
+            type: "done",
+            key,
+            answer: p.event.answer,
+            reason: p.event.reason,
+            reasoning: p.event.reasoning,
+          });
           if (!run || !run.local) {
             if (key === activeIdRef.current) reloadHistory(key);
           }

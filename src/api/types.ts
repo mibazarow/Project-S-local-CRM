@@ -136,6 +136,8 @@ export interface LlmConfig {
   vision?: boolean | null;
   // Cached result of the last vision probe (written by detect_vision).
   visionDetected?: boolean | null;
+  // Thinking mode level: "off" omits reasoning_effort, the rest send it as-is.
+  thinkingLevel?: "off" | "low" | "medium" | "high";
 }
 
 // llm::VisionStatus — result of get_vision_status / detect_vision.
@@ -233,6 +235,8 @@ export interface MessageDto {
   chatId: number;
   role: "system" | "user" | "assistant" | "tool";
   content: string | null;
+  // Thinking trace of an assistant turn (null when thinking is off).
+  reasoning: string | null;
   toolCalls: ToolCallDto[];
   toolCallId: string | null;
   name: string | null;
@@ -244,10 +248,11 @@ export interface MessageDto {
 // agent::loop AgentEvent (serde tag = "type", rename_all = "camelCase").
 export type AgentEvent =
   | { type: "textDelta"; text: string }
+  | { type: "reasoningDelta"; text: string }
   | { type: "toolCallStarted"; name: string; args: unknown }
   | { type: "toolCallFinished"; name: string; ok: boolean; envelope: unknown }
   | { type: "confirmationRequested"; tool: string; args: unknown; dangerReason: string | null }
-  | { type: "done"; answer: string; reason: string }
+  | { type: "done"; answer: string; reason: string; reasoning: string | null }
   | { type: "error"; code: string; message: string };
 
 // agent::send_file — payload of the "agent-file" event emitted when the agent

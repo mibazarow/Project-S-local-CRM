@@ -86,6 +86,11 @@ pub struct ChatMessage {
     pub tool_calls: Vec<ToolCall>,
     pub tool_call_id: Option<String>,
     pub name: Option<String>,
+    // Thinking-mode chain of thought of an assistant turn. Providers that run
+    // in thinking mode reject a follow-up request unless the previous
+    // assistant turn sends `reasoning_content` back, so the loop must carry it
+    // through the transcript (serialized for assistant turns only).
+    pub reasoning_content: Option<String>,
 }
 
 impl ChatMessage {
@@ -96,6 +101,7 @@ impl ChatMessage {
             tool_calls: Vec::new(),
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }
     }
 
@@ -118,6 +124,7 @@ impl ChatMessage {
             tool_calls,
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }
     }
 
@@ -128,6 +135,7 @@ impl ChatMessage {
             tool_calls: Vec::new(),
             tool_call_id: Some(tool_call_id.into()),
             name: None,
+            reasoning_content: None,
         }
     }
 
@@ -139,7 +147,15 @@ impl ChatMessage {
             tool_calls: Vec::new(),
             tool_call_id: None,
             name: None,
+            reasoning_content: None,
         }
+    }
+
+    // Attaches the thinking trace of an assistant turn (ignored for other
+    // roles: the serializer only emits it for assistant messages).
+    pub fn with_reasoning(mut self, reasoning: Option<String>) -> Self {
+        self.reasoning_content = reasoning;
+        self
     }
 
     // Text of a plain string content; None for multimodal parts or no content.
@@ -155,7 +171,19 @@ impl ChatMessage {
 // `tool_calls` wrapped as {id, type, function{name, arguments-as-string}}).
 impl Serialize for ChatMessage {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        // Thinking traces belong to assistant turns only: sending the key on
+        // any other role is rejected by thinking-mode providers.
+        let reasoning = match self.role {
+            Role::Assistant => self
+                .reasoning_content
+                .as_deref()
+                .filter(|r| !r.trim().is_empty()),
+            _ => None,
+        };
         let mut len = 2; // role, content
+        if reasoning.is_some() {
+            len += 1;
+        }
         if !self.tool_calls.is_empty() {
             len += 1;
         }
@@ -168,6 +196,9 @@ impl Serialize for ChatMessage {
         let mut map = serializer.serialize_map(Some(len))?;
         map.serialize_entry("role", &self.role)?;
         map.serialize_entry("content", &self.content)?;
+        if let Some(reasoning) = reasoning {
+            map.serialize_entry("reasoning_content", reasoning)?;
+        }
         if !self.tool_calls.is_empty() {
             let wire: Vec<Value> = self
                 .tool_calls
@@ -210,6 +241,9 @@ pub struct Usage {
 #[serde(rename_all = "camelCase")]
 pub struct ChatOutcome {
     pub content: Option<String>,
+    // Accumulated thinking trace of the round (providers report it as
+    // `reasoning_content`, some stream it as `reasoning`).
+    pub reasoning: Option<String>,
     pub tool_calls: Vec<ToolCall>,
     pub finish_reason: Option<String>,
     pub usage: Option<Usage>,
@@ -219,6 +253,7 @@ pub struct ChatOutcome {
 #[serde(rename_all = "camelCase")]
 pub enum ChatEvent {
     Delta(String),
+    ReasoningDelta(String),
     ToolCallDelta {
         index: usize,
         id: Option<String>,
@@ -284,5 +319,38 @@ mod tests {
         let parts = ChatMessage::user_parts(vec![ContentPart::text("x")]);
         assert_eq!(parts.text_content(), None);
         assert_eq!(ChatMessage::assistant_tool_calls(vec![]).text_content(), None);
+    }
+
+    #[test]
+    fn reasoning_content_is_sent_for_assistant_turns_only() {
+        let asst = ChatMessage::assistant("answer").with_reasoning(Some("think".into()));
+        assert_eq!(
+            serde_json::to_value(&asst).unwrap(),
+            json!({ "role": "assistant", "content": "answer", "reasoning_content": "think" })
+        );
+        // A thinking trace attached to a tool-call turn must travel back too.
+        let calls = ChatMessage::assistant_tool_calls(vec![ToolCall::new(
+            "c1".into(),
+            "f".into(),
+            "{}".into(),
+        )])
+        .with_reasoning(Some("plan".into()));
+        let wire = serde_json::to_value(&calls).unwrap();
+        assert_eq!(wire["reasoning_content"], "plan");
+        // Other roles never carry the key, and an empty trace is dropped.
+        assert_eq!(
+            serde_json::to_value(ChatMessage::user("hi").with_reasoning(Some("x".into()))).unwrap(),
+            json!({ "role": "user", "content": "hi" })
+        );
+        assert_eq!(
+            serde_json::to_value(ChatMessage::assistant("a").with_reasoning(Some("  ".into())))
+                .unwrap(),
+            json!({ "role": "assistant", "content": "a" })
+        );
+        assert!(
+            serde_json::to_value(ChatMessage::assistant("a")).unwrap()
+                .get("reasoning_content")
+                .is_none()
+        );
     }
 }

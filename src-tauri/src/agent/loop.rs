@@ -50,6 +50,10 @@ pub enum AgentEvent {
     TextDelta {
         text: String,
     },
+    // Thinking-mode trace of the running round (streamed live to the UI).
+    ReasoningDelta {
+        text: String,
+    },
     ToolCallStarted {
         name: String,
         args: Value,
@@ -67,6 +71,9 @@ pub enum AgentEvent {
     Done {
         answer: String,
         reason: String,
+        // Thinking trace accumulated over the whole run (None when the model
+        // never produced one or thinking is off).
+        reasoning: Option<String>,
     },
     Error {
         code: String,
@@ -201,6 +208,8 @@ pub struct AgentRunResult {
     // "finish" | "stop" | "step_limit" | "cancelled" | "timeout" | "stalled"
     pub finish_reason: String,
     pub steps: usize,
+    // Thinking trace of the run, accumulated across rounds.
+    pub reasoning: Option<String>,
 }
 
 pub struct AgentState<'a> {
@@ -252,6 +261,10 @@ fn run_inner(
         notes_root: config.notes_root.clone(),
     };
     let mut fallback = String::new();
+    // Thinking trace accumulated across rounds: replayed to the model on every
+    // assistant turn (thinking-mode providers reject a follow-up without it)
+    // and reported with the final result.
+    let mut reasoning: Option<String> = None;
     let mut always_allow: BTreeSet<String> = BTreeSet::new();
 
     let mut watchdog = match clock {
@@ -276,30 +289,39 @@ fn run_inner(
             emit(AgentEvent::Done {
                 answer: fallback.clone(),
                 reason: "cancelled".into(),
+                reasoning: reasoning.clone(),
             });
             return Ok(AgentRunResult {
                 answer: fallback,
                 finish_reason: "cancelled".into(),
                 steps: step - 1,
+                reasoning,
             });
         }
         if let Some(reason) = watchdog.check() {
             emit(AgentEvent::Done {
                 answer: fallback.clone(),
                 reason: reason.into(),
+                reasoning: reasoning.clone(),
             });
             return Ok(AgentRunResult {
                 answer: fallback,
                 finish_reason: reason.into(),
                 steps: step - 1,
+                reasoning,
             });
         }
         let specs = state.catalog.to_specs();
-        let mut on_event = |ev: ChatEvent| {
-            if let ChatEvent::Delta(text) = ev {
+        let mut on_event = |ev: ChatEvent| match ev {
+            ChatEvent::Delta(text) => {
                 watchdog.note_progress();
                 emit(AgentEvent::TextDelta { text });
             }
+            ChatEvent::ReasoningDelta(text) => {
+                watchdog.note_progress();
+                emit(AgentEvent::ReasoningDelta { text });
+            }
+            _ => {}
         };
         let outcome = match state.backend.chat_stream(&messages, Some(&specs), &config.params, &mut on_event) {
             Ok(outcome) => outcome,
@@ -312,6 +334,19 @@ fn run_inner(
             }
         };
 
+        // Carry this round's thinking trace into the accumulated run trace and
+        // onto the assistant message the loop appends below.
+        let round_reasoning = outcome
+            .reasoning
+            .clone()
+            .filter(|r| !r.trim().is_empty());
+        if let Some(r) = &round_reasoning {
+            reasoning = Some(match reasoning.take() {
+                Some(prev) => format!("{prev}\n{r}"),
+                None => r.clone(),
+            });
+        }
+
         // Latch this round's final text as the fallback answer candidate.
         if let Some(content) = outcome.content.as_deref().filter(|c| !c.trim().is_empty()) {
             fallback = content.to_string();
@@ -319,7 +354,7 @@ fn run_inner(
 
         if outcome.tool_calls.is_empty() {
             if let Some(content) = outcome.content {
-                let msg = ChatMessage::assistant(content.clone());
+                let msg = ChatMessage::assistant(content.clone()).with_reasoning(round_reasoning);
                 on_message(&msg);
                 messages.push(msg);
                 // FalseSuccessGuard: completion claim with no successful
@@ -336,7 +371,8 @@ fn run_inner(
             }
             continue;
         }
-        let assistant_msg = ChatMessage::assistant_tool_calls(outcome.tool_calls.clone());
+        let assistant_msg = ChatMessage::assistant_tool_calls(outcome.tool_calls.clone())
+            .with_reasoning(round_reasoning);
         on_message(&assistant_msg);
         messages.push(assistant_msg);
 
@@ -400,11 +436,13 @@ fn run_inner(
                 emit(AgentEvent::Done {
                     answer: answer.clone(),
                     reason: reason.clone(),
+                    reasoning: reasoning.clone(),
                 });
                 return Ok(AgentRunResult {
                     answer,
                     finish_reason: reason,
                     steps: step,
+                    reasoning,
                 });
             }
 
@@ -420,11 +458,13 @@ fn run_inner(
     emit(AgentEvent::Done {
         answer: fallback.clone(),
         reason: "step_limit".into(),
+        reasoning: reasoning.clone(),
     });
     Ok(AgentRunResult {
         answer: fallback,
         finish_reason: "step_limit".into(),
         steps: config.max_steps,
+        reasoning,
     })
 }
 
@@ -640,6 +680,9 @@ mod tests {
                 .unwrap()
                 .pop_front()
                 .ok_or_else(|| AppError::Invalid("scripted backend exhausted".into()))?;
+            if let Some(reasoning) = &outcome.reasoning {
+                on_event(ChatEvent::ReasoningDelta(reasoning.clone()));
+            }
             if let Some(content) = &outcome.content {
                 on_event(ChatEvent::Delta(content.clone()));
             }
@@ -675,6 +718,17 @@ mod tests {
     fn text_outcome(content: &str) -> ChatOutcome {
         ChatOutcome {
             content: Some(content.into()),
+            reasoning: None,
+            tool_calls: vec![],
+            finish_reason: Some("stop".into()),
+            usage: None,
+        }
+    }
+
+    fn reasoning_outcome(content: &str, reasoning: &str) -> ChatOutcome {
+        ChatOutcome {
+            content: Some(content.into()),
+            reasoning: Some(reasoning.into()),
             tool_calls: vec![],
             finish_reason: Some("stop".into()),
             usage: None,
@@ -684,6 +738,7 @@ mod tests {
     fn tools_outcome(calls: Vec<ToolCall>) -> ChatOutcome {
         ChatOutcome {
             content: None,
+            reasoning: None,
             tool_calls: calls,
             finish_reason: Some("tool_calls".into()),
             usage: None,
@@ -720,6 +775,7 @@ mod tests {
                 model: "test-model".into(),
                 temperature: None,
                 max_tokens: None,
+                reasoning_effort: None,
             },
             cancel: None,
             state: None,
@@ -755,7 +811,46 @@ mod tests {
         assert_eq!(result.finish_reason, "finish");
         assert_eq!(result.steps, 2);
         assert!(events.iter().any(|e| matches!(e, AgentEvent::TextDelta { text } if text == "working on it")));
-        assert!(events.iter().any(|e| matches!(e, AgentEvent::Done { answer, reason } if answer == "the answer" && reason == "finish")));
+        assert!(events.iter().any(|e| matches!(e, AgentEvent::Done { answer, reason, .. } if answer == "the answer" && reason == "finish")));
+    }
+
+    #[test]
+    fn reasoning_streams_accumulates_and_travels_back_to_the_model() {
+        let backend = ScriptedBackend::new(vec![
+            reasoning_outcome("working on it", "first thought"),
+            tools_outcome(vec![finish_call("the answer")]),
+        ]);
+        let mut catalog = catalog_with(None);
+        let mut state = AgentState {
+            backend: &backend,
+            catalog: &mut catalog,
+        };
+        let mut events = Vec::new();
+        let result = run(&mut state, &config(8), &AutoConfirmer::allowing(false), |e| events.push(e)).unwrap();
+        // Live stream: the trace reaches the UI as its own event kind.
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::ReasoningDelta { text } if text == "first thought")));
+        // Final result and the Done event carry the accumulated trace.
+        assert_eq!(result.reasoning.as_deref(), Some("first thought"));
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::Done { reasoning: Some(r), .. }) if r == "first thought"
+        ));
+        // The next backend call saw the assistant turn replay its trace, which
+        // is what thinking-mode providers demand of a follow-up request.
+        let last_round = backend.seen.lock().unwrap().last().unwrap().clone();
+        let assistant = last_round
+            .iter()
+            .find(|m| m.role == Role::Assistant)
+            .expect("assistant turn in the replayed transcript");
+        assert_eq!(assistant.reasoning_content.as_deref(), Some("first thought"));
+        let wire = serde_json::to_value(&last_round).unwrap();
+        assert_eq!(
+            wire[2]["reasoning_content"].as_str(),
+            Some("first thought"),
+            "request body must send reasoning_content back"
+        );
     }
 
     #[test]

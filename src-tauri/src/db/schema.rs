@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 21;
+pub const SCHEMA_VERSION: i64 = 22;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -440,6 +440,15 @@ CREATE TABLE IF NOT EXISTS processes (
 );
 ";
 
+// Thinking-mode traces: the assistant chain of thought is stored next to its
+// turn so a follow-up request can replay `reasoning_content` (thinking-mode
+// providers reject a transcript that drops it) and the UI can show it
+// collapsed. Guarded per column (same recipe as v14) so a re-run after an
+// interrupted v22 does not re-ALTER.
+const MIGRATION_22: &str = "
+ALTER TABLE messages ADD COLUMN reasoning TEXT;
+";
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -562,6 +571,17 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
     }
     if version < 21 {
         conn.execute_batch(MIGRATION_21)?;
+        conn.pragma_update(None, "user_version", 21)?;
+    }
+    if version < 22 {
+        let has_reasoning: i64 = conn.query_row(
+            "SELECT count(*) FROM pragma_table_info('messages') WHERE name = 'reasoning'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_reasoning == 0 {
+            conn.execute_batch(MIGRATION_22)?;
+        }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
     Ok(())
@@ -1489,6 +1509,65 @@ CREATE UNIQUE INDEX uniq_chats_one_project_chat ON chats(project_id) WHERE kind 
             [],
         );
         assert!(no_pid.is_err());
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_v22_adds_nullable_messages_reasoning_column() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+
+        let has_reasoning: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('messages') WHERE name = 'reasoning'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_reasoning, 1);
+
+        conn.execute(
+            "INSERT INTO chats (id, kind, created_at, updated_at) VALUES (1, 'project', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        // Nullable: a turn without a thinking trace stores NULL.
+        conn.execute(
+            "INSERT INTO messages (chat_id, role, content, created_at, position) VALUES (1, 'assistant', 'answer', '2026-01-01', 1)",
+            [],
+        )
+        .unwrap();
+        let missing: Option<String> = conn
+            .query_row("SELECT reasoning FROM messages WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(missing, None);
+        conn.execute(
+            "UPDATE messages SET reasoning = ?1 WHERE id = 1",
+            params!["because"],
+        )
+        .unwrap();
+        let stored: String = conn
+            .query_row("SELECT reasoning FROM messages WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, "because");
+
+        // Guarded ALTER: a v21 database whose column is missing is repaired.
+        conn.execute("ALTER TABLE messages DROP COLUMN reasoning", [])
+            .unwrap();
+        conn.pragma_update(None, "user_version", 21).unwrap();
+        run_migrations(&conn).unwrap();
+        let has_reasoning: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('messages') WHERE name = 'reasoning'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_reasoning, 1);
 
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);

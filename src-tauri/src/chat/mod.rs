@@ -46,6 +46,9 @@ pub struct MessageDto {
     pub chat_id: i64,
     pub role: String,
     pub content: Option<String>,
+    // Thinking trace of an assistant turn (SPEC reasoning slice): replayed to
+    // the model and shown collapsed in the UI.
+    pub reasoning: Option<String>,
     pub tool_calls: Vec<Value>,
     pub tool_call_id: Option<String>,
     pub name: Option<String>,
@@ -181,6 +184,35 @@ pub fn append_message(
     tool_call_id: Option<&str>,
     name: Option<&str>,
 ) -> Result<MessageDto> {
+    append_full(conn, chat_id, role, content, tool_calls, tool_call_id, name, None)
+}
+
+// Persists a transcript message exactly as the agent loop appended it, its
+// thinking trace included (assistant turns only).
+pub fn append_chat_message(conn: &Connection, chat_id: i64, msg: &ChatMessage) -> Result<MessageDto> {
+    append_full(
+        conn,
+        chat_id,
+        msg.role,
+        msg.text_content(),
+        &msg.tool_calls,
+        msg.tool_call_id.as_deref(),
+        msg.name.as_deref(),
+        msg.reasoning_content.as_deref(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_full(
+    conn: &Connection,
+    chat_id: i64,
+    role: Role,
+    content: Option<&str>,
+    tool_calls: &[ToolCall],
+    tool_call_id: Option<&str>,
+    name: Option<&str>,
+    reasoning: Option<&str>,
+) -> Result<MessageDto> {
     let tool_calls_json = tool_calls_to_json(tool_calls)?;
     let position: i64 = conn.query_row(
         "SELECT COALESCE(MAX(position), 0) + 1 FROM messages WHERE chat_id = ?1",
@@ -188,9 +220,18 @@ pub fn append_message(
         |r| r.get(0),
     )?;
     conn.execute(
-        "INSERT INTO messages (chat_id, role, content, tool_calls, tool_call_id, name, created_at, position)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now','localtime'), ?7)",
-        params![chat_id, role_str(role), content, tool_calls_json, tool_call_id, name, position],
+        "INSERT INTO messages (chat_id, role, content, reasoning, tool_calls, tool_call_id, name, created_at, position)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now','localtime'), ?8)",
+        params![
+            chat_id,
+            role_str(role),
+            content,
+            reasoning,
+            tool_calls_json,
+            tool_call_id,
+            name,
+            position
+        ],
     )?;
     conn.execute(
         "UPDATE chats SET updated_at = datetime('now','localtime') WHERE id = ?1",
@@ -351,7 +392,7 @@ pub(crate) fn index_chat_messages_with(
 fn message_dto(conn: &Connection, id: i64) -> Result<MessageDto> {
     let mut dto = conn
         .query_row(
-            "SELECT chat_id, role, content, tool_calls, tool_call_id, name, created_at, position
+            "SELECT chat_id, role, content, reasoning, tool_calls, tool_call_id, name, created_at, position
              FROM messages WHERE id = ?1",
             params![id],
             |r| {
@@ -360,11 +401,12 @@ fn message_dto(conn: &Connection, id: i64) -> Result<MessageDto> {
                     chat_id: r.get(0)?,
                     role: r.get(1)?,
                     content: r.get(2)?,
-                    tool_calls: parse_tool_calls_value(r.get(3)?),
-                    tool_call_id: r.get(4)?,
-                    name: r.get(5)?,
-                    created_at: r.get(6)?,
-                    position: r.get(7)?,
+                    reasoning: r.get(3)?,
+                    tool_calls: parse_tool_calls_value(r.get(4)?),
+                    tool_call_id: r.get(5)?,
+                    name: r.get(6)?,
+                    created_at: r.get(7)?,
+                    position: r.get(8)?,
                     attachments: Vec::new(),
                 })
             },
@@ -388,7 +430,7 @@ pub fn load_history(
 ) -> Result<Vec<ChatMessage>> {
     let base = chat_project_root(conn, chat_id)?;
     let mut stmt = conn.prepare(
-        "SELECT id, role, content, tool_calls, tool_call_id, name
+        "SELECT id, role, content, reasoning, tool_calls, tool_call_id, name
          FROM messages WHERE chat_id = ?1 ORDER BY position",
     )?;
     let rows = stmt.query_map(params![chat_id], |r| {
@@ -399,11 +441,12 @@ pub fn load_history(
             r.get::<_, Option<String>>(3)?,
             r.get::<_, Option<String>>(4)?,
             r.get::<_, Option<String>>(5)?,
+            r.get::<_, Option<String>>(6)?,
         ))
     })?;
     let mut out = Vec::new();
     for row in rows {
-        let (id, role, content, tool_calls, tool_call_id, name) = row?;
+        let (id, role, content, reasoning, tool_calls, tool_call_id, name) = row?;
         let content = if role == "user" {
             expand_user_turn(conn, id, content, base.as_deref(), vision_supported)?
         } else {
@@ -418,6 +461,10 @@ pub fn load_history(
             },
             tool_call_id,
             name,
+            // Thinking traces of stored assistant turns travel back to the
+            // model: thinking-mode providers reject a follow-up whose previous
+            // assistant turn dropped `reasoning_content`.
+            reasoning_content: reasoning,
         });
     }
     Ok(out)
@@ -821,15 +868,7 @@ fn run_agent_inner(
     let mut on_message = move |msg: &ChatMessage| {
         let guard = persist_state.db.lock().unwrap();
         if let Some(conn) = guard.as_ref() {
-            let _ = append_message(
-                conn,
-                chat_id,
-                msg.role,
-                msg.text_content(),
-                &msg.tool_calls,
-                msg.tool_call_id.as_deref(),
-                msg.name.as_deref(),
-            );
+            let _ = append_chat_message(conn, chat_id, msg);
         }
     };
 
@@ -852,7 +891,16 @@ pub(crate) fn persist_final_answer(
     result: &agent_loop::AgentRunResult,
 ) -> Result<()> {
     if result.finish_reason != "step_limit" && !result.answer.trim().is_empty() {
-        append_message(conn, chat_id, Role::Assistant, Some(&result.answer), &[], None, None)?;
+        append_full(
+            conn,
+            chat_id,
+            Role::Assistant,
+            Some(&result.answer),
+            &[],
+            None,
+            None,
+            result.reasoning.as_deref(),
+        )?;
     }
     Ok(())
 }
@@ -886,6 +934,7 @@ mod tests {
                 model: "m".into(),
                 temperature: Some(temperature_for_kind(kind)),
                 max_tokens: None,
+                reasoning_effort: None,
             };
             let body = crate::llm::build_body(&[ChatMessage::user("hi")], None, &params, false);
             assert_eq!(body["temperature"], json!(temperature_for_kind(kind)));
@@ -931,6 +980,7 @@ mod tests {
     fn text_outcome(content: &str) -> ChatOutcome {
         ChatOutcome {
             content: Some(content.into()),
+            reasoning: None,
             tool_calls: vec![],
             finish_reason: Some("stop".into()),
             usage: None,
@@ -940,6 +990,7 @@ mod tests {
     fn tools_outcome(calls: Vec<ToolCall>) -> ChatOutcome {
         ChatOutcome {
             content: None,
+            reasoning: None,
             tool_calls: calls,
             finish_reason: Some("tool_calls".into()),
             usage: None,
@@ -978,6 +1029,7 @@ mod tests {
                 model: "test-model".into(),
                 temperature: None,
                 max_tokens: None,
+                reasoning_effort: None,
             },
             cancel: None,
             state: None,
@@ -1044,6 +1096,27 @@ mod tests {
         assert_eq!(dtos[1].tool_calls[0]["name"], "read_file");
         assert_eq!(dtos[2].tool_call_id.as_deref(), Some("c1"));
         assert!(dtos[0].position < dtos[1].position);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn reasoning_round_trips_through_the_db_back_into_the_model_transcript() {
+        let (wd, conn, pid) = setup("chat-reasoning");
+        let chat_id = ensure_project_chat(&conn, pid).unwrap();
+        append_message(&conn, chat_id, Role::User, Some("go"), &[], None, None).unwrap();
+        let asst = ChatMessage::assistant("done").with_reasoning(Some("because".into()));
+        append_chat_message(&conn, chat_id, &asst).unwrap();
+
+        // The UI DTO carries the trace so the transcript can show it.
+        let dtos = chat_history(&conn, pid).unwrap();
+        assert_eq!(dtos[0].reasoning, None);
+        assert_eq!(dtos[1].reasoning.as_deref(), Some("because"));
+
+        // The model-facing transcript replays it as reasoning_content.
+        let hist = load_history(&conn, chat_id, false).unwrap();
+        assert_eq!(hist[1].reasoning_content.as_deref(), Some("because"));
+        let wire = serde_json::to_value(&hist).unwrap();
+        assert_eq!(wire[1]["reasoning_content"], "because");
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -1186,8 +1259,10 @@ mod tests {
         let chat_id = ensure_project_chat(&conn, pid).unwrap();
         append_message(&conn, chat_id, Role::User, Some("go"), &[], None, None).unwrap();
 
+        let mut thinking_round = tools_outcome(vec![call("c1", "echo", json!({ "text": "hi" }))]);
+        thinking_round.reasoning = Some("planning the echo".into());
         let backend = ScriptedBackend::new(vec![
-            tools_outcome(vec![call("c1", "echo", json!({ "text": "hi" }))]),
+            thinking_round,
             tools_outcome(vec![finish_call("final answer")]),
         ]);
         let mut catalog = catalog_with(Some(EchoTool::new(PermissionPolicy::Skip)));
@@ -1197,16 +1272,7 @@ mod tests {
         };
         let mut events = Vec::new();
         let mut on_message = |msg: &ChatMessage| {
-            append_message(
-                &conn,
-                chat_id,
-                msg.role,
-                msg.text_content(),
-                &msg.tool_calls,
-                msg.tool_call_id.as_deref(),
-                msg.name.as_deref(),
-            )
-            .unwrap();
+            append_chat_message(&conn, chat_id, msg).unwrap();
         };
         let result = agent_loop::run_with(
             &mut state,
@@ -1231,7 +1297,7 @@ mod tests {
         assert_eq!(kinds, ["started", "finished", "started", "finished", "done"]);
         assert!(matches!(
             events.last(),
-            Some(agent_loop::AgentEvent::Done { answer, reason })
+            Some(agent_loop::AgentEvent::Done { answer, reason, .. })
                 if answer == "final answer" && reason == "finish"
         ));
 
@@ -1246,6 +1312,15 @@ mod tests {
         assert_eq!(hist[2].tool_call_id.as_deref(), Some("c1"));
         assert_eq!(hist[3].tool_calls[0].name, "finish_task");
         assert_eq!(hist[5].text_content(), Some("final answer"));
+        // Thinking traces persist with their turns: the tool-call turn keeps
+        // its own trace, and the finish_task answer turn carries the trace
+        // accumulated over the run, so a follow-up request can replay it.
+        assert_eq!(hist[1].reasoning_content.as_deref(), Some("planning the echo"));
+        assert_eq!(hist[2].reasoning_content, None);
+        assert_eq!(hist[5].reasoning_content.as_deref(), Some("planning the echo"));
+        let dtos = chat_history(&conn, pid).unwrap();
+        assert_eq!(dtos[1].reasoning.as_deref(), Some("planning the echo"));
+        assert_eq!(dtos[5].reasoning.as_deref(), Some("planning the echo"));
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -1497,6 +1572,7 @@ mod tests {
         let ev = agent_loop::AgentEvent::Done {
             answer: "x".into(),
             reason: "finish".into(),
+            reasoning: None,
         };
         let project = serde_json::to_value(AgentEventPayload {
             chat_id: 7,

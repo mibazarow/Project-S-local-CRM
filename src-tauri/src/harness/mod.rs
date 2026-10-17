@@ -183,6 +183,7 @@ pub(crate) fn llm_title(wd: &Path, text: &str) -> Option<String> {
         model: cfg.model.clone(),
         temperature: None,
         max_tokens: Some(AUTOTITLE_MAX_TOKENS),
+        reasoning_effort: None,
     };
     let prompt = format!("Give a short Russian title (2–5 words), no quotes\n\n{text}");
     let out = client
@@ -645,6 +646,7 @@ mod tests {
 
         let backend = ScriptedBackend::new(vec![ChatOutcome {
             content: None,
+            reasoning: None,
             tool_calls: vec![finish_call("final answer")],
             finish_reason: Some("tool_calls".into()),
             usage: None,
@@ -666,6 +668,7 @@ mod tests {
                 model: "test-model".into(),
                 temperature: None,
                 max_tokens: None,
+                reasoning_effort: None,
             },
             cancel: None,
             state: None,

@@ -44,6 +44,7 @@ interface LlmForm {
   contextWindow: string;
   maxTokens: string;
   vision: "auto" | "yes" | "no";
+  thinkingLevel: "off" | "low" | "medium" | "high";
 }
 
 function toLlmForm(cfg: LlmConfig): LlmForm {
@@ -54,6 +55,7 @@ function toLlmForm(cfg: LlmConfig): LlmForm {
     contextWindow: String(cfg.contextWindow),
     maxTokens: cfg.maxTokens == null ? "" : String(cfg.maxTokens),
     vision: cfg.vision == null ? "auto" : cfg.vision ? "yes" : "no",
+    thinkingLevel: cfg.thinkingLevel ?? "medium",
   };
 }
 
@@ -293,6 +295,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
       if (m !== null) patch.maxTokens = Math.round(m);
     }
     patch.vision = f.vision === "auto" ? null : f.vision === "yes";
+    patch.thinkingLevel = f.thinkingLevel;
     return ipc.writeConfig("llm", patch).catch((e) => setError(errMsg(e)));
   }, []);
 
@@ -960,6 +963,28 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                   onBlur={blurLlmField}
                 />
                 <div className="set-hint">Пусто — без ограничения со стороны приложения.</div>
+              </div>
+              <div className="set-row">
+                <label>Уровень размышлений</label>
+                <select
+                  value={llmForm?.thinkingLevel ?? "medium"}
+                  onChange={(e) => {
+                    updateLlmForm({
+                      thinkingLevel: e.target.value as "off" | "low" | "medium" | "high",
+                    });
+                    void flushLlmSave();
+                  }}
+                >
+                  <option value="off">Выключено</option>
+                  <option value="low">Низкий</option>
+                  <option value="medium">Средний</option>
+                  <option value="high">Высокий</option>
+                </select>
+                <div className="set-hint">
+                  Сколько модель думает перед ответом (reasoning_effort). Ход мыслей показывается
+                  свёрнутым блоком «Размышления» в чате и отправляется обратно модели в следующем
+                  запросе. Если провайдер не принимает reasoning_effort, ошибка придёт в чат.
+                </div>
               </div>
               <div className="set-row">
                 <label>Распознавание изображений (vision)</label>

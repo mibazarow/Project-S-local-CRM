@@ -460,6 +460,7 @@ mod tests {
             }
             Ok(ChatOutcome {
                 content: self.reply.clone(),
+                reasoning: None,
                 tool_calls: vec![],
                 finish_reason: Some("stop".into()),
                 usage: None,

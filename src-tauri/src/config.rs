@@ -65,6 +65,14 @@ pub struct LlmConfig {
     pub vision: Option<bool>,
     // Cached result of the last vision probe (informational, written by detect_vision).
     pub vision_detected: Option<bool>,
+    // Thinking mode level: "off" | "low" | "medium" | "high". Off omits
+    // `reasoning_effort` from requests; other levels send it as-is.
+    #[serde(default = "default_thinking_level")]
+    pub thinking_level: String,
+}
+
+pub fn default_thinking_level() -> String {
+    "medium".into()
 }
 
 impl LlmConfig {
@@ -74,6 +82,18 @@ impl LlmConfig {
     pub fn vision_enabled(&self) -> bool {
         self.vision
             .unwrap_or_else(|| self.vision_detected.unwrap_or(false))
+    }
+
+    // Request mapping for the thinking level: "off" omits reasoning_effort,
+    // an unrecognized or empty value (older llm.json files) sends the shipped
+    // default "medium".
+    pub fn reasoning_effort(&self) -> Option<&str> {
+        match self.thinking_level.as_str() {
+            "off" => None,
+            "low" => Some("low"),
+            "high" => Some("high"),
+            _ => Some("medium"),
+        }
     }
 }
 
@@ -88,6 +108,7 @@ impl Default for LlmConfig {
             max_tokens: None,
             vision: None,
             vision_detected: None,
+            thinking_level: default_thinking_level(),
         }
     }
 }
@@ -477,6 +498,34 @@ mod tests {
             .unwrap();
         assert_eq!((auto.vision, auto.vision_detected), (None, None));
         assert!(!auto.vision_enabled());
+    }
+
+    #[test]
+    fn thinking_level_defaults_to_medium_and_maps_to_reasoning_effort() {
+        // Shipped default: medium, and a written llm.json carries it.
+        assert_eq!(LlmConfig::default().thinking_level, "medium");
+        assert_eq!(LlmConfig::default().reasoning_effort(), Some("medium"));
+
+        // An existing llm.json without the key loads as medium (no migration).
+        let legacy: LlmConfig =
+            serde_json::from_value(json!({ "baseUrl": "b", "model": "m", "contextWindow": 1 }))
+                .unwrap();
+        assert_eq!(legacy.reasoning_effort(), Some("medium"));
+
+        for (level, effort) in [
+            ("off", None),
+            ("low", Some("low")),
+            ("medium", Some("medium")),
+            ("high", Some("high")),
+            ("", Some("medium")),
+            ("bogus", Some("medium")),
+        ] {
+            let cfg: LlmConfig = serde_json::from_value(json!({
+                "baseUrl": "b", "model": "m", "contextWindow": 1, "thinkingLevel": level,
+            }))
+            .unwrap();
+            assert_eq!(cfg.reasoning_effort(), effort, "level {level:?}");
+        }
     }
 
     #[test]

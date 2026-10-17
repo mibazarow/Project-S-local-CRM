@@ -68,6 +68,9 @@ export default function ProjectChat({ projectId, projectName }: Props) {
         case "textDelta":
           dispatch({ type: "delta", key, text: p.event.text });
           break;
+        case "reasoningDelta":
+          dispatch({ type: "reasoningDelta", key, text: p.event.text });
+          break;
         case "toolCallStarted":
           dispatch({ type: "stepStart", key, name: p.event.name, summary: summarizeArgs(p.event.args) });
           break;
@@ -75,7 +78,13 @@ export default function ProjectChat({ projectId, projectName }: Props) {
           dispatch({ type: "stepFinish", key, ok: p.event.ok });
           break;
         case "done":
-          dispatch({ type: "done", key, answer: p.event.answer, reason: p.event.reason });
+          dispatch({
+            type: "done",
+            key,
+            answer: p.event.answer,
+            reason: p.event.reason,
+            reasoning: p.event.reasoning,
+          });
           break;
         case "error":
           dispatch({ type: "runError", key, message: p.event.message });

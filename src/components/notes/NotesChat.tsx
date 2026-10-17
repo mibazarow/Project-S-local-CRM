@@ -65,6 +65,9 @@ export default function NotesChat() {
         case "textDelta":
           dispatch({ type: "delta", key, text: p.event.text });
           break;
+        case "reasoningDelta":
+          dispatch({ type: "reasoningDelta", key, text: p.event.text });
+          break;
         case "toolCallStarted":
           dispatch({ type: "stepStart", key, name: p.event.name, summary: summarizeArgs(p.event.args) });
           break;
@@ -73,7 +76,13 @@ export default function NotesChat() {
           break;
         case "done": {
           const run = stateRef.current[key]?.run;
-          dispatch({ type: "done", key, answer: p.event.answer, reason: p.event.reason });
+          dispatch({
+            type: "done",
+            key,
+            answer: p.event.answer,
+            reason: p.event.reason,
+            reasoning: p.event.reasoning,
+          });
           // A run started while this view was unmounted finalizes from the
           // persisted transcript, not from the stream.
           if (!run || !run.local) reloadHistory(key);

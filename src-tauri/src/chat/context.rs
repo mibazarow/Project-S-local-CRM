@@ -261,6 +261,7 @@ mod tests {
             FakeBackend {
                 reply: Ok(ChatOutcome {
                     content: Some(reply.into()),
+                    reasoning: None,
                     tool_calls: vec![],
                     finish_reason: Some("stop".into()),
                     usage: None,
@@ -301,6 +302,7 @@ mod tests {
             model: "test-model".into(),
             temperature: None,
             max_tokens: None,
+            reasoning_effort: None,
         }
     }
 

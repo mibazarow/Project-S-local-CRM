@@ -676,6 +676,7 @@ mod tests {
     fn tools_outcome(calls: Vec<ToolCall>) -> ChatOutcome {
         ChatOutcome {
             content: None,
+            reasoning: None,
             tool_calls: calls,
             finish_reason: Some("tool_calls".into()),
             usage: None,
@@ -724,6 +725,7 @@ mod tests {
                 model: "test-model".into(),
                 temperature: None,
                 max_tokens: None,
+                reasoning_effort: None,
             },
             cancel: None,
             state: None,
@@ -768,7 +770,7 @@ mod tests {
         assert_eq!(kinds, ["started", "finished", "started", "finished", "done"]);
         assert!(matches!(
             events.last(),
-            Some(agent_loop::AgentEvent::Done { answer, reason })
+            Some(agent_loop::AgentEvent::Done { answer, reason, .. })
                 if answer == "вот содержимое" && reason == "finish"
         ));
 

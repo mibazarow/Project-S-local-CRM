@@ -19,6 +19,9 @@ pub struct ChatParams {
     pub model: String,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
+    // Thinking-mode effort ("low" | "medium" | "high"); None omits
+    // `reasoning_effort` from the request entirely (thinking off).
+    pub reasoning_effort: Option<String>,
 }
 
 impl From<&LlmConfig> for ChatParams {
@@ -27,6 +30,7 @@ impl From<&LlmConfig> for ChatParams {
             model: cfg.model.clone(),
             temperature: cfg.temperature,
             max_tokens: cfg.max_tokens,
+            reasoning_effort: cfg.reasoning_effort().map(str::to_owned),
         }
     }
 }
@@ -264,6 +268,7 @@ pub fn detect_vision(wd: &Path) -> Result<VisionStatus> {
         model: cfg.model.clone(),
         temperature: None,
         max_tokens: Some(1),
+        reasoning_effort: None,
     };
     let probe_url = format!(
         "data:image/png;base64,{}",
@@ -362,6 +367,9 @@ pub(crate) fn build_body(
     if let Some(m) = params.max_tokens {
         body["max_tokens"] = json!(m);
     }
+    if let Some(effort) = &params.reasoning_effort {
+        body["reasoning_effort"] = json!(effort);
+    }
     if let Some(tools) = tools.filter(|t| !t.is_empty()) {
         body["tools"] = Value::Array(
             tools
@@ -377,6 +385,7 @@ pub(crate) fn build_body(
 #[derive(Default)]
 struct StreamAcc {
     content: String,
+    reasoning: String,
     finish_reason: Option<String>,
     usage: Option<Usage>,
     // index-keyed fragments: (id, name, arguments) accumulated across chunks.
@@ -405,6 +414,20 @@ impl StreamAcc {
             if !c.is_empty() {
                 self.content.push_str(c);
                 on_event(ChatEvent::Delta(c.to_string()));
+            }
+        }
+        // Thinking deltas: DeepSeek-style `reasoning_content`, some gateways
+        // stream the same trace as `reasoning`. Both accumulate and stream;
+        // only one key per delta is read so an aliasing provider cannot
+        // double-count the same fragment.
+        let reasoning = delta
+            .get("reasoning_content")
+            .or_else(|| delta.get("reasoning"))
+            .and_then(Value::as_str);
+        if let Some(r) = reasoning {
+            if !r.is_empty() {
+                self.reasoning.push_str(r);
+                on_event(ChatEvent::ReasoningDelta(r.to_string()));
             }
         }
         if let Some(tcs) = delta.get("tool_calls").and_then(Value::as_array) {
@@ -455,6 +478,7 @@ impl StreamAcc {
         on_event(ChatEvent::Done);
         ChatOutcome {
             content: (!self.content.is_empty()).then_some(self.content),
+            reasoning: (!self.reasoning.is_empty()).then_some(self.reasoning),
             tool_calls,
             finish_reason: self.finish_reason,
             usage: self.usage,
@@ -493,6 +517,11 @@ fn parse_non_stream(value: &Value) -> Result<ChatOutcome> {
         .ok_or_else(|| AppError::Json("chat response has no choices".into()))?;
     let message = &choice["message"];
     let content = message.get("content").and_then(Value::as_str).map(String::from);
+    let reasoning = message
+        .get("reasoning_content")
+        .or_else(|| message.get("reasoning"))
+        .and_then(Value::as_str)
+        .map(String::from);
     let tool_calls = message
         .get("tool_calls")
         .and_then(Value::as_array)
@@ -514,6 +543,7 @@ fn parse_non_stream(value: &Value) -> Result<ChatOutcome> {
         .unwrap_or_default();
     Ok(ChatOutcome {
         content,
+        reasoning,
         tool_calls,
         finish_reason: choice.get("finish_reason").and_then(Value::as_str).map(String::from),
         usage: value
@@ -570,6 +600,28 @@ mod tests {
     }
 
     #[test]
+    fn sse_stream_accumulates_reasoning_from_both_delta_keys() {
+        let (events, outcome) = sse(&[
+            r#"data: {"choices":[{"index":0,"delta":{"reasoning_content":"Thin"}}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"reasoning_content":"king"}}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"reasoning":" deeper"}}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"content":"Hi"}}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            "data: [DONE]",
+        ]);
+        assert_eq!(outcome.reasoning.as_deref(), Some("Thinking deeper"));
+        assert_eq!(outcome.content.as_deref(), Some("Hi"));
+        let streamed: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                ChatEvent::ReasoningDelta(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(streamed, ["Thin", "king", " deeper"]);
+    }
+
+    #[test]
     fn sse_invalid_tool_arguments_keep_raw_and_mark_error() {
         let (_, outcome) = sse(&[
             r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"f","arguments":"{oops"}}]}}]}"#,
@@ -587,11 +639,13 @@ mod tests {
         let messages = vec![
             ChatMessage::system("sys"),
             ChatMessage::user("hi"),
+            ChatMessage::assistant("earlier answer").with_reasoning(Some("earlier thought".into())),
             ChatMessage::assistant_tool_calls(vec![ToolCall::new(
                 "c1".into(),
                 "f".into(),
                 "{\"a\":1}".into(),
-            )]),
+            )])
+            .with_reasoning(Some("planning".into())),
             ChatMessage::tool_result("c1", "ok"),
         ];
         let tools = [ToolSpec {
@@ -603,6 +657,7 @@ mod tests {
             model: "m".into(),
             temperature: Some(0.5),
             max_tokens: Some(64),
+            reasoning_effort: Some("medium".into()),
         };
         let body = build_body(&messages, Some(&tools), &params, true);
         assert_eq!(
@@ -614,7 +669,13 @@ mod tests {
                     { "role": "user", "content": "hi" },
                     {
                         "role": "assistant",
+                        "content": "earlier answer",
+                        "reasoning_content": "earlier thought"
+                    },
+                    {
+                        "role": "assistant",
                         "content": null,
+                        "reasoning_content": "planning",
                         "tool_calls": [{
                             "id": "c1",
                             "type": "function",
@@ -626,6 +687,7 @@ mod tests {
                 "stream": true,
                 "temperature": 0.5,
                 "max_tokens": 64,
+                "reasoning_effort": "medium",
                 "tools": [{
                     "type": "function",
                     "function": {
@@ -640,6 +702,18 @@ mod tests {
     }
 
     #[test]
+    fn thinking_off_omits_reasoning_effort_from_the_body() {
+        let params = ChatParams {
+            model: "m".into(),
+            temperature: None,
+            max_tokens: None,
+            reasoning_effort: None,
+        };
+        let body = build_body(&[ChatMessage::user("hi")], None, &params, false);
+        assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
     fn build_body_serializes_multimodal_user_content_parts() {
         let messages = vec![ChatMessage::user_parts(vec![
             ContentPart::text("что на картинке?"),
@@ -649,6 +723,7 @@ mod tests {
             model: "m".into(),
             temperature: None,
             max_tokens: None,
+            reasoning_effort: None,
         };
         let body = build_body(&messages, None, &params, false);
         assert_eq!(
@@ -741,6 +816,7 @@ mod tests {
                 "message": {
                     "role": "assistant",
                     "content": "hi",
+                    "reasoning_content": "because",
                     "tool_calls": [{
                         "id": "c1",
                         "type": "function",
@@ -753,6 +829,7 @@ mod tests {
         });
         let outcome = parse_non_stream(&value).unwrap();
         assert_eq!(outcome.content.as_deref(), Some("hi"));
+        assert_eq!(outcome.reasoning.as_deref(), Some("because"));
         assert_eq!(outcome.tool_calls[0].arguments, json!({ "a": 1 }));
         assert_eq!(outcome.usage.unwrap().total_tokens, 3);
     }
