@@ -141,6 +141,25 @@ const emptyMcpForm: McpForm = {
   headers: "",
 };
 
+type SkillKindOption = "instruction" | "script" | "extension";
+
+// "Создать скилл" form; values map 1:1 onto the skills_create command.
+interface SkillForm {
+  name: string;
+  description: string;
+  kind: SkillKindOption;
+  body: string;
+  overwrite: boolean;
+}
+
+const emptySkillForm: SkillForm = {
+  name: "",
+  description: "",
+  kind: "instruction",
+  body: "",
+  overwrite: false,
+};
+
 // KEY=VALUE (or KEY: VALUE when allowColon) lines → record; null on a
 // malformed line so the form can show an inline error.
 function parseKeyLines(s: string, allowColon: boolean): Record<string, string> | null {
@@ -200,6 +219,10 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [overwrite, setOverwrite] = useState(false);
   const [gitUrl, setGitUrl] = useState("");
   const [importResults, setImportResults] = useState<ImportResult[] | null>(null);
+  const [skillForm, setSkillForm] = useState<SkillForm>({ ...emptySkillForm });
+  const [skillFormError, setSkillFormError] = useState<string | null>(null);
+  const [skillNote, setSkillNote] = useState<string | null>(null);
+  const [skillCreateBusy, setSkillCreateBusy] = useState(false);
 
   const [mcp, setMcp] = useState<McpServerStatus[] | null>(null);
   const [mcpError, setMcpError] = useState<string | null>(null);
@@ -660,6 +683,38 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
       .then((names) => setImportResults(names.map((name) => ({ name, ok: true, error: null }))))
       .catch((e) => setSkillsError(errMsg(e)))
       .finally(() => setSkillsBusy(false));
+  };
+
+  // skills_create emits skills-changed, so the list refreshes on its own.
+  const createSkill = (e: FormEvent) => {
+    e.preventDefault();
+    setSkillFormError(null);
+    setSkillNote(null);
+    const name = skillForm.name.trim();
+    if (!/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/.test(name) || name.length > 64) {
+      setSkillFormError("Имя: строчные латинские буквы, цифры и дефис, не длиннее 64 символов");
+      return;
+    }
+    const description = skillForm.description.trim();
+    if (!description) {
+      setSkillFormError("Описание — одна строка, обязательно");
+      return;
+    }
+    setSkillCreateBusy(true);
+    void ipc
+      .skillsCreate(
+        name,
+        description,
+        skillForm.kind,
+        skillForm.body.trim() || undefined,
+        skillForm.overwrite,
+      )
+      .then(() => {
+        setSkillForm({ ...emptySkillForm });
+        setSkillNote(`Скилл «${name}» создан`);
+      })
+      .catch((err) => setSkillFormError(errMsg(err)))
+      .finally(() => setSkillCreateBusy(false));
   };
 
   // memory-changed reloads the list, so add/update/delete need no manual refresh.
@@ -1306,6 +1361,74 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                 Установить встроенные
               </button>
               <div className="set-hint">Копирует набор встроенных скиллов приложения в папку настроек.</div>
+              <details className="mcp-guide">
+                <summary>Создать скилл</summary>
+                <form className="schedule-form" onSubmit={createSkill}>
+                  <div className="set-row">
+                    <label>Имя (slug)</label>
+                    <input
+                      type="text"
+                      value={skillForm.name}
+                      onChange={(e) => setSkillForm({ ...skillForm, name: e.target.value })}
+                      placeholder="my-skill"
+                      spellCheck={false}
+                    />
+                    <div className="set-hint">
+                      Строчные латинские буквы, цифры и дефис; по этому имени агент и вызывает скилл.
+                    </div>
+                  </div>
+                  <div className="set-row">
+                    <label>Описание (одна строка)</label>
+                    <input
+                      type="text"
+                      value={skillForm.description}
+                      onChange={(e) => setSkillForm({ ...skillForm, description: e.target.value })}
+                      placeholder="Что делает этот скилл"
+                    />
+                  </div>
+                  <div className="set-row">
+                    <label>Тип</label>
+                    <select
+                      value={skillForm.kind}
+                      onChange={(e) =>
+                        setSkillForm({ ...skillForm, kind: e.target.value as SkillKindOption })
+                      }
+                    >
+                      <option value="instruction">instruction (инструкция)</option>
+                      <option value="script">script (скрипт)</option>
+                      <option value="extension">extension (расширение)</option>
+                    </select>
+                  </div>
+                  <div className="set-row">
+                    <label>Тело скилла (markdown, необязательно)</label>
+                    <textarea
+                      rows={6}
+                      value={skillForm.body}
+                      onChange={(e) => setSkillForm({ ...skillForm, body: e.target.value })}
+                      placeholder="Полные инструкции для агента…"
+                      spellCheck={false}
+                    />
+                  </div>
+                  <div className="set-row switch-row">
+                    <label>перезаписать, если существует</label>
+                    <label className="switch">
+                      <input
+                        type="checkbox"
+                        checked={skillForm.overwrite}
+                        onChange={(e) => setSkillForm({ ...skillForm, overwrite: e.target.checked })}
+                      />
+                      <span className="track"></span>
+                    </label>
+                  </div>
+                  <div className="form-actions">
+                    <button className="primary-btn small" type="submit" disabled={skillCreateBusy}>
+                      {skillCreateBusy ? "Создание…" : "Создать"}
+                    </button>
+                  </div>
+                  {skillFormError && <div className="set-error">{skillFormError}</div>}
+                  {skillNote && <div className="set-hint">{skillNote}</div>}
+                </form>
+              </details>
               {importResults && (
                 <div className="skill-results">
                   {importResults.map((r, i) => (

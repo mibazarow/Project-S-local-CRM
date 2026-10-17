@@ -264,6 +264,23 @@ export const skillsImport = (source: string, target: string, overwrite?: boolean
 
 export const skillsInstallBuiltin = () => invoke<string[]>("skills_install_builtin");
 
+// skills_create: name is a slug (lowercase letters, digits, hyphens),
+// description one line; kind defaults to "instruction" on the backend.
+export const skillsCreate = (
+  name: string,
+  description: string,
+  kind?: string,
+  body?: string,
+  overwrite?: boolean,
+) =>
+  invoke<SkillInfo>("skills_create", {
+    name,
+    description,
+    kind: kind ?? null,
+    body: body ?? null,
+    overwrite: overwrite ?? null,
+  });
+
 // MCP (SPEC 6.2): per-server status and reload; enable/add edit mcp.json via
 // read_config("mcp")/write_config("mcp") then reload.
 export const mcpStatus = () => invoke<McpServerStatus[]>("mcp_status");
