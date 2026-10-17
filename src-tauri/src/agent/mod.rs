@@ -6,6 +6,7 @@
 pub mod browser_tool;
 pub mod catalog;
 pub mod finish;
+pub mod git_tools;
 pub mod harness_tools;
 pub mod permissions;
 pub mod project_tools;

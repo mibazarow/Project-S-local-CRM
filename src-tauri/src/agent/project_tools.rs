@@ -31,6 +31,13 @@ pub fn project_catalog() -> Catalog {
         Arc::new(TaskDeleteTool),
         Arc::new(DatasAddTool),
         Arc::new(DatasReadTool),
+        // Git tools via the system git CLI (read-only core set + confirmed
+        // mutating set); see git_tools.rs for the safety rules.
+        Arc::new(crate::agent::git_tools::GitStatusTool),
+        Arc::new(crate::agent::git_tools::GitDiffTool),
+        Arc::new(crate::agent::git_tools::GitLogTool),
+        Arc::new(crate::agent::git_tools::GitBranchTool),
+        Arc::new(crate::agent::git_tools::GitCommitTool),
         Arc::new(crate::agent::net_tools::WebfetchTool::new()),
         Arc::new(crate::agent::net_tools::WebsearchTool::new()),
         Arc::new(crate::skills::SkillTool),
@@ -788,7 +795,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 23] = [
+    const TOOL_NAMES: [&str; 28] = [
         "search",
         "read_file",
         "list_tree",
@@ -803,6 +810,11 @@ mod tests {
         "task_delete",
         "datas_add",
         "datas_read",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "git_branch",
+        "git_commit",
         "webfetch",
         "websearch",
         "skill",
@@ -1049,6 +1061,9 @@ mod tests {
             "list_tree",
             "task_list",
             "datas_read",
+            "git_status",
+            "git_diff",
+            "git_log",
             "webfetch",
             "websearch",
             "skill",
@@ -1073,8 +1088,10 @@ mod tests {
             assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
         }
-        for name in ["rename_path", "delete_path", "task_delete"] {
+        for name in ["rename_path", "delete_path", "task_delete", "git_commit"] {
             assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
         }
+        assert_eq!(tool("git_branch").class(), ToolClass::Mutating);
+        assert_eq!(tool("git_branch").policy(), PermissionPolicy::CheckConditional);
     }
 }

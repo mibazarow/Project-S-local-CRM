@@ -69,6 +69,13 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(CrmTaskDeleteTool),
         Arc::new(DatasReadTool),
         Arc::new(DatasAddTool),
+        // Git tools via the system git CLI, lazy-discovered like the rest of
+        // the machine-wide set; see git_tools.rs for the safety rules.
+        Arc::new(super::git_tools::GitStatusTool),
+        Arc::new(super::git_tools::GitDiffTool),
+        Arc::new(super::git_tools::GitLogTool),
+        Arc::new(super::git_tools::GitBranchTool),
+        Arc::new(super::git_tools::GitCommitTool),
         Arc::new(ScheduleCreateTool),
         Arc::new(ScheduleListTool),
         Arc::new(SchedulePauseTool),
@@ -1348,7 +1355,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const DEFERRED_NAMES: [&str; 23] = [
+    const DEFERRED_NAMES: [&str; 28] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -1368,6 +1375,11 @@ mod tests {
         "crm_task_delete",
         "datas_read",
         "datas_add",
+        "git_status",
+        "git_diff",
+        "git_log",
+        "git_branch",
+        "git_commit",
         "schedule_create",
         "schedule_list",
         "schedule_pause",
@@ -1394,7 +1406,7 @@ mod tests {
 
     #[test]
     fn classes_policies_and_danger_reasons_match_the_spec() {
-        for name in ["fs_read", "fs_list", "fs_grep", "webfetch", "websearch", "crm_list_projects", "crm_search", "crm_tasks", "datas_read"] {
+        for name in ["fs_read", "fs_list", "fs_grep", "webfetch", "websearch", "crm_list_projects", "crm_search", "crm_tasks", "datas_read", "git_status", "git_diff", "git_log"] {
             assert_eq!(tool(name).class(), ToolClass::ReadOnly, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
         }
@@ -1403,11 +1415,15 @@ mod tests {
         }
         assert_eq!(tool("fs_write").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("create_skill").policy(), PermissionPolicy::Skip);
-        for name in ["fs_delete", "bash", "crm_task_delete"] {
+        for name in ["fs_delete", "bash", "crm_task_delete", "git_commit"] {
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
             assert!(tool(name).danger_reason(&json!({}), &ToolCtx::default()).is_some(), "{name} danger_reason");
         }
+        assert_eq!(tool("git_branch").class(), ToolClass::Mutating);
+        assert_eq!(tool("git_branch").policy(), PermissionPolicy::CheckConditional);
+        assert!(tool("git_branch").danger_reason(&json!({ "action": "list" }), &ToolCtx::default()).is_none());
+        assert!(tool("git_branch").danger_reason(&json!({ "action": "create", "name": "n" }), &ToolCtx::default()).is_some());
         for name in ["schedule_create", "schedule_delete"] {
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
