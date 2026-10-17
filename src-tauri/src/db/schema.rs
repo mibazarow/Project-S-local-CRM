@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 20;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -382,6 +382,37 @@ JOIN chats c ON c.id = m.chat_id AND c.kind = 'harness'
 WHERE c.session_id IS NOT NULL
   AND m.role IN ('user','assistant')
   AND m.content IS NOT NULL AND trim(m.content) <> '';
+",
+        crate::embed::EMBED_DIM
+    )
+}
+
+// Hybrid memory search (SPEC 6.3): memory_fts is rebuilt with an explicit
+// memory_id column and an indexed tags column (the v7 mirror only stored
+// content), keeping rowid = memory.id; existing rows are backfilled here.
+// memory_vectors tracks which memory rows already carry an embedding and
+// vec_memory stores one vector per record under rowid = memory.id. Vectors
+// are backfilled on demand by the index_memory command because the embedding
+// model may be missing at migration time.
+fn migration_20() -> String {
+    format!(
+        "
+DROP TABLE IF EXISTS memory_fts;
+CREATE VIRTUAL TABLE memory_fts USING fts5(
+    memory_id UNINDEXED,
+    content,
+    tags,
+    tokenize = 'unicode61'
+);
+CREATE TABLE IF NOT EXISTS memory_vectors (
+    memory_id INTEGER PRIMARY KEY,
+    updated_at TEXT NOT NULL
+);
+CREATE VIRTUAL TABLE IF NOT EXISTS vec_memory USING vec0(
+    embedding float[{}]
+);
+INSERT INTO memory_fts (rowid, memory_id, content, tags)
+SELECT id, id, content, tags FROM memory;
 ",
         crate::embed::EMBED_DIM
     )
