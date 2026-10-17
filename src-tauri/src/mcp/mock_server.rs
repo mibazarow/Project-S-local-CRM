@@ -20,6 +20,10 @@ pub(crate) struct CapturedRequest {
 pub(crate) type Handler =
     Arc<dyn Fn(&mut TcpStream, &CapturedRequest) -> std::io::Result<()> + Send + Sync>;
 
+// Per-connection read/write bound: a genuinely hung client fails fast with a
+// timeout error instead of hanging or flaking the test.
+const CONN_TIMEOUT: Duration = Duration::from_secs(5);
+
 pub(crate) struct MockServer {
     pub(crate) url_base: String,
     stop: Arc<AtomicBool>,
@@ -82,7 +86,16 @@ fn handle_conn(
     requests: Arc<Mutex<Vec<CapturedRequest>>>,
     handler: Handler,
 ) -> std::io::Result<()> {
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    // The listener is non-blocking for the accept poll loop, and on macOS the
+    // accepted socket inherits that O_NONBLOCK flag: a blocking read_line
+    // would then hit WouldBlock before the request bytes arrive and close the
+    // connection (the flake this fixes). Force the accepted socket back to
+    // blocking mode and bound both directions, so reads below block until the
+    // full line/body has arrived (BufReader + read_to_string already stitch
+    // partial reads together) and a real hang times out instead.
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(CONN_TIMEOUT))?;
+    stream.set_write_timeout(Some(CONN_TIMEOUT))?;
     let req = {
         let mut reader = BufReader::new(stream.try_clone()?);
         let mut line = String::new();

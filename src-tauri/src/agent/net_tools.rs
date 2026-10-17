@@ -756,9 +756,9 @@ mod tests {
     fn webfetch_caps_body_at_two_mebibytes_and_text_at_max_chars() {
         let big = "x".repeat(3 * 1024 * 1024);
         let server = mock(Arc::new(move |stream: &mut std::net::TcpStream, _req| {
-            // accepted sockets inherit the listener's non-blocking flag on
-            // macOS; a multi-MB write_all needs blocking writes
-            let _ = stream.set_nonblocking(false);
+            // No set_nonblocking(false) workaround here: MockServer already
+            // forces accepted sockets to blocking mode with I/O timeouts,
+            // so the multi-MB write_all below is a plain blocking write.
             respond(stream, 200, "text/plain", &big, &[])
         }));
         let r = WebfetchTool::new()
