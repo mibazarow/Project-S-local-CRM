@@ -93,6 +93,12 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(super::git_tools::GitLogTool),
         Arc::new(super::git_tools::GitBranchTool),
         Arc::new(super::git_tools::GitCommitTool),
+        // SSH tools via the system ssh/scp CLI with keys/ssh-agent; lazy
+        // discovered like the rest of the machine-wide set; see ssh_tools.rs.
+        Arc::new(super::ssh_tools::SshListProfilesTool),
+        Arc::new(super::ssh_tools::SshExecTool),
+        Arc::new(super::ssh_tools::SshCopyTool::upload()),
+        Arc::new(super::ssh_tools::SshCopyTool::download()),
         Arc::new(ScheduleCreateTool),
         Arc::new(ScheduleListTool),
         Arc::new(SchedulePauseTool),
@@ -1393,7 +1399,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const DEFERRED_NAMES: [&str; 32] = [
+    const DEFERRED_NAMES: [&str; 36] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -1422,6 +1428,10 @@ mod tests {
         "git_log",
         "git_branch",
         "git_commit",
+        "ssh_list_profiles",
+        "ssh_exec",
+        "ssh_upload",
+        "ssh_download",
         "schedule_create",
         "schedule_list",
         "schedule_pause",
@@ -1448,7 +1458,7 @@ mod tests {
 
     #[test]
     fn classes_policies_and_danger_reasons_match_the_spec() {
-        for name in ["fs_read", "fs_list", "fs_grep", "webfetch", "websearch", "crm_list_projects", "crm_search", "crm_tasks", "datas_read", "git_status", "git_diff", "git_log"] {
+        for name in ["fs_read", "fs_list", "fs_grep", "webfetch", "websearch", "crm_list_projects", "crm_search", "crm_tasks", "datas_read", "git_status", "git_diff", "git_log", "ssh_list_profiles"] {
             assert_eq!(tool(name).class(), ToolClass::ReadOnly, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
         }
@@ -1457,7 +1467,7 @@ mod tests {
         }
         assert_eq!(tool("fs_write").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("create_skill").policy(), PermissionPolicy::Skip);
-        for name in ["fs_delete", "bash", "crm_task_delete", "git_commit", "apply_patch"] {
+        for name in ["fs_delete", "bash", "crm_task_delete", "git_commit", "apply_patch", "ssh_exec", "ssh_upload", "ssh_download"] {
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
             assert!(tool(name).danger_reason(&json!({}), &ToolCtx::default()).is_some(), "{name} danger_reason");

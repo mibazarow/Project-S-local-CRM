@@ -1,7 +1,7 @@
 use crate::error::{AppError, Result};
 use crate::paths;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
@@ -13,11 +13,18 @@ pub enum ConfigKind {
     App,
     Indexing,
     Mcp,
+    Ssh,
 }
 
 impl ConfigKind {
-    pub fn all() -> [ConfigKind; 4] {
-        [ConfigKind::Llm, ConfigKind::App, ConfigKind::Indexing, ConfigKind::Mcp]
+    pub fn all() -> [ConfigKind; 5] {
+        [
+            ConfigKind::Llm,
+            ConfigKind::App,
+            ConfigKind::Indexing,
+            ConfigKind::Mcp,
+            ConfigKind::Ssh,
+        ]
     }
 
     pub fn filename(self) -> &'static str {
@@ -26,6 +33,7 @@ impl ConfigKind {
             ConfigKind::App => paths::CONFIG_APP,
             ConfigKind::Indexing => paths::CONFIG_INDEXING,
             ConfigKind::Mcp => paths::CONFIG_MCP,
+            ConfigKind::Ssh => paths::CONFIG_SSH,
         }
     }
 
@@ -35,6 +43,7 @@ impl ConfigKind {
             ConfigKind::App => "app",
             ConfigKind::Indexing => "indexing",
             ConfigKind::Mcp => "mcp",
+            ConfigKind::Ssh => "ssh",
         }
     }
 
@@ -203,6 +212,7 @@ fn default_value(kind: ConfigKind) -> Result<Value> {
         ConfigKind::App => serde_json::to_value(AppConfig::default())?,
         ConfigKind::Indexing => serde_json::to_value(IndexingConfig::default())?,
         ConfigKind::Mcp => serde_json::to_value(McpConfig::default())?,
+        ConfigKind::Ssh => json!({ "profiles": [] }),
     };
     Ok(value)
 }

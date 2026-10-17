@@ -137,7 +137,7 @@ fn resolve_dir(args: &Value, ctx: &ToolCtx) -> Result<PathBuf> {
     }
 }
 
-fn join_rel(root: &Path, rel: &str) -> Result<PathBuf> {
+pub(crate) fn join_rel(root: &Path, rel: &str) -> Result<PathBuf> {
     let mut out = root.to_path_buf();
     for part in Path::new(rel).components() {
         match part {

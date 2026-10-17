@@ -51,6 +51,12 @@ pub fn project_catalog() -> Catalog {
         Arc::new(crate::agent::git_tools::GitLogTool),
         Arc::new(crate::agent::git_tools::GitBranchTool),
         Arc::new(crate::agent::git_tools::GitCommitTool),
+        // SSH tools via the system ssh/scp CLI with keys/ssh-agent; every
+        // mutating call is confirmed; see ssh_tools.rs for the safety rules.
+        Arc::new(crate::agent::ssh_tools::SshListProfilesTool),
+        Arc::new(crate::agent::ssh_tools::SshExecTool),
+        Arc::new(crate::agent::ssh_tools::SshCopyTool::upload()),
+        Arc::new(crate::agent::ssh_tools::SshCopyTool::download()),
         Arc::new(crate::agent::net_tools::WebfetchTool::new()),
         Arc::new(crate::agent::net_tools::WebsearchTool::new()),
         Arc::new(crate::skills::SkillTool),
@@ -846,7 +852,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 32] = [
+    const TOOL_NAMES: [&str; 36] = [
         "search",
         "read_file",
         "list_tree",
@@ -870,6 +876,10 @@ mod tests {
         "git_log",
         "git_branch",
         "git_commit",
+        "ssh_list_profiles",
+        "ssh_exec",
+        "ssh_upload",
+        "ssh_download",
         "webfetch",
         "websearch",
         "skill",

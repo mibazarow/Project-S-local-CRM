@@ -15,6 +15,7 @@ pub mod permissions;
 pub mod project_tools;
 pub mod prompts;
 pub mod result;
+pub mod ssh_tools;
 pub mod tool;
 
 #[path = "loop.rs"]
