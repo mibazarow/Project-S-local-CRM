@@ -14,7 +14,7 @@ const MATCH_LABELS: Record<string, string> = { fts: "слова", semantic: "с�
 const STATUS_LABELS: Record<string, string> = { new: "Новые", progress: "В работе", done: "Готово" };
 
 // FTS5 snippet markers ("<<match>>") become <mark> elements.
-function renderSnippet(snippet: string): ReactNode[] {
+export function renderSnippet(snippet: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const re = /<<([^>]*)>>/g;
   let last = 0;

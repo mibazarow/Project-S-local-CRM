@@ -1,4 +1,4 @@
-export type Tab = "projects" | "harness" | "journal";
+export type Tab = "projects" | "harness" | "journal" | "notes";
 
 interface Props {
   tab: Tab;
@@ -30,6 +30,12 @@ export default function TopBar({ tab, onTab, onSettings }: Props) {
           onClick={() => onTab("journal")}
         >
           Журнал
+        </button>
+        <button
+          className={tab === "notes" ? "tab active" : "tab"}
+          onClick={() => onTab("notes")}
+        >
+          Блокнот
         </button>
       </nav>
       <div className="topbar-right">

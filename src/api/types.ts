@@ -250,24 +250,33 @@ export type AgentEvent =
   | { type: "done"; answer: string; reason: string }
   | { type: "error"; code: string; message: string };
 
-// chat::AgentEventPayload — exactly one of projectId / sessionId is set:
-// project chats carry projectId, harness sessions carry sessionId.
+// chat::AgentEventPayload — project chats carry projectId, harness sessions
+// carry sessionId, notes-chat runs carry notes: true (chatId only).
 export interface AgentEventPayload {
   chatId: number;
   projectId?: number;
   sessionId?: number;
+  notes?: boolean;
   event: AgentEvent;
 }
 
 // chat::ConfirmationRequestPayload ("agent-confirmation" event), routed by
-// the same run key: projectId for project chats, sessionId for sessions.
+// the same run key: projectId for project chats, sessionId for sessions,
+// notes: true for notes-chat runs.
 export interface ConfirmationRequestPayload {
   id: number;
   projectId?: number;
   sessionId?: number;
+  notes?: boolean;
   tool: string;
   args: unknown;
   dangerReason: string | null;
+}
+
+// lib.rs NotesChanged — payload of the "notes-changed" event emitted by the
+// notes_* mutation commands.
+export interface NotesChanged {
+  relPath: string;
 }
 
 // harness::SessionDto

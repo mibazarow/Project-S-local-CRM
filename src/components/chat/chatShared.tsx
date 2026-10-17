@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode, type RefObject } from "react";
 import * as ipc from "../../api/ipc";
 import type {
   ConfirmationRequestPayload,
@@ -404,5 +404,98 @@ export function MessageAttachments({
         ),
       )}
     </>
+  );
+}
+
+// Transcript column shared by all three chats (project, harness, notes):
+// the persisted items plus the live run bubble, with the caller-provided
+// empty state and an optional header block (e.g. a list-load error).
+export function ChatTranscript({
+  slice,
+  listRef,
+  className,
+  empty,
+  header,
+  projectId,
+}: {
+  slice: Slice | null;
+  listRef: RefObject<HTMLDivElement | null>;
+  className?: string;
+  empty: ReactNode;
+  header?: ReactNode;
+  projectId: number | null;
+}) {
+  return (
+    <div className={className ?? "chat-messages"} ref={listRef}>
+      {header}
+      {!slice || (slice.items.length === 0 && !slice.run) ? (
+        <div className="chat-empty">{empty}</div>
+      ) : (
+        <>
+          {slice.items.map((item) => (
+            <div key={item.key} className={`msg ${item.role}`}>
+              <span className="who">{item.role === "user" ? "Вы" : "Агент"}</span>
+              {item.text && <div className="bubble">{item.text}</div>}
+              <MessageAttachments attachments={item.attachments} projectId={projectId} />
+              <StepsList steps={item.steps} />
+              {item.note && <span className="note">{item.note}</span>}
+              {item.error && (
+                <div className="error">
+                  {item.error}
+                  <br />
+                  Проверьте Настройки → Модель.
+                </div>
+              )}
+            </div>
+          ))}
+          {slice.run && (
+            <div className="msg agent">
+              <span className="who">Агент</span>
+              {slice.run.text && <div className="bubble">{slice.run.text}</div>}
+              <StepsList steps={slice.run.steps} />
+              {!slice.run.text && slice.run.steps.length === 0 && (
+                <span className="note">агент думает…</span>
+              )}
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+// Pending-confirmation card shared by all three chats (SPEC 6: one loop,
+// one confirmation flow; only the routing key differs per view).
+export function ConfirmCard({
+  confirmation,
+  onResolve,
+}: {
+  confirmation: ConfirmationRequestPayload;
+  onResolve: (decision: "allow" | "deny" | "allowAlways") => void;
+}) {
+  return (
+    <div className="confirm-card">
+      <div className="head">
+        <span className="lbl">Подтверждение</span>
+        <span className="tool">{confirmation.tool}</span>
+      </div>
+      <div className="args">{summarizeArgs(confirmation.args)}</div>
+      {confirmation.dangerReason && <div className="danger">{confirmation.dangerReason}</div>}
+      <div className="actions">
+        <button className="primary-btn small" type="button" onClick={() => onResolve("allow")}>
+          Разрешить
+        </button>
+        <button className="ghost-btn small" type="button" onClick={() => onResolve("allowAlways")}>
+          Всегда разрешать
+        </button>
+        <button
+          className="ghost-btn small danger"
+          type="button"
+          onClick={() => onResolve("deny")}
+        >
+          Запретить
+        </button>
+      </div>
+    </div>
   );
 }

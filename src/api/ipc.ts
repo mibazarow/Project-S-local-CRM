@@ -19,6 +19,7 @@ import type {
   MessageAttachmentDto,
   MessageDto,
   ModelInfo,
+  NotesChanged,
   OnboardingStatus,
   ConfirmationRequestPayload,
   ProjectDto,
@@ -160,6 +161,41 @@ export const searchProject = (projectId: number, query: string, limit?: number) 
 
 export const fsReadBinaryDataUrl = (projectId: number, relPath: string, maxBytes: number) =>
   invoke<string>("fs_read_binary_data_url", { projectId, relPath, maxBytes });
+
+// Notes vault (top-level Notes/ folder): markdown notes with folders, all
+// paths vault-relative. Mutations emit "notes-changed"; agent tool writes
+// arrive later as "index-changed" with projectId = -1 (NOTES_SCOPE_ID).
+export const notesEnsure = () => invoke<string>("notes_ensure");
+
+export const notesTree = () => invoke<FsEntry[]>("notes_tree");
+
+export const notesList = (rel?: string) => invoke<FsEntry[]>("notes_list", { rel: rel ?? null });
+
+export const notesRead = (rel: string) => invoke<string>("notes_read", { rel });
+
+export const notesWrite = (rel: string, content: string) =>
+  invoke<FsEntry>("notes_write", { rel, content });
+
+export const notesCreate = (rel: string, content?: string) =>
+  invoke<FsEntry>("notes_create", { rel, content: content ?? null });
+
+export const notesRename = (rel: string, newName: string) =>
+  invoke<FsEntry>("notes_rename", { rel, newName });
+
+export const notesDelete = (rel: string) => invoke<void>("notes_delete", { rel });
+
+export const searchNotes = (query: string, limit?: number) =>
+  invoke<SearchHit[]>("search_notes", { query, limit: limit ?? null });
+
+// Notes chat: one continuous chat per working dir; events route by
+// "notes: true" on agent-event / agent-confirmation.
+export const ensureNotesChat = () => invoke<number>("ensure_notes_chat");
+
+export const notesChatHistory = () => invoke<MessageDto[]>("notes_chat_history");
+
+export const sendNotesMessage = (text: string) => invoke<number>("send_notes_message", { text });
+
+export const cancelNotesRun = () => invoke<boolean>("cancel_notes_run");
 
 // Chat attachments (SPEC 6.1): attach_files copies sources into the project's
 // or the harness inbox; exactly one of projectId / sessionId selects the
@@ -357,3 +393,7 @@ export const onMemoryChanged = (handler: (payload: MemoryChanged) => void) =>
 // Emitted by the todowrite tool after the plan of a scope changed.
 export const onTodosChanged = (handler: (payload: TodosChanged) => void) =>
   listen<TodosChanged>("todos-changed", (e) => handler(e.payload));
+
+// Emitted by the notes_* mutation commands after a note or folder changed.
+export const onNotesChanged = (handler: (payload: NotesChanged) => void) =>
+  listen<NotesChanged>("notes-changed", (e) => handler(e.payload));

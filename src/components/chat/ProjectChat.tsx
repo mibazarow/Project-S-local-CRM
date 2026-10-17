@@ -6,8 +6,8 @@ import {
   historyToItems,
   summarizeArgs,
   toMessage,
-  StepsList,
-  MessageAttachments,
+  ChatTranscript,
+  ConfirmCard,
   AttachFileIcon,
   AttachXIcon,
   useVisionSupport,
@@ -156,42 +156,12 @@ export default function ProjectChat({ projectId, projectName }: Props) {
 
       <TodoPanel scopeKind="project" scopeId={projectId} />
 
-      <div className="chat-messages" ref={listRef}>
-        {!slice || (slice.items.length === 0 && !slice.run) ? (
-          <div className="chat-empty">
-            Начните диалог — агент проекта ответит здесь.
-          </div>
-        ) : (
-          <>
-            {slice.items.map((item) => (
-              <div key={item.key} className={`msg ${item.role}`}>
-                <span className="who">{item.role === "user" ? "Вы" : "Агент"}</span>
-                {item.text && <div className="bubble">{item.text}</div>}
-                <MessageAttachments attachments={item.attachments} projectId={projectId} />
-                <StepsList steps={item.steps} />
-                {item.note && <span className="note">{item.note}</span>}
-                {item.error && (
-                  <div className="error">
-                    {item.error}
-                    <br />
-                    Проверьте Настройки → Модель.
-                  </div>
-                )}
-              </div>
-            ))}
-            {slice.run && (
-              <div className="msg agent">
-                <span className="who">Агент</span>
-                {slice.run.text && <div className="bubble">{slice.run.text}</div>}
-                <StepsList steps={slice.run.steps} />
-                {!slice.run.text && slice.run.steps.length === 0 && (
-                  <span className="note">агент думает…</span>
-                )}
-              </div>
-            )}
-          </>
-        )}
-      </div>
+      <ChatTranscript
+        slice={slice}
+        listRef={listRef}
+        empty="Начните диалог — агент проекта ответит здесь."
+        projectId={projectId}
+      />
 
       {att.pending.length > 0 && (
         <div className="attach-bar">
@@ -221,27 +191,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
         </div>
       )}
 
-      {confirmation && (
-        <div className="confirm-card">
-          <div className="head">
-            <span className="lbl">Подтверждение</span>
-            <span className="tool">{confirmation.tool}</span>
-          </div>
-          <div className="args">{summarizeArgs(confirmation.args)}</div>
-          {confirmation.dangerReason && <div className="danger">{confirmation.dangerReason}</div>}
-          <div className="actions">
-            <button className="primary-btn small" type="button" onClick={() => resolve("allow")}>
-              Разрешить
-            </button>
-            <button className="ghost-btn small" type="button" onClick={() => resolve("allowAlways")}>
-              Всегда разрешать
-            </button>
-            <button className="ghost-btn small danger" type="button" onClick={() => resolve("deny")}>
-              Запретить
-            </button>
-          </div>
-        </div>
-      )}
+      {confirmation && <ConfirmCard confirmation={confirmation} onResolve={resolve} />}
 
       <div className="chat-input">
         <textarea
