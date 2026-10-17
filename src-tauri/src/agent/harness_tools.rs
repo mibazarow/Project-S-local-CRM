@@ -2,7 +2,9 @@
 // tool, CRM tools, and the scheduler tools. Unlike the project tools, harness
 // paths are absolute, ~-expanded, or relative to the working dir; the default
 // territory is Harness/. fs_write skips confirmation only inside Harness/ and
-// Projects/ (CheckConditional); fs_delete and bash are always confirmed — the
+// Projects/ (CheckConditional), and so do fs_copy/fs_move unless overwrite is
+// requested or an endpoint lies outside; fs_delete and bash are always
+// confirmed — the
 // confirmation is the guard, there is no path allowlist. Child processes of
 // bash always see TMPDIR/TEMP/TMP pointed at Harness/tmp/ (SPEC 5.2), never
 // the system /tmp. The CDP browser tool lives in browser_tool.rs.
@@ -67,6 +69,8 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(FsListTool),
         Arc::new(FsWriteTool),
         Arc::new(FsDeleteTool),
+        Arc::new(FsCopyTool),
+        Arc::new(FsMoveTool),
         Arc::new(FsGrepTool),
         // Precise edits (exact string replacement + git apply patches);
         // see edit_tools.rs for the safety rules.
@@ -475,6 +479,320 @@ impl Tool for FsDeleteTool {
             Ok(()) => Ok(ToolResult::ok(json!({ "deleted": path.display().to_string() }))),
             Err(e) => Ok(io_fail(&path, &e)),
         }
+    }
+}
+
+// EXDEV (cross-device link): errno 18 on both macOS and Linux; rename()
+// fails with it when from/to live on different volumes, and fs_move then
+// falls back to copy + remove.
+const EXDEV: i32 = 18;
+
+// First symlink component on the way to `path` below the working dir (the
+// final component included), so auto-created parents and in-territory links
+// can never land outside the territory the policy checked.
+fn symlink_below_wd(path: &Path, wd: &Path) -> Option<PathBuf> {
+    let Ok(rest) = path.strip_prefix(wd) else {
+        return None;
+    };
+    let mut cur = wd.to_path_buf();
+    for part in rest.components() {
+        cur.push(part.as_os_str());
+        if fs::symlink_metadata(&cur)
+            .map(|m| m.file_type().is_symlink())
+            .unwrap_or(false)
+        {
+            return Some(cur);
+        }
+    }
+    None
+}
+
+// Symlink anywhere under the working dir, or the final entry of a path
+// outside it: fs_copy/fs_move never follow or replace symlinks.
+fn symlink_guard(path: &Path, wd: &Path) -> Option<PathBuf> {
+    symlink_below_wd(path, wd).or_else(|| {
+        fs::symlink_metadata(path)
+            .ok()
+            .filter(|m| m.file_type().is_symlink())
+            .map(|_| path.to_path_buf())
+    })
+}
+
+// Recursive copy; symlinks inside the tree are skipped, never followed.
+fn copy_tree(from: &Path, to: &Path) -> std::io::Result<u64> {
+    fs::create_dir_all(to)?;
+    let mut bytes = 0u64;
+    let mut stack = vec![(from.to_path_buf(), to.to_path_buf())];
+    while let Some((src_dir, dst_dir)) = stack.pop() {
+        for item in fs::read_dir(&src_dir)? {
+            let item = item?;
+            let ft = item.file_type()?;
+            if ft.is_symlink() {
+                continue;
+            }
+            let dst = dst_dir.join(item.file_name());
+            if ft.is_dir() {
+                fs::create_dir_all(&dst)?;
+                stack.push((item.path(), dst));
+            } else {
+                bytes += fs::copy(item.path(), &dst)?;
+            }
+        }
+    }
+    Ok(bytes)
+}
+
+// Total size of a file or tree (symlinks not followed), for the bytes field.
+fn entry_bytes(path: &Path) -> u64 {
+    let Ok(meta) = fs::metadata(path) else {
+        return 0;
+    };
+    if !meta.is_dir() {
+        return meta.len();
+    }
+    let mut total = 0u64;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&dir) else {
+            continue;
+        };
+        for item in rd.flatten() {
+            if let Ok(ft) = item.file_type() {
+                if ft.is_symlink() {
+                    continue;
+                }
+                if ft.is_dir() {
+                    stack.push(item.path());
+                } else if let Ok(m) = item.metadata() {
+                    total += m.len();
+                }
+            }
+        }
+    }
+    total
+}
+
+// CheckConditional: confirmation is skipped only when both endpoints are
+// inside Harness/ and Projects/ and nothing is replaced; overwrite always
+// confirms, even inside the territory.
+fn transfer_danger_reason(args: &Value, ctx: &ToolCtx, verb: &str) -> Option<String> {
+    let wd = ctx.working_dir.as_deref()?;
+    let from = resolve_path(args.get("from").and_then(Value::as_str)?, wd);
+    let to = resolve_path(args.get("to").and_then(Value::as_str)?, wd);
+    let mut reasons: Vec<String> = Vec::new();
+    if !(in_default_territory(&from, wd) && in_default_territory(&to, wd)) {
+        reasons.push(format!("{verb} вне Harness/ и Projects/"));
+    }
+    if args.get("overwrite").and_then(Value::as_bool).unwrap_or(false) {
+        reasons.push("overwrite=true перезапишет существующий файл".to_string());
+    }
+    (!reasons.is_empty()).then(|| reasons.join("; "))
+}
+
+// Shared fs_copy/fs_move body: resolve both paths, refuse symlinks and
+// directory-into-itself, apply the collision rules, then transfer.
+fn fs_transfer(args: &Value, ctx: &ToolCtx, move_it: bool, max_len: usize) -> Result<ToolResult> {
+    let wd = require_wd(ctx)?;
+    let verb = if move_it { "move" } else { "copy" };
+    let from_raw = args["from"].as_str().unwrap_or_default();
+    let to_raw = args["to"].as_str().unwrap_or_default();
+    if from_raw.is_empty() || to_raw.is_empty() {
+        return Ok(ToolResult::err(
+            ToolErrorCode::InvalidArgs,
+            "from and to are required",
+        ));
+    }
+    let overwrite = args.get("overwrite").and_then(Value::as_bool).unwrap_or(false);
+    let from = resolve_path(from_raw, &wd);
+    let to = resolve_path(to_raw, &wd);
+    for path in [&from, &to] {
+        if let Some(link) = symlink_guard(path, &wd) {
+            return Ok(ToolResult::err(
+                ToolErrorCode::InvalidArgs,
+                format!("{} is a symlink; {verb} does not follow symlinks", link.display()),
+            ));
+        }
+    }
+    let meta = match fs::symlink_metadata(&from) {
+        Ok(m) => m,
+        Err(e) => return Ok(io_fail(&from, &e)),
+    };
+    let is_dir = meta.is_dir();
+    // An existing directory `to` means "transfer into it", keeping the name.
+    let target = if fs::metadata(&to).map(|m| m.is_dir()).unwrap_or(false) {
+        match from.file_name() {
+            Some(name) => to.join(name),
+            None => {
+                return Ok(ToolResult::err(
+                    ToolErrorCode::InvalidArgs,
+                    format!("{} has no name to {verb}", from.display()),
+                ))
+            }
+        }
+    } else {
+        to.clone()
+    };
+    if let Some(link) = symlink_guard(&target, &wd) {
+        return Ok(ToolResult::err(
+            ToolErrorCode::InvalidArgs,
+            format!("{} is a symlink; {verb} does not follow symlinks", link.display()),
+        ));
+    }
+    if is_dir && canonicalish(&target).starts_with(canonicalish(&from)) {
+        return Ok(ToolResult::err(
+            ToolErrorCode::InvalidArgs,
+            format!(
+                "cannot {verb} a directory into itself or its own subfolder: {}",
+                target.display()
+            ),
+        ));
+    }
+    if let Ok(tmeta) = fs::symlink_metadata(&target) {
+        if !overwrite {
+            return Ok(ToolResult::err(
+                ToolErrorCode::InvalidArgs,
+                format!(
+                    "destination exists: {}; pass overwrite=true to replace a file",
+                    target.display()
+                ),
+            ));
+        }
+        if is_dir || tmeta.is_dir() {
+            return Ok(ToolResult::err(
+                ToolErrorCode::InvalidArgs,
+                format!(
+                    "overwrite only replaces files, not directories; remove {} with fs_delete first",
+                    target.display()
+                ),
+            ));
+        }
+    }
+    if let Some(parent) = target.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            return Ok(io_fail(parent, &e));
+        }
+    }
+    let bytes = if move_it {
+        let total = entry_bytes(&from);
+        match fs::rename(&from, &target) {
+            Ok(()) => total,
+            Err(e) if e.raw_os_error() == Some(EXDEV) => {
+                let copied = if is_dir {
+                    copy_tree(&from, &target)
+                } else {
+                    fs::copy(&from, &target)
+                };
+                match copied {
+                    Ok(n) => {
+                        let removed = if is_dir {
+                            fs::remove_dir_all(&from)
+                        } else {
+                            fs::remove_file(&from)
+                        };
+                        if let Err(e) = removed {
+                            return Ok(ToolResult::err(
+                                ToolErrorCode::ExecutionError,
+                                format!(
+                                    "copied {} to {} but could not remove the source: {e}",
+                                    from.display(),
+                                    target.display()
+                                ),
+                            ));
+                        }
+                        n
+                    }
+                    Err(e) => return Ok(io_fail(&target, &e)),
+                }
+            }
+            Err(e) => return Ok(io_fail(&from, &e)),
+        }
+    } else if is_dir {
+        match copy_tree(&from, &target) {
+            Ok(n) => n,
+            Err(e) => return Ok(io_fail(&target, &e)),
+        }
+    } else {
+        match fs::copy(&from, &target) {
+            Ok(n) => n,
+            Err(e) => return Ok(io_fail(&target, &e)),
+        }
+    };
+    Ok(ToolResult::ok(json!({
+        "from": from.display().to_string(),
+        "to": target.display().to_string(),
+        "kind": if is_dir { "dir" } else { "file" },
+        "bytes": bytes,
+    }))
+    .capped(max_len))
+}
+
+pub struct FsCopyTool;
+
+impl Tool for FsCopyTool {
+    fn name(&self) -> &str {
+        "fs_copy"
+    }
+    fn description(&self) -> &str {
+        "Copy a file or folder (recursively) anywhere on the machine (absolute, ~/ or working-dir-relative paths). Parent folders of the target are created; to may be a new path or an existing folder (the source is placed into it by name). Symlinks are never followed or copied, and a folder is never copied into itself. The destination is only replaced with overwrite=true, which replaces files but never merges or replaces folders. Copies inside Harness/ and Projects/ run without confirmation unless overwrite=true; elsewhere the user confirms."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "from": { "type": "string" },
+                "to": { "type": "string" },
+                "overwrite": { "type": "boolean" }
+            },
+            "required": ["from", "to"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::CheckConditional
+    }
+    fn danger_reason(&self, args: &Value, ctx: &ToolCtx) -> Option<String> {
+        transfer_danger_reason(args, ctx, "копирование")
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        fs_transfer(args, ctx, false, self.max_result_len())
+    }
+}
+
+pub struct FsMoveTool;
+
+impl Tool for FsMoveTool {
+    fn name(&self) -> &str {
+        "fs_move"
+    }
+    fn description(&self) -> &str {
+        "Move a file or folder anywhere on the machine (rename; falls back to copy+delete across volumes). to may be a new path or an existing folder (the source is moved into it by name); parent folders are created. Symlinks are never followed, and a folder is never moved into itself. The destination is only replaced with overwrite=true, which replaces files but never folders. Moves inside Harness/ and Projects/ run without confirmation unless overwrite=true; elsewhere the user confirms."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "from": { "type": "string" },
+                "to": { "type": "string" },
+                "overwrite": { "type": "boolean" }
+            },
+            "required": ["from", "to"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::CheckConditional
+    }
+    fn danger_reason(&self, args: &Value, ctx: &ToolCtx) -> Option<String> {
+        transfer_danger_reason(args, ctx, "перемещение")
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        fs_transfer(args, ctx, true, self.max_result_len())
     }
 }
 
@@ -1459,11 +1777,13 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const DEFERRED_NAMES: [&str; 42] = [
+    const DEFERRED_NAMES: [&str; 44] = [
         "fs_read",
         "fs_list",
         "fs_write",
         "fs_delete",
+        "fs_copy",
+        "fs_move",
         "fs_grep",
         "edit_file",
         "apply_patch",
@@ -1528,10 +1848,12 @@ mod tests {
             assert_eq!(tool(name).class(), ToolClass::ReadOnly, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
         }
-        for name in ["fs_write", "crm_task_create", "crm_task_update", "crm_task_move", "datas_add", "create_skill"] {
+        for name in ["fs_write", "fs_copy", "fs_move", "crm_task_create", "crm_task_update", "crm_task_move", "datas_add", "create_skill"] {
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
         }
         assert_eq!(tool("fs_write").policy(), PermissionPolicy::CheckConditional);
+        assert_eq!(tool("fs_copy").policy(), PermissionPolicy::CheckConditional);
+        assert_eq!(tool("fs_move").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("create_skill").policy(), PermissionPolicy::Skip);
         for name in ["fs_delete", "bash", "crm_task_delete", "git_commit", "git_pull", "git_push", "apply_patch", "ssh_exec", "ssh_upload", "ssh_download"] {
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
@@ -1591,6 +1913,20 @@ mod tests {
         assert!(edit.danger_reason(&edit_args("outside.txt"), &env.ctx).is_some());
         assert_eq!(tool("apply_patch").class(), ToolClass::Mutating);
         assert_eq!(tool("apply_patch").policy(), PermissionPolicy::Check);
+
+        for name in ["fs_copy", "fs_move"] {
+            let t = tool(name);
+            let inside = json!({ "from": "Harness/a.txt", "to": "Harness/b.txt" });
+            assert!(t.danger_reason(&inside, &env.ctx).is_none(), "{name}: inside->inside must not confirm");
+            let into_projects = json!({ "from": "Harness/a.txt", "to": "Projects/p/b.txt" });
+            assert!(t.danger_reason(&into_projects, &env.ctx).is_none(), "{name}: inside->Projects must not confirm");
+            let out_to = json!({ "from": "Harness/a.txt", "to": "outside.txt" });
+            assert!(t.danger_reason(&out_to, &env.ctx).is_some(), "{name}: outside target must confirm");
+            let out_from = json!({ "from": "outside.txt", "to": "Harness/b.txt" });
+            assert!(t.danger_reason(&out_from, &env.ctx).is_some(), "{name}: outside source must confirm");
+            let forced = json!({ "from": "Harness/a.txt", "to": "Harness/b.txt", "overwrite": true });
+            assert!(t.danger_reason(&forced, &env.ctx).is_some(), "{name}: overwrite must confirm even inside");
+        }
         fs::remove_dir_all(&env.wd).unwrap();
     }
 
@@ -1786,6 +2122,134 @@ mod tests {
         }
         let r = exec("fs_read", json!({ "path": "missing.md" }), &env.ctx);
         assert_eq!(r.error.unwrap().code, "not_found");
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn fs_copy_and_move_files_dirs_collisions_and_parents() {
+        let env = setup("ht-copy");
+        let h = env.wd.join("Harness");
+
+        // copy a file: the source stays, kind/bytes are reported
+        fs::write(h.join("src.txt"), "hello").unwrap();
+        let r = exec("fs_copy", json!({ "from": "Harness/src.txt", "to": "Harness/dst.txt" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["kind"], "file");
+        assert_eq!(data["bytes"], 5);
+        assert_eq!(data["to"], h.join("dst.txt").display().to_string());
+        assert_eq!(fs::read_to_string(h.join("dst.txt")).unwrap(), "hello");
+        assert!(h.join("src.txt").is_file(), "copy must keep the source");
+
+        // copy into an existing directory keeps the source name
+        fs::create_dir_all(h.join("dir")).unwrap();
+        let r = exec("fs_copy", json!({ "from": "Harness/src.txt", "to": "Harness/dir" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["to"], h.join("dir/src.txt").display().to_string());
+        assert!(h.join("dir/src.txt").is_file());
+
+        // collision without overwrite
+        let r = exec("fs_copy", json!({ "from": "Harness/src.txt", "to": "Harness/dir" }), &env.ctx);
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "invalid_args");
+        assert!(err.message.contains("destination exists"), "{}", err.message);
+
+        // overwrite=true replaces the file
+        fs::write(h.join("dst.txt"), "old content").unwrap();
+        let r = exec("fs_copy", json!({ "from": "Harness/src.txt", "to": "Harness/dst.txt", "overwrite": true }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(fs::read_to_string(h.join("dst.txt")).unwrap(), "hello");
+
+        // missing parents of the target are created
+        let r = exec("fs_copy", json!({ "from": "Harness/src.txt", "to": "Harness/deep/nested/copy.txt" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(fs::read_to_string(h.join("deep/nested/copy.txt")).unwrap(), "hello");
+
+        // recursive directory copy with byte totals
+        fs::create_dir_all(h.join("tree/sub")).unwrap();
+        fs::write(h.join("tree/a.txt"), "aaa").unwrap();
+        fs::write(h.join("tree/sub/b.txt"), "bbbb").unwrap();
+        let r = exec("fs_copy", json!({ "from": "Harness/tree", "to": "Harness/tree2" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["kind"], "dir");
+        assert_eq!(data["bytes"], 7);
+        assert_eq!(fs::read_to_string(h.join("tree2/sub/b.txt")).unwrap(), "bbbb");
+
+        // a directory cannot be copied into itself or its own subfolder
+        for to in ["Harness/tree", "Harness/tree/sub"] {
+            let r = exec("fs_copy", json!({ "from": "Harness/tree", "to": to }), &env.ctx);
+            let err = r.error.unwrap();
+            assert_eq!(err.code, "invalid_args", "{to}");
+            assert!(err.message.contains("itself"), "{}", err.message);
+        }
+
+        // an existing directory destination is never merged or overwritten
+        let r = exec("fs_copy", json!({ "from": "Harness/tree/sub", "to": "Harness/tree2", "overwrite": true }), &env.ctx);
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "invalid_args");
+        assert!(err.message.contains("directories") && err.message.contains("fs_delete"), "{}", err.message);
+
+        // move a file: the source is gone
+        let r = exec("fs_move", json!({ "from": "Harness/dst.txt", "to": "Harness/moved.txt" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["bytes"], 5);
+        assert!(!h.join("dst.txt").exists());
+        assert_eq!(fs::read_to_string(h.join("moved.txt")).unwrap(), "hello");
+
+        // move a directory
+        let r = exec("fs_move", json!({ "from": "Harness/tree2", "to": "Harness/tree3" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["kind"], "dir");
+        assert_eq!(fs::read_to_string(h.join("tree3/a.txt")).unwrap(), "aaa");
+        assert!(!h.join("tree2").exists());
+
+        // move collision, then overwrite
+        let r = exec("fs_move", json!({ "from": "Harness/moved.txt", "to": "Harness/src.txt" }), &env.ctx);
+        assert_eq!(r.error.unwrap().code, "invalid_args");
+        let r = exec("fs_move", json!({ "from": "Harness/moved.txt", "to": "Harness/src.txt", "overwrite": true }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert!(!h.join("moved.txt").exists());
+        assert_eq!(fs::read_to_string(h.join("src.txt")).unwrap(), "hello");
+
+        // non-existent source
+        let r = exec("fs_copy", json!({ "from": "Harness/missing.txt", "to": "Harness/x.txt" }), &env.ctx);
+        assert_eq!(r.error.unwrap().code, "not_found");
+        let r = exec("fs_move", json!({ "from": "Harness/missing.txt", "to": "Harness/x.txt" }), &env.ctx);
+        assert_eq!(r.error.unwrap().code, "not_found");
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fs_copy_and_move_never_follow_symlinks_and_skip_links_in_trees() {
+        let env = setup("ht-copy-symlink");
+        let h = env.wd.join("Harness");
+        let outside = env.wd.join("elsewhere");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("x.txt"), "x").unwrap();
+        std::os::unix::fs::symlink(&outside, h.join("link")).unwrap();
+
+        // a territory link resolving outside confirms (policy sees the real
+        // path) and execution refuses to follow it
+        let copy = tool("fs_copy");
+        let args = json!({ "from": "Harness/link/x.txt", "to": "Harness/y.txt" });
+        assert!(copy.danger_reason(&args, &env.ctx).is_some(), "symlink escape must confirm");
+        let r = exec("fs_copy", args, &env.ctx);
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "invalid_args");
+        assert!(err.message.contains("symlink"), "{}", err.message);
+        assert!(!h.join("y.txt").exists());
+
+        // symlinks inside a copied tree are skipped, not followed
+        fs::create_dir_all(h.join("tree")).unwrap();
+        fs::write(h.join("tree/real.txt"), "r").unwrap();
+        std::os::unix::fs::symlink(h.join("tree/real.txt"), h.join("tree/lnk.txt")).unwrap();
+        let r = exec("fs_copy", json!({ "from": "Harness/tree", "to": "Harness/tree-copy" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["bytes"], 1);
+        assert!(h.join("tree-copy/real.txt").is_file());
+        assert!(!h.join("tree-copy/lnk.txt").exists());
         fs::remove_dir_all(&env.wd).unwrap();
     }
 
