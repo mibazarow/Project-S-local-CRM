@@ -19,6 +19,7 @@ pub mod process_tools;
 pub mod project_tools;
 pub mod prompts;
 pub mod result;
+pub mod screenshot_tool;
 pub mod send_file;
 pub mod ssh_tools;
 pub mod tool;

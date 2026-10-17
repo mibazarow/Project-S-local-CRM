@@ -83,6 +83,9 @@ pub fn harness_catalog() -> Catalog {
         // OCR of images and PDFs via the macOS Vision framework through an
         // embedded Swift helper; see ocr_tools.rs for the safety rules.
         Arc::new(super::ocr_tools::OcrTool),
+        // Screen capture via the macOS screencapture CLI; always confirmed,
+        // see screenshot_tool.rs for the safety rules.
+        Arc::new(super::screenshot_tool::ScreenshotTool::default()),
         Arc::new(crate::skills::CreateSkillTool),
         Arc::new(BashTool::default()),
         // Background process control (dev servers, installs): the background
@@ -1785,7 +1788,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const DEFERRED_NAMES: [&str; 46] = [
+    const DEFERRED_NAMES: [&str; 47] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -1798,6 +1801,7 @@ mod tests {
         "create_document",
         "create_spreadsheet",
         "ocr",
+        "screenshot",
         "create_skill",
         "bash",
         "process_start",
@@ -1865,7 +1869,7 @@ mod tests {
         assert_eq!(tool("fs_copy").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("fs_move").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("create_skill").policy(), PermissionPolicy::Skip);
-        for name in ["fs_delete", "bash", "crm_task_delete", "git_commit", "git_pull", "git_push", "apply_patch", "ssh_exec", "ssh_upload", "ssh_download"] {
+        for name in ["fs_delete", "bash", "crm_task_delete", "git_commit", "git_pull", "git_push", "apply_patch", "ssh_exec", "ssh_upload", "ssh_download", "screenshot"] {
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
             assert!(tool(name).danger_reason(&json!({}), &ToolCtx::default()).is_some(), "{name} danger_reason");
