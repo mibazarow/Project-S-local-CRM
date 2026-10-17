@@ -4,6 +4,7 @@ import type {
   AgentEventPayload,
   AttachmentDto,
   BackupInfo,
+  ChatHit,
   ConfigChanged,
   ConfigKind,
   ConnectionTest,
@@ -278,6 +279,14 @@ export const sendSessionMessage = (
 
 export const cancelSessionRun = (sessionId: number) =>
   invoke<boolean>("cancel_session_run", { sessionId });
+
+// Full-text + semantic search over harness session messages (FTS markers
+// "<<…>>" in the snippet). indexChatMessages backfills the message index and
+// returns the number of newly indexed rows.
+export const searchChats = (query: string, limit?: number) =>
+  invoke<ChatHit[]>("search_chats", { query, limit: limit ?? null });
+
+export const indexChatMessages = () => invoke<number>("index_chat_messages");
 
 // Scheduler (SPEC 5.3): run_at / cron / notify over the schedules table.
 export const scheduleList = () => invoke<ScheduleDto[]>("schedule_list");

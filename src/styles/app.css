@@ -955,6 +955,12 @@ input, textarea { font-family: inherit; }
 .session-item.active .mini-btn { color: rgba(255, 255, 255, .85); }
 .session-item.active .mini-btn:hover { background: rgba(255, 255, 255, .2); color: #fff; }
 
+.sidebar-head-actions { display: flex; gap: 2px; }
+.harness-search { margin: 0 10px 8px; flex: none; max-width: none; }
+.harness-index-note { margin: 0 12px 6px; }
+.harness-search-results { gap: 6px; }
+.harness-search-results .search-hit.active { border-color: var(--accent); background: var(--accent-soft); }
+
 .sidebar-foot { padding: 10px 12px; border-top: 1px solid var(--hairline); }
 .muted-note { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
 .sub-head { border-top: 1px solid var(--hairline); }

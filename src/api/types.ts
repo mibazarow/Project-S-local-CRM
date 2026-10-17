@@ -288,6 +288,17 @@ export interface SessionDto {
   lastActiveAt: string;
 }
 
+// search::ChatHit — one harness session matched by search_chats; the snippet
+// carries FTS5 markers ("<<match>>"), score is the merged RRF relevance.
+export interface ChatHit {
+  sessionId: number;
+  title: string | null;
+  lastActive: string;
+  score: number;
+  messageId: number;
+  snippet: string;
+}
+
 // skills::SkillInfo — one row of skills_list. Invalid or builtin-shadowed
 // rows carry `error` and have no toggle; the rest are normal skills.
 export interface SkillInfo {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useReducer, useRef, useState, type FormEvent } 
 import * as ipc from "../../api/ipc";
 import type {
   AgentEventPayload,
+  ChatHit,
   MessageAttachmentDto,
   ScheduleDto,
   SessionDto,
@@ -19,6 +20,8 @@ import {
 } from "../chat/chatShared";
 import { useChatAttachments } from "../chat/useChatAttachments";
 import TodoPanel from "../chat/TodoPanel";
+import { renderSnippet } from "../files/SearchResults";
+import { IconClose, IconSearch } from "../files/icons";
 
 const UNTITLED = "Новая сессия";
 
@@ -83,6 +86,12 @@ const PencilIcon = () => (
 const TrashIcon = () => (
   <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
     <path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6" />
+  </svg>
+);
+
+const RefreshIcon = () => (
+  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6" />
   </svg>
 );
 
@@ -214,6 +223,13 @@ export default function HarnessView() {
   const [activeId, setActiveId] = useState<number | null>(null);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
 
+  const [query, setQuery] = useState("");
+  const [activeQuery, setActiveQuery] = useState("");
+  const [hits, setHits] = useState<ChatHit[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [indexNote, setIndexNote] = useState<string | null>(null);
+
   const [chat, dispatch] = useReducer(chatReducer, {});
   const chatRef = useRef(chat);
   chatRef.current = chat;
@@ -264,6 +280,53 @@ export default function HarnessView() {
     void loadSessions();
     void loadSchedules();
   }, [loadSessions, loadSchedules]);
+
+  // Chat search: the query is debounced into activeQuery (one request per
+  // pause, no polling); an empty query restores the plain session list.
+  useEffect(() => {
+    const timer = setTimeout(() => setActiveQuery(query.trim()), 250);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  useEffect(() => {
+    if (!activeQuery) {
+      setHits([]);
+      setSearchError(null);
+      setSearchLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setSearchLoading(true);
+    setSearchError(null);
+    void (async () => {
+      try {
+        const result = await ipc.searchChats(activeQuery, 10);
+        if (!cancelled) setHits(result);
+      } catch (e) {
+        if (!cancelled) setSearchError(toMessage(e));
+      } finally {
+        if (!cancelled) setSearchLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeQuery]);
+
+  // Chat message index: backfill once on mount (best-effort, silent), on
+  // demand via the toolbar button; failures never surface.
+  const reindexChats = useCallback((quietOnZero: boolean) => {
+    void ipc
+      .indexChatMessages()
+      .then((n) => {
+        if (!quietOnZero || n > 0) setIndexNote(`Индекс обновлён: ${n}`);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    reindexChats(true);
+  }, [reindexChats]);
 
   useEffect(() => {
     if (activeId == null) return;
@@ -488,25 +551,83 @@ export default function HarnessView() {
       <aside className="sidebar">
         <div className="sidebar-head">
           <span className="sidebar-title">Сессии</span>
-          <button className="icon-btn small" type="button" title="Новая сессия" onClick={() => void createSession()}>
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
-          </button>
+          <span className="sidebar-head-actions">
+            <button
+              className="icon-btn small"
+              type="button"
+              title="Обновить индекс"
+              onClick={() => reindexChats(false)}
+            >
+              <RefreshIcon />
+            </button>
+            <button className="icon-btn small" type="button" title="Новая сессия" onClick={() => void createSession()}>
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+            </button>
+          </span>
         </div>
-        <div className="session-list">
-          {sessions.map((s) => (
-            <SessionItem
-              key={s.id}
-              session={s}
-              active={s.id === activeId}
-              onOpen={() => setActiveId(s.id)}
-              onRename={(id, title) => void renameSession(id, title)}
-              onDelete={() => void deleteSession(s)}
-            />
-          ))}
-          {sessions.length === 0 && (
-            <div className="empty-note">Сессий пока нет. Нажмите «+», чтобы создать первую.</div>
+        <div className="search harness-search">
+          <IconSearch />
+          <input
+            type="text"
+            placeholder="Поиск по чатам…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+          />
+          {query && (
+            <button className="icon-btn small" type="button" title="Очистить поиск" onClick={() => setQuery("")}>
+              <IconClose />
+            </button>
           )}
         </div>
+        {indexNote && <div className="set-hint harness-index-note">{indexNote}</div>}
+        {activeQuery ? (
+          <div className="session-list harness-search-results">
+            {searchLoading && <div className="empty-note">Поиск…</div>}
+            {searchError && <div className="tree-error">{searchError}</div>}
+            {!searchLoading && !searchError && hits.length === 0 && (
+              <div className="empty-note">Ничего не найдено</div>
+            )}
+            {hits.map((hit) => (
+              <div
+                className={hit.sessionId === activeId ? "search-hit active" : "search-hit"}
+                key={hit.sessionId}
+                role="button"
+                tabIndex={0}
+                onClick={() => setActiveId(hit.sessionId)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") setActiveId(hit.sessionId);
+                }}
+              >
+                <div className="search-hit-head">
+                  <span className="search-hit-name">{hit.title ?? UNTITLED}</span>
+                  <span className="search-hit-path">{formatActivity(hit.lastActive)}</span>
+                  <span className="search-hit-badges">
+                    <span className="badge" title="Релевантность совпадения">
+                      {hit.score.toFixed(3)}
+                    </span>
+                  </span>
+                </div>
+                {hit.snippet && <div className="search-snippet">{renderSnippet(hit.snippet)}</div>}
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="session-list">
+            {sessions.map((s) => (
+              <SessionItem
+                key={s.id}
+                session={s}
+                active={s.id === activeId}
+                onOpen={() => setActiveId(s.id)}
+                onRename={(id, title) => void renameSession(id, title)}
+                onDelete={() => void deleteSession(s)}
+              />
+            ))}
+            {sessions.length === 0 && (
+              <div className="empty-note">Сессий пока нет. Нажмите «+», чтобы создать первую.</div>
+            )}
+          </div>
+        )}
         <div className="sidebar-foot muted-note">
           Сессии без активности 30 дней удаляются автоматически
         </div>
