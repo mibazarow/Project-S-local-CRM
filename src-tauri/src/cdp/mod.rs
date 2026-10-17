@@ -160,6 +160,70 @@ pub fn insert_text_params(text: &str) -> Value {
     json!({ "text": text })
 }
 
+// B2 request builders: file upload, download arming, tab management. Pure,
+// so the exact CDP payloads stay unit-testable without a live Chrome.
+pub fn query_selector_params(node_id: i64, selector: &str) -> Value {
+    json!({ "nodeId": node_id, "selector": selector })
+}
+
+pub fn set_file_input_files_params(files: &[String], node_id: i64) -> Value {
+    json!({ "files": files, "nodeId": node_id })
+}
+
+pub fn set_download_behavior_params(download_path: &Path) -> Value {
+    json!({
+        "behavior": "allow",
+        "downloadPath": download_path.display().to_string(),
+    })
+}
+
+pub fn create_target_params(url: &str) -> Value {
+    json!({ "url": url })
+}
+
+pub fn attach_target_params(target_id: &str) -> Value {
+    json!({ "targetId": target_id, "flatten": true })
+}
+
+pub fn close_target_params(target_id: &str) -> Value {
+    json!({ "targetId": target_id })
+}
+
+// Target.getTargets result filtered to page tabs as {id, url, title}.
+pub fn parse_targets(result: &Value) -> Vec<Value> {
+    result["targetInfos"]
+        .as_array()
+        .map(|infos| {
+            infos
+                .iter()
+                .filter(|t| t["type"].as_str() == Some("page"))
+                .map(|t| json!({ "id": t["targetId"], "url": t["url"], "title": t["title"] }))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+// Which page tab becomes active after the current one is closed.
+pub fn next_active_after_close(active: &str, tabs: &[Value]) -> Option<String> {
+    tabs.iter()
+        .find(|t| t["id"].as_str().is_some_and(|id| id != active))
+        .and_then(|t| t["id"].as_str())
+        .map(|id| id.to_string())
+}
+
+// Chrome writes partial downloads as *.crdownload; only the final name is done.
+pub fn is_complete_download(name: &str) -> bool {
+    !name.ends_with(".crdownload")
+}
+
+// First file name that appeared since the snapshot and looks complete.
+pub fn find_new_file(before: &[String], after: &[String]) -> Option<String> {
+    after
+        .iter()
+        .find(|name| !before.iter().any(|old| old == *name) && is_complete_download(name))
+        .cloned()
+}
+
 // (name, key, code, windowsVirtualKeyCode) for the keys the tool promises.
 const NAMED_KEYS: [(&str, &str, &str, u32); 8] = [
     ("Enter", "Enter", "Enter", 13),
@@ -220,6 +284,9 @@ pub struct Browser {
     rx_in: Receiver<CdpFrame>,
     rx_err: Receiver<serde_json::Error>,
     next_id: u64,
+    // The page every session-scoped action runs on: both ids follow
+    // tab_open/tab_switch/close_tab re-attachment.
+    target_id: String,
     session_id: String,
     // stderr is drained forever by the launch thread into this channel; the
     // queue is kept so a failed call can report the browser's own complaints.
@@ -374,27 +441,18 @@ impl Browser {
             rx_in,
             rx_err,
             next_id: 0,
+            target_id: String::new(),
             session_id: String::new(),
             stderr_lines: rx_line,
             stderr_tail: seen,
             pump: Some(pump),
         };
-        let target = browser.call("Target.createTarget", &json!({ "url": "about:blank" }), None)?;
+        let target = browser.call("Target.createTarget", &create_target_params("about:blank"), None)?;
         let target_id = target["targetId"]
             .as_str()
             .ok_or_else(|| AppError::Json("Target.createTarget returned no targetId".into()))?
             .to_string();
-        let attached = browser.call(
-            "Target.attachToTarget",
-            &json!({ "targetId": target_id, "flatten": true }),
-            None,
-        )?;
-        browser.session_id = attached["sessionId"]
-            .as_str()
-            .ok_or_else(|| AppError::Json("Target.attachToTarget returned no sessionId".into()))?
-            .to_string();
-        let sid = browser.session_id.clone();
-        browser.call("Page.enable", &json!({}), Some(&sid))?;
+        browser.use_target(&target_id)?;
         Ok(browser)
     }
 
@@ -647,6 +705,82 @@ impl Browser {
             .cloned()
             .unwrap_or(Value::Null))
     }
+
+    // The page all session-scoped actions currently run on.
+    pub fn active_target_id(&self) -> &str {
+        &self.target_id
+    }
+
+    // Attach to a page target and make it the active one for every action.
+    fn use_target(&mut self, target_id: &str) -> Result<()> {
+        let attached = self.call("Target.attachToTarget", &attach_target_params(target_id), None)?;
+        let session_id = attached["sessionId"]
+            .as_str()
+            .ok_or_else(|| AppError::Json("Target.attachToTarget returned no sessionId".into()))?
+            .to_string();
+        self.call("Page.enable", &json!({}), Some(&session_id))?;
+        self.target_id = target_id.to_string();
+        self.session_id = session_id;
+        Ok(())
+    }
+
+    // DOM.setFileInputFiles on the file input matching the selector.
+    pub fn set_file_input(&mut self, selector: &str, path: &Path) -> Result<()> {
+        let session_id = self.session_id.clone();
+        self.call("DOM.enable", &json!({}), Some(&session_id))?;
+        let doc = self.call("DOM.getDocument", &json!({}), Some(&session_id))?;
+        let root = doc["root"]["nodeId"]
+            .as_i64()
+            .ok_or_else(|| AppError::Json("DOM.getDocument returned no root nodeId".into()))?;
+        let found = self.call("DOM.querySelector", &query_selector_params(root, selector), Some(&session_id))?;
+        let node = found["nodeId"].as_i64().filter(|id| *id != 0).ok_or_else(|| {
+            AppError::Invalid(format!("no file input matches selector {selector:?}"))
+        })?;
+        let files = vec![path.display().to_string()];
+        self.call("DOM.setFileInputFiles", &set_file_input_files_params(&files, node), Some(&session_id))
+            .map(|_| ())
+    }
+
+    // Browser-level: allow downloads to land in download_dir from now on.
+    pub fn arm_download(&mut self, download_dir: &Path) -> Result<()> {
+        self.call("Browser.setDownloadBehavior", &set_download_behavior_params(download_dir), None)
+            .map(|_| ())
+    }
+
+    // Creates a page target and makes it the active tab.
+    pub fn open_tab(&mut self, url: &str) -> Result<String> {
+        let created = self.call("Target.createTarget", &create_target_params(url), None)?;
+        let target_id = created["targetId"]
+            .as_str()
+            .ok_or_else(|| AppError::Json("Target.createTarget returned no targetId".into()))?
+            .to_string();
+        self.use_target(&target_id)?;
+        Ok(target_id)
+    }
+
+    pub fn list_tabs(&mut self) -> Result<Vec<Value>> {
+        let result = self.call("Target.getTargets", &json!({}), None)?;
+        Ok(parse_targets(&result))
+    }
+
+    pub fn close_tab(&mut self, target_id: &str) -> Result<()> {
+        self.call("Target.closeTarget", &close_target_params(target_id), None)?;
+        if target_id == self.target_id {
+            let tabs = self.list_tabs()?;
+            match next_active_after_close(target_id, &tabs) {
+                Some(next) => self.use_target(&next)?,
+                None => {
+                    self.target_id.clear();
+                    self.session_id.clear();
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn switch_tab(&mut self, target_id: &str) -> Result<()> {
+        self.use_target(target_id)
+    }
 }
 
 impl Drop for Browser {
@@ -812,5 +946,56 @@ mod tests {
         assert!(select.contains("'change'"));
         assert!(select.contains(r##"el.value = "b""##), "{select}");
         assert_eq!(insert_text_params("hi"), json!({ "text": "hi" }));
+    }
+
+    #[test]
+    fn b2_request_builders_are_pure() {
+        assert_eq!(create_target_params("https://example.ru"), json!({ "url": "https://example.ru" }));
+        assert_eq!(attach_target_params("T1"), json!({ "targetId": "T1", "flatten": true }));
+        assert_eq!(close_target_params("T1"), json!({ "targetId": "T1" }));
+        let dl = set_download_behavior_params(Path::new("/tmp/wd/Harness/tmp/downloads"));
+        assert_eq!(dl["behavior"], "allow");
+        assert_eq!(dl["downloadPath"], "/tmp/wd/Harness/tmp/downloads");
+        assert_eq!(query_selector_params(7, "#f"), json!({ "nodeId": 7, "selector": "#f" }));
+        assert_eq!(
+            set_file_input_files_params(&["/x/a.bin".to_string()], 9),
+            json!({ "files": ["/x/a.bin"], "nodeId": 9 })
+        );
+    }
+
+    #[test]
+    fn parse_targets_keeps_only_page_tabs() {
+        let result = json!({ "targetInfos": [
+            { "targetId": "P1", "type": "page", "url": "https://example.ru", "title": "Example" },
+            { "targetId": "I1", "type": "iframe", "url": "https://example.ru/i", "title": "" },
+            { "targetId": "P2", "type": "page", "url": "about:blank", "title": "" }
+        ]});
+        let tabs = parse_targets(&result);
+        assert_eq!(tabs.len(), 2);
+        assert_eq!(tabs[0]["id"], "P1");
+        assert_eq!(tabs[0]["url"], "https://example.ru");
+        assert_eq!(tabs[0]["title"], "Example");
+        assert_eq!(tabs[1]["id"], "P2");
+        assert_eq!(parse_targets(&json!({})), Vec::<Value>::new());
+    }
+
+    #[test]
+    fn next_active_after_close_picks_a_remaining_page() {
+        let tabs = vec![json!({ "id": "A" }), json!({ "id": "B" })];
+        assert_eq!(next_active_after_close("A", &tabs).as_deref(), Some("B"));
+        assert_eq!(next_active_after_close("B", &tabs).as_deref(), Some("A"));
+        assert_eq!(next_active_after_close("A", &[json!({ "id": "A" })]), None);
+        assert_eq!(next_active_after_close("A", &[]), None);
+    }
+
+    #[test]
+    fn find_new_file_skips_partial_downloads() {
+        let before = vec!["old.txt".to_string()];
+        let partial = vec!["old.txt".to_string(), "note.pdf.crdownload".to_string()];
+        assert_eq!(find_new_file(&before, &partial), None);
+        let done = vec!["old.txt".to_string(), "note.pdf".to_string()];
+        assert_eq!(find_new_file(&before, &done).as_deref(), Some("note.pdf"));
+        assert!(!is_complete_download("x.crdownload"));
+        assert!(is_complete_download("x.pdf"));
     }
 }

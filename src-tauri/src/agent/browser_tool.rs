@@ -1,17 +1,17 @@
 // Harness browser tool (SPEC 5.2 #3): drives the installed Chrome/Chromium
 // through the cdp module. The browser session survives across tool calls in
 // one app process (open, then text/click/screenshot/eval/wait/type/press/
-// select/extract on the same page) and is killed after IDLE_SECS of
-// inactivity or when the tool errors. All artifacts (profile, screenshots)
-// stay under Harness/tmp/. Missing Chrome is a plain execution_error: the
-// tool is always registered, it just degrades.
+// select/extract/upload/download/tab_* on the active tab) and is killed
+// after IDLE_SECS of inactivity or when the tool errors. All artifacts
+// (profile, screenshots, downloads) stay under Harness/tmp/. Missing Chrome
+// is a plain execution_error: the tool is always registered, it just degrades.
 use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::cdp::{self, Browser};
 use crate::error::AppError;
 use crate::paths;
 use serde_json::{json, Value};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -20,6 +20,8 @@ const TEXT_CAP: usize = 20_000;
 const EXTRACT_CAP: usize = 50_000;
 const WAIT_TIMEOUT_MS: i64 = 10_000;
 const WAIT_TIMEOUT_MAX_MS: i64 = 60_000;
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
+const DOWNLOAD_POLL: Duration = Duration::from_millis(500);
 
 struct Session {
     browser: Browser,
@@ -83,6 +85,12 @@ fn danger_for(action: &str) -> &'static str {
         "press" => "нажать клавишу на странице",
         "select" => "выбрать пункт в выпадающем списке на странице",
         "extract" => "извлечь данные со страницы через JavaScript",
+        "upload" => "загрузить локальный файл в поле input[type=file] на странице",
+        "download" => "скачать файл из браузера в рабочую папку",
+        "tab_open" => "открыть новую вкладку в браузере",
+        "tab_list" => "прочитать список вкладок браузера",
+        "tab_close" => "закрыть вкладку браузера",
+        "tab_switch" => "переключить активную вкладку браузера",
         _ => "управление браузером",
     }
 }
@@ -94,19 +102,21 @@ impl Tool for BrowserTool {
         "browser"
     }
     fn description(&self) -> &str {
-        "Drive the installed Chrome/Chromium via CDP (headless by default, headful with headless:false). Actions: open (url), text, screenshot, click (selector), eval (expression), wait (selector and/or text, optional timeoutMs), type (selector, text), press (key: Enter/Tab/Escape/Backspace/Arrow*/single char), select (selector, value), extract (expression, optional maxChars). The page stays open between calls; the browser is killed after 120 s of idle. Screenshots are saved under Harness/tmp/. Requires confirmation."
+        "Drive Chrome/Chromium via CDP: open (url), text, screenshot, click (selector), eval, wait, type, press, select, extract, upload (selector, path), download (selector?, path), tab_open (url), tab_list, tab_close, tab_switch (tabId)."
     }
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
-                "action": { "type": "string", "enum": ["open", "text", "screenshot", "click", "eval", "wait", "type", "press", "select", "extract"] },
+                "action": { "type": "string", "enum": ["open", "text", "screenshot", "click", "eval", "wait", "type", "press", "select", "extract", "upload", "download", "tab_open", "tab_list", "tab_close", "tab_switch"] },
                 "url": { "type": "string" },
                 "selector": { "type": "string" },
                 "expression": { "type": "string" },
                 "text": { "type": "string" },
                 "key": { "type": "string" },
                 "value": { "type": "string" },
+                "path": { "type": "string" },
+                "tabId": { "type": "string" },
                 "timeoutMs": { "type": "integer" },
                 "maxChars": { "type": "integer" },
                 "headless": { "type": "boolean" }
@@ -140,6 +150,8 @@ impl Tool for BrowserTool {
         let text = args.get("text").and_then(Value::as_str);
         let key = args.get("key").and_then(Value::as_str);
         let value = args.get("value").and_then(Value::as_str);
+        let path_arg = args.get("path").and_then(Value::as_str);
+        let tab_id = args.get("tabId").and_then(Value::as_str);
         let headless = args.get("headless").and_then(Value::as_bool).unwrap_or(true);
         let timeout = clamp_timeout_ms(args.get("timeoutMs").and_then(Value::as_i64));
         let max_chars = clamp_max_chars(args.get("maxChars").and_then(Value::as_i64));
@@ -162,12 +174,39 @@ impl Tool for BrowserTool {
             "extract" if expression.unwrap_or_default().is_empty() => {
                 return invalid("extract needs an expression")
             }
-            "text" | "screenshot" => {}
-            "open" | "click" | "eval" | "wait" | "type" | "press" | "select" | "extract" => {}
+            "upload" if selector.unwrap_or_default().is_empty() => return invalid("upload needs a selector"),
+            "upload" if path_arg.unwrap_or_default().is_empty() => return invalid("upload needs a path"),
+            "tab_open" if !url.is_some_and(allowed_url) => {
+                return invalid("tab_open needs a url with an http://, https:// or data: scheme")
+            }
+            "tab_close" if tab_id.unwrap_or_default().is_empty() => return invalid("tab_close needs a tabId"),
+            "tab_switch" if tab_id.unwrap_or_default().is_empty() => return invalid("tab_switch needs a tabId"),
+            "text" | "screenshot" | "download" | "tab_list" => {}
+            "open" | "click" | "eval" | "wait" | "type" | "press" | "select" | "extract" | "upload" | "tab_open" => {}
             other => return invalid(&format!("unknown browser action {other:?}")),
         }
 
         let tmp = paths::harness_tmp_dir(&wd);
+        // Path safety runs before any launch: bad paths never start Chrome.
+        let upload_file = match action {
+            "upload" => match resolve_upload_path(path_arg.unwrap(), ctx, &wd) {
+                Ok(file) => Some(file),
+                Err(e) => return Ok(path_fail(e)),
+            },
+            _ => None,
+        };
+        let download_dir = match action {
+            "download" => match resolve_download_dir(path_arg, ctx, &wd) {
+                Ok(dir) => Some(dir),
+                Err(e) => return Ok(path_fail(e)),
+            },
+            _ => None,
+        };
+        if let Some(dir) = download_dir.as_ref() {
+            if let Err(e) = std::fs::create_dir_all(dir) {
+                return Ok(ToolResult::err(ToolErrorCode::ExecutionError, e.to_string()));
+            }
+        }
         let mut guard = SESSION.lock().unwrap_or_else(|e| e.into_inner());
         let mut fresh = match guard.as_mut() {
             None => true,
@@ -217,6 +256,60 @@ impl Tool for BrowserTool {
                     .select_value(selector.unwrap(), value.unwrap())
                     .map(|_| Outcome::Empty),
                 "extract" => browser.eval_json(expression.unwrap()).map(Outcome::Json),
+                "upload" => browser
+                    .set_file_input(selector.unwrap(), upload_file.as_ref().expect("resolved above"))
+                    .map(|_| Outcome::Empty),
+                "download" => {
+                    let dir = download_dir.as_ref().expect("resolved above");
+                    let dir_names = |dir: &Path| -> Vec<String> {
+                        std::fs::read_dir(dir)
+                            .map(|rd| {
+                                rd.filter_map(|e| e.ok())
+                                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                                    .collect()
+                            })
+                            .unwrap_or_default()
+                    };
+                    let before = dir_names(dir);
+                    browser.arm_download(dir)?;
+                    if let Some(sel) = selector.filter(|s| !s.is_empty()) {
+                        browser.click(sel)?;
+                    }
+                    let deadline = Instant::now() + DOWNLOAD_TIMEOUT;
+                    loop {
+                        if let Some(name) = cdp::find_new_file(&before, &dir_names(dir)) {
+                            return Ok(Outcome::Json(json!({
+                                "downloaded": dir.join(name).display().to_string()
+                            })));
+                        }
+                        if Instant::now() >= deadline {
+                            return Err(AppError::Http(format!(
+                                "download timed out after {} s: no new file appeared in {}",
+                                DOWNLOAD_TIMEOUT.as_secs(),
+                                dir.display()
+                            )));
+                        }
+                        std::thread::sleep(DOWNLOAD_POLL);
+                    }
+                }
+                "tab_open" => browser
+                    .open_tab(url.unwrap())
+                    .map(|id| Outcome::Json(json!({ "tabId": id }))),
+                "tab_list" => browser.list_tabs().map(|tabs| Outcome::Json(json!({ "tabs": tabs }))),
+                "tab_close" => {
+                    browser.close_tab(tab_id.unwrap())?;
+                    Ok(Outcome::Json(json!({
+                        "closed": tab_id,
+                        "active": browser.active_target_id()
+                    })))
+                }
+                "tab_switch" => {
+                    browser.switch_tab(tab_id.unwrap())?;
+                    Ok(Outcome::Json(json!({
+                        "switched": tab_id,
+                        "active": browser.active_target_id()
+                    })))
+                }
                 _ => unreachable!("action validated above"),
             }
         };
@@ -287,10 +380,89 @@ impl Tool for BrowserTool {
             ("press", _) => json!({ "pressed": key }),
             ("select", _) => json!({ "selected": selector, "value": value }),
             ("extract", Outcome::Json(extracted)) => cap_json(extracted, max_chars),
+            ("upload", _) => json!({
+                "uploaded": selector,
+                "path": upload_file.expect("resolved above").display().to_string()
+            }),
+            ("download", Outcome::Json(data)) => data,
+            ("tab_open", Outcome::Json(data)) => data,
+            ("tab_list", Outcome::Json(data)) => data,
+            ("tab_close", Outcome::Json(data)) => data,
+            ("tab_switch", Outcome::Json(data)) => data,
             _ => unreachable!("action validated above"),
         };
         Ok(ToolResult::ok(data).capped(self.max_result_len()))
     }
+}
+
+// Upload source: project mode resolves strictly inside the project (the
+// fs_ops resolver rejects escapes, symlink escapes and absolute paths);
+// harness mode uses the existing resolve_path semantics and just requires
+// the file to exist.
+fn resolve_upload_path(raw: &str, ctx: &ToolCtx, wd: &Path) -> crate::error::Result<PathBuf> {
+    if let Some(project_id) = ctx.project_id {
+        super::project_tools::with_conn(ctx, |conn| {
+            crate::fs_ops::resolve_existing(conn, wd, project_id, raw)
+        })
+    } else {
+        let file = super::harness_tools::canonicalish(&super::harness_tools::resolve_path(raw, wd));
+        if !file.is_file() {
+            return Err(AppError::Invalid(format!(
+                "upload file not found: {}",
+                file.display()
+            )));
+        }
+        Ok(file)
+    }
+}
+
+// Download folder: the default is Harness/tmp/downloads; an explicit one
+// must stay inside Harness/ (harness mode) or inside the project (project
+// mode), symlink escapes included.
+fn resolve_download_dir(raw: Option<&str>, ctx: &ToolCtx, wd: &Path) -> crate::error::Result<PathBuf> {
+    let Some(raw) = raw.filter(|raw| !raw.is_empty()) else {
+        return Ok(paths::harness_tmp_dir(wd).join("downloads"));
+    };
+    let dir = super::harness_tools::canonicalish(&super::harness_tools::resolve_path(raw, wd));
+    let (base, label) = match ctx.project_id {
+        Some(project_id) => (
+            super::project_tools::with_conn(ctx, |conn| {
+                crate::projects::project_root(conn, wd, project_id)
+            })?,
+            "the project",
+        ),
+        None => (
+            super::harness_tools::canonicalish(&paths::harness_dir(wd)),
+            "Harness/",
+        ),
+    };
+    if !dir.starts_with(&base) {
+        return Err(AppError::Invalid(format!(
+            "download path {raw:?} is not allowed: the download folder must stay inside {label}"
+        )));
+    }
+    Ok(dir)
+}
+
+// Maps a path-resolution AppError to the envelope code (SPEC 6.4 style):
+// containment and symlink refusals are permission_denied, missing files are
+// not_found, configuration faults are execution_error.
+fn path_fail(e: AppError) -> ToolResult {
+    let msg = e.to_string();
+    let code = if matches!(e, AppError::NotConfigured) || msg.starts_with("io error") {
+        ToolErrorCode::ExecutionError
+    } else if msg.contains("must stay inside")
+        || msg.contains("escapes")
+        || msg.contains("not project-relative")
+        || msg.contains("symlink")
+    {
+        ToolErrorCode::PermissionDenied
+    } else if msg.contains("not found") {
+        ToolErrorCode::NotFound
+    } else {
+        ToolErrorCode::InvalidArgs
+    };
+    ToolResult::err(code, msg)
 }
 
 #[cfg(test)]
@@ -321,7 +493,8 @@ mod tests {
                 assert_eq!(tool.policy(), PermissionPolicy::Check);
                 for action in [
                     "open", "text", "screenshot", "click", "eval", "wait", "type", "press",
-                    "select", "extract",
+                    "select", "extract", "upload", "download", "tab_open", "tab_list",
+                    "tab_close", "tab_switch",
                 ] {
                     let reason = tool.danger_reason(&json!({ "action": action }), &ToolCtx::default());
                     assert!(reason.is_some(), "no danger_reason for {action}");
@@ -349,7 +522,7 @@ mod tests {
         let schema = BrowserTool.parameters();
         for action in [
             "open", "text", "screenshot", "click", "eval", "wait", "type", "press", "select",
-            "extract",
+            "extract", "upload", "download", "tab_open", "tab_list", "tab_close", "tab_switch",
         ] {
             assert!(validate_args(&schema, &json!({ "action": action })).is_ok(), "{action}");
         }
@@ -359,12 +532,20 @@ mod tests {
         assert!(validate_args(&schema, &json!({ "action": "press", "key": "Enter" })).is_ok());
         assert!(validate_args(&schema, &json!({ "action": "select", "selector": "#s", "value": "b" })).is_ok());
         assert!(validate_args(&schema, &json!({ "action": "extract", "expression": "document.title", "maxChars": 1000 })).is_ok());
+        assert!(validate_args(&schema, &json!({ "action": "upload", "selector": "#f", "path": "Harness/a.bin" })).is_ok());
+        assert!(validate_args(&schema, &json!({ "action": "download" })).is_ok());
+        assert!(validate_args(&schema, &json!({ "action": "download", "selector": "a.dl", "path": "Harness/out" })).is_ok());
+        assert!(validate_args(&schema, &json!({ "action": "tab_open", "url": "https://example.ru" })).is_ok());
+        assert!(validate_args(&schema, &json!({ "action": "tab_close", "tabId": "T1" })).is_ok());
+        assert!(validate_args(&schema, &json!({ "action": "tab_switch", "tabId": "T1" })).is_ok());
         assert!(validate_args(&schema, &json!({ "action": "print" })).is_err());
         assert!(validate_args(&schema, &json!({})).is_err());
         assert!(validate_args(&schema, &json!({ "action": "text", "bogus": 1 })).is_err());
         assert!(validate_args(&schema, &json!({ "action": "text", "headless": "yes" })).is_err());
         assert!(validate_args(&schema, &json!({ "action": "wait", "timeoutMs": "5000" })).is_err());
         assert!(validate_args(&schema, &json!({ "action": "press", "key": true })).is_err());
+        assert!(validate_args(&schema, &json!({ "action": "tab_close", "tabId": 5 })).is_err());
+        assert!(validate_args(&schema, &json!({ "action": "upload", "selector": "#f", "path": 3 })).is_err());
     }
 
     #[test]
@@ -403,6 +584,13 @@ mod tests {
             json!({ "action": "press" }),
             json!({ "action": "select", "selector": "#s" }),
             json!({ "action": "extract" }),
+            json!({ "action": "upload" }),
+            json!({ "action": "upload", "selector": "#f" }),
+            json!({ "action": "upload", "path": "Harness/a.bin" }),
+            json!({ "action": "tab_open" }),
+            json!({ "action": "tab_open", "url": "file:///etc/passwd" }),
+            json!({ "action": "tab_close" }),
+            json!({ "action": "tab_switch" }),
         ] {
             let r = BrowserTool.execute(&args, &ctx).unwrap();
             assert_eq!(r.error.unwrap().code, "invalid_args", "{args}");
@@ -452,6 +640,66 @@ mod tests {
         let nullish = cap_json(Value::Null, 100);
         assert_eq!(nullish["truncated"], false);
         assert!(nullish["value"].is_null());
+    }
+
+    #[test]
+    fn download_dir_must_stay_inside_harness_in_harness_mode() {
+        let wd = temp_test_dir("browser-dirs");
+        std::fs::create_dir_all(wd.join("Harness")).unwrap();
+        let ctx = ctx_for(&wd);
+        assert_eq!(
+            resolve_download_dir(None, &ctx, &wd).unwrap(),
+            paths::harness_tmp_dir(&wd).join("downloads")
+        );
+        assert!(resolve_download_dir(Some("Harness/out"), &ctx, &wd).is_ok());
+        for bad in ["/tmp", "Harness/../../etc", "~/outside"] {
+            let err = resolve_download_dir(Some(bad), &ctx, &wd).unwrap_err().to_string();
+            assert!(err.contains("must stay inside Harness/"), "{bad}: {err}");
+        }
+        // a symlinked download dir escaping Harness is refused
+        let outside = temp_test_dir("browser-dirs-outside");
+        std::os::unix::fs::symlink(&outside, wd.join("Harness").join("link")).unwrap();
+        let err = resolve_download_dir(Some("Harness/link"), &ctx, &wd)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("must stay inside Harness/"), "{err}");
+        std::fs::remove_dir_all(&outside).ok();
+        std::fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn upload_path_must_exist_in_harness_mode() {
+        let wd = temp_test_dir("browser-upload");
+        std::fs::create_dir_all(wd.join("Harness")).unwrap();
+        let ctx = ctx_for(&wd);
+        let err = resolve_upload_path("Harness/nope.bin", &ctx, &wd)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("upload file not found"), "{err}");
+        let file = wd.join("Harness").join("ok.bin");
+        std::fs::write(&file, "x").unwrap();
+        let resolved = resolve_upload_path("Harness/ok.bin", &ctx, &wd).unwrap();
+        assert_eq!(resolved, file.canonicalize().unwrap());
+        std::fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn path_errors_map_to_clear_envelope_codes_before_any_launch() {
+        let wd = temp_test_dir("browser-pathfail");
+        std::fs::create_dir_all(wd.join("Harness")).unwrap();
+        let ctx = ctx_for(&wd);
+        let r = BrowserTool
+            .execute(&json!({ "action": "download", "path": "/tmp" }), &ctx)
+            .unwrap();
+        assert_eq!(r.error.unwrap().code, "permission_denied");
+        let r = BrowserTool
+            .execute(
+                &json!({ "action": "upload", "selector": "#f", "path": "Harness/nope.bin" }),
+                &ctx,
+            )
+            .unwrap();
+        assert_eq!(r.error.unwrap().code, "not_found");
+        std::fs::remove_dir_all(&wd).unwrap();
     }
 
     // Manual end-to-end: needs a real Chrome on this machine.
@@ -517,6 +765,71 @@ mod tests {
         browser.press_key("Escape").expect("press failed");
         browser.press_key("a").expect("press char failed");
         assert!(browser.press_key("F13").is_err());
+        drop(browser);
+        end_session();
+        for attempt in 0..10 {
+            match std::fs::remove_dir_all(&wd) {
+                Ok(()) => break,
+                Err(e) if attempt == 9 => panic!("cleanup failed: {e}"),
+                Err(_) => std::thread::sleep(Duration::from_millis(300)),
+            }
+        }
+    }
+
+    // Manual end-to-end for the B2 actions: needs a real Chrome.
+    // Run with: cargo test -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn live_chrome_upload_download_tabs() {
+        let chrome = cdp::find_chrome().expect("no Chrome installed");
+        let wd = temp_test_dir("browser-live-b2");
+        let tmp = paths::harness_tmp_dir(&wd);
+        let src = wd.join("upload-src.txt");
+        std::fs::write(&src, "hello upload").unwrap();
+        let url = "data:text/html,%3Cinput%20id%3D%22f%22%20type%3D%22file%22%3E%3Ca%20id%3D%22dl%22%20href%3D%22data%3Atext%2Fplain%2Cdl%22%20download%3D%22dl.txt%22%3Edl%3C%2Fa%3E";
+        let mut browser = cdp::Browser::launch(&chrome, &tmp, true).expect("launch failed");
+        browser.navigate(url).expect("navigate failed");
+        // upload into the file input
+        browser.set_file_input("#f", &src).expect("upload failed");
+        assert_eq!(
+            browser.eval("document.querySelector('#f').files.length").unwrap(),
+            "1"
+        );
+        assert!(browser.set_file_input("#missing", &src).is_err());
+        // tabs: open switches to the new page, list sees both pages
+        let first = browser.active_target_id().to_string();
+        let second = browser.open_tab("about:blank").expect("tab_open failed");
+        assert_eq!(browser.active_target_id(), second);
+        let tabs = browser.list_tabs().expect("tab_list failed");
+        assert_eq!(tabs.len(), 2);
+        assert!(tabs.iter().any(|t| t["id"] == first) && tabs.iter().any(|t| t["id"] == second));
+        browser.switch_tab(&first).expect("switch failed");
+        assert_eq!(browser.active_target_id(), first);
+        assert!(browser.switch_tab("no-such-target").is_err());
+        // closing the active tab re-attaches to a remaining page
+        browser.switch_tab(&second).expect("switch back failed");
+        browser.close_tab(&second).expect("close failed");
+        assert_eq!(browser.active_target_id(), first);
+        // download: arm, click the download link, poll the folder
+        let dir = tmp.join("downloads");
+        std::fs::create_dir_all(&dir).unwrap();
+        browser.arm_download(&dir).expect("arm failed");
+        browser.click("#dl").expect("click failed");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let names = |dir: &std::path::Path| -> Vec<String> {
+            std::fs::read_dir(dir)
+                .map(|rd| rd.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+                .unwrap_or_default()
+        };
+        let mut downloaded = None;
+        while downloaded.is_none() && Instant::now() < deadline {
+            downloaded = cdp::find_new_file(&[], &names(&dir));
+            if downloaded.is_none() {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+        let downloaded = downloaded.expect("download never landed");
+        assert_eq!(downloaded, "dl.txt");
         drop(browser);
         end_session();
         for attempt in 0..10 {
