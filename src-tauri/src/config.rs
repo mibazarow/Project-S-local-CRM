@@ -86,10 +86,9 @@ impl Default for LlmConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct AppConfig {
-    // Agent identity (SPEC 6.3): mirrored into memory records on every
-    // context build, so settings edits show up in the next session.
-    pub agent_name: String,
-    pub user_address: String,
+    // Agent identity is fixed (name "Project-S", informal «ты»): it is not a
+    // setting anymore; old app.json files may still carry agentName /
+    // userAddress keys, serde ignores unknown keys so they load unchanged.
     // Full autopilot (SPEC 5.2): every tool confirmation is auto-allowed.
     pub autopilot: bool,
     // Context compaction trigger as % of the model window (SPEC 4.6).
@@ -108,8 +107,6 @@ pub struct AppConfig {
 impl Default for AppConfig {
     fn default() -> Self {
         AppConfig {
-            agent_name: "Агент".into(),
-            user_address: "на ты".into(),
             autopilot: false,
             compaction_threshold_percent: 80,
             session_ttl_days: 30,
@@ -317,13 +314,32 @@ mod tests {
         assert_eq!(read_config(&dir, ConfigKind::Llm).unwrap()["contextWindow"], 100_000);
         assert_eq!(read_config(&dir, ConfigKind::Mcp).unwrap()["servers"], json!([]));
         let app = read_config(&dir, ConfigKind::App).unwrap();
-        assert_eq!(app["agentName"], "Агент");
-        assert_eq!(app["userAddress"], "на ты");
+        assert_eq!(app["autopilot"], false);
         assert!(read_config(&dir, ConfigKind::Indexing)
             .unwrap()
             .get("maxFileSizeBytes")
             .is_some());
 
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn app_config_ignores_removed_identity_keys() {
+        // Old app.json files still carry agentName/userAddress: unknown keys
+        // are ignored, so existing configs load without a migration.
+        let dir = temp_test_dir("config-app-legacy");
+        fs::create_dir_all(paths::config_dir(&dir)).unwrap();
+        fs::write(
+            file_path(&dir, ConfigKind::App),
+            r#"{ "agentName": "Вася", "userAddress": "на Вы", "autopilot": true, "sessionTtlDays": 5 }"#,
+        )
+        .unwrap();
+        let cfg: AppConfig =
+            serde_json::from_value(read_config(&dir, ConfigKind::App).unwrap()).unwrap();
+        assert!(cfg.autopilot);
+        assert_eq!(cfg.session_ttl_days, 5);
+        // absent keys still fall back to defaults
+        assert_eq!(cfg.compaction_threshold_percent, 80);
         fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -42,6 +42,7 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(crate::skills::SkillTool),
         Arc::new(crate::memory::RememberTool),
         Arc::new(crate::memory::RecallTool),
+        Arc::new(crate::memory::SetUserGenderTool),
     ];
     let deferred: Vec<Arc<dyn Tool>> = vec![
         Arc::new(FsReadTool),
@@ -1265,7 +1266,7 @@ mod tests {
     fn catalog_registers_everything_without_duplicate_names() {
         let mut catalog = harness_catalog();
         let active: Vec<String> = catalog.to_specs().into_iter().map(|s| s.name).collect();
-        for expected in ["finish_task", "skill", "remember", "recall", LIST_TOOLS, ENABLE_TOOLS] {
+        for expected in ["finish_task", "skill", "remember", "recall", "set_user_gender", LIST_TOOLS, ENABLE_TOOLS] {
             assert!(active.iter().any(|n| n == expected), "missing active {expected}");
         }
         let summary = catalog.list_summary();

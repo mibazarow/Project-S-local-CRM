@@ -401,7 +401,7 @@ mod tests {
             .into_iter()
             .map(|s| s.name)
             .collect();
-        for expected in ["finish_task", "skill", "remember", "recall"] {
+        for expected in ["finish_task", "skill", "remember", "recall", "set_user_gender"] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }
     }

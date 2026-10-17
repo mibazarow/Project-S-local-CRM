@@ -82,8 +82,6 @@ function visionLabel(v: VisionStatus | null): string {
 // app.json fields edited by the "Агент" and "Прочее" tabs share one form so a
 // single debounced writer owns the file.
 interface AppForm {
-  agentName: string;
-  userAddress: string;
   autopilot: boolean;
   sessionTtlDays: string;
   tmpRetentionDays: string;
@@ -92,8 +90,6 @@ interface AppForm {
 
 function toAppForm(cfg: Partial<AppConfig>): AppForm {
   return {
-    agentName: cfg.agentName ?? "Агент",
-    userAddress: cfg.userAddress ?? "на ты",
     autopilot: cfg.autopilot ?? false,
     sessionTtlDays: String(cfg.sessionTtlDays ?? 30),
     tmpRetentionDays: String(cfg.tmpRetentionDays ?? 7),
@@ -410,8 +406,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     const patch: Record<string, unknown> = { ...raw };
     // autostart is owned by set_autostart; keep its on-disk value untouched.
     delete patch.autostart;
-    patch.agentName = f.agentName;
-    patch.userAddress = f.userAddress;
     patch.autopilot = f.autopilot;
     const ttl = parseNum(f.sessionTtlDays);
     if (ttl !== null) patch.sessionTtlDays = Math.max(0, Math.round(ttl));
@@ -1280,28 +1274,6 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
           )}
           {tab === "agent" && (
             <>
-              <div className="set-row">
-                <label>Имя агента</label>
-                <input
-                  type="text"
-                  value={appForm?.agentName ?? ""}
-                  onChange={(e) => updateAppForm({ agentName: e.target.value })}
-                  onFocus={focusAppField("agentName")}
-                  onBlur={blurAppField}
-                />
-                <div className="set-hint">Как агент подписывается в ответах; имя уходит в память.</div>
-              </div>
-              <div className="set-row">
-                <label>Как обращаться к пользователю</label>
-                <input
-                  type="text"
-                  value={appForm?.userAddress ?? ""}
-                  onChange={(e) => updateAppForm({ userAddress: e.target.value })}
-                  onFocus={focusAppField("userAddress")}
-                  onBlur={blurAppField}
-                />
-                <div className="set-hint">Например «на ты» или «на Вы» — тон общения агента.</div>
-              </div>
               <div className="set-row switch-row">
                 <label>Полный автопилот (все разрешения без подтверждений)</label>
                 <label className="switch">

@@ -1,7 +1,7 @@
 // Global memory (SPEC 6.3): one SQLite store shared by project chats and
-// harness sessions. Records carry facts/preferences/lessons; agent identity
-// (name + how to address the user) lives here too and is mirrored from
-// app.json on every context build. Search is FTS5 keyword search over
+// harness sessions. Records carry facts/preferences/lessons; the user's
+// gender lives here as a fixed-source identity record, injected into every
+// context block. Search is FTS5 keyword search over
 // memory_fts (rowid = memory.id) — enough at M1 scale and it works with the
 // Noop embedder; no vector leg for memory yet.
 use crate::agent::result::{ToolErrorCode, ToolResult};
@@ -24,10 +24,12 @@ pub struct MemoryDto {
     pub updated_at: String,
 }
 
-// Identity records are memory rows tagged by source; they are always
-// injected and re-synced from app.json, never only from the UI.
-pub const IDENTITY_NAME_SOURCE: &str = "identity:name";
-pub const IDENTITY_ADDRESS_SOURCE: &str = "identity:address";
+// Identity is fixed: the agent is always "Project-S" and always addresses
+// the user informally with «ты». Only the user's gender is a learned memory
+// record (set by the set_user_gender tool), injected into every block.
+pub const IDENTITY_GENDER_SOURCE: &str = "identity:gender";
+pub const AGENT_NAME: &str = "Project-S";
+const GENDER_VALUES: [&str; 3] = ["male", "female", "unknown"];
 
 // Header of the block appended to every run's system prompt.
 pub const MEMORY_BLOCK_PREFIX: &str = "[Memory]";
@@ -158,19 +160,50 @@ fn search_preferring(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-// The explicit identity sentence carried by every memory block (SPEC 6.3).
-pub fn identity_line(agent_name: &str, user_address: &str) -> String {
-    format!("Your name is {agent_name}; address the user: {user_address}")
+// The fixed model-facing identity lines carried by every memory block.
+fn identity_lines() -> String {
+    format!("Your name is {AGENT_NAME}.\nAddress the user informally with «ты».")
 }
 
-// Identity is part of memory: settings edits land in the identity records on
-// the next context build, so the injected block always follows app.json.
-pub fn sync_identity(conn: &Connection, agent_name: &str, user_address: &str) -> Result<()> {
-    upsert_identity(conn, IDENTITY_NAME_SOURCE, &format!("Agent name: {agent_name}"))?;
-    upsert_identity(conn, IDENTITY_ADDRESS_SOURCE, &format!("How to address the user: {user_address}"))
+// The gender line is always injected: a known gender drives Russian
+// agreement, an unknown one keeps the model on gender-neutral phrasing.
+fn gender_line(gender: &str) -> String {
+    let guidance = match gender {
+        "male" => "use masculine Russian agreement",
+        "female" => "use feminine Russian agreement",
+        _ => "use gender-neutral phrasing until it is known",
+    };
+    format!("User gender: {gender} ({guidance}).")
 }
 
-fn upsert_identity(conn: &Connection, source: &str, content: &str) -> Result<()> {
+// The gender learned so far ("unknown" until set_user_gender records one).
+pub fn user_gender(conn: &Connection) -> Result<String> {
+    let content: Option<String> = conn
+        .query_row(
+            "SELECT content FROM memory WHERE source = ?1",
+            params![IDENTITY_GENDER_SOURCE],
+            |r| r.get::<_, String>(0),
+        )
+        .optional()?;
+    let gender = content
+        .as_deref()
+        .and_then(|c| c.rsplit_once(": ").map(|(_, v)| v))
+        .filter(|v| GENDER_VALUES.contains(v))
+        .unwrap_or("unknown");
+    Ok(gender.to_owned())
+}
+
+// Upsert the gender record; the content reads naturally in the memory UI.
+pub fn set_user_gender(conn: &Connection, gender: &str) -> Result<()> {
+    upsert_identity(
+        conn,
+        IDENTITY_GENDER_SOURCE,
+        &format!("User gender: {gender}"),
+        &["identity".into(), "gender".into()],
+    )
+}
+
+fn upsert_identity(conn: &Connection, source: &str, content: &str, tags: &[String]) -> Result<()> {
     let existing = conn
         .query_row(
             "SELECT id FROM memory WHERE source = ?1",
@@ -180,48 +213,34 @@ fn upsert_identity(conn: &Connection, source: &str, content: &str) -> Result<()>
         .optional()?;
     match existing {
         Some(id) => {
+            let tags_json = serde_json::to_string(&normalize_tags(tags.to_vec()))?;
             conn.execute(
-                "UPDATE memory SET content = ?1, updated_at = datetime('now','localtime') WHERE id = ?2",
-                params![content, id],
+                "UPDATE memory SET content = ?1, tags = ?2, updated_at = datetime('now','localtime') WHERE id = ?3",
+                params![content, tags_json, id],
             )?;
             conn.execute("UPDATE memory_fts SET content = ?1 WHERE rowid = ?2", params![content, id])?;
         }
         None => {
-            add(conn, content, None, None, Some(source))?;
+            add(conn, content, None, Some(tags.to_vec()), Some(source))?;
         }
     }
     Ok(())
 }
 
-// Builds the "[Memory]" block for one run: the identity line, then the
-// identity records (always), then records relevant to the fresh user query
+// Builds the "[Memory]" block for one run: the fixed identity lines, the
+// always-injected gender line, then records relevant to the fresh user query
 // (keyword search — works with the Noop embedder). Records attached to the
 // current project are marked for that chat (SPEC 6.3 "подсвечиваются").
-pub fn context_block(
-    conn: &Connection,
-    project_id: Option<i64>,
-    query: &str,
-    agent_name: &str,
-    user_address: &str,
-) -> Result<String> {
-    sync_identity(conn, agent_name, user_address)?;
-    let mut block = format!("{MEMORY_BLOCK_PREFIX}\n{}", identity_line(agent_name, user_address));
+pub fn context_block(conn: &Connection, project_id: Option<i64>, query: &str) -> Result<String> {
+    let gender = user_gender(conn)?;
+    let mut block = format!("{MEMORY_BLOCK_PREFIX}\n{}\n{}", identity_lines(), gender_line(&gender));
 
-    let mut records: Vec<MemoryDto> = {
-        let mut stmt = conn.prepare(&format!(
-            "SELECT {MEMORY_COLS} FROM memory WHERE source IN (?1, ?2) ORDER BY source"
-        ))?;
-        let rows = stmt.query_map(params![IDENTITY_NAME_SOURCE, IDENTITY_ADDRESS_SOURCE], dto_from_row)?;
-        rows.collect::<rusqlite::Result<Vec<_>>>()?
-    };
+    let mut records: Vec<MemoryDto> = Vec::new();
     for record in search_preferring(conn, query, MAX_BLOCK_RECORDS * 2, project_id)? {
         if records.len() >= MAX_BLOCK_RECORDS {
             break;
         }
         if record.source.as_deref().is_some_and(|s| s.starts_with("identity:")) {
-            continue;
-        }
-        if records.iter().any(|r| r.id == record.id) {
             continue;
         }
         records.push(record);
@@ -342,6 +361,52 @@ impl Tool for RecallTool {
         let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
         match search(conn, query, limit) {
             Ok(records) => Ok(ToolResult::ok(json!({ "memories": records })).capped(self.max_result_len())),
+            Err(e) => Ok(ToolResult::err(ToolErrorCode::ExecutionError, e.to_string())),
+        }
+    }
+}
+
+// set_user_gender: the agent persists the gender it infers from the
+// conversation (never asks the user); the record feeds the always-injected
+// gender line so Russian agreement follows the user. Mutating stays Skip:
+// writing user facts into global memory is intentional (like remember).
+pub struct SetUserGenderTool;
+
+impl Tool for SetUserGenderTool {
+    fn name(&self) -> &str {
+        "set_user_gender"
+    }
+    fn description(&self) -> &str {
+        "Persist the user's gender for correct Russian agreement after inferring it from the conversation or the user's own words (never ask for it): male, female, or unknown (to reset)."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "gender": { "type": "string", "enum": ["male", "female", "unknown"] }
+            },
+            "required": ["gender"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let gender = args["gender"].as_str().unwrap_or_default();
+        if !GENDER_VALUES.contains(&gender) {
+            return Ok(ToolResult::err(
+                ToolErrorCode::InvalidArgs,
+                "gender must be one of: male, female, unknown",
+            ));
+        }
+        let guard = db_guard(ctx)?;
+        let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
+        match set_user_gender(conn, gender) {
+            Ok(()) => Ok(ToolResult::ok(json!({ "gender": gender }))),
             Err(e) => Ok(ToolResult::err(ToolErrorCode::ExecutionError, e.to_string())),
         }
     }
@@ -479,38 +544,88 @@ mod tests {
     }
 
     #[test]
-    fn sync_identity_upserts_exactly_two_records() {
-        let (wd, conn) = setup("mem-identity");
-        sync_identity(&conn, "Вася", "на ты").unwrap();
-        sync_identity(&conn, "Вася Пупкин", "на Вы").unwrap();
-        let identity: Vec<MemoryDto> = list(&conn)
+    fn set_user_gender_upserts_exactly_one_identity_record() {
+        let (wd, conn) = setup("mem-gender");
+        assert_eq!(user_gender(&conn).unwrap(), "unknown");
+        set_user_gender(&conn, "female").unwrap();
+        set_user_gender(&conn, "male").unwrap();
+        let gender: Vec<MemoryDto> = list(&conn)
             .unwrap()
             .into_iter()
-            .filter(|m| m.source.as_deref().unwrap_or_default().starts_with("identity:"))
+            .filter(|m| m.source.as_deref() == Some(IDENTITY_GENDER_SOURCE))
             .collect();
-        assert_eq!(identity.len(), 2);
-        assert!(identity.iter().any(|m| m.content == "Agent name: Вася Пупкин"));
-        assert!(identity.iter().any(|m| m.content == "How to address the user: на Вы"));
+        assert_eq!(gender.len(), 1);
+        assert_eq!(gender[0].content, "User gender: male");
+        assert_eq!(gender[0].tags, vec!["identity", "gender"]);
+        assert_eq!(user_gender(&conn).unwrap(), "male");
+        set_user_gender(&conn, "unknown").unwrap();
+        assert_eq!(user_gender(&conn).unwrap(), "unknown");
         fs::remove_dir_all(&wd).unwrap();
     }
 
     #[test]
-    fn context_block_always_has_identity_and_relevant_record_and_follows_config() {
+    fn set_user_gender_registered_in_both_catalogs_validates_and_updates() {
+        let (wd, conn) = setup("mem-gender-tools");
+        let state = Arc::new(AppState::new());
+        *state.db.lock().unwrap() = Some(conn);
+        let ctx = ToolCtx {
+            project_id: None,
+            session_id: None,
+            working_dir: None,
+            state: Some(Arc::clone(&state)),
+        };
+
+        for catalog in [
+            crate::agent::project_tools::project_catalog(),
+            crate::harness::harness_catalog(),
+        ] {
+            let tool = match catalog.resolve("set_user_gender") {
+                Resolution::Found(t) => t.clone(),
+                _ => panic!("set_user_gender missing from catalog"),
+            };
+            assert_eq!(tool.class(), ToolClass::Mutating);
+            assert_eq!(tool.policy(), PermissionPolicy::Skip);
+
+            let bad = tool.execute(&json!({ "gender": "other" }), &ctx).unwrap();
+            assert_eq!(bad.error.unwrap().code, "invalid_args");
+            let bad = tool.execute(&json!({}), &ctx).unwrap();
+            assert_eq!(bad.error.unwrap().code, "invalid_args");
+
+            let r = tool.execute(&json!({ "gender": "female" }), &ctx).unwrap();
+            assert!(r.ok, "{:?}", r.error);
+
+            let guard = state.db.lock().unwrap();
+            let records = list(guard.as_ref().unwrap()).unwrap();
+            let gender: Vec<&MemoryDto> = records
+                .iter()
+                .filter(|m| m.source.as_deref() == Some(IDENTITY_GENDER_SOURCE))
+                .collect();
+            assert_eq!(gender.len(), 1);
+            assert_eq!(gender[0].content, "User gender: female");
+            assert_eq!(gender[0].tags, vec!["identity", "gender"]);
+            drop(guard);
+        }
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn context_block_has_fixed_identity_and_unknown_gender_by_default() {
         let (wd, conn) = setup("mem-block");
         add(&conn, "Любит кофе по утрам", None, None, None).unwrap();
         add(&conn, "Совсем про другое", None, None, None).unwrap();
 
-        let block = context_block(&conn, None, "кофе", "Агент", "на ты").unwrap();
-        assert!(block.starts_with(&format!("{MEMORY_BLOCK_PREFIX}\nYour name is Агент; address the user: на ты")));
+        let block = context_block(&conn, None, "кофе").unwrap();
+        assert!(block.starts_with(&format!(
+            "{MEMORY_BLOCK_PREFIX}\nYour name is Project-S.\nAddress the user informally with «ты».\nUser gender: unknown (use gender-neutral phrasing until it is known)."
+        )));
         assert!(block.contains("Любит кофе по утрам"));
         assert!(!block.contains("Совсем про другое"));
-        assert!(block.contains("Agent name: Агент"), "identity records always injected");
-        assert_eq!(block.matches("Agent name").count(), 1, "identity record injected once");
 
-        // settings change lands in the next block
-        let block = context_block(&conn, None, "кофе", "Вася Пупкин", "на Вы").unwrap();
-        assert!(block.contains("Your name is Вася Пупкин; address the user: на Вы"));
-        assert!(block.contains("Agent name: Вася Пупкин"));
+        // a known gender lands in the next block as an agreement hint
+        set_user_gender(&conn, "female").unwrap();
+        let block = context_block(&conn, None, "кофе").unwrap();
+        assert!(block.contains("User gender: female (use feminine Russian agreement)."));
+        assert_eq!(block.matches("User gender").count(), 1, "gender line injected once");
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -523,14 +638,15 @@ mod tests {
             add(&conn, &format!("лишняя запись {i} кофе"), None, None, None).unwrap();
         }
 
-        let block = context_block(&conn, Some(project.id), "кофе", "Агент", "на ты").unwrap();
+        let block = context_block(&conn, Some(project.id), "кофе").unwrap();
         assert!(block.contains("факт про этот проект кофе [this project]"));
+        let header = format!("{MEMORY_BLOCK_PREFIX}\n{}\n{}", identity_lines(), gender_line("unknown"));
         let lines = block.lines().count();
-        assert!(lines <= 1 + 1 + MAX_BLOCK_RECORDS, "record cap exceeded: {lines}");
-        assert!(block.chars().count() <= MEMORY_BLOCK_PREFIX.len() + 1 + 80 + MAX_BLOCK_CHARS);
+        assert!(lines <= header.lines().count() + MAX_BLOCK_RECORDS, "record cap exceeded: {lines}");
+        assert!(block.chars().count() <= header.chars().count() + MAX_BLOCK_CHARS);
 
         // the same record is not marked for a different (or no) project
-        let block = context_block(&conn, None, "факт про этот", "Агент", "на ты").unwrap();
+        let block = context_block(&conn, None, "факт про этот").unwrap();
         assert!(block.contains("факт про этот проект кофе"));
         assert!(!block.contains("[this project]"));
         fs::remove_dir_all(&wd).unwrap();

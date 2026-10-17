@@ -36,8 +36,8 @@ Tools:\n\
 - write_file, create_folder — writing inside the project;\n\
 - task_list, task_create, task_update, task_move — project tasks;\n\
 - datas_add — adding/updating entries in datas.md;\n\
-- remember, recall — global memory about the user and shared facts (shared \
-by all chats and sessions); the \"[Memory]\" block is already injected below;\n\
+- remember, recall, set_user_gender — global memory about the user and shared \
+facts (shared by all chats and sessions); the \"[Memory]\" block is already injected below;\n\
 - rename_path, delete_path, task_delete — dangerous operations, executed only \
 with user confirmation.\n\
 \n\
@@ -45,6 +45,10 @@ Rules:\n\
 - do not invent file or task contents: search and read first;\n\
 - write and delete only inside the project folder;\n\
 - answer in Russian, briefly and to the point;\n\
+- Always address the user informally with «ты» (correct Russian). Do not ask \
+the user for their gender. Infer it from the conversation or from the user's \
+own words and persist it with `set_user_gender`. Until it is known, use \
+gender-neutral phrasing;\n\
 - end every answer with a finish_task call: action=finish, answer — the final \
 answer to the user; if the work is impossible or interrupted — action=stop with the reason in answer.",
         name = project.name,
@@ -73,11 +77,16 @@ Temporary files — only in Harness/tmp/: do not use the system /tmp; create sub
 \n\
 Rules:\n\
 - do not invent file contents or command results: read and verify first;\n\
-- remember important things and check the global memory: remember / recall (shared \
+- remember important things and check the global memory: remember / recall / \
+set_user_gender (shared \
 by all chats and sessions); the \"[Memory]\" block is already injected below;\n\
 - dangerous operations (writing outside CRM folders, bash, browser) are executed only with user \
 confirmation;\n\
 - answer in Russian, briefly and to the point;\n\
+- Always address the user informally with «ты» (correct Russian). Do not ask \
+the user for their gender. Infer it from the conversation or from the user's \
+own words and persist it with `set_user_gender`. Until it is known, use \
+gender-neutral phrasing;\n\
 - end every answer with a finish_task call: action=finish, answer — the final answer \
 to the user; if the work is impossible or interrupted — action=stop with the reason in answer.";
     base.to_string() + &skills_prompt_block(skills)
@@ -105,12 +114,15 @@ mod tests {
         let p = project_system_prompt(&sample(), &[]);
         assert!(p.contains("example.ru"));
         assert!(p.contains("/wd/Projects/example.ru"));
-        for token in ["search", "read_file", "task_create", "datas_add", "finish_task", "remember", "recall"] {
+        for token in ["search", "read_file", "task_create", "datas_add", "finish_task", "remember", "recall", "set_user_gender"] {
             assert!(p.contains(token), "missing tool guidance: {token}");
         }
         assert!(p.contains("confirmation"));
         assert!(p.contains("Always respond to the user in Russian"));
         assert!(p.contains("answer in Russian, briefly and to the point"));
+        assert!(p.contains("Always address the user informally with «ты» (correct Russian)"));
+        assert!(p.contains("Do not ask the user for their gender"));
+        assert!(p.contains("Until it is known, use gender-neutral phrasing"));
         assert!(!p.contains("Available skills"), "empty skills add no block");
     }
 
@@ -139,7 +151,11 @@ mod tests {
         assert!(p.contains("Harness/tmp/"), "{p}");
         assert!(p.contains("finish_task"), "{p}");
         assert!(p.contains("remember"), "{p}");
+        assert!(p.contains("set_user_gender"), "{p}");
         assert!(p.contains("Always respond to the user in Russian"), "{p}");
+        assert!(p.contains("Always address the user informally with «ты» (correct Russian)"), "{p}");
+        assert!(p.contains("Do not ask the user for their gender"), "{p}");
+        assert!(p.contains("Until it is known, use gender-neutral phrasing"), "{p}");
         assert!(p.contains("confirmation"), "{p}");
         assert!(!p.contains("Available skills"), "empty skills add no block");
 

@@ -85,10 +85,10 @@ export interface ConfigChanged {
   which: ConfigKind;
 }
 
-// Shape of app.json (config.rs AppConfig).
+// Shape of app.json (config.rs AppConfig). Agent identity is fixed
+// ("Project-S", informal «ты»): old files may still carry agentName /
+// userAddress keys, the app ignores them.
 export interface AppConfig {
-  agentName: string;
-  userAddress: string;
   autopilot: boolean;
   compactionThresholdPercent: number;
   sessionTtlDays: number;

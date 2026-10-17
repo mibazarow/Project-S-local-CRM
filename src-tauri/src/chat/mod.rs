@@ -506,21 +506,14 @@ fn run_agent_inner(
     let app_cfg: AppConfig =
         serde_json::from_value(config::read_config(wd, ConfigKind::App)?).unwrap_or_default();
 
-    // Global memory injection (SPEC 6.3): the identity line + identity
-    // records + records relevant to the fresh user turn, appended to the
-    // system prompt of every run (project chats and harness sessions alike).
-    // Identity records are re-synced from app.json here, so a settings edit
-    // shows up in the next context build.
+    // Global memory injection (SPEC 6.3): the fixed identity lines + the
+    // always-injected gender line + records relevant to the fresh user turn,
+    // appended to the system prompt of every run (project chats and harness
+    // sessions alike).
     {
         let guard = thread_state.db.lock().unwrap();
         let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
-        let block = memory::context_block(
-            conn,
-            run.project_id(),
-            &user_query,
-            &app_cfg.agent_name,
-            &app_cfg.user_address,
-        )?;
+        let block = memory::context_block(conn, run.project_id(), &user_query)?;
         system_prompt.push_str(&format!("\n\n{block}"));
     }
 

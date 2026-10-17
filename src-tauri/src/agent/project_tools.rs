@@ -36,6 +36,7 @@ pub fn project_catalog() -> Catalog {
         // Global memory is shared with the harness agent (SPEC 6.3).
         Arc::new(crate::memory::RememberTool),
         Arc::new(crate::memory::RecallTool),
+        Arc::new(crate::memory::SetUserGenderTool),
     ];
     for tool in tools {
         // Names are statically unique; a failure here is a programming bug.
@@ -782,7 +783,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 18] = [
+    const TOOL_NAMES: [&str; 19] = [
         "search",
         "read_file",
         "list_tree",
@@ -801,6 +802,7 @@ mod tests {
         "create_skill",
         "remember",
         "recall",
+        "set_user_gender",
     ];
 
     #[test]
@@ -1045,6 +1047,7 @@ mod tests {
             "datas_add",
             "create_skill",
             "remember",
+            "set_user_gender",
         ] {
             assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");

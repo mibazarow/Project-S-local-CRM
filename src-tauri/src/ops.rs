@@ -362,12 +362,13 @@ mod tests {
         let wd = scaffold("autostart");
         config::ensure_defaults(&wd).unwrap();
         assert!(!autostart_choice(&wd)); // default off (SPEC 8)
+        config::write_config(&wd, ConfigKind::App, serde_json::json!({ "customFlag": true })).unwrap();
         set_autostart_choice(&wd, true).unwrap();
         assert!(autostart_choice(&wd));
         let raw = config::read_config(&wd, ConfigKind::App).unwrap();
         assert_eq!(raw["autostart"], true);
         // Unknown app.json keys survive the autostart rewrite.
-        assert_eq!(raw["agentName"], "Агент");
+        assert_eq!(raw["customFlag"], true);
         fs::remove_dir_all(&wd).unwrap();
     }
 
