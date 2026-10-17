@@ -394,13 +394,16 @@ pub fn start_project_run(
         (chat_id, project)
     };
 
-    let skills = crate::skills::short_list(&wd);
-    let system_prompt = project_system_prompt(&project, &skills);
+    // The catalog is built BEFORE the prompt so the generated tool block
+    // covers everything the run can see, MCP bridges included (schemas stay
+    // lazy via list_available_tools/enable_tools).
     let mut catalog = project_catalog();
     catalog.register(Arc::new(FinishTaskTool), true)?;
     // MCP tools are bridged from the app-level registry: the run's catalog
     // borrows the live server clients (SPEC 6.2).
-    let mcp_tools = state.mcp.lock().unwrap().tools();
+    register_mcp_tools(&mut catalog, state.mcp.lock().unwrap().tools());
+    let skills = crate::skills::short_list(&wd);
+    let system_prompt = project_system_prompt(&project, &skills, &catalog.summary_prompt_block());
 
     spawn_run(
         app,
@@ -414,9 +417,19 @@ pub fn start_project_run(
             user_query: text.to_string(),
             catalog,
         },
-        mcp_tools,
     );
     Ok(chat_id)
+}
+
+// MCP/built-in name collisions stay visible as hidden, not UNKNOWN
+// (SPEC 6.4 "collisions are dropped noticeably").
+pub(crate) fn register_mcp_tools(catalog: &mut Catalog, tools: Vec<Arc<dyn Tool>>) {
+    for tool in tools {
+        let name = tool.name().to_string();
+        if catalog.register(tool, true).is_err() {
+            catalog.hide(&name, "name collision with the built-in catalog");
+        }
+    }
 }
 
 // The pieces that differ between the two agents. Everything else — the run
@@ -442,12 +455,11 @@ pub(crate) fn spawn_run(
     wd: &Path,
     registry: &Arc<AgentRegistry>,
     bridge: RunBridge,
-    mcp_tools: Vec<Arc<dyn Tool>>,
 ) {
     let app = app.clone();
     let registry = Arc::clone(registry);
     let wd = wd.to_path_buf();
-    std::thread::spawn(move || run_agent_bridge(&app, &registry, &wd, bridge, mcp_tools));
+    std::thread::spawn(move || run_agent_bridge(&app, &registry, &wd, bridge));
 }
 
 // Runs the agent loop for a project chat or a harness session, emitting the
@@ -457,10 +469,9 @@ fn run_agent_bridge(
     registry: &Arc<AgentRegistry>,
     wd: &Path,
     bridge: RunBridge,
-    mcp_tools: Vec<Arc<dyn Tool>>,
 ) {
     let (run, chat_id) = (bridge.run, bridge.chat_id);
-    if let Err(e) = run_agent_inner(app, registry, wd, bridge, mcp_tools) {
+    if let Err(e) = run_agent_inner(app, registry, wd, bridge) {
         let _ = app.emit(
             "agent-event",
             AgentEventPayload {
@@ -481,7 +492,6 @@ fn run_agent_inner(
     registry: &Arc<AgentRegistry>,
     wd: &Path,
     bridge: RunBridge,
-    mcp_tools: Vec<Arc<dyn Tool>>,
 ) -> Result<()> {
     let RunBridge {
         run,
@@ -542,14 +552,6 @@ fn run_agent_inner(
         );
     }
 
-    for tool in mcp_tools {
-        let name = tool.name().to_string();
-        // MCP/built-in name collisions stay visible as hidden, not UNKNOWN
-        // (SPEC 6.4 "collisions are dropped noticeably").
-        if catalog.register(tool, true).is_err() {
-            catalog.hide(&name, "name collision with the built-in catalog");
-        }
-    }
     let mut agent_state = agent_loop::AgentState {
         backend: &client,
         catalog: &mut catalog,

@@ -1106,6 +1106,11 @@ pub fn run() {
             if let Some(wd) = onboarding::load_working_dir(&app_cfg) {
                 *state.db.lock().unwrap() = Some(db::open(&paths::db_path(&wd))?);
                 *state.working_dir.lock().unwrap() = Some(wd.clone());
+                // SPEC 6.2: keep the bundled builtin skill set in sync with
+                // this app build on every start (missing/changed copies are
+                // refreshed; user skills and unknown builtin dirs survive).
+                // Best-effort: a sync failure must never block startup.
+                let _ = skills::sync_builtin(&wd);
                 // SPEC 5.1: drop harness sessions idle past the TTL on start.
                 let ttl = session_ttl_days(&wd);
                 let guard = state.db.lock().unwrap();

@@ -390,9 +390,62 @@ pub fn short_list(wd: &Path) -> Vec<(String, String)> {
         .collect()
 }
 
+// Skill names are matched leniently: "grill.me", "Grill Me", "grill_me"
+// all resolve to the canonical "grill-me" folder/manifest name.
+pub fn normalize_skill_name(raw: &str) -> String {
+    let mut out = String::new();
+    for c in raw.trim().chars() {
+        if c == '.' || c == '_' || c.is_whitespace() {
+            out.push('-');
+        } else {
+            out.extend(c.to_lowercase());
+        }
+    }
+    while out.contains("--") {
+        out = out.replace("--", "-");
+    }
+    out.trim_matches('-').to_string()
+}
+
+// Close-name hints for a miss: prefix/contains scoring against normalized
+// names, best 3.
+fn suggest_skill_names(names: &[String], norm: &str) -> Vec<String> {
+    if norm.is_empty() {
+        return Vec::new();
+    }
+    let mut scored: Vec<(u8, &String)> = Vec::new();
+    for name in names {
+        let n = normalize_skill_name(name);
+        if n == norm {
+            continue;
+        }
+        let score = if n.starts_with(norm) || norm.starts_with(&n) {
+            1
+        } else if n.contains(norm) || norm.contains(&n) {
+            2
+        } else {
+            continue;
+        };
+        scored.push((score, name));
+    }
+    scored.sort_by_key(|(score, name)| (*score, name.as_str()));
+    scored.into_iter().take(3).map(|(_, name)| name.clone()).collect()
+}
+
 pub fn find(wd: &Path, name: &str) -> Result<SkillManifest> {
-    match discover(wd).skills.iter().find(|s| s.name == name) {
-        None => Err(AppError::Invalid(format!("skill not found: {name}"))),
+    let set = discover(wd);
+    let norm = normalize_skill_name(name);
+    match set.skills.iter().find(|s| normalize_skill_name(&s.name) == norm) {
+        None => {
+            let names: Vec<String> = set.skills.iter().map(|s| s.name.clone()).collect();
+            let hints = suggest_skill_names(&names, &norm);
+            let hint = if hints.is_empty() {
+                String::new()
+            } else {
+                format!(" (closest: {})", hints.join(", "))
+            };
+            Err(AppError::Invalid(format!("skill not found: {name}{hint}")))
+        }
         Some(s) if !s.enabled => Err(AppError::Invalid(format!("skill disabled: {name}"))),
         Some(s) => Ok(s.clone()),
     }
@@ -837,6 +890,64 @@ pub fn install_builtin_from(wd: &Path, src: &Path) -> Result<Vec<String>> {
     Ok(installed)
 }
 
+// Startup sync of the bundled builtin set into an EXISTING working dir:
+// copies only missing or changed builtin skill folders (SKILL.md content
+// differs byte-for-byte), never touches user/, and never deletes builtin
+// dirs the bundle no longer ships (e.g. an older bundle's "scrapling").
+// Idempotent; the app version is recorded in Settings/skills/.builtin-version.
+pub fn sync_builtin(wd: &Path) -> Result<Vec<String>> {
+    let src = resolve_builtin_source().ok_or_else(|| {
+        AppError::Invalid(
+            "no builtin skill source found (expected resources/skills/builtin in the repo or packaged resources, or ~/.config/kilo/skills, or ~/.kilocode/skills)".into(),
+        )
+    })?;
+    sync_builtin_from(wd, &src)
+}
+
+fn sync_builtin_from(wd: &Path, src: &Path) -> Result<Vec<String>> {
+    if !src.is_dir() {
+        return Err(AppError::Invalid(format!(
+            "builtin skill source not found: {}",
+            src.display()
+        )));
+    }
+    let dest_root = paths::skills_builtin_dir(wd);
+    fs::create_dir_all(&dest_root)?;
+    let mut synced = Vec::new();
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if name.starts_with('.') || !path.is_dir() || !path.join(paths::SKILL_FILE).is_file() {
+            continue;
+        }
+        let dest = dest_root.join(&name);
+        if builtin_copy_up_to_date(&path, &dest) {
+            continue;
+        }
+        if dest.exists() {
+            fs::remove_dir_all(&dest)?;
+        }
+        copy_dir_all(&path, &dest)?;
+        synced.push(name);
+    }
+    fs::write(
+        paths::skills_builtin_version_file(wd),
+        format!("{}\n", env!("CARGO_PKG_VERSION")),
+    )?;
+    synced.sort();
+    Ok(synced)
+}
+
+// A builtin copy is current when its SKILL.md matches the bundled one
+// byte-for-byte; missing, changed or unreadable copies are re-installed.
+fn builtin_copy_up_to_date(src: &Path, dest: &Path) -> bool {
+    match fs::read(src.join(paths::SKILL_FILE)) {
+        Ok(src_bytes) => fs::read(dest.join(paths::SKILL_FILE)).is_ok_and(|dst| dst == src_bytes),
+        Err(_) => false,
+    }
+}
+
 fn valid_skill_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
@@ -949,7 +1060,7 @@ impl Tool for SkillTool {
             Ok(s) => s,
             Err(e) => {
                 let msg = e.to_string();
-                let code = if msg.contains("disabled") {
+                let code = if msg.contains("skill disabled") {
                     ToolErrorCode::Hidden
                 } else {
                     ToolErrorCode::NotFound
@@ -1532,6 +1643,118 @@ mod tests {
             .join(&name)
             .join(paths::SKILL_FILE)
             .is_file());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn skill_name_normalization_maps_fuzzy_requests_to_canonical_names() {
+        assert_eq!(normalize_skill_name("grill.me"), "grill-me");
+        assert_eq!(normalize_skill_name("  Grill_Me  "), "grill-me");
+        assert_eq!(normalize_skill_name("GRILL ME"), "grill-me");
+        assert_eq!(normalize_skill_name("grill..--me"), "grill-me");
+        assert_eq!(normalize_skill_name("-p-"), "p");
+    }
+
+    #[test]
+    fn load_full_and_skill_tool_accept_normalized_names_and_suggest_close_misses() {
+        let wd = temp_test_dir("skills-normalize");
+        let user = paths::skills_user_dir(&wd);
+        write_skill(
+            &user,
+            "grill-me",
+            "---\nname: grill-me\ndescription: interview\n---\nGrill body.\n",
+        );
+        write_skill(
+            &user,
+            "grill-with-docs",
+            "---\nname: grill-with-docs\ndescription: interview plus docs\n---\nDocs.\n",
+        );
+        write_skill(&user, "ponytail", "---\nname: ponytail\ndescription: lazy\n---\nLazy.\n");
+
+        assert_eq!(load_full(&wd, "grill.me").unwrap(), "Grill body.");
+        assert_eq!(load_full(&wd, "Grill_Me").unwrap(), "Grill body.");
+        assert_eq!(load_full(&wd, "grill-me").unwrap(), "Grill body.");
+
+        let err = load_full(&wd, "gril").unwrap_err().to_string();
+        assert!(err.contains("skill not found: gril"), "{err}");
+        assert!(err.contains("closest: grill-me, grill-with-docs"), "{err}");
+        assert!(!err.contains("ponytail"), "{err}");
+
+        let ctx = ToolCtx {
+            working_dir: Some(wd.clone()),
+            ..Default::default()
+        };
+        let r = SkillTool.execute(&json!({ "name": "grill.me" }), &ctx).unwrap();
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["name"], "grill-me");
+        let r = SkillTool.execute(&json!({ "name": "gril" }), &ctx).unwrap();
+        let e = r.error.unwrap();
+        assert_eq!(e.code, "not_found");
+        assert!(e.message.contains("closest: grill-me, grill-with-docs"), "{}", e.message);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn sync_builtin_copies_missing_refreshes_changed_and_keeps_everything_else() {
+        let wd = scaffold("skills-sync-builtin");
+        let src = wd.join("builtin-src");
+        write_skill(&src, "one", "---\nname: one\ndescription: bundled one\n---\nB1.\n");
+        write_skill(&src, "two", "---\nname: two\ndescription: bundled two\n---\nB2.\n");
+        // an unknown builtin dir (e.g. an older bundle's skill) must survive
+        write_skill(
+            &paths::skills_builtin_dir(&wd),
+            "scrapling",
+            "---\nname: scrapling\ndescription: keep me\n---\nOld.\n",
+        );
+        // a user skill with a bundled name must never be touched
+        write_skill(
+            &paths::skills_user_dir(&wd),
+            "one",
+            "---\nname: one\ndescription: user one\n---\nMine.\n",
+        );
+
+        let synced = sync_builtin_from(&wd, &src).unwrap();
+        assert_eq!(synced, ["one", "two"]);
+        let copy =
+            fs::read_to_string(paths::skills_builtin_dir(&wd).join("one/SKILL.md")).unwrap();
+        assert!(copy.contains("bundled one"), "{copy}");
+        assert_eq!(load_full(&wd, "one").unwrap(), "Mine."); // the user copy still wins
+        assert!(paths::skills_builtin_dir(&wd).join("scrapling/SKILL.md").is_file());
+        assert_eq!(
+            fs::read_to_string(paths::skills_builtin_version_file(&wd))
+                .unwrap()
+                .trim(),
+            env!("CARGO_PKG_VERSION")
+        );
+
+        // idempotent: a second run copies nothing
+        assert!(sync_builtin_from(&wd, &src).unwrap().is_empty());
+        assert!(paths::skills_builtin_dir(&wd).join("scrapling/SKILL.md").is_file());
+
+        // a changed bundled skill refreshes only its builtin copy
+        fs::write(src.join("two/SKILL.md"), "---\nname: two\ndescription: v2\n---\nB2 v2.\n").unwrap();
+        assert_eq!(sync_builtin_from(&wd, &src).unwrap(), ["two"]);
+        let copy =
+            fs::read_to_string(paths::skills_builtin_dir(&wd).join("two/SKILL.md")).unwrap();
+        assert!(copy.contains("v2"), "{copy}");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn sync_builtin_uses_the_bundled_set_marks_the_version_and_is_idempotent() {
+        let wd = scaffold("skills-sync-bundled");
+        let synced = sync_builtin(&wd).unwrap();
+        assert!(!synced.is_empty());
+        for name in &synced {
+            assert!(find(&wd, name).is_ok(), "{name} did not load back");
+        }
+        assert_eq!(
+            fs::read_to_string(paths::skills_builtin_version_file(&wd))
+                .unwrap()
+                .trim(),
+            env!("CARGO_PKG_VERSION")
+        );
+        assert!(sync_builtin(&wd).unwrap().is_empty());
         fs::remove_dir_all(&wd).unwrap();
     }
 

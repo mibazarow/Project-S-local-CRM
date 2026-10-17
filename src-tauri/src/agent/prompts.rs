@@ -19,7 +19,18 @@ pub fn skills_prompt_block(skills: &[(String, String)]) -> String {
     out.trim_end().to_string()
 }
 
-pub fn project_system_prompt(project: &ProjectDto, skills: &[(String, String)]) -> String {
+// Proactive skill selection: the short list is in the prompt, so the agent
+// must consult it before working instead of guessing procedures.
+const SKILLS_RULE: &str = "Before starting work, scan the Available skills list; if a skill matches the task, load it with the `skill` tool and follow it. If the user names a skill, load it by name. Never invent a skill's contents.";
+
+// tools_block comes from Catalog::summary_prompt_block and is built AFTER
+// the run catalog (core + deferred + MCP bridges) is complete, so the agent
+// always sees its full tool set; schemas stay lazy.
+pub fn project_system_prompt(
+    project: &ProjectDto,
+    skills: &[(String, String)],
+    tools_block: &str,
+) -> String {
     let base = format!(
         "You are the agent of project \"{name}\" in the Project S CRM. The project lives in the folder {path}; \
 all paths in tools are relative to the project root.\n\
@@ -30,20 +41,13 @@ technical terms, file names, or quoted content.\n\
 You run this project: you hold its context, retell the course of work from the chat history, \
 files and tasks, maintain the access file datas.md, and answer the user from the project materials.\n\
 \n\
-Tools:\n\
-- search — hybrid search over the project index (including closed tasks);\n\
-- read_file, list_tree, datas_read — reading files, the tree, and datas.md;\n\
-- write_file, create_folder — writing inside the project;\n\
-- task_list, task_create, task_update, task_move — project tasks;\n\
-- datas_add — adding/updating entries in datas.md;\n\
-- remember, recall, set_user_gender — global memory about the user and shared \
-facts (shared by all chats and sessions); the \"[Memory]\" block is already injected below;\n\
-- rename_path, delete_path, task_delete — dangerous operations, executed only \
-with user confirmation.\n\
+{tools_block}\n\
 \n\
 Rules:\n\
 - do not invent file or task contents: search and read first;\n\
+- {SKILLS_RULE}\n\
 - write and delete only inside the project folder;\n\
+- rename_path, delete_path, task_delete — dangerous operations, executed only with user confirmation;\n\
 - answer in Russian, briefly and to the point;\n\
 - Always address the user informally with «ты» (correct Russian). Do not ask \
 the user for their gender. Infer it from the conversation or from the user's \
@@ -60,10 +64,11 @@ answer to the user; if the work is impossible or interrupted — action=stop wit
 // Harness agent (SPEC 5.2): one general computer-control agent, no presets in
 // v1. The default working territory is Harness/ and all scratch files go to
 // Harness/tmp/; paths outside Harness/ and Projects/ need confirmation. The
-// tool set grows in later slices, so the prompt names only the rules that hold
-// regardless of which tools are wired in.
-pub fn harness_system_prompt(skills: &[(String, String)]) -> String {
-    let base = "You are the Project S harness agent: you control the computer on user requests \
+// generated tools block names the whole catalog (lazy schemas), so the
+// prompt itself only carries the rules that hold regardless of tool set.
+pub fn harness_system_prompt(skills: &[(String, String)], tools_block: &str) -> String {
+    let base = format!(
+        "You are the Project S harness agent: you control the computer on user requests \
 and can set schedules (one-time and recurring) that fire while the app is open.\n\
 \n\
 Always respond to the user in Russian (correct, natural Russian). Do not translate product names, \
@@ -75,8 +80,11 @@ require user confirmation.\n\
 \n\
 Temporary files — only in Harness/tmp/: do not use the system /tmp; create subfolders per task.\n\
 \n\
+{tools_block}\n\
+\n\
 Rules:\n\
 - do not invent file contents or command results: read and verify first;\n\
+- {SKILLS_RULE}\n\
 - remember important things and check the global memory: remember / recall / \
 set_user_gender (shared \
 by all chats and sessions); the \"[Memory]\" block is already injected below;\n\
@@ -88,13 +96,15 @@ the user for their gender. Infer it from the conversation or from the user's \
 own words and persist it with `set_user_gender`. Until it is known, use \
 gender-neutral phrasing;\n\
 - end every answer with a finish_task call: action=finish, answer — the final answer \
-to the user; if the work is impossible or interrupted — action=stop with the reason in answer.";
-    base.to_string() + &skills_prompt_block(skills)
+to the user; if the work is impossible or interrupted — action=stop with the reason in answer."
+    );
+    base + &skills_prompt_block(skills)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn sample() -> ProjectDto {
         ProjectDto {
@@ -110,9 +120,23 @@ mod tests {
         }
     }
 
+    // The real project-run catalog (core tools + finish_task), exactly as
+    // chat::start_project_run builds it before generating the prompt block.
+    fn project_tools_block() -> String {
+        let mut catalog = crate::agent::project_tools::project_catalog();
+        catalog
+            .register(Arc::new(crate::agent::finish::FinishTaskTool), true)
+            .unwrap();
+        catalog.summary_prompt_block()
+    }
+
+    fn harness_tools_block() -> String {
+        crate::agent::harness_tools::harness_catalog().summary_prompt_block()
+    }
+
     #[test]
     fn prompt_mentions_project_tools_and_finish_task() {
-        let p = project_system_prompt(&sample(), &[]);
+        let p = project_system_prompt(&sample(), &[], &project_tools_block());
         assert!(p.contains("example.ru"));
         assert!(p.contains("/wd/Projects/example.ru"));
         for token in ["search", "read_file", "task_create", "datas_add", "finish_task", "remember", "recall", "set_user_gender"] {
@@ -124,7 +148,26 @@ mod tests {
         assert!(p.contains("Always address the user informally with «ты» (correct Russian)"));
         assert!(p.contains("Do not ask the user for their gender"));
         assert!(p.contains("Until it is known, use gender-neutral phrasing"));
-        assert!(!p.contains("Available skills"), "empty skills add no block");
+        assert!(!p.contains("Available skills (short list"), "empty skills add no block");
+    }
+
+    #[test]
+    fn project_prompt_carries_generated_tool_block_and_skills_rule() {
+        let p = project_system_prompt(&sample(), &[], &project_tools_block());
+        assert!(p.contains("Available tools (names and one-line descriptions"));
+        assert!(p.contains("- search — Search this project's index"));
+        assert!(p.contains("- create_skill —"));
+        assert!(p.contains("Before starting work, scan the Available skills list"));
+        assert!(p.contains("If the user names a skill, load it by name."));
+        assert!(p.contains("Never invent a skill's contents."));
+    }
+
+    #[test]
+    fn real_tool_blocks_fit_the_prompt_cap() {
+        let project = project_tools_block();
+        let harness = harness_tools_block();
+        assert!(project.len() < crate::agent::catalog::SUMMARY_BLOCK_CAP);
+        assert!(harness.len() < crate::agent::catalog::SUMMARY_BLOCK_CAP);
     }
 
     #[test]
@@ -139,13 +182,13 @@ mod tests {
         assert!(block.contains("- research — Investigate a question."));
         // Header plus exactly one line per skill: no bodies, no extra keys.
         assert_eq!(block.trim().lines().count(), 1 + skills.len());
-        let p = project_system_prompt(&sample(), &skills);
+        let p = project_system_prompt(&sample(), &skills, &project_tools_block());
         assert!(p.contains("- ponytail — Lazy senior dev mode."));
     }
 
     #[test]
-    fn harness_prompt_carries_territory_tmp_schedules_and_skills() {
-        let p = harness_system_prompt(&[]);
+    fn harness_prompt_carries_territory_tmp_schedules_tools_skills_rule() {
+        let p = harness_system_prompt(&[], &harness_tools_block());
         assert!(p.contains("control the computer"), "{p}");
         assert!(p.contains("schedules"), "{p}");
         assert!(p.contains("Harness/"), "{p}");
@@ -158,10 +201,15 @@ mod tests {
         assert!(p.contains("Do not ask the user for their gender"), "{p}");
         assert!(p.contains("Until it is known, use gender-neutral phrasing"), "{p}");
         assert!(p.contains("confirmation"), "{p}");
-        assert!(!p.contains("Available skills"), "empty skills add no block");
+        assert!(!p.contains("Available skills (short list"), "empty skills add no block");
+        assert!(p.contains("Available tools (names and one-line descriptions"), "{p}");
+        assert!(p.contains("- bash —"), "{p}");
+        assert!(p.contains("- schedule_create —"), "{p}");
+        assert!(p.contains("Before starting work, scan the Available skills list"), "{p}");
+        assert!(p.contains("Never invent a skill's contents."), "{p}");
 
         let skills = vec![("ponytail".to_string(), "Lazy senior dev mode.".to_string())];
-        let p = harness_system_prompt(&skills);
+        let p = harness_system_prompt(&skills, &harness_tools_block());
         assert!(p.contains("- ponytail — Lazy senior dev mode."), "{p}");
     }
 }

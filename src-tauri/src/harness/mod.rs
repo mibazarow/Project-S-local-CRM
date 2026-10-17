@@ -330,9 +330,12 @@ pub fn run_session_on(
         spawn_auto_title(app, &wd, session_id, text.to_string());
     }
 
+    // Catalog first, prompt second: the generated tool block must cover the
+    // whole harness catalog including the MCP bridges (schemas stay lazy).
+    let mut catalog = harness_catalog();
+    chat::register_mcp_tools(&mut catalog, state.mcp.lock().unwrap().tools());
     let skills = crate::skills::short_list(&wd);
-    let system_prompt = harness_system_prompt(&skills);
-    let mcp_tools = state.mcp.lock().unwrap().tools();
+    let system_prompt = harness_system_prompt(&skills, &catalog.summary_prompt_block());
 
     chat::spawn_run(
         app,
@@ -344,9 +347,8 @@ pub fn run_session_on(
             chat_id,
             system_prompt,
             user_query: text.to_string(),
-            catalog: harness_catalog(),
+            catalog,
         },
-        mcp_tools,
     );
     Ok(chat_id)
 }

@@ -31,6 +31,8 @@ pub const SKILLS_BUILTIN: &str = "builtin";
 pub const SKILLS_USER: &str = "user";
 pub const SKILLS_ENABLED: &str = "enabled.json";
 pub const SKILL_FILE: &str = "SKILL.md";
+// Written by skills::sync_builtin after each builtin-set sync.
+pub const SKILLS_BUILTIN_VERSION: &str = ".builtin-version";
 
 pub fn projects_dir(wd: &Path) -> PathBuf {
     wd.join(PROJECTS_DIR)
@@ -73,6 +75,11 @@ pub fn skills_user_dir(wd: &Path) -> PathBuf {
 // watcher-friendly (SPEC 6.2 "тумблеры вкл/выкл", "принцип открытости").
 pub fn skills_enabled_file(wd: &Path) -> PathBuf {
     skills_dir(wd).join(SKILLS_ENABLED)
+}
+
+// Marker holding the app version that last synced the builtin skill set.
+pub fn skills_builtin_version_file(wd: &Path) -> PathBuf {
+    skills_dir(wd).join(SKILLS_BUILTIN_VERSION)
 }
 
 pub fn models_dir(wd: &Path) -> PathBuf {
