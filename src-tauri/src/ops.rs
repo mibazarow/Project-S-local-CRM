@@ -34,8 +34,8 @@ pub struct BackupInfo {
 }
 
 // SPEC 3.6: one .zip holding a consistent SQLite snapshot (VACUUM INTO, so a
-// live WAL DB is copied without locking it) plus a copy of Projects/ only
-// (Harness/tmp is deliberately excluded). Default destination is
+// live WAL DB is copied without locking it) plus copies of Projects/ and the
+// Notes/ vault (Harness/tmp is deliberately excluded). Default destination is
 // Settings/backups/project-s-YYYYMMDD-HHMMSS.zip. The archive is re-opened
 // and the DB inside integrity-checked before success is reported (SPEC 7
 // "backup archive is recoverable").
@@ -74,8 +74,7 @@ fn write_and_verify_zip(wd: &Path, snapshot: &Path, dest: &Path) -> Result<Backu
     let mut src = File::open(snapshot)?;
     copy(&mut src, &mut zip)?;
 
-    let projects = paths::projects_dir(wd);
-    let mut stack = vec![projects];
+    let mut stack = vec![paths::projects_dir(wd), paths::notes_dir(wd)];
     while let Some(dir) = stack.pop() {
         if !dir.is_dir() {
             continue;
@@ -255,11 +254,15 @@ mod tests {
         fs::create_dir_all(project.join("sub")).unwrap();
         fs::write(project.join("a.md"), "alpha").unwrap();
         fs::write(project.join("sub/b.txt"), "beta-content").unwrap();
+        let notes = paths::notes_dir(&wd).join("sub");
+        fs::create_dir_all(&notes).unwrap();
+        fs::write(paths::notes_dir(&wd).join("foo.md"), "note-content").unwrap();
+        fs::write(notes.join("bar.md"), "nested-note").unwrap();
         wd
     }
 
     #[test]
-    fn backup_zip_holds_db_snapshot_and_project_files_at_default_path() {
+    fn backup_zip_holds_db_snapshot_project_and_notes_files_at_default_path() {
         let wd = scaffold("backup");
         let conn = db::open(&paths::db_path(&wd)).unwrap();
         let info = create_backup(&wd, &conn, None).unwrap();
@@ -268,7 +271,7 @@ mod tests {
         assert!(path.starts_with(paths::backups_dir(&wd)));
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         assert!(name.starts_with("project-s-") && name.ends_with(".zip"));
-        assert!(info.entries >= 3);
+        assert!(info.entries >= 5);
         assert!(info.bytes > 0);
 
         let file = File::open(&path).unwrap();
@@ -277,6 +280,8 @@ mod tests {
         assert!(names.contains(&"project-s.db".to_string()));
         assert!(names.contains(&"Projects/example-ru/a.md".to_string()));
         assert!(names.contains(&"Projects/example-ru/sub/b.txt".to_string()));
+        assert!(names.contains(&"Notes/foo.md".to_string()));
+        assert!(names.contains(&"Notes/sub/bar.md".to_string()));
         // tmp is NOT part of the backup (SPEC 3.6).
         assert!(!names.iter().any(|n| n.starts_with("Harness")));
 
@@ -309,6 +314,25 @@ mod tests {
         drop(conn);
         fs::remove_dir_all(&wd).unwrap();
         fs::remove_dir_all(&out).unwrap();
+    }
+
+    #[test]
+    fn backup_with_empty_notes_vault_is_fine() {
+        let wd = temp_test_dir("backup-empty-notes");
+        for dir in paths::scaffold_dirs(&wd) {
+            fs::create_dir_all(dir).unwrap();
+        }
+        fs::write(paths::projects_dir(&wd).join("a.md"), "alpha").unwrap();
+        let conn = db::open(&paths::db_path(&wd)).unwrap();
+        let info = create_backup(&wd, &conn, None).unwrap();
+
+        let archive = zip::ZipArchive::new(File::open(&info.path).unwrap()).unwrap();
+        let names: Vec<String> = archive.file_names().map(str::to_string).collect();
+        assert!(names.contains(&"project-s.db".to_string()));
+        assert!(names.contains(&"Projects/a.md".to_string()));
+        assert!(!names.iter().any(|n| n.starts_with("Notes")));
+        drop(conn);
+        fs::remove_dir_all(&wd).unwrap();
     }
 
     #[test]
