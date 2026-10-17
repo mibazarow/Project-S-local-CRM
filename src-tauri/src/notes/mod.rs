@@ -719,6 +719,7 @@ mod tests {
             allow_all: false,
             project_id: None,
             session_id: None,
+            chat_id: None,
             params: ChatParams {
                 model: "test-model".into(),
                 temperature: None,

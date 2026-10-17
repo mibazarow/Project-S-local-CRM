@@ -497,6 +497,7 @@ mod tests {
         let ctx = ToolCtx {
             project_id: Some(project.id),
             session_id: None,
+            chat_id: None,
             working_dir: Some(wd.clone()),
             state: Some(Arc::clone(&state)),
             notes_root: None,
@@ -572,6 +573,7 @@ mod tests {
         let ctx = ToolCtx {
             project_id: None,
             session_id: None,
+            chat_id: None,
             working_dir: None,
             state: Some(Arc::clone(&state)),
             notes_root: None,

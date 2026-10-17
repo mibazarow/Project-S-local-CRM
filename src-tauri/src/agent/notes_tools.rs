@@ -31,6 +31,9 @@ pub fn notes_catalog() -> Catalog {
         Arc::new(NotesRenameTool),
         Arc::new(NotesDeleteTool),
         Arc::new(SearchNotesTool),
+        // Agent-initiated chat attachment (SPEC 6.1): hand a Notes file to
+        // the user as a new assistant turn.
+        Arc::new(crate::agent::send_file::SendFileTool),
     ];
     for tool in tools {
         // Names are statically unique; a failure here is a programming bug.
@@ -383,6 +386,7 @@ mod tests {
             "notes_rename",
             "notes_delete",
             "search_notes",
+            "send_file",
         ] {
             assert!(
                 matches!(catalog.resolve(name), Resolution::Found(_)),
@@ -396,7 +400,7 @@ mod tests {
             assert_eq!(t.class(), ToolClass::ReadOnly, "{name}");
             assert_eq!(t.policy(), Policy::Skip, "{name}");
         }
-        for name in ["notes_write", "notes_create", "notes_rename"] {
+        for name in ["notes_write", "notes_create", "notes_rename", "send_file"] {
             let Resolution::Found(t) = catalog.resolve(name) else { unreachable!() };
             assert_eq!(t.class(), ToolClass::Mutating, "{name}");
             assert_eq!(t.policy(), Policy::Skip, "{name}");

@@ -58,6 +58,9 @@ pub fn harness_catalog() -> Catalog {
         // Per-conversation plan panel (SPEC: todowrite/todoread).
         Arc::new(crate::todos::TodoWriteTool),
         Arc::new(crate::todos::TodoReadTool),
+        // Agent-initiated chat attachment (SPEC 6.1): hand a file to the user
+        // as a new assistant turn; active from the first round.
+        Arc::new(super::send_file::SendFileTool),
     ];
     let deferred: Vec<Arc<dyn Tool>> = vec![
         Arc::new(FsReadTool),
@@ -1436,6 +1439,7 @@ mod tests {
         let ctx = ToolCtx {
             project_id: None,
             session_id: None,
+            chat_id: None,
             working_dir: Some(wd.clone()),
             state: Some(state),
             notes_root: None,

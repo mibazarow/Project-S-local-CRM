@@ -13,7 +13,7 @@ use crate::harness;
 use crate::llm;
 use crate::paths;
 use crate::projects;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -135,6 +135,74 @@ pub fn attachment_data_url(
 ) -> Result<String> {
     let path = resolve_attachment_path(conn, wd, project_id, saved_path)?;
     fs_ops::binary_data_url(&path, max_bytes, saved_path)
+}
+
+// Reads one attachment of a specific chat message as a base64 data URL, for
+// the chat UI to render agent-sent files (SPEC 6.1). The savedPath is resolved
+// by the chat's kind: project chats join the project root, the notes chat joins
+// the Notes vault, harness savedPaths are absolute. Images only; `index` picks
+// the Nth attachment of the message (0-based, the order the history DTO shows).
+pub fn chat_attachment_data_url(
+    conn: &Connection,
+    wd: &Path,
+    chat_id: i64,
+    message_id: i64,
+    index: usize,
+    max_bytes: u64,
+) -> Result<String> {
+    // The message must belong to the chat: never read across chats.
+    let owner: Option<i64> = conn
+        .query_row(
+            "SELECT chat_id FROM messages WHERE id = ?1",
+            params![message_id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    if owner != Some(chat_id) {
+        return Err(AppError::Invalid(format!(
+            "message {message_id} is not in chat {chat_id}"
+        )));
+    }
+    let (kind, project_id): (String, Option<i64>) = conn
+        .query_row(
+            "SELECT kind, project_id FROM chats WHERE id = ?1",
+            params![chat_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .ok_or_else(|| AppError::Invalid(format!("chat {chat_id} not found")))?;
+    let attachment = load_message_attachments(conn, message_id)?
+        .into_iter()
+        .nth(index)
+        .ok_or_else(|| AppError::Invalid(format!("attachment {index} not found")))?;
+    if !attachment.is_image {
+        return Err(AppError::Invalid(format!(
+            "attachment \"{}\" is not an image",
+            attachment.name
+        )));
+    }
+    let path = resolve_chat_attachment_path(conn, wd, &kind, project_id, &attachment.saved_path)?;
+    fs_ops::binary_data_url(&path, max_bytes, &attachment.saved_path)
+}
+
+// Resolves a stored savedPath for a chat of the given kind. Absolute paths
+// (harness) are used as-is; project-relative ones join the project root; the
+// notes chat joins the Notes vault root.
+fn resolve_chat_attachment_path(
+    conn: &Connection,
+    wd: &Path,
+    kind: &str,
+    project_id: Option<i64>,
+    saved_path: &str,
+) -> Result<PathBuf> {
+    if Path::new(saved_path).is_absolute() {
+        return Ok(PathBuf::from(saved_path));
+    }
+    if kind == "notes" {
+        let root = paths::notes_dir(wd).canonicalize()?;
+        return fs_ops::contain_existing(&root, saved_path, "Notes");
+    }
+    resolve_attachment_path(conn, wd, project_id, saved_path)
 }
 
 // Opens an attachment (document or image) with the macOS default handler.
@@ -671,6 +739,63 @@ mod tests {
         // embedder, so indexing a freshly attached file stays offline.
         let (wd, _conn, _pid, _state) = setup("att-noop");
         assert_eq!(embed::select_embedder(&wd).backend_id(), "noop");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn chat_attachment_data_url_reads_project_image_by_index() {
+        let (wd, conn, pid, _state) = setup("att-chat-url");
+        let chat_id = crate::chat::ensure_project_chat(&conn, pid).unwrap();
+        let root = paths::projects_dir(&wd).join("proj");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("pic.png"), llm::TINY_PNG).unwrap();
+        fs::write(root.join("note.txt"), "текст").unwrap();
+        let msg = crate::chat::append_message(
+            &conn,
+            chat_id,
+            llm::Role::Assistant,
+            Some("вот картинка"),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        save_message_attachments(
+            &conn,
+            msg.id,
+            &[
+                AttachmentRef {
+                    name: "pic.png".into(),
+                    saved_path: "pic.png".into(),
+                    kind: "image".into(),
+                    is_image: true,
+                },
+                AttachmentRef {
+                    name: "note.txt".into(),
+                    saved_path: "note.txt".into(),
+                    kind: "document".into(),
+                    is_image: false,
+                },
+            ],
+        )
+        .unwrap();
+
+        let url = chat_attachment_data_url(&conn, &wd, chat_id, msg.id, 0, 20 * 1024 * 1024).unwrap();
+        assert!(url.starts_with("data:image/png;base64,"));
+        // A non-image attachment at the next index is refused.
+        assert!(matches!(
+            chat_attachment_data_url(&conn, &wd, chat_id, msg.id, 1, 1024),
+            Err(AppError::Invalid(_))
+        ));
+        // Out-of-range index and a foreign chat are refused.
+        assert!(matches!(
+            chat_attachment_data_url(&conn, &wd, chat_id, msg.id, 2, 1024),
+            Err(AppError::Invalid(_))
+        ));
+        assert!(matches!(
+            chat_attachment_data_url(&conn, &wd, 999, msg.id, 0, 1024),
+            Err(AppError::Invalid(_))
+        ));
         fs::remove_dir_all(&wd).unwrap();
     }
 }

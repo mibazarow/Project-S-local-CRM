@@ -70,6 +70,9 @@ pub fn project_catalog() -> Catalog {
         // Per-conversation plan panel (SPEC: todowrite/todoread).
         Arc::new(crate::todos::TodoWriteTool),
         Arc::new(crate::todos::TodoReadTool),
+        // Agent-initiated chat attachment (SPEC 6.1): hand a project file to
+        // the user as a new assistant turn.
+        Arc::new(crate::agent::send_file::SendFileTool),
     ];
     for tool in tools {
         // Names are statically unique; a failure here is a programming bug.
@@ -832,6 +835,7 @@ mod tests {
         let ctx = ToolCtx {
             project_id: Some(dto.id),
             session_id: None,
+            chat_id: None,
             working_dir: Some(wd.clone()),
             state: Some(state),
             notes_root: None,
@@ -855,7 +859,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 38] = [
+    const TOOL_NAMES: [&str; 39] = [
         "search",
         "read_file",
         "list_tree",
@@ -894,6 +898,7 @@ mod tests {
         "set_user_gender",
         "todowrite",
         "todoread",
+        "send_file",
     ];
 
     #[test]

@@ -25,6 +25,9 @@ pub struct ToolCtx {
     // Set for harness session runs: schedule tools bind new schedules to the
     // session that created them (SPEC 5.3 related/independent origin).
     pub session_id: Option<i64>,
+    // Chat the run is writing into: send_file appends its agent attachment to
+    // this chat (SPEC 6.1 agent-initiated attachments). Set for every chat run.
+    pub chat_id: Option<i64>,
     pub working_dir: Option<std::path::PathBuf>,
     // Canonical Notes/ vault root, set only for notes-agent runs: the notes
     // tools refuse to work without it (SPEC notes chat slice).

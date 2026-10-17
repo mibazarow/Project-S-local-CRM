@@ -301,6 +301,7 @@ mod tests {
         let ctx = ToolCtx {
             project_id,
             session_id,
+            chat_id: None,
             working_dir: Some(wd.clone()),
             state: Some(state),
             notes_root: None,

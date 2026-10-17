@@ -707,6 +707,31 @@ fn attachment_data_url(
     })
 }
 
+// Reads one attachment image of a chat message as a base64 data URL, for the
+// chat UI to render agent-sent files (SPEC 6.1). The savedPath is resolved by
+// the chat's kind (project / notes / harness). Images only; index selects the
+// Nth attachment of the message (0-based).
+#[tauri::command]
+fn chat_attachment_data_url(
+    state: State<AppState>,
+    chat_id: i64,
+    message_id: i64,
+    index: usize,
+    max_bytes: Option<u64>,
+) -> Result<String> {
+    let wd = state.working_dir()?;
+    with_db(&state, |conn| {
+        attachments::chat_attachment_data_url(
+            conn,
+            &wd,
+            chat_id,
+            message_id,
+            index,
+            max_bytes.unwrap_or(20 * 1024 * 1024),
+        )
+    })
+}
+
 // Opens an attachment (document or image) with the macOS default handler.
 #[tauri::command]
 fn attachment_open(
@@ -1401,6 +1426,7 @@ pub fn run() {
             attach_files,
             attachment_data_url,
             attachment_open,
+            chat_attachment_data_url,
             index_project,
             reindex_all,
             index_status,

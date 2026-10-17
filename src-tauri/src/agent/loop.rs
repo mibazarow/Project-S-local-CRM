@@ -180,6 +180,9 @@ pub struct AgentRunConfig {
     pub project_id: Option<i64>,
     // Harness session of this run, when it is one (schedule tools bind to it).
     pub session_id: Option<i64>,
+    // Chat the run writes into; handed to tools through ToolCtx so send_file
+    // can append its attachment to the right chat (SPEC 6.1).
+    pub chat_id: Option<i64>,
     pub params: ChatParams,
     // Checked between steps; set by cancel_run for this project's run.
     pub cancel: Option<Arc<AtomicBool>>,
@@ -243,6 +246,7 @@ fn run_inner(
     let ctx = ToolCtx {
         project_id: config.project_id,
         session_id: config.session_id,
+        chat_id: config.chat_id,
         working_dir: config.working_dir.clone(),
         state: config.state.clone(),
         notes_root: config.notes_root.clone(),
@@ -711,6 +715,7 @@ mod tests {
             allow_all: false,
             project_id: None,
             session_id: None,
+            chat_id: None,
             params: ChatParams {
                 model: "test-model".into(),
                 temperature: None,

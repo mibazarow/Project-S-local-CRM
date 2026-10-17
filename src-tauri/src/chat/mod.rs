@@ -51,9 +51,10 @@ pub struct MessageDto {
     pub name: Option<String>,
     pub created_at: String,
     pub position: i64,
-    // Saved attachment copies linked to this message (SPEC 6.1); non-empty
-    // only on user turns. The raw content stays the plain user text: the UI
-    // renders the attachments as chips/thumbnails next to it.
+    // Saved attachment copies linked to this message (SPEC 6.1): user turns
+    // carry files the user attached, assistant turns carry files the agent
+    // sent with send_file. The raw content stays the plain text; the UI renders
+    // the attachments as chips/thumbnails next to it.
     pub attachments: Vec<AttachmentRef>,
 }
 
@@ -745,6 +746,7 @@ fn run_agent_inner(
         allow_all: app_cfg.autopilot,
         project_id: run.project_id(),
         session_id: run.session_id(),
+        chat_id: Some(chat_id),
         params,
         cancel: Some(Arc::clone(&cancel)),
         // Tools reach the DB and the working dir through the run's own
@@ -936,6 +938,7 @@ mod tests {
             allow_all: false,
             project_id: None,
             session_id: None,
+            chat_id: None,
             params: ChatParams {
                 model: "test-model".into(),
                 temperature: None,
