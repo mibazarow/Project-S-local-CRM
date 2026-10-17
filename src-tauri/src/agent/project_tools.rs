@@ -62,6 +62,10 @@ pub fn project_catalog() -> Catalog {
         Arc::new(crate::agent::ssh_tools::SshExecTool),
         Arc::new(crate::agent::ssh_tools::SshCopyTool::upload()),
         Arc::new(crate::agent::ssh_tools::SshCopyTool::download()),
+        // macOS clipboard read/write via the system pbcopy/pbpaste; every
+        // call hits the general pasteboard; see clipboard_tools.rs.
+        Arc::new(crate::agent::clipboard_tools::ClipboardGetTool::default()),
+        Arc::new(crate::agent::clipboard_tools::ClipboardSetTool::default()),
         Arc::new(crate::agent::net_tools::WebfetchTool::new()),
         Arc::new(crate::agent::net_tools::WebsearchTool::new()),
         Arc::new(crate::agent::net_tools::HttpRequestTool),
@@ -863,7 +867,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 41] = [
+    const TOOL_NAMES: [&str; 43] = [
         "search",
         "read_file",
         "list_tree",
@@ -894,6 +898,8 @@ mod tests {
         "ssh_exec",
         "ssh_upload",
         "ssh_download",
+        "clipboard_get",
+        "clipboard_set",
         "webfetch",
         "websearch",
         "http_request",

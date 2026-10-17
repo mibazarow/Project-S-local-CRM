@@ -119,6 +119,10 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(super::ssh_tools::SshExecTool),
         Arc::new(super::ssh_tools::SshCopyTool::upload()),
         Arc::new(super::ssh_tools::SshCopyTool::download()),
+        // macOS clipboard read/write via the system pbcopy/pbpaste, lazy
+        // discovered like the rest of the machine-wide set; see clipboard_tools.rs.
+        Arc::new(super::clipboard_tools::ClipboardGetTool::default()),
+        Arc::new(super::clipboard_tools::ClipboardSetTool::default()),
         Arc::new(ScheduleCreateTool),
         Arc::new(ScheduleListTool),
         Arc::new(SchedulePauseTool),
