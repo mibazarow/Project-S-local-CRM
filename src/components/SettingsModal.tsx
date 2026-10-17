@@ -118,6 +118,43 @@ function parseTags(s: string): string[] {
     .filter(Boolean);
 }
 
+type McpTransportKind = "stdio" | "http" | "sse";
+
+// MCP add/edit form: raw strings, parsed only at save time.
+interface McpForm {
+  name: string;
+  transport: McpTransportKind;
+  command: string;
+  args: string;
+  env: string;
+  url: string;
+  headers: string;
+}
+
+const emptyMcpForm: McpForm = {
+  name: "",
+  transport: "stdio",
+  command: "",
+  args: "",
+  env: "",
+  url: "",
+  headers: "",
+};
+
+// KEY=VALUE (or KEY: VALUE when allowColon) lines → record; null on a
+// malformed line so the form can show an inline error.
+function parseKeyLines(s: string, allowColon: boolean): Record<string, string> | null {
+  const out: Record<string, string> = {};
+  for (const line of s.split("\n")) {
+    const t = line.trim();
+    if (!t) continue;
+    const m = allowColon ? t.match(/^([^=:]+)[=:](.*)$/) : t.match(/^([^=]+)=(.*)$/);
+    if (!m || !m[1].trim()) return null;
+    out[m[1].trim()] = m[2].trim();
+  }
+  return out;
+}
+
 // Read-modify-write of mcp.json: unknown top-level and per-server keys
 // survive, then the servers are restarted and the fresh status returned.
 async function patchMcpServers(
@@ -167,13 +204,9 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [mcp, setMcp] = useState<McpServerStatus[] | null>(null);
   const [mcpError, setMcpError] = useState<string | null>(null);
   const [mcpBusy, setMcpBusy] = useState(false);
-  const [mcpForm, setMcpForm] = useState({
-    name: "",
-    transport: "stdio",
-    command: "",
-    args: "",
-    url: "",
-  });
+  const [mcpForm, setMcpForm] = useState<McpForm>({ ...emptyMcpForm });
+  // Original name of the server being edited; null = the form adds a new one.
+  const [mcpEditing, setMcpEditing] = useState<string | null>(null);
   const [mcpFormError, setMcpFormError] = useState<string | null>(null);
 
   const [mem, setMem] = useState<MemoryDto[] | null>(null);
@@ -691,7 +724,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
       .finally(() => setMcpBusy(false));
   };
 
-  const addMcpServer = async (e: FormEvent) => {
+  const saveMcpServer = async (e: FormEvent) => {
     e.preventDefault();
     setMcpFormError(null);
     const name = mcpForm.name.trim();
@@ -699,26 +732,129 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
       setMcpFormError("Укажи имя сервера");
       return;
     }
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name)) {
+      setMcpFormError("Имя: латиница, цифры, дефис или подчёркивание, без пробелов");
+      return;
+    }
+    if (mcpEditing === null && mcp?.some((s) => s.name === name)) {
+      setMcpFormError("Сервер с таким именем уже есть");
+      return;
+    }
+    let transport: Record<string, unknown>;
+    if (mcpForm.transport === "stdio") {
+      const command = mcpForm.command.trim();
+      if (!command) {
+        setMcpFormError("Укажи команду — npx, node, python…");
+        return;
+      }
+      const env = parseKeyLines(mcpForm.env, false);
+      if (env === null) {
+        setMcpFormError("Переменные окружения: каждая строка в формате KEY=VALUE");
+        return;
+      }
+      transport = {
+        type: "stdio",
+        command,
+        args: mcpForm.args.trim().split(/\s+/).filter(Boolean),
+      };
+      if (Object.keys(env).length) transport.env = env;
+    } else {
+      const url = mcpForm.url.trim();
+      if (!url) {
+        setMcpFormError("Укажи URL сервера");
+        return;
+      }
+      if (!/^https?:\/\//i.test(url)) {
+        setMcpFormError("URL должен начинаться с http:// или https://");
+        return;
+      }
+      const headers = parseKeyLines(mcpForm.headers, true);
+      if (headers === null) {
+        setMcpFormError("Заголовки: строки вида Authorization: Bearer … или KEY=VALUE");
+        return;
+      }
+      transport = { type: mcpForm.transport, url };
+      if (Object.keys(headers).length) transport.headers = headers;
+    }
     setMcpBusy(true);
     try {
-      const transport =
-        mcpForm.transport === "stdio"
-          ? {
-              type: "stdio",
-              command: mcpForm.command.trim(),
-              args: mcpForm.args.trim().split(/\s+/).filter(Boolean),
-            }
-          : { type: "http", url: mcpForm.url.trim() };
+      const editing = mcpEditing;
       setMcp(
-        await patchMcpServers((servers) => [...servers, { name, enabled: true, transport }]),
+        await patchMcpServers((servers) =>
+          editing === null
+            ? [...servers, { name, enabled: true, transport }]
+            : servers.map((s) => (s.name === editing ? { ...s, name, transport } : s)),
+        ),
       );
-      setMcpForm({ name: "", transport: "stdio", command: "", args: "", url: "" });
+      setMcpForm({ ...emptyMcpForm });
+      setMcpEditing(null);
     } catch (err) {
       setMcpFormError(errMsg(err));
     } finally {
       setMcpBusy(false);
     }
   };
+
+  // Pre-fill the form from the raw mcp.json entry (status rows carry no
+  // command/url), so hand-edited servers can be fixed from the UI.
+  const startMcpEdit = (name: string) => {
+    setMcpError(null);
+    setMcpFormError(null);
+    void ipc
+      .readConfig("mcp")
+      .then((raw) => {
+        const servers = Array.isArray((raw as Record<string, unknown>).servers)
+          ? ((raw as Record<string, unknown>).servers as Record<string, unknown>[])
+          : [];
+        const entry = servers.find((s) => s.name === name);
+        if (!entry) {
+          setMcpFormError("Сервер не найден в mcp.json — нажми «Перезагрузить»");
+          return;
+        }
+        const t = (entry.transport ?? {}) as Record<string, unknown>;
+        const kind: McpTransportKind =
+          t.type === "http" || t.type === "sse" ? t.type : "stdio";
+        const mapLines = (v: unknown, joiner: string) =>
+          v && typeof v === "object"
+            ? Object.entries(v as Record<string, unknown>)
+                .map(([k, val]) => `${k}${joiner}${String(val)}`)
+                .join("\n")
+            : "";
+        setMcpEditing(name);
+        setMcpForm({
+          name,
+          transport: kind,
+          command: String(t.command ?? ""),
+          args: Array.isArray(t.args) ? t.args.map((a) => String(a)).join("\n") : "",
+          env: mapLines(t.env, "="),
+          url: String(t.url ?? ""),
+          headers: mapLines(t.headers, ": "),
+        });
+      })
+      .catch((e) => setMcpFormError(errMsg(e)));
+  };
+
+  const cancelMcpEdit = () => {
+    setMcpEditing(null);
+    setMcpForm({ ...emptyMcpForm });
+    setMcpFormError(null);
+  };
+
+  const deleteMcpServer = async (name: string) => {
+    if (!window.confirm(`Удалить сервер «${name}» из mcp.json?`)) return;
+    setMcpBusy(true);
+    setMcpError(null);
+    try {
+      setMcp(await patchMcpServers((servers) => servers.filter((s) => s.name !== name)));
+      if (mcpEditing === name) cancelMcpEdit();
+    } catch (e) {
+      setMcpError(errMsg(e));
+    } finally {
+      setMcpBusy(false);
+    }
+  };
+
+  const mcpArgsPreview = mcpForm.args.trim().split(/\s+/).filter(Boolean);
 
   const focusField = (name: keyof Form) => () => {
     focusedRef.current = name;
@@ -1220,6 +1356,23 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
           )}
           {tab === "mcp" && (
             <>
+              <details className="mcp-guide">
+                <summary>Как подключить MCP-сервер</summary>
+                <div className="mcp-guide-body">
+                  <div>
+                    Локально (stdio): команда <code>npx</code>, аргументы — по одному на строку:{" "}
+                    <code>-y @modelcontextprotocol/server-filesystem /path</code>
+                  </div>
+                  <div>
+                    Удалённо (http): URL <code>https://mcp.example.com/mcp</code> и заголовок{" "}
+                    <code>Authorization: Bearer …</code>
+                  </div>
+                  <div>
+                    Инструменты попадают в каталог как <code>mcp_сервер__инструмент</code> и по
+                    умолчанию требуют подтверждения перед вызовом.
+                  </div>
+                </div>
+              </details>
               <div className="llm-actions">
                 <button className="ghost-btn" disabled={mcpBusy} onClick={reloadMcp}>
                   Перезагрузить
@@ -1242,8 +1395,17 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                           {s.error ? (s.status === "running" ? ` · ${s.error}` : s.error) : ""}
                         </div>
                       </div>
+                      <span className="badge">{s.transport}</span>
                       <span className={`badge st-${s.status === "running" ? "active" : s.status}`}>
                         {s.status === "running" ? "запущен" : s.status === "error" ? "ошибка" : "выключен"}
+                      </span>
+                      <span className="mcp-actions">
+                        <button className="ghost-btn small" onClick={() => startMcpEdit(s.name)}>
+                          Изменить
+                        </button>
+                        <button className="ghost-btn small" onClick={() => void deleteMcpServer(s.name)}>
+                          Удалить
+                        </button>
                       </span>
                       <label className="switch">
                         <input
@@ -1259,8 +1421,10 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                 </div>
               )}
               {mcpError && <div className="set-error">{mcpError}</div>}
-              <div className="schedule-group-title">Добавить сервер</div>
-              <form className="schedule-form" onSubmit={(e) => void addMcpServer(e)}>
+              <div className="schedule-group-title">
+                {mcpEditing === null ? "Добавить сервер" : `Изменить сервер «${mcpEditing}»`}
+              </div>
+              <form className="schedule-form" onSubmit={(e) => void saveMcpServer(e)}>
                 <div className="set-row">
                   <label>Имя сервера</label>
                   <input
@@ -1270,16 +1434,22 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                     placeholder="example-mcp"
                     spellCheck={false}
                   />
-                  <div className="set-hint">Латиница без пробелов — имя сервера в mcp.json.</div>
+                  <div className="set-hint">
+                    Латиница, цифры, дефис и подчёркивание — по имени сервера называются его
+                    инструменты.
+                  </div>
                 </div>
                 <div className="set-row">
                   <label>Тип транспорта</label>
                   <select
                     value={mcpForm.transport}
-                    onChange={(e) => setMcpForm({ ...mcpForm, transport: e.target.value })}
+                    onChange={(e) =>
+                      setMcpForm({ ...mcpForm, transport: e.target.value as McpTransportKind })
+                    }
                   >
                     <option value="stdio">stdio (локальный процесс)</option>
                     <option value="http">http (по адресу)</option>
+                    <option value="sse">sse (по адресу, legacy)</option>
                   </select>
                 </div>
                 {mcpForm.transport === "stdio" ? (
@@ -1296,34 +1466,71 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                       <div className="set-hint">Программа, запускающая сервер (npx, node, python).</div>
                     </div>
                     <div className="set-row">
-                      <label>Аргументы (через пробел)</label>
-                      <input
-                        type="text"
+                      <label>Аргументы (по одному на строку или через пробел)</label>
+                      <textarea
+                        rows={2}
                         value={mcpForm.args}
                         onChange={(e) => setMcpForm({ ...mcpForm, args: e.target.value })}
-                        placeholder="-y @example/mcp-server"
+                        placeholder={"-y\n@example/mcp-server\n/path"}
                         spellCheck={false}
                       />
-                      <div className="set-hint">Аргументы команды, разделённые пробелом.</div>
+                      {mcpArgsPreview.length > 0 && (
+                        <div className="mcp-chips">
+                          {mcpArgsPreview.map((a, i) => (
+                            <span key={i} className="mcp-chip">
+                              {a}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    <div className="set-row">
+                      <label>Переменные окружения (необязательно)</label>
+                      <textarea
+                        rows={2}
+                        value={mcpForm.env}
+                        onChange={(e) => setMcpForm({ ...mcpForm, env: e.target.value })}
+                        placeholder="API_KEY=secret — по одной строке KEY=VALUE"
+                        spellCheck={false}
+                      />
                     </div>
                   </>
                 ) : (
-                  <div className="set-row">
-                    <label>URL сервера</label>
-                    <input
-                      type="text"
-                      value={mcpForm.url}
-                      onChange={(e) => setMcpForm({ ...mcpForm, url: e.target.value })}
-                      placeholder="http://localhost:9000/mcp"
-                      spellCheck={false}
-                    />
-                    <div className="set-hint">Адрес http/sse-сервера; транспорт http/sse пока не запускается.</div>
-                  </div>
+                  <>
+                    <div className="set-row">
+                      <label>URL сервера</label>
+                      <input
+                        type="text"
+                        value={mcpForm.url}
+                        onChange={(e) => setMcpForm({ ...mcpForm, url: e.target.value })}
+                        placeholder="https://mcp.example.com/mcp"
+                        spellCheck={false}
+                      />
+                      <div className="set-hint">
+                        Адрес http/sse-сервера; адреса облачных метаданных запрещены.
+                      </div>
+                    </div>
+                    <div className="set-row">
+                      <label>Заголовки (необязательно)</label>
+                      <textarea
+                        rows={2}
+                        value={mcpForm.headers}
+                        onChange={(e) => setMcpForm({ ...mcpForm, headers: e.target.value })}
+                        placeholder={"Authorization: Bearer …\nX-Api-Key=…"}
+                        spellCheck={false}
+                      />
+                    </div>
+                  </>
                 )}
                 <div className="form-actions">
                   <button className="primary-btn small" type="submit" disabled={mcpBusy}>
-                    Добавить
+                    {mcpEditing === null ? "Добавить" : "Сохранить"}
                   </button>
+                  {mcpEditing !== null && (
+                    <button className="ghost-btn small" type="button" onClick={cancelMcpEdit}>
+                      Отмена
+                    </button>
+                  )}
                 </div>
                 {mcpFormError && <div className="set-error">{mcpFormError}</div>}
               </form>

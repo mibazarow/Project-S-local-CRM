@@ -998,6 +998,47 @@ input, textarea { font-family: inherit; }
 .skill-item-error .info .t, .skill-item-error .info .c { color: var(--danger); }
 .badge.st-disabled { color: var(--text-muted); }
 .skill-results { display: flex; flex-direction: column; gap: 2px; }
+.mcp-item .mcp-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.mcp-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.mcp-chip {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 11px;
+  color: var(--text);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 2px 8px;
+  overflow-wrap: anywhere;
+}
+.mcp-guide { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+.mcp-guide summary {
+  cursor: pointer;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  padding: 8px 12px;
+  list-style: none;
+}
+.mcp-guide summary::-webkit-details-marker { display: none; }
+.mcp-guide[open] summary { border-bottom: 1px solid var(--border); margin-bottom: 8px; }
+.mcp-guide .mcp-guide-body {
+  padding: 0 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.mcp-guide code {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 11.5px;
+  color: var(--text);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+  overflow-wrap: anywhere;
+}
 
 .memory-list { display: flex; flex-direction: column; gap: 6px; }
 .memory-item {
