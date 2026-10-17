@@ -1,5 +1,6 @@
 import { useEffect, useState, type ReactNode, type RefObject } from "react";
 import * as ipc from "../../api/ipc";
+import { MarkdownMessage } from "./MarkdownMessage";
 import type {
   AgentFileEvent,
   ConfirmationRequestPayload,
@@ -569,7 +570,12 @@ export function ChatTranscript({
           {slice.items.map((item) => (
             <div key={item.key} className={`msg ${item.role}`}>
               <span className="who">{item.role === "user" ? "Вы" : "Агент"}</span>
-              {item.text && <div className="bubble">{item.text}</div>}
+              {item.text &&
+                (item.role === "agent" ? (
+                  <MarkdownMessage text={item.text} />
+                ) : (
+                  <div className="bubble">{item.text}</div>
+                ))}
               <MessageAttachments
                 attachments={item.attachments}
                 projectId={projectId}
@@ -589,7 +595,7 @@ export function ChatTranscript({
           {slice.run && (
             <div className="msg agent">
               <span className="who">Агент</span>
-              {slice.run.text && <div className="bubble">{slice.run.text}</div>}
+              {slice.run.text && <MarkdownMessage text={slice.run.text} />}
               <StepsList steps={slice.run.steps} />
               {!slice.run.text && slice.run.steps.length === 0 && (
                 <span className="note">агент думает…</span>
