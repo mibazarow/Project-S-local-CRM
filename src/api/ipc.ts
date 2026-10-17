@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   AgentEventPayload,
+  AgentFileEvent,
   AttachmentDto,
   BackupInfo,
   ChatHit,
@@ -219,6 +220,25 @@ export const attachmentDataUrl = (savedPath: string, projectId?: number, maxByte
 export const attachmentOpen = (savedPath: string, projectId?: number) =>
   invoke<void>("attachment_open", { projectId: projectId ?? null, savedPath });
 
+// Agent-sent chat files (SPEC 6.1): the savedPath of a send_file attachment is
+// resolved by the chat's kind, so reads/opens go through the chat/message/index
+// instead of a savedPath + projectId pair.
+export const chatAttachmentDataUrl = (
+  chatId: number,
+  messageId: number,
+  index: number,
+  maxBytes?: number,
+) =>
+  invoke<string>("chat_attachment_data_url", {
+    chatId,
+    messageId,
+    index,
+    maxBytes: maxBytes ?? null,
+  });
+
+export const chatAttachmentOpen = (chatId: number, messageId: number, index: number) =>
+  invoke<void>("chat_attachment_open", { chatId, messageId, index });
+
 export const reindexAll = () => invoke<ProjectIndexStats[]>("reindex_all");
 
 export const embedStatus = () => invoke<EmbedStatus>("embed_status");
@@ -380,6 +400,10 @@ export const onAgentEvent = (handler: (payload: AgentEventPayload) => void) =>
 
 export const onAgentConfirmation = (handler: (payload: ConfirmationRequestPayload) => void) =>
   listen<ConfirmationRequestPayload>("agent-confirmation", (e) => handler(e.payload));
+
+// Emitted by the send_file tool after the agent attached a file to a chat.
+export const onAgentFile = (handler: (payload: AgentFileEvent) => void) =>
+  listen<AgentFileEvent>("agent-file", (e) => handler(e.payload));
 
 export const onSchedulesChanged = (handler: () => void) =>
   listen<unknown>("schedules-changed", () => handler());

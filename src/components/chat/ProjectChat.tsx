@@ -24,6 +24,14 @@ export default function ProjectChat({ projectId, projectName }: Props) {
   const [state, dispatch] = useReducer(chatReducer, {});
   const stateRef = useRef(state);
   stateRef.current = state;
+  // project id -> chat id, learned from history loads and send returns: the
+  // "agent-file" event carries only chatId, so the view maps it back to the
+  // project key, and ChatTranscript needs the chat id for agent attachments.
+  const [chatIds, setChatIds] = useState<Record<number, number>>({});
+  const chatIdsRef = useRef(chatIds);
+  chatIdsRef.current = chatIds;
+  const rememberChatId = (project: number, chat: number) =>
+    setChatIds((prev) => (prev[project] === chat ? prev : { ...prev, [project]: chat }));
   const [text, setText] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -40,7 +48,11 @@ export default function ProjectChat({ projectId, projectName }: Props) {
     if (stateRef.current[projectId]?.loaded) return;
     void ipc
       .projectChatHistory(projectId)
-      .then((dtos) => dispatch({ type: "loaded", key: projectId, items: historyToItems(dtos) }))
+      .then((dtos) => {
+        const chat = dtos[0]?.chatId;
+        if (chat != null) rememberChatId(projectId, chat);
+        dispatch({ type: "loaded", key: projectId, items: historyToItems(dtos) });
+      })
       .catch(() => dispatch({ type: "loaded", key: projectId, items: [] }));
   }, [projectId]);
 
@@ -48,6 +60,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
     let cancelled = false;
     let unEvent: (() => void) | undefined;
     let unConfirm: (() => void) | undefined;
+    let unFile: (() => void) | undefined;
     const onEvent = (p: AgentEventPayload) => {
       if (p.projectId == null) return; // harness-session events carry sessionId
       const key = p.projectId;
@@ -78,10 +91,20 @@ export default function ProjectChat({ projectId, projectName }: Props) {
         dispatch({ type: "confirm", key: p.projectId, payload: p });
       })
       .then((u) => (cancelled ? u() : (unConfirm = u)));
+    // Agent-sent files: the event carries only chatId, so route it through the
+    // remembered project -> chat map; the reducer dedupes by messageId.
+    void ipc
+      .onAgentFile((p) => {
+        const entry = Object.entries(chatIdsRef.current).find(([, chat]) => chat === p.chatId);
+        if (!entry) return;
+        dispatch({ type: "agentFile", key: Number(entry[0]), payload: p });
+      })
+      .then((u) => (cancelled ? u() : (unFile = u)));
     return () => {
       cancelled = true;
       unEvent?.();
       unConfirm?.();
+      unFile?.();
     };
   }, []);
 
@@ -127,9 +150,10 @@ export default function ProjectChat({ projectId, projectName }: Props) {
       grow();
       att.clear();
       dispatch({ type: "send", key: projectId, text: trimmed, attachments: refs });
-      void ipc.sendProjectMessage(projectId, trimmed, refs).catch((e) =>
-        dispatch({ type: "sendFailed", key: projectId, message: toMessage(e) }),
-      );
+      void ipc
+        .sendProjectMessage(projectId, trimmed, refs)
+        .then((chat) => rememberChatId(projectId, chat))
+        .catch((e) => dispatch({ type: "sendFailed", key: projectId, message: toMessage(e) }));
     })();
   };
 
@@ -161,6 +185,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
         listRef={listRef}
         empty="Начните диалог — агент проекта ответит здесь."
         projectId={projectId}
+        chatId={projectId != null ? (chatIds[projectId] ?? null) : null}
       />
 
       {att.pending.length > 0 && (

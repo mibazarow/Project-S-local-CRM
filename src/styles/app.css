@@ -675,6 +675,8 @@ input, textarea { font-family: inherit; }
 }
 .msg-attachment.doc .cap { padding: 0; border-top: none; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .msg-attachment.doc:hover { background: var(--surface); }
+.msg-attachment.clickable { cursor: pointer; }
+.msg-attachment.clickable:hover { background: var(--surface); }
 .msg.user .msg-attachment { border-color: transparent; }
 
 .chat.drag-over, .center-harness.drag-over { outline: 2px dashed var(--accent); outline-offset: -4px; }

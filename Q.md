@@ -17,7 +17,6 @@
 
 ## Инструменты: доработки по аудиту (ДЕЛАЕМ)
 ### Must-have
-- [TODO] **`send_file` / `send_photo`** — агент прикрепляет созданные артефакты прямо в чат. S-M.
 - [TODO] **`fs_copy` / `fs_move`** — копирование/перемещение по машине (Check вне Harness/Projects). S.
 - [TODO] **`ocr_image` / `ocr_pdf`** — OCR через macOS Vision (сканы/акты в CRM). M.
 ### Nice-to-have

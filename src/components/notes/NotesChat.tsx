@@ -51,6 +51,7 @@ export default function NotesChat() {
     let cancelled = false;
     let unEvent: (() => void) | undefined;
     let unConfirm: (() => void) | undefined;
+    let unFile: (() => void) | undefined;
     const reloadHistory = (key: number) => {
       void ipc
         .notesChatHistory()
@@ -99,10 +100,20 @@ export default function NotesChat() {
         dispatch({ type: "confirm", key, payload: p });
       })
       .then((u) => (cancelled ? u() : (unConfirm = u)));
+    // Agent-sent files: the notes chat is a per-working-dir singleton, so the
+    // event's chatId matches the locally known id; the reducer dedupes by
+    // messageId, so a later history reload never renders the file twice.
+    void ipc
+      .onAgentFile((p) => {
+        if (p.chatId !== chatIdRef.current) return;
+        dispatch({ type: "agentFile", key: p.chatId, payload: p });
+      })
+      .then((u) => (cancelled ? u() : (unFile = u)));
     return () => {
       cancelled = true;
       unEvent?.();
       unConfirm?.();
+      unFile?.();
     };
   }, []);
 
@@ -154,6 +165,7 @@ export default function NotesChat() {
         listRef={listRef}
         empty="Спросите агента о заметках…"
         projectId={null}
+        chatId={chatId}
       />
 
       {slice?.sendError && (

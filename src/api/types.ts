@@ -250,6 +250,19 @@ export type AgentEvent =
   | { type: "done"; answer: string; reason: string }
   | { type: "error"; code: string; message: string };
 
+// agent::send_file — payload of the "agent-file" event emitted when the agent
+// attaches a file to the chat with send_file. savedPath rules match
+// MessageAttachmentDto (project-/Notes-vault-relative, absolute for harness).
+export interface AgentFileEvent {
+  chatId: number;
+  messageId: number;
+  name: string;
+  path: string;
+  kind: "image" | "document" | "other";
+  isImage: boolean;
+  caption: string;
+}
+
 // chat::AgentEventPayload — project chats carry projectId, harness sessions
 // carry sessionId, notes-chat runs carry notes: true (chatId only).
 export interface AgentEventPayload {

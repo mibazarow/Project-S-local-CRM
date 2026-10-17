@@ -235,6 +235,14 @@ export default function HarnessView() {
   const [chat, dispatch] = useReducer(chatReducer, {});
   const chatRef = useRef(chat);
   chatRef.current = chat;
+  // session id -> chat id, learned from history loads and send returns: the
+  // "agent-file" event carries only chatId, so the view maps it back to the
+  // session key, and ChatTranscript needs the chat id for agent attachments.
+  const [sessionChatIds, setSessionChatIds] = useState<Record<number, number>>({});
+  const sessionChatIdsRef = useRef(sessionChatIds);
+  sessionChatIdsRef.current = sessionChatIds;
+  const rememberChatId = (session: number, chatId: number) =>
+    setSessionChatIds((prev) => (prev[session] === chatId ? prev : { ...prev, [session]: chatId }));
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
   const [text, setText] = useState("");
@@ -346,7 +354,11 @@ export default function HarnessView() {
     if (chatRef.current[activeId]?.loaded) return;
     void ipc
       .harnessSessionHistory(activeId)
-      .then((dtos) => dispatch({ type: "loaded", key: activeId, items: historyToItems(dtos) }))
+      .then((dtos) => {
+        const chatId = dtos[0]?.chatId;
+        if (chatId != null) rememberChatId(activeId, chatId);
+        dispatch({ type: "loaded", key: activeId, items: historyToItems(dtos) });
+      })
       .catch(() => dispatch({ type: "loaded", key: activeId, items: [] }));
   }, [activeId]);
 
@@ -362,10 +374,15 @@ export default function HarnessView() {
     let unConfirm: (() => void) | undefined;
     let unSchedules: (() => void) | undefined;
     let unSessions: (() => void) | undefined;
+    let unFile: (() => void) | undefined;
     const reloadHistory = (key: number) => {
       void ipc
         .harnessSessionHistory(key)
-        .then((dtos) => dispatch({ type: "loaded", key, items: historyToItems(dtos) }))
+        .then((dtos) => {
+          const chatId = dtos[0]?.chatId;
+          if (chatId != null) rememberChatId(key, chatId);
+          dispatch({ type: "loaded", key, items: historyToItems(dtos) });
+        })
         .catch(() => {});
     };
     const onEvent = (p: AgentEventPayload) => {
@@ -415,12 +432,22 @@ export default function HarnessView() {
     // and the backend emits this event after a session auto-title or an
     // agent rename_chat: the list (order and titles) refreshes as it changes.
     void ipc.onSessionsChanged(() => void loadSessions()).then((u) => (cancelled ? u() : (unSessions = u)));
+    // Agent-sent files: the event carries only chatId, so route it through the
+    // remembered session -> chat map; the reducer dedupes by messageId.
+    void ipc
+      .onAgentFile((p) => {
+        const entry = Object.entries(sessionChatIdsRef.current).find(([, chat]) => chat === p.chatId);
+        if (!entry) return;
+        dispatch({ type: "agentFile", key: Number(entry[0]), payload: p });
+      })
+      .then((u) => (cancelled ? u() : (unFile = u)));
     return () => {
       cancelled = true;
       unEvent?.();
       unConfirm?.();
       unSchedules?.();
       unSessions?.();
+      unFile?.();
     };
   }, [loadSessions, loadSchedules]);
 
@@ -501,9 +528,14 @@ export default function HarnessView() {
       // the list right after the command lands so the active chat visibly
       // rises to the top immediately, not only when the answer completes.
       // Auto-titles and rename_chat arrive later via "sessions-changed".
+      // The command returns the session chat id: remember it for agent-file
+      // routing and agent attachment reads before any send_file event lands.
       void ipc
         .sendSessionMessage(activeId, trimmed, refs)
-        .then(() => loadSessions())
+        .then((chatId) => {
+          rememberChatId(activeId, chatId);
+          return loadSessions();
+        })
         .catch((e) => dispatch({ type: "sendFailed", key: activeId, message: toMessage(e) }));
     })();
   };
@@ -675,6 +707,7 @@ export default function HarnessView() {
             )
           }
           projectId={null}
+          chatId={activeId != null ? (sessionChatIds[activeId] ?? null) : null}
         />
 
         {att.pending.length > 0 && (

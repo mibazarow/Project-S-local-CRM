@@ -732,6 +732,24 @@ fn chat_attachment_data_url(
     })
 }
 
+// Opens one attachment (document or image) of a chat message with the macOS
+// default handler, for the chat UI to open agent-sent files (SPEC 6.1). The
+// savedPath is resolved by the chat's kind (project / notes / harness); the
+// attachment must belong to that chat/message or the call is refused.
+#[tauri::command]
+fn chat_attachment_open(
+    app: AppHandle,
+    state: State<AppState>,
+    chat_id: i64,
+    message_id: i64,
+    index: usize,
+) -> Result<()> {
+    let wd = state.working_dir()?;
+    with_db(&state, |conn| {
+        attachments::chat_attachment_open(&app, conn, &wd, chat_id, message_id, index)
+    })
+}
+
 // Opens an attachment (document or image) with the macOS default handler.
 #[tauri::command]
 fn attachment_open(
@@ -1427,6 +1445,7 @@ pub fn run() {
             attachment_data_url,
             attachment_open,
             chat_attachment_data_url,
+            chat_attachment_open,
             index_project,
             reindex_all,
             index_status,

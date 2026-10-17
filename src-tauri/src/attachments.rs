@@ -150,7 +150,27 @@ pub fn chat_attachment_data_url(
     index: usize,
     max_bytes: u64,
 ) -> Result<String> {
-    // The message must belong to the chat: never read across chats.
+    let (kind, project_id, attachment) = chat_attachment_ref(conn, chat_id, message_id, index)?;
+    if !attachment.is_image {
+        return Err(AppError::Invalid(format!(
+            "attachment \"{}\" is not an image",
+            attachment.name
+        )));
+    }
+    let path = resolve_chat_attachment_path(conn, wd, &kind, project_id, &attachment.saved_path)?;
+    fs_ops::binary_data_url(&path, max_bytes, &attachment.saved_path)
+}
+
+// Loads one attachment of a message that belongs to the chat, together with
+// the chat's kind and project id, for chat-scoped resolution. The message must
+// belong to the chat: never read across chats. `index` picks the Nth
+// attachment of the message (0-based, the order the history DTO shows).
+fn chat_attachment_ref(
+    conn: &Connection,
+    chat_id: i64,
+    message_id: i64,
+    index: usize,
+) -> Result<(String, Option<i64>, AttachmentRef)> {
     let owner: Option<i64> = conn
         .query_row(
             "SELECT chat_id FROM messages WHERE id = ?1",
@@ -175,14 +195,38 @@ pub fn chat_attachment_data_url(
         .into_iter()
         .nth(index)
         .ok_or_else(|| AppError::Invalid(format!("attachment {index} not found")))?;
-    if !attachment.is_image {
-        return Err(AppError::Invalid(format!(
-            "attachment \"{}\" is not an image",
-            attachment.name
-        )));
-    }
-    let path = resolve_chat_attachment_path(conn, wd, &kind, project_id, &attachment.saved_path)?;
-    fs_ops::binary_data_url(&path, max_bytes, &attachment.saved_path)
+    Ok((kind, project_id, attachment))
+}
+
+// Resolves the on-disk path of one attachment of a chat message, by the chat's
+// kind. Shared by the data-URL and open commands (and their tests).
+pub fn chat_attachment_path(
+    conn: &Connection,
+    wd: &Path,
+    chat_id: i64,
+    message_id: i64,
+    index: usize,
+) -> Result<PathBuf> {
+    let (kind, project_id, attachment) = chat_attachment_ref(conn, chat_id, message_id, index)?;
+    resolve_chat_attachment_path(conn, wd, &kind, project_id, &attachment.saved_path)
+}
+
+// Opens one attachment (document or image) of a chat message with the macOS
+// default handler; the savedPath is resolved by the chat's kind and the
+// attachment must belong to that chat/message.
+pub fn chat_attachment_open(
+    app: &tauri::AppHandle,
+    conn: &Connection,
+    wd: &Path,
+    chat_id: i64,
+    message_id: i64,
+    index: usize,
+) -> Result<()> {
+    use tauri_plugin_opener::OpenerExt;
+    let path = chat_attachment_path(conn, wd, chat_id, message_id, index)?;
+    app.opener()
+        .open_path(path.display().to_string(), None::<&str>)
+        .map_err(|e| AppError::Io(e.to_string()))
 }
 
 // Resolves a stored savedPath for a chat of the given kind. Absolute paths
@@ -796,6 +840,116 @@ mod tests {
             chat_attachment_data_url(&conn, &wd, 999, msg.id, 0, 1024),
             Err(AppError::Invalid(_))
         ));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn chat_attachment_path_resolves_by_chat_kind_and_rejects_foreign_messages() {
+        let (wd, conn, pid, _state) = setup("att-chat-open");
+        // Project chat: a project-relative savedPath joins the (canonical)
+        // project root, and a non-image resolves too (open accepts any kind).
+        let chat_id = crate::chat::ensure_project_chat(&conn, pid).unwrap();
+        let root = paths::projects_dir(&wd).join("proj");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("report.md"), "# report").unwrap();
+        let msg = crate::chat::append_message(
+            &conn,
+            chat_id,
+            llm::Role::Assistant,
+            Some("report"),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        save_message_attachments(
+            &conn,
+            msg.id,
+            &[AttachmentRef {
+                name: "report.md".into(),
+                saved_path: "report.md".into(),
+                kind: "document".into(),
+                is_image: false,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            chat_attachment_path(&conn, &wd, chat_id, msg.id, 0).unwrap(),
+            root.canonicalize().unwrap().join("report.md")
+        );
+        // Out-of-range index and a foreign chat are refused.
+        assert!(matches!(
+            chat_attachment_path(&conn, &wd, chat_id, msg.id, 1),
+            Err(AppError::Invalid(_))
+        ));
+        assert!(matches!(
+            chat_attachment_path(&conn, &wd, 999, msg.id, 0),
+            Err(AppError::Invalid(_))
+        ));
+
+        // Notes chat: a vault-relative savedPath joins the Notes root.
+        let notes_chat = crate::notes::ensure_notes_chat(&conn).unwrap();
+        let vault = paths::notes_dir(&wd);
+        fs::create_dir_all(&vault).unwrap();
+        fs::write(vault.join("idea.md"), "# idea").unwrap();
+        let nmsg = crate::chat::append_message(
+            &conn,
+            notes_chat,
+            llm::Role::Assistant,
+            None,
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        save_message_attachments(
+            &conn,
+            nmsg.id,
+            &[AttachmentRef {
+                name: "idea.md".into(),
+                saved_path: "idea.md".into(),
+                kind: "document".into(),
+                is_image: false,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            chat_attachment_path(&conn, &wd, notes_chat, nmsg.id, 0).unwrap(),
+            vault.canonicalize().unwrap().join("idea.md")
+        );
+
+        // Harness chat: an absolute savedPath is used as-is.
+        let session = crate::harness::create_session(&conn, Some("s")).unwrap();
+        let hchat = crate::harness::session_chat_id(&conn, session.id).unwrap();
+        let inbox = paths::harness_inbox_dir(&wd);
+        fs::create_dir_all(&inbox).unwrap();
+        let abs = inbox.join("log.txt");
+        fs::write(&abs, "line").unwrap();
+        let hmsg = crate::chat::append_message(
+            &conn,
+            hchat,
+            llm::Role::Assistant,
+            None,
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        save_message_attachments(
+            &conn,
+            hmsg.id,
+            &[AttachmentRef {
+                name: "log.txt".into(),
+                saved_path: abs.display().to_string(),
+                kind: "document".into(),
+                is_image: false,
+            }],
+        )
+        .unwrap();
+        assert_eq!(
+            chat_attachment_path(&conn, &wd, hchat, hmsg.id, 0).unwrap(),
+            abs
+        );
         fs::remove_dir_all(&wd).unwrap();
     }
 }
