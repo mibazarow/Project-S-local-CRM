@@ -20,6 +20,7 @@ mod notes;
 mod onboarding;
 mod ops;
 mod paths;
+mod processes;
 mod projects;
 mod scheduler;
 mod search;
@@ -157,6 +158,7 @@ fn choose_working_dir(
     *state.db.lock().unwrap() = Some(conn);
     *state.working_dir.lock().unwrap() = Some(wd.clone());
     open_journal(&state, &wd)?;
+    let _ = with_db(&state, processes::reconcile);
     watcher::start(&app, &state, &wd);
     let _ = index::index_notes(&wd);
     *state.mcp.lock().unwrap() = mcp::McpRegistry::start(&wd);
@@ -1328,6 +1330,11 @@ pub fn run() {
                 let guard = state.db.lock().unwrap();
                 if let Some(conn) = guard.as_ref() {
                     let _ = harness::purge_inactive_sessions(conn, ttl);
+                    // Background process rows from a previous run: the
+                    // processes themselves were reparented to launchd and
+                    // keep running; reconcile only updates their status,
+                    // it never kills them.
+                    let _ = processes::reconcile(conn);
                 }
                 drop(guard);
                 // Notes vault: create/seed Notes/ before the watcher attaches

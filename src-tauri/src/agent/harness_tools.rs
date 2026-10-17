@@ -75,6 +75,12 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(super::doc_tools::CreateSpreadsheetTool::harness()),
         Arc::new(crate::skills::CreateSkillTool),
         Arc::new(BashTool::default()),
+        // Background process control (dev servers, installs): the background
+        // twin of bash, lazy-discovered together with it; see process_tools.rs.
+        Arc::new(super::process_tools::ProcessStartTool),
+        Arc::new(super::process_tools::ProcessLogsTool),
+        Arc::new(super::process_tools::ProcessStopTool),
+        Arc::new(super::process_tools::ProcessListTool),
         Arc::new(super::browser_tool::BrowserTool),
         Arc::new(super::net_tools::WebfetchTool::new()),
         Arc::new(super::net_tools::WebsearchTool::new()),
@@ -1447,7 +1453,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const DEFERRED_NAMES: [&str; 36] = [
+    const DEFERRED_NAMES: [&str; 40] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -1459,6 +1465,10 @@ mod tests {
         "create_spreadsheet",
         "create_skill",
         "bash",
+        "process_start",
+        "process_logs",
+        "process_stop",
+        "process_list",
         "browser",
         "webfetch",
         "websearch",
@@ -1533,6 +1543,15 @@ mod tests {
         assert_eq!(tool("schedule_list").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("schedule_pause").class(), ToolClass::Mutating);
         assert_eq!(tool("schedule_pause").policy(), PermissionPolicy::Skip);
+        for name in ["process_logs", "process_list"] {
+            assert_eq!(tool(name).class(), ToolClass::ReadOnly, "{name} class");
+            assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
+        }
+        for name in ["process_start", "process_stop"] {
+            assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
+            assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
+            assert!(tool(name).danger_reason(&json!({}), &ToolCtx::default()).is_some(), "{name} danger_reason");
+        }
         assert_eq!(tool("list_chats").class(), ToolClass::ReadOnly);
         assert_eq!(tool("list_chats").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("rename_chat").class(), ToolClass::Mutating);

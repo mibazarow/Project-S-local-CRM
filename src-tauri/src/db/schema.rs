@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::Connection;
 
-pub const SCHEMA_VERSION: i64 = 20;
+pub const SCHEMA_VERSION: i64 = 21;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -418,6 +418,28 @@ SELECT id, id, content, tags FROM memory;
     )
 }
 
+// Background process control (harness process tools): one row per started
+// background command (dev servers, installs). The command runs in its own
+// process group, so pgid equals pid; logs live under Harness/tmp/processes/
+// and are plain files, not FK-linked — deleting a row never touches a log.
+// status: running → exited (pid gone) / stopped (killed via process_stop)
+// / error (exited non-zero or otherwise unusable).
+const MIGRATION_21: &str = "
+CREATE TABLE IF NOT EXISTS processes (
+    id INTEGER PRIMARY KEY,
+    name TEXT,
+    pid INTEGER NOT NULL,
+    pgid INTEGER NOT NULL,
+    command TEXT NOT NULL,
+    cwd TEXT,
+    log_path TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('running','exited','stopped','error')),
+    exit_code INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+";
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -503,7 +525,7 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         conn.pragma_update(None, "foreign_keys", "OFF")?;
         conn.execute_batch(MIGRATION_17)?;
         conn.pragma_update(None, "foreign_keys", if fk_on { "ON" } else { "OFF" })?;
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        conn.pragma_update(None, "user_version", 17)?;
     }
     if version < 18 {
         // Cached project brief (SPEC project context slice): a short Russian
@@ -528,10 +550,18 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         if has_brief_updated_at == 0 {
             conn.execute("ALTER TABLE projects ADD COLUMN brief_updated_at TEXT", [])?;
         }
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        conn.pragma_update(None, "user_version", 18)?;
     }
     if version < 19 {
         conn.execute_batch(&migration_19())?;
+        conn.pragma_update(None, "user_version", 19)?;
+    }
+    if version < 20 {
+        conn.execute_batch(&migration_20())?;
+        conn.pragma_update(None, "user_version", 20)?;
+    }
+    if version < 21 {
+        conn.execute_batch(MIGRATION_21)?;
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
     Ok(())
@@ -1384,5 +1414,83 @@ CREATE UNIQUE INDEX uniq_chats_one_project_chat ON chats(project_id) WHERE kind 
             [],
         );
         assert!(bad.is_err());
+    }
+
+    #[test]
+    fn migration_v20_rebuilds_memory_fts_with_memory_id_and_backfills() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        // Simulate a pre-v20 database: memory_fts with the v7 shape (content
+        // only) and one memory row to backfill.
+        conn.execute_batch("DROP TABLE memory_fts;").unwrap();
+        conn.execute_batch(
+            "CREATE VIRTUAL TABLE memory_fts USING fts5(content, tokenize = 'unicode61');",
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO memory (content, tags, created_at, updated_at) VALUES ('remember this', '[\"x\"]', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 19).unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let rows: Vec<(i64, String)> = conn
+            .prepare("SELECT memory_id, content FROM memory_fts")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![(1, "remember this".to_string())]);
+        let tables: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE name IN ('memory_vectors','vec_memory')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 2);
+    }
+
+    #[test]
+    fn migration_v21_creates_processes_table_with_status_check() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO processes (name, pid, pgid, command, cwd, log_path, status, exit_code, created_at, updated_at) VALUES ('dev', 4242, 4242, 'npm run dev', '/tmp/p', '/tmp/p.log', 'exited', 0, '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        // name and cwd stay nullable, exit_code too
+        conn.execute(
+            "INSERT INTO processes (pid, pgid, command, log_path, status, created_at, updated_at) VALUES (1, 1, 'sleep 1', 'l', 'running', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        for bad_status in ["bogus", "killed", ""] {
+            let bad = conn.execute(
+                "INSERT INTO processes (pid, pgid, command, log_path, status, created_at, updated_at) VALUES (2, 2, 'x', 'l', ?1, '2026-01-01', '2026-01-01')",
+                params![bad_status],
+            );
+            assert!(bad.is_err(), "status {bad_status:?} accepted");
+        }
+        // pid/pgid/command/log_path/status are NOT NULL
+        let no_pid = conn.execute(
+            "INSERT INTO processes (pgid, command, log_path, status, created_at, updated_at) VALUES (1, 'x', 'l', 'running', '2026-01-01', '2026-01-01')",
+            [],
+        );
+        assert!(no_pid.is_err());
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
     }
 }

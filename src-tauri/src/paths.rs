@@ -16,6 +16,9 @@ pub const SETTINGS_BACKUPS: &str = "backups";
 
 pub const HARNESS_TMP: &str = "tmp";
 pub const HARNESS_INBOX: &str = "Входящие";
+// Log folder for background processes started by the harness (process
+// tools); lives under Harness/tmp so the tmp retention purge covers it.
+pub const HARNESS_PROCESSES: &str = "processes";
 
 pub const PROJECT_TASKS: &str = "tasks";
 pub const PROJECT_INBOX: &str = "Входящие";
@@ -46,6 +49,11 @@ pub fn harness_dir(wd: &Path) -> PathBuf {
 
 pub fn harness_tmp_dir(wd: &Path) -> PathBuf {
     wd.join(HARNESS_DIR).join(HARNESS_TMP)
+}
+
+// Logs of background processes (process_start): <id>-<slug>.log files.
+pub fn harness_processes_dir(wd: &Path) -> PathBuf {
+    harness_tmp_dir(wd).join(HARNESS_PROCESSES)
 }
 
 // Default landing folder for harness-session chat attachments (SPEC 6.1).
@@ -135,6 +143,7 @@ mod tests {
         let wd = Path::new("/tmp/wd");
         assert_eq!(projects_dir(wd), PathBuf::from("/tmp/wd/Projects"));
         assert_eq!(harness_tmp_dir(wd), PathBuf::from("/tmp/wd/Harness/tmp"));
+        assert_eq!(harness_processes_dir(wd), PathBuf::from("/tmp/wd/Harness/tmp/processes"));
         assert_eq!(config_dir(wd), PathBuf::from("/tmp/wd/Settings/config"));
         assert_eq!(skills_dir(wd), PathBuf::from("/tmp/wd/Settings/skills"));
         assert_eq!(skills_builtin_dir(wd), PathBuf::from("/tmp/wd/Settings/skills/builtin"));

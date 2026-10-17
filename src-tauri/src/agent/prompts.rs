@@ -212,8 +212,16 @@ mod tests {
     fn real_tool_blocks_fit_the_prompt_cap() {
         let project = project_tools_block();
         let harness = harness_tools_block();
-        assert!(project.len() < crate::agent::catalog::SUMMARY_BLOCK_CAP);
-        assert!(harness.len() < crate::agent::catalog::SUMMARY_BLOCK_CAP);
+        assert!(
+            project.len() < crate::agent::catalog::SUMMARY_BLOCK_CAP,
+            "project block {} chars",
+            project.len()
+        );
+        assert!(
+            harness.len() < crate::agent::catalog::SUMMARY_BLOCK_CAP,
+            "harness block {} chars",
+            harness.len()
+        );
     }
 
     #[test]

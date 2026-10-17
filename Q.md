@@ -17,7 +17,6 @@
 
 ## Инструменты: доработки по аудиту (ДЕЛАЕМ)
 ### Must-have
-- [TODO] **`process_start` / `process_logs` / `process_stop`** — фоновые процессы и сервисы (dev-серверы, установки); `bash` сейчас только foreground 120 с. M.
 - [TODO] **`git_pull` (ff) / `git_push`** — синхронизация репозиториев (Check, без force). S.
 - [TODO] **`send_file` / `send_photo`** — агент прикрепляет созданные артефакты прямо в чат. S-M.
 - [TODO] **`fs_copy` / `fs_move`** — копирование/перемещение по машине (Check вне Harness/Projects). S.
