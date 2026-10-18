@@ -244,7 +244,9 @@ pub fn run_with(
 }
 
 // clock overrides the watchdog's elapsed-time source (tests fake it); None
-// means the real monotonic clock.
+// means the real monotonic clock. The body is decomposed into the named steps
+// below; the round/event order, guard firing, step-limit/latch semantics and
+// error handling are exactly what a single flat loop body used to do.
 fn run_inner(
     state: &mut AgentState<'_>,
     config: &AgentRunConfig,
@@ -253,247 +255,417 @@ fn run_inner(
     mut on_message: impl FnMut(&ChatMessage),
     clock: Option<Box<dyn Fn() -> Duration + Send>>,
 ) -> Result<AgentRunResult> {
-    // The pre-built transcript is sanitized as a last-line guard: a caller
-    // that assembled its history outside chat::load_history must still never
-    // send an assistant tool_calls turn without its tool results (HTTP 400).
-    let mut messages = sanitize_tool_history(&config.messages);
-
-    let ctx = ToolCtx {
-        project_id: config.project_id,
-        session_id: config.session_id,
-        chat_id: config.chat_id,
-        working_dir: config.working_dir.clone(),
-        state: config.state.clone(),
-        notes_root: config.notes_root.clone(),
+    let mut run = Run::new(config, clock);
+    let mut hooks = Hooks {
+        emit: &mut emit,
+        on_message: &mut on_message,
     };
-    let mut fallback = String::new();
+
+    for step in 1..=config.max_steps {
+        if run.is_cancelled(config) {
+            return Ok(run.finish_run(&mut hooks, "cancelled", step - 1, None));
+        }
+        if let Some(reason) = run.check_watchdog() {
+            return Ok(run.finish_run(&mut hooks, reason, step - 1, None));
+        }
+        let outcome = run.call_llm(state, config, &mut hooks)?;
+        run.note_round_outcome(&outcome);
+        match run.step(state, config, confirmer, &mut hooks, step, &outcome) {
+            StepOutcome::Continue => continue,
+            StepOutcome::Finished(result) => return Ok(result),
+        }
+    }
+
+    Ok(run.finish_run(&mut hooks, "step_limit", config.max_steps, None))
+}
+
+// The two run callbacks threaded through every step: `emit` for UI events,
+// `on_message` for transcript persistence.
+struct Hooks<'a, E, M>
+where
+    E: FnMut(AgentEvent),
+    M: FnMut(&ChatMessage),
+{
+    emit: &'a mut E,
+    on_message: &'a mut M,
+}
+
+// Lets the steps take any reborrow of the hooks struct, not a concrete one.
+trait HookSet {
+    fn emit(&mut self, event: AgentEvent);
+    fn on_message(&mut self, message: &ChatMessage);
+
+    // The pre-existing execute_tool_call boundary takes a bare emit closure;
+    // this adapter routes its ConfirmationRequested/Started events through the
+    // same hook without changing that function.
+    fn exec_tool(
+        &mut self,
+        catalog: &mut Catalog,
+        tc: &ToolCall,
+        config: &AgentRunConfig,
+        confirmer: &dyn Confirmer,
+        always_allow: &mut BTreeSet<String>,
+        ctx: &ToolCtx,
+    ) -> ToolResult {
+        execute_tool_call(catalog, tc, config, confirmer, always_allow, ctx, &mut |e| {
+            self.emit(e)
+        })
+    }
+}
+
+impl<E, M> HookSet for Hooks<'_, E, M>
+where
+    E: FnMut(AgentEvent),
+    M: FnMut(&ChatMessage),
+{
+    fn emit(&mut self, event: AgentEvent) {
+        (self.emit)(event);
+    }
+
+    fn on_message(&mut self, message: &ChatMessage) {
+        (self.on_message)(message);
+    }
+}
+
+// What one round decided after its tool calls: continue with the next round
+// or end the run (the finish_task latch fired).
+enum StepOutcome {
+    Continue,
+    Finished(AgentRunResult),
+}
+
+// Per-run mutable state shared by the steps: the append-only transcript, the
+// latched fallback answer, the accumulated thinking trace, the confirmation
+// allowlist, the watchdog and the once-per-run guard counters.
+struct Run {
+    messages: Vec<ChatMessage>,
+    ctx: ToolCtx,
+    fallback: String,
     // Thinking trace accumulated across rounds: replayed to the model on every
     // assistant turn (thinking-mode providers reject a follow-up without it)
     // and reported with the final result.
-    let mut reasoning: Option<String> = None;
-    let mut always_allow: BTreeSet<String> = BTreeSet::new();
-
-    let mut watchdog = match clock {
-        Some(now) => Watchdog::new(&config.limits, now),
-        None => Watchdog::system(&config.limits),
-    };
+    reasoning: Option<String>,
+    always_allow: BTreeSet<String>,
+    watchdog: Watchdog,
+    // This round's thinking trace, set by note_round_outcome and consumed by
+    // step when it appends the assistant message.
+    round_reasoning: Option<String>,
     // Guard state, all per-run: each guard fires at most once.
-    let mut tool_calls_made = 0usize;
-    let mut verifying_ok = false;
-    let mut last_call_sig: Option<u64> = None;
-    let mut repeat_count = 0usize;
-    let mut false_success_nudged = false;
-    let mut loop_nudged = false;
-    let mut no_attempt_nudged = false;
+    guards: GuardState,
+}
 
-    for step in 1..=config.max_steps {
-        if config
+// Guard bookkeeping shared by the FalseSuccess / NoAttempt / Loop guards.
+struct GuardState {
+    tool_calls_made: usize,
+    verifying_ok: bool,
+    last_call_sig: Option<u64>,
+    repeat_count: usize,
+    false_success_nudged: bool,
+    loop_nudged: bool,
+    no_attempt_nudged: bool,
+}
+
+impl Run {
+    fn new(config: &AgentRunConfig, clock: Option<Box<dyn Fn() -> Duration + Send>>) -> Self {
+        // The pre-built transcript is sanitized as a last-line guard: a caller
+        // that assembled its history outside chat::load_history must still never
+        // send an assistant tool_calls turn without its tool results (HTTP 400).
+        let messages = sanitize_tool_history(&config.messages);
+        let ctx = ToolCtx {
+            project_id: config.project_id,
+            session_id: config.session_id,
+            chat_id: config.chat_id,
+            working_dir: config.working_dir.clone(),
+            state: config.state.clone(),
+            notes_root: config.notes_root.clone(),
+        };
+        let watchdog = match clock {
+            Some(now) => Watchdog::new(&config.limits, now),
+            None => Watchdog::system(&config.limits),
+        };
+        Run {
+            messages,
+            ctx,
+            fallback: String::new(),
+            reasoning: None,
+            always_allow: BTreeSet::new(),
+            watchdog,
+            round_reasoning: None,
+            guards: GuardState {
+                tool_calls_made: 0,
+                verifying_ok: false,
+                last_call_sig: None,
+                repeat_count: 0,
+                false_success_nudged: false,
+                loop_nudged: false,
+                no_attempt_nudged: false,
+            },
+        }
+    }
+
+    fn is_cancelled(&self, config: &AgentRunConfig) -> bool {
+        config
             .cancel
             .as_ref()
             .is_some_and(|flag| flag.load(Ordering::Relaxed))
-        {
-            emit(AgentEvent::Done {
-                answer: fallback.clone(),
-                reason: "cancelled".into(),
-                reasoning: reasoning.clone(),
-            });
-            return Ok(AgentRunResult {
-                answer: fallback,
-                finish_reason: "cancelled".into(),
-                steps: step - 1,
-                reasoning,
-            });
-        }
-        if let Some(reason) = watchdog.check() {
-            emit(AgentEvent::Done {
-                answer: fallback.clone(),
-                reason: reason.into(),
-                reasoning: reasoning.clone(),
-            });
-            return Ok(AgentRunResult {
-                answer: fallback,
-                finish_reason: reason.into(),
-                steps: step - 1,
-                reasoning,
-            });
-        }
+    }
+
+    fn check_watchdog(&self) -> Option<&'static str> {
+        self.watchdog.check()
+    }
+
+    // One streamed LLM round; deltas count as watchdog progress. A backend
+    // error emits the llm Error event and aborts the run (same as before).
+    fn call_llm<H: HookSet>(
+        &mut self,
+        state: &mut AgentState<'_>,
+        config: &AgentRunConfig,
+        hooks: &mut H,
+    ) -> Result<ChatOutcome> {
         let specs = state.catalog.to_specs();
         let mut on_event = |ev: ChatEvent| match ev {
             ChatEvent::Delta(text) => {
-                watchdog.note_progress();
-                emit(AgentEvent::TextDelta { text });
+                self.watchdog.note_progress();
+                hooks.emit(AgentEvent::TextDelta { text });
             }
             ChatEvent::ReasoningDelta(text) => {
-                watchdog.note_progress();
-                emit(AgentEvent::ReasoningDelta { text });
+                self.watchdog.note_progress();
+                hooks.emit(AgentEvent::ReasoningDelta { text });
             }
             _ => {}
         };
-        let outcome = match state.backend.chat_stream(&messages, Some(&specs), &config.params, &mut on_event) {
-            Ok(outcome) => outcome,
+        match state.backend.chat_stream(&self.messages, Some(&specs), &config.params, &mut on_event) {
+            Ok(outcome) => Ok(outcome),
             Err(e) => {
-                emit(AgentEvent::Error {
+                hooks.emit(AgentEvent::Error {
                     code: "llm".into(),
                     message: e.to_string(),
                 });
-                return Err(e);
+                Err(e)
             }
-        };
+        }
+    }
 
-        // Carry this round's thinking trace into the accumulated run trace and
-        // onto the assistant message the loop appends below.
+    // Accumulate this round's thinking trace and latch its final text as the
+    // fallback answer candidate, before any transcript turns are appended.
+    // The round's trace is kept for the assistant message appended by `step`.
+    fn note_round_outcome(&mut self, outcome: &ChatOutcome) {
         let round_reasoning = outcome
             .reasoning
             .clone()
             .filter(|r| !r.trim().is_empty());
         if let Some(r) = &round_reasoning {
-            reasoning = Some(match reasoning.take() {
+            self.reasoning = Some(match self.reasoning.take() {
                 Some(prev) => format!("{prev}\n{r}"),
                 None => r.clone(),
             });
         }
-
-        // Latch this round's final text as the fallback answer candidate.
         if let Some(content) = outcome.content.as_deref().filter(|c| !c.trim().is_empty()) {
-            fallback = content.to_string();
+            self.fallback = content.to_string();
         }
+        self.round_reasoning = round_reasoning;
+    }
 
+    // The round body after the trace/fallback bookkeeping: text-only rounds
+    // append their assistant turn, fire the claim guards and continue; tool
+    // rounds append the assistant tool_calls turn and run every call.
+    fn step<H: HookSet>(
+        &mut self,
+        state: &mut AgentState<'_>,
+        config: &AgentRunConfig,
+        confirmer: &dyn Confirmer,
+        hooks: &mut H,
+        step: usize,
+        outcome: &ChatOutcome,
+    ) -> StepOutcome {
+        let round_reasoning = self.round_reasoning.take();
         if outcome.tool_calls.is_empty() {
-            if let Some(content) = outcome.content {
+            if let Some(content) = &outcome.content {
                 let msg = ChatMessage::assistant(content.clone()).with_reasoning(round_reasoning);
-                on_message(&msg);
-                messages.push(msg);
-                // FalseSuccessGuard: completion claim with no successful
-                // verifying tool call in this run.
-                if !false_success_nudged && !verifying_ok && claims_completion(&content) {
-                    messages.push(ChatMessage::system(FALSE_SUCCESS_NUDGE));
-                    false_success_nudged = true;
-                }
-                // NoAttemptGuard: incapability claim with zero tool calls.
-                if !no_attempt_nudged && tool_calls_made == 0 && claims_incapability(&content) {
-                    messages.push(ChatMessage::system(NO_ATTEMPT_NUDGE));
-                    no_attempt_nudged = true;
-                }
+                hooks.on_message(&msg);
+                self.messages.push(msg);
+                self.handle_claim_guards(content);
             }
-            continue;
+            return StepOutcome::Continue;
         }
         let assistant_msg = ChatMessage::assistant_tool_calls(outcome.tool_calls.clone())
             .with_reasoning(round_reasoning);
-        on_message(&assistant_msg);
-        messages.push(assistant_msg);
+        hooks.on_message(&assistant_msg);
+        self.messages.push(assistant_msg);
 
         for tc in &outcome.tool_calls {
-            emit(AgentEvent::ToolCallStarted {
-                name: tc.name.clone(),
-                args: tc.arguments.clone(),
-            });
-            let envelope = execute_tool_call(
-                state.catalog,
-                tc,
-                config,
-                confirmer,
-                &mut always_allow,
-                &ctx,
-                &mut emit,
-            );
-            let ok = envelope.ok;
-            // The envelope serialization must never abort the run with `?`:
-            // an early return here would persist the assistant tool_calls
-            // turn without its tool result and poison every later request.
-            let envelope_json = serde_json::to_value(&envelope).unwrap_or_else(|e| {
-                json!({
-                    "ok": false,
-                    "error": {
-                        "code": "execution_error",
-                        "message": format!("tool result could not be serialized: {e}"),
-                    },
-                })
-            });
-            emit(AgentEvent::ToolCallFinished {
-                name: tc.name.clone(),
-                ok,
-                envelope: envelope_json.clone(),
-            });
-            // Background entity linking (links slice): a successful tool call
-            // ties the run's chat to the file/task/note/schedule it touched.
-            // Best-effort: the helper swallows every error and never changes
-            // the tool result or the loop.
-            if ok {
-                crate::links::auto_link_from_tool_ctx(&ctx, &tc.name, &tc.arguments, &envelope_json);
+            if let Some((answer, reason)) =
+                self.run_tool_call(state.catalog, tc, config, confirmer, hooks)
+            {
+                return StepOutcome::Finished(self.finish_run(hooks, &reason, step, Some(answer)));
             }
-            // Every tool call — success, error, denied, timeout, hidden,
-            // unknown, invalid args or a killed run — reaches this line and
-            // appends its tool message before the next assistant turn.
-            let tool_content = serde_json::to_string(&envelope_json).unwrap_or_else(|_| {
-                r#"{"ok":false,"error":{"code":"execution_error","message":"tool result could not be serialized"}}"#
-                    .to_string()
-            });
-            let tool_msg = ChatMessage::tool_result(&tc.id, tool_content);
-            on_message(&tool_msg);
-            messages.push(tool_msg);
-            watchdog.note_progress();
+        }
+        StepOutcome::Continue
+    }
 
-            tool_calls_made += 1;
-            // Discovery meta-tools prove nothing about the task itself, so a
-            // successful one is not verifying evidence for the false-success
-            // guard.
-            if ok && tc.name != LIST_TOOLS && tc.name != ENABLE_TOOLS {
-                verifying_ok = true;
-            }
-            let sig = call_signature(tc, &envelope_json);
-            if Some(sig) == last_call_sig {
-                repeat_count += 1;
-            } else {
-                last_call_sig = Some(sig);
-                repeat_count = 1;
-            }
-
-            if tc.name == "finish_task" && ok {
-                let answer = tc
-                    .arguments
-                    .get("answer")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_string();
-                let reason = tc
-                    .arguments
-                    .get("action")
-                    .and_then(Value::as_str)
-                    .unwrap_or("finish")
-                    .to_string();
-                emit(AgentEvent::Done {
-                    answer: answer.clone(),
-                    reason: reason.clone(),
-                    reasoning: reasoning.clone(),
-                });
-                return Ok(AgentRunResult {
-                    answer,
-                    finish_reason: reason,
-                    steps: step,
-                    reasoning,
-                });
-            }
-
-            // LoopGuard: the same call produced the same result LOOP_REPEAT_LIMIT
-            // times in a row.
-            if !loop_nudged && repeat_count >= LOOP_REPEAT_LIMIT {
-                messages.push(ChatMessage::system(LOOP_NUDGE));
-                loop_nudged = true;
-            }
+    // FalseSuccessGuard: completion claim with no successful verifying tool
+    // call in this run. NoAttemptGuard: incapability claim with zero tool
+    // calls. Each fires at most once per run.
+    fn handle_claim_guards(&mut self, content: &str) {
+        if !self.guards.false_success_nudged
+            && !self.guards.verifying_ok
+            && claims_completion(content)
+        {
+            self.messages.push(ChatMessage::system(FALSE_SUCCESS_NUDGE));
+            self.guards.false_success_nudged = true;
+        }
+        if !self.guards.no_attempt_nudged
+            && self.guards.tool_calls_made == 0
+            && claims_incapability(content)
+        {
+            self.messages.push(ChatMessage::system(NO_ATTEMPT_NUDGE));
+            self.guards.no_attempt_nudged = true;
         }
     }
 
-    emit(AgentEvent::Done {
-        answer: fallback.clone(),
-        reason: "step_limit".into(),
-        reasoning: reasoning.clone(),
-    });
-    Ok(AgentRunResult {
-        answer: fallback,
-        finish_reason: "step_limit".into(),
-        steps: config.max_steps,
-        reasoning,
-    })
+    // One tool call end to end: Started event, execution, envelope
+    // serialization, Finished event, best-effort entity linking, the tool
+    // transcript message, guard bookkeeping and the finish_task latch.
+    // Returns Some((answer, reason)) when the latch fires.
+    fn run_tool_call<H: HookSet>(
+        &mut self,
+        catalog: &mut Catalog,
+        tc: &ToolCall,
+        config: &AgentRunConfig,
+        confirmer: &dyn Confirmer,
+        hooks: &mut H,
+    ) -> Option<(String, String)> {
+        hooks.emit(AgentEvent::ToolCallStarted {
+            name: tc.name.clone(),
+            args: tc.arguments.clone(),
+        });
+        let envelope = hooks.exec_tool(
+            catalog,
+            tc,
+            config,
+            confirmer,
+            &mut self.always_allow,
+            &self.ctx,
+        );
+        let ok = envelope.ok;
+        // The envelope serialization must never abort the run with `?`:
+        // an early return here would persist the assistant tool_calls
+        // turn without its tool result and poison every later request.
+        let envelope_json = serde_json::to_value(&envelope).unwrap_or_else(|e| {
+            json!({
+                "ok": false,
+                "error": {
+                    "code": "execution_error",
+                    "message": format!("tool result could not be serialized: {e}"),
+                },
+            })
+        });
+        hooks.emit(AgentEvent::ToolCallFinished {
+            name: tc.name.clone(),
+            ok,
+            envelope: envelope_json.clone(),
+        });
+        // Background entity linking (links slice): a successful tool call
+        // ties the run's chat to the file/task/note/schedule it touched.
+        // Best-effort: the helper swallows every error and never changes
+        // the tool result or the loop.
+        if ok {
+            crate::links::auto_link_from_tool_ctx(&self.ctx, &tc.name, &tc.arguments, &envelope_json);
+        }
+        // Every tool call — success, error, denied, timeout, hidden,
+        // unknown, invalid args or a killed run — reaches this line and
+        // appends its tool message before the next assistant turn.
+        let tool_content = serde_json::to_string(&envelope_json).unwrap_or_else(|_| {
+            r#"{"ok":false,"error":{"code":"execution_error","message":"tool result could not be serialized"}}"#
+                .to_string()
+        });
+        let tool_msg = ChatMessage::tool_result(&tc.id, tool_content);
+        hooks.on_message(&tool_msg);
+        self.messages.push(tool_msg);
+        self.watchdog.note_progress();
+
+        self.note_tool_call(tc, &envelope_json, ok);
+        // The finish latch is checked before the LoopGuard nudge: a run that
+        // ends on finish_task never gets the nudge appended (as before).
+        if let Some(latched) = self.finish_latch(tc, ok) {
+            return Some(latched);
+        }
+        self.handle_loop_guard();
+        None
+    }
+
+    // Guard bookkeeping after a tool result was appended: the call count and
+    // the verifying evidence for FalseSuccess, the identical-call streak.
+    fn note_tool_call(&mut self, tc: &ToolCall, envelope_json: &Value, ok: bool) {
+        self.guards.tool_calls_made += 1;
+        // Discovery meta-tools prove nothing about the task itself, so a
+        // successful one is not verifying evidence for the false-success
+        // guard.
+        if ok && tc.name != LIST_TOOLS && tc.name != ENABLE_TOOLS {
+            self.guards.verifying_ok = true;
+        }
+        let sig = call_signature(tc, envelope_json);
+        if Some(sig) == self.guards.last_call_sig {
+            self.guards.repeat_count += 1;
+        } else {
+            self.guards.last_call_sig = Some(sig);
+            self.guards.repeat_count = 1;
+        }
+    }
+
+    // LoopGuard: the same call produced the same result LOOP_REPEAT_LIMIT
+    // times in a row; fires at most once per run.
+    fn handle_loop_guard(&mut self) {
+        if !self.guards.loop_nudged && self.guards.repeat_count >= LOOP_REPEAT_LIMIT {
+            self.messages.push(ChatMessage::system(LOOP_NUDGE));
+            self.guards.loop_nudged = true;
+        }
+    }
+
+    // The finish_task latch: a successful finish_task call ends the run with
+    // its answer/action arguments.
+    fn finish_latch(&self, tc: &ToolCall, ok: bool) -> Option<(String, String)> {
+        if tc.name != "finish_task" || !ok {
+            return None;
+        }
+        let answer = tc
+            .arguments
+            .get("answer")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let reason = tc
+            .arguments
+            .get("action")
+            .and_then(Value::as_str)
+            .unwrap_or("finish")
+            .to_string();
+        Some((answer, reason))
+    }
+
+    // The single exit for every non-error end: emit Done and build the result
+    // with the steps completed. The finish latch overrides the answer with the
+    // one from finish_task's arguments; every other end reports the latch.
+    fn finish_run<H: HookSet>(
+        &mut self,
+        hooks: &mut H,
+        reason: &str,
+        steps: usize,
+        answer: Option<String>,
+    ) -> AgentRunResult {
+        let answer = answer.unwrap_or_else(|| self.fallback.clone());
+        hooks.emit(AgentEvent::Done {
+            answer: answer.clone(),
+            reason: reason.into(),
+            reasoning: self.reasoning.clone(),
+        });
+        AgentRunResult {
+            answer,
+            finish_reason: reason.into(),
+            steps,
+            reasoning: self.reasoning.clone(),
+        }
+    }
 }
 
 // Attaches an actionable hint to failed tool results (before capping, so the
@@ -820,6 +992,94 @@ mod tests {
                 _ => None,
             })
             .unwrap_or_else(|| panic!("no ToolCallFinished for {name}"))
+    }
+
+    // --- extracted step units (S3.4 decomposition) ---
+
+    fn probe_run() -> Run {
+        Run::new(&config(8), None)
+    }
+
+    #[test]
+    fn finish_latch_fires_only_on_a_successful_finish_task_call() {
+        let run = probe_run();
+        // Not finish_task: no latch regardless of ok.
+        let echo = call("c1", "echo", json!({ "answer": "x" }));
+        assert_eq!(run.finish_latch(&echo, true), None);
+        // finish_task but the call failed: the run continues.
+        let failed = finish_call("nope");
+        assert_eq!(run.finish_latch(&failed, false), None);
+        // Successful finish_task: answer/action travel through.
+        let ok = finish_call("yes");
+        assert_eq!(
+            run.finish_latch(&ok, true),
+            Some(("yes".to_string(), "finish".to_string()))
+        );
+        // Missing args fall back exactly as before: empty answer, "finish" action.
+        let bare = call("f2", "finish_task", json!({}));
+        assert_eq!(
+            run.finish_latch(&bare, true),
+            Some((String::new(), "finish".to_string()))
+        );
+        let stop = call("f3", "finish_task", json!({ "action": "stop" }));
+        assert_eq!(
+            run.finish_latch(&stop, true),
+            Some((String::new(), "stop".to_string()))
+        );
+    }
+
+    #[test]
+    fn note_round_outcome_latches_the_last_non_blank_text_and_trims_blank_traces() {
+        let mut run = probe_run();
+        run.note_round_outcome(&text_outcome("first"));
+        // Blank/whitespace content must not clobber the latched fallback.
+        let blank = ChatOutcome {
+            content: Some("   ".into()),
+            reasoning: Some("  ".into()),
+            tool_calls: vec![],
+            finish_reason: None,
+            usage: None,
+        };
+        run.note_round_outcome(&blank);
+        assert_eq!(run.fallback, "first");
+        assert_eq!(run.reasoning, None);
+        run.note_round_outcome(&text_outcome("second"));
+        assert_eq!(run.fallback, "second");
+        // Non-blank traces accumulate across rounds, newline-joined.
+        run.note_round_outcome(&reasoning_outcome("third", "trace a"));
+        run.note_round_outcome(&reasoning_outcome("fourth", "trace b"));
+        assert_eq!(run.reasoning.as_deref(), Some("trace a\ntrace b"));
+        assert_eq!(run.fallback, "fourth");
+    }
+
+    #[test]
+    fn loop_guard_records_the_streak_but_nudges_only_at_the_limit() {
+        let mut run = probe_run();
+        let tc = call("c1", "echo", json!({ "text": "x" }));
+        let envelope = json!({ "ok": true, "data": { "echo": "x" } });
+        for _ in 1..LOOP_REPEAT_LIMIT {
+            run.note_tool_call(&tc, &envelope, true);
+            run.handle_loop_guard();
+        }
+        assert!(!run.guards.loop_nudged);
+        assert!(run.messages.iter().all(|m| m.text_content() != Some(LOOP_NUDGE)));
+        run.note_tool_call(&tc, &envelope, true);
+        run.handle_loop_guard();
+        assert!(run.guards.loop_nudged);
+        assert!(run
+            .messages
+            .iter()
+            .any(|m| m.role == Role::System && m.text_content() == Some(LOOP_NUDGE)));
+        // Verifying evidence: meta-tools do not count, failed calls do not,
+        // a successful real tool does (fresh run: the streak above already
+        // set the flag).
+        let mut run = probe_run();
+        run.note_tool_call(&call("d1", LIST_TOOLS, json!({})), &json!({ "ok": true }), true);
+        assert!(!run.guards.verifying_ok);
+        run.note_tool_call(&tc, &envelope, false);
+        assert!(!run.guards.verifying_ok);
+        run.note_tool_call(&tc, &envelope, true);
+        assert!(run.guards.verifying_ok);
     }
 
     #[test]
