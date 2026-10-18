@@ -7,7 +7,7 @@
 
 ## Текущее состояние
 - Последний зелёный HEAD: `ab60b04` — `npm test` **164 passed**, `npm run build` OK, oxlint — только pre-existing `crossActions.ts`.
-- Бэкенд последний раз проверен на `10ae06d`: `cargo test` **777 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings. S5.1 трогал только бэкенд (allow/мёртвый код), контракты/DTO/схема не затронуты.
+- Бэкенд последний раз проверен на `10ae06d`: `cargo test` **777 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings. Контракты/DTO/схема не затронуты.
 - Baseline-скриншоты: `/tmp/project-s-baseline/` (7 экранов).
 - Полный `npm run app:build` — только в финале.
 
