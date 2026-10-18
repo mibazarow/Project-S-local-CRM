@@ -7,12 +7,11 @@
 
 ## Текущее состояние
 - Последний зелёный HEAD: `ab60b04` — `npm test` **164 passed**, `npm run build` OK, oxlint — только pre-existing `crossActions.ts`.
-- Бэкенд последний раз проверен на `8d6a316`: `cargo test` **796 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings. Контракты/DTO/схема не затронуты.
+- Бэкенд последний раз проверен на `578a856`: `cargo test` **803 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings. Контракты/DTO/схема не затронуты.
 - Baseline-скриншоты: `/tmp/project-s-baseline/` (7 экранов).
 - Полный `npm run app:build` — только в финале.
 
 ## Фаза 5 — остаток
-- **S5.5c browser-static** — `SESSION` (`agent/browser_tool.rs:34`): инкапсулировать общую сессию (launch/reuse/kill).
 - **S5.5d processes-static** — `CHILDREN` (`processes.rs:40`): инкапсулировать реестр процессов (shutdown/reconcile).
 - **S5.5e backups-static** — `ACTIVE_BACKUPS` (`ops.rs:260`): инкапсулировать дедуп конкурентных бэкапов.
 - **S5.5f open-with-cache** — `CACHE` (`open_with.rs:153`): инкапсулировать кэш списка приложений по типу.
@@ -28,4 +27,4 @@
 - `BAG_REPORT.md`/`Q.md` — рабочие файлы задач, не менять их в рамках рефакторинга.
 
 ## Следующий шаг
-**S5.5c browser-static** — инкапсулировать `SESSION` (`agent/browser_tool.rs:34`): общую браузерную сессию (launch/reuse/kill), покрыть тестом повторный launch.
+**S5.5d processes-static** — инкапсулировать `CHILDREN` (`processes.rs:40`): реестр процессов (shutdown/reconcile), покрыть тестом повторный shutdown.
