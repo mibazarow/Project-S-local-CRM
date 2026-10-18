@@ -38,7 +38,9 @@ pub struct SkillManifest {
     pub description: String,
     pub kind: SkillKind,
     pub permissions: Option<Value>,
+    #[allow(dead_code)] // parsed from SKILL.md frontmatter now, consumed by later slices
     pub env_from_settings: Option<Vec<String>>,
+    #[allow(dead_code)] // parsed from SKILL.md frontmatter now, consumed by later slices
     pub scheduled_tasks: Option<Value>,
     // The SKILL.md file itself.
     pub path: PathBuf,
@@ -490,6 +492,7 @@ pub fn body(skill: &SkillManifest) -> Result<String> {
     Ok(body)
 }
 
+#[cfg(test)]
 pub fn load_full(wd: &Path, name: &str) -> Result<String> {
     body(&find(wd, name)?)
 }

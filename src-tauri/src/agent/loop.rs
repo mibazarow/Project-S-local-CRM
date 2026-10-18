@@ -220,6 +220,7 @@ pub struct AgentState<'a> {
     pub catalog: &'a mut Catalog,
 }
 
+#[cfg(test)]
 pub fn run(
     state: &mut AgentState<'_>,
     config: &AgentRunConfig,

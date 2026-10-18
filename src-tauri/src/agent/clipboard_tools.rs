@@ -203,6 +203,7 @@ impl Default for ClipboardGetTool {
 }
 
 impl ClipboardGetTool {
+    #[cfg(test)]
     pub fn with_program(program: PathBuf, timeout: Duration) -> Self {
         ClipboardGetTool { program, timeout }
     }
@@ -267,6 +268,7 @@ impl Default for ClipboardSetTool {
 }
 
 impl ClipboardSetTool {
+    #[cfg(test)]
     pub fn with_program(program: PathBuf, timeout: Duration) -> Self {
         ClipboardSetTool { program, timeout }
     }

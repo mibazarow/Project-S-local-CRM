@@ -86,7 +86,7 @@ pub fn create(
 }
 
 // Deletes one directed link; true when a row was removed.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn remove(
     conn: &Connection,
     from_kind: &str,
@@ -101,7 +101,7 @@ pub fn remove(
 }
 
 // Outgoing links of one entity.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn list_for(conn: &Connection, kind: &str, id: &str) -> Result<Vec<LinkDto>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {COLS} FROM links WHERE from_kind = ?1 AND from_id = ?2 ORDER BY id"

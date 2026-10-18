@@ -12,7 +12,7 @@ pub mod stdio;
 
 use crate::agent::result::{ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
-use crate::config::{self, ConfigKind, McpConfig, McpServerConfig, McpTransportConfig};
+use crate::config::{self, ConfigKind, McpServerConfig, McpTransportConfig};
 use crate::error::{AppError, Result};
 use crate::paths;
 use jsonrpc::{McpTransport, RpcChannel};
@@ -489,26 +489,6 @@ impl McpRegistry {
         }
         self.servers.clear();
     }
-}
-
-// One-shot entry point for a catalog builder without a persistent registry:
-// the returned tools keep their server clients alive through Arc handles,
-// so each child process lives exactly as long as its tools do.
-#[allow(dead_code)]
-pub fn create_mcp_tools(
-    config: &McpConfig,
-    wd: &Path,
-) -> (Vec<Arc<dyn Tool>>, Vec<McpServerStatus>) {
-    let value = serde_json::to_value(config).unwrap_or(Value::Null);
-    let servers = value
-        .get("servers")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let registry = McpRegistry::start_from(&servers, wd);
-    let tools = registry.tools();
-    let status = registry.status();
-    (tools, status)
 }
 
 fn config_error_row(name: &str, error: String) -> ServerHandle {

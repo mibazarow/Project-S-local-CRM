@@ -187,6 +187,7 @@ fn fmt_utc(dt: DateTime<Utc>) -> String {
     dt.format("%Y-%m-%dT%H:%M:%SZ").to_string()
 }
 
+#[cfg(test)]
 pub fn parse_utc(text: &str) -> Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(text)
         .map(|dt| dt.with_timezone(&Utc))
@@ -436,7 +437,7 @@ pub fn open_session(conn: &Connection, id: i64) -> Result<i64> {
 }
 
 // Engine CRUD used by the schedules UI slice (later): edit spec/prompt/tz/status.
-#[allow(dead_code)]
+#[cfg(test)]
 pub struct UpdateIn<'a> {
     pub spec: Option<&'a str>,
     pub prompt: Option<&'a str>,
@@ -444,7 +445,7 @@ pub struct UpdateIn<'a> {
     pub status: Option<&'a str>,
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn update(conn: &Connection, id: i64, patch: &UpdateIn<'_>, now: DateTime<Utc>) -> Result<ScheduleDto> {
     let current = schedule_dto(conn, id)?;
     let spec = patch.spec.unwrap_or(&current.spec).to_string();

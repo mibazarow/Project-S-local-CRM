@@ -9,8 +9,6 @@
 // skill creation, the `create_skill` tool) and `exec` (the `skill_exec`
 // script runner). All public items are re-exported here so the external
 // `skills::…` call paths keep working unchanged.
-#![allow(dead_code)] // env_from_settings/scheduled_tasks are parsed now, consumed by later slices
-
 mod exec;
 mod import;
 mod manifest;

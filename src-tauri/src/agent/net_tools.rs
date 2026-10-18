@@ -430,6 +430,7 @@ impl WebfetchTool {
         }
     }
 
+    #[cfg(test)]
     pub fn with_timeouts(connect: Duration, read: Duration) -> Self {
         WebfetchTool { connect, read }
     }
@@ -538,6 +539,7 @@ impl WebsearchTool {
     }
 
     // Test seam: point the scraper at a local mock instead of DuckDuckGo.
+    #[cfg(test)]
     pub fn with_endpoint(endpoint: &str) -> Self {
         WebsearchTool {
             endpoint: endpoint.to_string(),

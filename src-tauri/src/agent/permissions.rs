@@ -6,6 +6,7 @@ use serde_json::Value;
 pub struct ConfirmRequest {
     pub tool: String,
     pub args: Value,
+    #[allow(dead_code)] // carried to confirmers as part of the request contract; not read yet
     pub project_id: Option<i64>,
     pub danger_reason: Option<String>,
 }
@@ -22,17 +23,20 @@ pub trait Confirmer: Send + Sync {
 }
 
 // Test/dev confirmer with a fixed verdict.
+#[cfg(test)]
 #[derive(Debug, Clone, Copy)]
 pub struct AutoConfirmer {
     pub allow: bool,
 }
 
+#[cfg(test)]
 impl AutoConfirmer {
     pub fn allowing(allow: bool) -> Self {
         AutoConfirmer { allow }
     }
 }
 
+#[cfg(test)]
 impl Confirmer for AutoConfirmer {
     fn confirm(&self, _req: &ConfirmRequest) -> ConfirmDecision {
         if self.allow {
@@ -43,8 +47,10 @@ impl Confirmer for AutoConfirmer {
     }
 }
 
+#[cfg(test)]
 pub struct DenyAllConfirmer;
 
+#[cfg(test)]
 impl Confirmer for DenyAllConfirmer {
     fn confirm(&self, _req: &ConfirmRequest) -> ConfirmDecision {
         ConfirmDecision::Deny

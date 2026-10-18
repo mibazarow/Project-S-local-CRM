@@ -1,8 +1,5 @@
 // Agent loop core (SPEC 6.4): tool catalog, tool trait + result envelope,
 // finish_task, two-level permissions, lazy tool discovery, loop driver.
-// Consumed by the chat UI slice (M3c), not wired into commands yet.
-#![allow(dead_code)]
-
 pub mod browser_tool;
 pub mod catalog;
 pub mod clipboard_tools;

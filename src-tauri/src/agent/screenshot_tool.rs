@@ -115,6 +115,7 @@ impl Default for ScreenshotTool {
 
 impl ScreenshotTool {
     // Test seam: a fake binary (missing-binary, timeout, zero-byte cases).
+    #[cfg(test)]
     pub fn with_binary(binary: impl Into<PathBuf>) -> Self {
         ScreenshotTool {
             binary: binary.into(),

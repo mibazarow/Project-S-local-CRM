@@ -4,6 +4,7 @@ pub use super::result::ToolResult;
 use crate::error::Result;
 use serde_json::{json, Map, Value};
 
+#[allow(dead_code)] // taxonomy read by cfg(test) invariants/catalog checks; ParallelSafe reserved for the parallel scheduler
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolClass {
     ReadOnly,
@@ -41,6 +42,7 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> Value;
+    #[allow(dead_code)] // taxonomy consumed by cfg(test) invariants, not by the loop
     fn class(&self) -> ToolClass {
         ToolClass::Mutating
     }

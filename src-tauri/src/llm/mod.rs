@@ -1,6 +1,3 @@
-// Chat API below is consumed by the agent loop slice (M3b), not by commands yet.
-#![allow(dead_code)]
-
 pub mod types;
 
 pub use types::*;

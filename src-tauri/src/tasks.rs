@@ -228,7 +228,7 @@ pub fn task_update(conn: &Connection, id: i64, patch: TaskPatch) -> Result<TaskD
     dto(conn, id)
 }
 
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn task_move(conn: &Connection, id: i64, status: &str, position: f64) -> Result<TaskDto> {
     Ok(task_move_capture(conn, id, status, position)?.0)
 }
@@ -414,7 +414,7 @@ pub(crate) fn task_snapshot(conn: &Connection, id: i64) -> Result<TaskSnapshot> 
 
 // Returns the owning project id so the caller can re-export it. The row is
 // snapshotted into the trash table first, so a deleted task stays restorable.
-#[allow(dead_code)]
+#[cfg(test)]
 pub fn task_delete(conn: &Connection, id: i64) -> Result<i64> {
     Ok(task_delete_with_trash(conn, id)?.0)
 }

@@ -30,6 +30,7 @@ impl Default for BashTool {
 }
 
 impl BashTool {
+    #[cfg(test)]
     pub fn with_timeout(timeout: Duration) -> Self {
         BashTool { timeout }
     }
