@@ -20,6 +20,9 @@ export interface ProjectDto {
   fileCount: number;
   taskCount: number;
   overdueCount: number;
+  // True when the project has at least one task in "В работе" (status
+  // progress); drives the Play indicator on the project row (SPEC 4.1).
+  hasActiveTasks: boolean;
   // Per-project kanban column labels, always exactly 3 (projects.rs
   // task_columns); renaming one column replaces the whole triple.
   taskColumns: string[];

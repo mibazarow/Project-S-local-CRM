@@ -17,6 +17,7 @@ pub struct ProjectDto {
     pub file_count: i64,
     pub task_count: i64,
     pub overdue_count: i64,
+    pub has_active_tasks: bool,
     pub task_columns: [String; 3],
 }
 
@@ -295,11 +296,14 @@ pub(crate) struct ProjectDbRow {
     task_columns: String,
     task_count: i64,
     overdue_count: i64,
+    has_active_tasks: bool,
 }
 
 fn db_row(conn: &Connection, id: i64) -> Result<ProjectDbRow> {
-    let (name, path, created_at, opened_at, position, task_columns) = conn.query_row(
-        "SELECT name, path, created_at, opened_at, position, task_columns FROM projects WHERE id = ?1",
+    let (name, path, created_at, opened_at, position, task_columns, has_active_tasks) = conn.query_row(
+        "SELECT name, path, created_at, opened_at, position, task_columns,
+                EXISTS(SELECT 1 FROM tasks WHERE project_id = ?1 AND status = 'progress')
+         FROM projects WHERE id = ?1",
         params![id],
         |r| Ok((
             r.get::<_, String>(0)?,
@@ -308,6 +312,7 @@ fn db_row(conn: &Connection, id: i64) -> Result<ProjectDbRow> {
             r.get::<_, Option<String>>(3)?,
             r.get::<_, f64>(4)?,
             r.get::<_, String>(5)?,
+            r.get::<_, bool>(6)?,
         )),
     )?;
     let task_count = conn.query_row(TASK_COUNT_SQL, params![id], |r| r.get(0))?;
@@ -321,6 +326,7 @@ fn db_row(conn: &Connection, id: i64) -> Result<ProjectDbRow> {
         task_columns,
         task_count,
         overdue_count,
+        has_active_tasks,
     })
 }
 
@@ -337,6 +343,7 @@ pub(crate) fn dto_from_row(id: i64, row: ProjectDbRow) -> ProjectDto {
         file_count: count_files(Path::new(&row.path)),
         task_count: row.task_count,
         overdue_count: row.overdue_count,
+        has_active_tasks: row.has_active_tasks,
         task_columns: parse_task_columns(&row.task_columns),
     }
 }
@@ -521,6 +528,43 @@ mod tests {
         assert_eq!(list[0].file_count, 3); // datas.md + a.txt + b.md
         assert_eq!(list[0].task_count, 4);
         assert_eq!(list[0].overdue_count, 1);
+        assert!(list[0].has_active_tasks); // the 'future' task is in 'progress'
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn list_projects_has_active_tasks_tracks_progress() {
+        let (wd, conn) = setup("proj-active");
+        let p = create_project(&conn, &wd, "p").unwrap();
+        // No tasks at all: no active indicator.
+        assert!(!list_projects(&conn).unwrap()[0].has_active_tasks);
+
+        // 'new' and 'done' tasks do not count as active.
+        conn.execute(
+            "INSERT INTO tasks (project_id, title, status, created_at) VALUES
+             (?1, 'a', 'new', '2026-01-01'),
+             (?1, 'b', 'done', '2026-01-01')",
+            params![p.id],
+        )
+        .unwrap();
+        assert!(!list_projects(&conn).unwrap()[0].has_active_tasks);
+
+        // Transitioning a task into 'progress' turns the indicator on.
+        let a: i64 = conn
+            .query_row(
+                "SELECT id FROM tasks WHERE project_id = ?1 AND title = 'a'",
+                params![p.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        conn.execute("UPDATE tasks SET status = 'progress' WHERE id = ?1", params![a])
+            .unwrap();
+        assert!(list_projects(&conn).unwrap()[0].has_active_tasks);
+
+        // Moving it back out of 'progress' turns it off again.
+        conn.execute("UPDATE tasks SET status = 'done' WHERE id = ?1", params![a])
+            .unwrap();
+        assert!(!list_projects(&conn).unwrap()[0].has_active_tasks);
         fs::remove_dir_all(&wd).unwrap();
     }
 

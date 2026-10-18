@@ -33,6 +33,7 @@ const project = (id: number, name: string): ProjectDto => ({
   fileCount: 3,
   taskCount: 0,
   overdueCount: 0,
+  hasActiveTasks: false,
   taskColumns: ["Новые", "В работе", "Готово"],
 });
 

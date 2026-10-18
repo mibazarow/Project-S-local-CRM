@@ -182,6 +182,9 @@ input, textarea { font-family: inherit; }
 .project-item.active .meta { color: rgba(255, 255, 255, .75); }
 .badge-red { color: var(--danger); font-weight: 600; }
 .project-item.active .badge-red { color: var(--danger-tint); }
+/* Active-task Play indicator: inline in the meta line, no reserved space when absent. */
+.project-item .active-tasks { color: var(--accent); margin-left: 6px; vertical-align: -1px; }
+.project-item.active .active-tasks { color: rgba(255, 255, 255, .85); }
 
 .proj-actions { position: absolute; top: 7px; right: 6px; opacity: 0; transition: opacity .12s; }
 .project-item:hover .proj-actions { opacity: 1; }

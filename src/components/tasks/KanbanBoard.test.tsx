@@ -62,6 +62,7 @@ const project = vi.hoisted(
     fileCount: 0,
     taskCount: 1,
     overdueCount: 0,
+    hasActiveTasks: false,
     taskColumns: ["Новые", "В работе", "Готово"],
   }),
 );

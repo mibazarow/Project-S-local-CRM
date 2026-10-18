@@ -12,7 +12,7 @@ const bus = vi.hoisted(() => ({
   projects: undefined as (() => void) | undefined,
 }));
 
-const projects = vi.hoisted(() => [
+const projects = vi.hoisted((): ProjectDto[] => [
   {
     id: 1,
     name: "Alpha",
@@ -23,8 +23,9 @@ const projects = vi.hoisted(() => [
     fileCount: 1,
     taskCount: 2,
     overdueCount: 0,
+    hasActiveTasks: false,
     taskColumns: ["a", "b", "c"],
-  } satisfies ProjectDto,
+  },
 ]);
 
 vi.mock("../api/ipc", () => ({
@@ -84,6 +85,13 @@ function CombinedProbe() {
   return <span>{state.activeProjectId}</span>;
 }
 
+// Surfaces the active-task indicator flag so a test can assert it survives a
+// project-list reload triggered by a task-status event.
+function ActiveProbe() {
+  const { state } = useApp();
+  return <span className="active-flag">{String(state.projects[0]?.hasActiveTasks ?? "")}</span>;
+}
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -97,6 +105,7 @@ async function mount() {
         <ActionsOnlyProbe />
         <StateOnlyProbe />
         <CombinedProbe />
+        <ActiveProbe />
       </AppProvider>,
     );
   });
@@ -107,6 +116,7 @@ beforeEach(() => {
   stateRenders = 0;
   combinedRenders = 0;
   seenActions = [];
+  projects[0].hasActiveTasks = false;
   vi.mocked(ipc.listProjects).mockClear();
 });
 
@@ -162,5 +172,15 @@ describe("app store split", () => {
     await act(async () => bus.projects?.());
     await act(async () => bus.schedules?.());
     expect(ipc.listProjects).toHaveBeenCalledTimes(3);
+  });
+
+  it("task-status event reloads the list and carries the active-task flag", async () => {
+    await mount();
+    expect(container.querySelector(".active-flag")!.textContent).toBe("false");
+    projects[0].hasActiveTasks = true;
+    vi.mocked(ipc.listProjects).mockClear();
+    await act(async () => bus.tasks?.({ projectId: 1 }));
+    expect(ipc.listProjects).toHaveBeenCalledTimes(1);
+    expect(container.querySelector(".active-flag")!.textContent).toBe("true");
   });
 });

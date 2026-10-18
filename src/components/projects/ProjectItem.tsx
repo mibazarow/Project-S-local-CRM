@@ -70,6 +70,20 @@ export default function ProjectItem({
             <span className="badge-red">{project.overdueCount} просрочено</span>
           </>
         )}
+        {project.hasActiveTasks && (
+          <svg
+            className="active-tasks"
+            viewBox="0 0 24 24"
+            width="11"
+            height="11"
+            fill="currentColor"
+            role="img"
+            aria-label="Есть задачи в работе"
+          >
+            <title>Есть задачи в работе</title>
+            <path d="M8 5v14l11-7z" />
+          </svg>
+        )}
       </span>
       <span className="proj-actions">
         <button
