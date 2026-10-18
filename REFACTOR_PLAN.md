@@ -6,14 +6,10 @@
 > **Правило ведения:** выполненный срез **удаляем из этого файла полностью**. Никаких `done`, зачёркиваний и списков «закрыто». В файле — только актуальный остаток. Закрыл срез → удалил абзац.
 
 ## Текущее состояние
-- Последний зелёный HEAD: `ab60b04` — `npm test` **164 passed**, `npm run build` OK, oxlint — только pre-existing `crossActions.ts`.
-- Бэкенд последний раз проверен на `998349e`: `cargo test` **819 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings, `npm run build` OK. Контракты/DTO/схема не затронуты.
-- Baseline-скриншоты: `/tmp/project-s-baseline/` (7 экранов).
-- Полный `npm run app:build` — только в финале.
-
-## Фаза 5 — остаток
-- Рефакторинг-срезы фазы 5 закрыты; новых срезов не планируется.
-- `embed`-кэши (`EMBEDDER_CACHE`, ORT `ENV`) — осознанно процессные, не трогаем.
+- Финальный зелёный HEAD: `02aefdb` — `npm test` **164 passed**, `npm run build` OK, oxlint — только pre-existing `crossActions.ts`; `cargo test` **819 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings. Контракты/DTO/схема/UI не затронуты.
+- Полный `npm run app:build` — OK; установка в `/Applications/Project-S.app` (`npm run app:install`).
+- Автосмоук установленного приложения: окно рендерит дефолтный вид «Проекты», ранее активный проект восстанавливается (persist `project-s:lastProject:*` в WKWebView localStorage), процесс жив, выход по SIGTERM без crash-репорта. Логи чистые: 0 panic/backtrace/unwrap, 0 error/fault в unified log за прогон (совпадения `error` — только в `runs-2026-10-17.jsonl`, до прогона).
+- Ограничение TCC: интерактивный клик-обход вкладок невозможен (у CLI-хоста нет Accessibility). Активный вид/вкладка **не персистятся** (`tab` = `useState("projects")`, `App.tsx:19`; FilesPanel/Settings — тоже `useState`), поэтому Today / Задачи / Блокнот / Харнес / Настройки покрыты **164 фронтенд-тестами** (`TopBar`, `FilesPanel`, `TodayView`, `HarnessView`, `NotesView`, `SettingsModal`, `Modal`), а не ручным обходом.
 
 ## Проверка среза
 `npm test`; `npm run build`; `npx oxlint src`; `cargo test`; `cargo check`; `cargo clippy --all-targets`; для перфа — замеры; для UI — скриншоты baseline; сверка `ipc.ts` и схемы БД; чистый `git status`.
@@ -25,4 +21,4 @@
 - `BAG_REPORT.md`/`Q.md` — рабочие файлы задач, не менять их в рамках рефакторинга.
 
 ## Следующий шаг
-**Только финальная проверка** (срезов больше нет): полный `npm run app:build`, установка в `/Applications/Project-S.app` (`npm run app:install`), смоук-проверка приложения (окна, вкладки, «Открыть в…», чат/агент, CRM-разделы). Никаких новых рефакторинг-срезов.
+Очередь пуста. Следующая работа — `Q.md`.
