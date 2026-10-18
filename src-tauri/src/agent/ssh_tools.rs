@@ -1,15 +1,23 @@
-// Agent SSH tools via the system ssh/scp CLI with keys/ssh-agent (no
-// passwords, no new crates). Profiles live in Settings/config/ssh.json;
-// ssh_exec/ssh_upload/ssh_download are Mutating and always confirmed — the
-// destructive-command analysis below only enriches the confirmation text,
-// the Check itself is the guard. Local paths stay inside the project root
-// (project mode) or resolve like the harness fs tools (harness mode);
-// remote paths pass through with newline/NUL rejection. Child processes
-// see TMPDIR/TEMP/TMP pointed at Harness/tmp/ (SPEC 5.2). Output is
-// secret-masked and capped; home paths are shortened to ~ in errors.
+// Agent SSH tools via the system ssh/scp/ssh-keygen CLI (no new crates).
+// Profiles live in Settings/config/ssh.json AND in the current project's
+// datas.md ("## SSH <name>" sections, the user's chosen storage); both
+// sources authenticate with keys/ssh-agent and passwords. Password auth
+// goes through SSH_ASKPASS: the password lives only in a 0600 file under
+// Harness/tmp/ next to a 0700 askpass script, both deleted when the call
+// ends — it never enters argv, tool results or errors. ssh_exec/ssh_upload/
+// ssh_download/ssh_generate_key/ssh_install_key are Mutating and always
+// confirmed — the destructive-command analysis below only enriches the
+// confirmation text, the Check itself is the guard. Local paths stay inside
+// the project root (project mode) or resolve like the harness fs tools
+// (harness mode); remote paths pass through with newline/NUL rejection.
+// Child processes see TMPDIR/TEMP/TMP pointed at Harness/tmp/ (SPEC 5.2).
+// Output is secret-masked and capped; home paths are shortened to ~ in
+// errors.
 use super::git_tools::join_rel;
 use super::harness_tools::{canonicalish, resolve_path};
-use super::project_tools::{envelope, require_wd, with_conn};
+use super::project_tools::{
+    envelope, read_datas, require_wd, upsert_section, with_conn, write_datas,
+};
 use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::config::{self, ConfigKind};
@@ -36,8 +44,10 @@ const CONNECT_TIMEOUT_SECS: u32 = 10;
 const DEFAULT_PORT: u16 = 22;
 
 // Settings/config/ssh.json shape: { "profiles": [ { name, host, user,
-// port, keyPath, hostKeyPolicy } ] }. Unknown keys (top-level and
+// port, keyPath, hostKeyPolicy, password } ] }. Unknown keys (top-level and
 // per-profile) survive typed round-trips like the other configs (SPEC 3.4).
+// `source` ("config" | "datas") is set by the loaders, never stored in
+// ssh.json (skip_serializing keeps the file clean).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct SshConfig {
@@ -60,6 +70,12 @@ pub struct SshProfile {
     // StrictHostKeyChecking option; anything else is a config error.
     #[serde(default)]
     pub host_key_policy: Option<String>,
+    // Never returned by any tool, never placed in argv or errors: password
+    // auth feeds it to a 0600 askpass file under Harness/tmp/ only.
+    #[serde(default)]
+    pub password: Option<String>,
+    #[serde(default, skip_serializing)]
+    pub source: String,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
 }
@@ -70,17 +86,159 @@ fn default_port() -> u16 {
 
 fn load_config(wd: &Path) -> Result<SshConfig> {
     let value = config::read_config(wd, ConfigKind::Ssh)?;
-    serde_json::from_value(value)
-        .map_err(|e| AppError::Invalid(format!("Settings/config/ssh.json is invalid: {e}")))
+    let mut cfg: SshConfig = serde_json::from_value(value)
+        .map_err(|e| AppError::Invalid(format!("Settings/config/ssh.json is invalid: {e}")))?;
+    for p in &mut cfg.profiles {
+        p.source = "config".into();
+    }
+    Ok(cfg)
 }
 
-// The resolved endpoint of one tool call.
+// datas.md SSH profile format (the user's chosen storage for access data):
+//
+//   ## SSH <name>
+//   host: example.ru
+//   user: deploy
+//   port: 2222
+//   password: s3cret
+//   key: ~/.ssh/id_ed25519
+//
+// The heading is matched case-insensitively ("## ssh prod") and the section
+// runs to the next "##" heading or EOF. Field names are case-insensitive
+// ("Host:", "PASSWORD:"); "key" and "keyPath" are both accepted. Any other
+// text and all other sections are ignored. An entry is malformed (skipped
+// whole) when its name, host or user is missing/invalid or its port line
+// is unparsable; a missing port defaults to 22.
+pub(crate) fn parse_datas_ssh(text: &str) -> Vec<SshProfile> {
+    let mut profiles: Vec<SshProfile> = Vec::new();
+    let mut current: Option<(String, Vec<(String, String)>)> = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("##") {
+            if let Some(p) = current.take().and_then(build_datas_profile) {
+                profiles.push(p);
+            }
+            let rest = trimmed.trim_start_matches('#').trim();
+            let mut words = rest.splitn(2, char::is_whitespace);
+            let head = words.next().unwrap_or("");
+            let name = words.next().unwrap_or("").trim().to_string();
+            if head.eq_ignore_ascii_case("ssh") && !name.is_empty() {
+                current = Some((name, Vec::new()));
+            }
+            continue;
+        }
+        if let Some((_, fields)) = &mut current {
+            if let Some((key, value)) = trimmed.split_once(':') {
+                let key = key.trim().to_ascii_lowercase();
+                if matches!(key.as_str(), "host" | "user" | "port" | "password" | "key" | "keypath") {
+                    fields.push((key, value.trim().to_string()));
+                }
+            }
+        }
+    }
+    if let Some(p) = current.and_then(build_datas_profile) {
+        profiles.push(p);
+    }
+    profiles
+}
+
+// Turns one parsed section into a profile; None when the entry is malformed.
+fn build_datas_profile((name, fields): (String, Vec<(String, String)>)) -> Option<SshProfile> {
+    let get = |key: &str| {
+        fields
+            .iter()
+            .rev()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.clone())
+    };
+    let host = get("host").filter(|h| valid_host_or_user(h))?;
+    let user = get("user").filter(|u| valid_host_or_user(u))?;
+    let port = match get("port") {
+        None => DEFAULT_PORT,
+        Some(raw) => match raw.parse::<u16>() {
+            Ok(p) if (1..=65535).contains(&p) => p,
+            _ => return None,
+        },
+    };
+    Some(SshProfile {
+        name,
+        host,
+        user,
+        port,
+        key_path: get("key").or_else(|| get("keypath")).filter(|k| !k.is_empty()),
+        host_key_policy: None,
+        password: get("password").filter(|p| !p.is_empty()),
+        source: "datas".into(),
+        extra: Map::new(),
+    })
+}
+
+// The exact heading title under which a profile named `name` already lives
+// in datas.md (case-insensitive match so a hand-written "## ssh prod" is
+// updated in place instead of duplicated); the canonical form otherwise.
+fn datas_section_title(md: &str, name: &str) -> String {
+    let want = format!("ssh {name}");
+    for line in md.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("##") {
+            let rest = trimmed.trim_start_matches('#').trim();
+            if rest.eq_ignore_ascii_case(&want) {
+                return rest.to_string();
+            }
+        }
+    }
+    format!("SSH {name}")
+}
+
+// Profiles parsed from the current project's datas.md; any missing piece
+// (no project, no state, unreadable file) simply yields no profiles.
+fn datas_profiles(ctx: &ToolCtx) -> Vec<SshProfile> {
+    let Some(pid) = ctx.project_id else {
+        return Vec::new();
+    };
+    let Ok(wd) = require_wd(ctx) else {
+        return Vec::new();
+    };
+    let Ok(text) = with_conn(ctx, |conn| read_datas(conn, &wd, pid)) else {
+        return Vec::new();
+    };
+    parse_datas_ssh(&text)
+}
+
+// ssh.json profiles merged with the current project's datas.md profiles;
+// a datas entry replaces a config entry of the same name (datas.md is the
+// user's chosen storage).
+fn all_profiles(ctx: &ToolCtx) -> Result<Vec<SshProfile>> {
+    let wd = require_wd(ctx)?;
+    let mut profiles = load_config(&wd)?.profiles;
+    for p in datas_profiles(ctx) {
+        match profiles.iter_mut().find(|existing| existing.name == p.name) {
+            Some(existing) => *existing = p,
+            None => profiles.push(p),
+        }
+    }
+    Ok(profiles)
+}
+
+// Auth kind reported by ssh_list_profiles; a profile without an explicit
+// key or password still authenticates through ssh-agent, i.e. by key.
+fn auth_kind(p: &SshProfile) -> &'static str {
+    match (p.password.is_some(), p.key_path.is_some()) {
+        (true, true) => "key+password",
+        (true, false) => "password",
+        (false, _) => "key",
+    }
+}
+
+// The resolved endpoint of one tool call. The password (when any) is only
+// ever written to the askpass file: it never enters argv or results.
 #[derive(Debug, Clone)]
 struct Target {
     host: String,
     user: String,
     port: u16,
     key_path: Option<PathBuf>,
+    password: Option<String>,
     strict_host_key: &'static str,
 }
 
@@ -132,6 +290,7 @@ fn build_target(
     port: i64,
     key_path: Option<&str>,
     host_key_policy: Option<&str>,
+    password: Option<String>,
 ) -> Result<Target> {
     if !valid_host_or_user(host) {
         return Err(AppError::Invalid(format!("invalid ssh host {host:?}")));
@@ -168,18 +327,21 @@ fn build_target(
         user: user.to_string(),
         port: port as u16,
         key_path: key,
+        password: password.filter(|p| !p.is_empty()),
         strict_host_key,
     })
 }
 
-// Either a named profile from ssh.json (the profile wins over explicit
-// fields) or explicit host/user/port/keyPath. host+user are required.
-fn resolve_target(args: &Value, wd: &Path) -> Result<Target> {
+// Either a named profile from ssh.json or the current project's datas.md
+// (the profile wins over explicit fields, and it carries its own
+// password/key so the model never needs to see the secret) or explicit
+// host/user/port/keyPath/password for ad-hoc use. host+user are required.
+fn resolve_target(args: &Value, ctx: &ToolCtx) -> Result<Target> {
     let profile = args.get("profile").and_then(Value::as_str).unwrap_or("").trim();
     if !profile.is_empty() {
-        let cfg = load_config(wd)?;
-        let p = cfg.profiles.iter().find(|p| p.name == profile).ok_or_else(|| {
-            let names: Vec<&str> = cfg.profiles.iter().map(|p| p.name.as_str()).collect();
+        let profiles = all_profiles(ctx)?;
+        let p = profiles.iter().find(|p| p.name == profile).ok_or_else(|| {
+            let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
             let known = if names.is_empty() {
                 "none".to_string()
             } else {
@@ -195,6 +357,7 @@ fn resolve_target(args: &Value, wd: &Path) -> Result<Target> {
             i64::from(p.port),
             p.key_path.as_deref(),
             p.host_key_policy.as_deref(),
+            p.password.clone(),
         );
     }
     let host = args.get("host").and_then(Value::as_str).unwrap_or("").trim();
@@ -209,7 +372,11 @@ fn resolve_target(args: &Value, wd: &Path) -> Result<Target> {
         .and_then(Value::as_i64)
         .unwrap_or(i64::from(DEFAULT_PORT));
     let key_path = args.get("keyPath").and_then(Value::as_str);
-    build_target(host, user, port, key_path, None)
+    let password = args
+        .get("password")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    build_target(host, user, port, key_path, None, password)
 }
 
 // Missing profiles/keys are not_found, everything else about the target is
@@ -224,24 +391,92 @@ fn target_error(e: AppError) -> ToolResult {
 }
 
 fn target_label(args: &Value, ctx: &ToolCtx) -> String {
-    ctx.working_dir
-        .as_deref()
-        .and_then(|wd| resolve_target(args, wd).ok())
+    resolve_target(args, ctx)
         .map(|t| t.label())
-        .unwrap_or_else(|| "цель не определена".to_string())
+        .unwrap_or_else(|_| "цель не определена".to_string())
 }
 
-// BatchMode=yes: ssh/scp must never fall back to a password prompt; keys
-// and ssh-agent are the only authentication paths.
+// Key-only auth: BatchMode=yes so ssh/scp can never fall back to a prompt.
+// With a password: BatchMode=no plus exactly one prompt, answered through
+// SSH_ASKPASS (see Askpass); when a key is present too, publickey is tried
+// first and the password only as the fallback.
 fn common_opts(t: &Target) -> Vec<String> {
-    vec![
+    let batch = if t.password.is_some() { "no" } else { "yes" };
+    let mut opts = vec![
         "-o".to_string(),
-        "BatchMode=yes".to_string(),
+        format!("BatchMode={batch}"),
         "-o".to_string(),
         format!("StrictHostKeyChecking={}", t.strict_host_key),
         "-o".to_string(),
         format!("ConnectTimeout={CONNECT_TIMEOUT_SECS}"),
-    ]
+    ];
+    if t.password.is_some() {
+        opts.push("-o".to_string());
+        opts.push("NumberOfPasswordPrompts=1".to_string());
+        if t.key_path.is_some() {
+            opts.push("-o".to_string());
+            opts.push("PreferredAuthentications=publickey,password,keyboard-interactive".to_string());
+        }
+    }
+    opts
+}
+
+// Password auth without ever putting the secret in argv: a private dir
+// under Harness/tmp/ holds a 0600 password file and a 0700 askpass script
+// that cats it; ssh reads the password from the script (SSH_ASKPASS with
+// SSH_ASKPASS_REQUIRE=force, DISPLAY set so non-tty ssh uses askpass).
+// The whole dir is removed when the guard drops — on success, failure or
+// error alike.
+struct Askpass {
+    dir: PathBuf,
+    script: PathBuf,
+}
+
+impl Askpass {
+    fn create(wd: &Path, password: &str) -> Result<Askpass> {
+        let tmp = paths::harness_tmp_dir(wd);
+        fs::create_dir_all(&tmp)?;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| AppError::Io(format!("clock unavailable: {e}")))?
+            .as_nanos();
+        let dir = tmp.join(format!("ssh-askpass-{}-{nonce}", std::process::id()));
+        fs::create_dir(&dir)?;
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+        let pass = dir.join("pass");
+        fs::write(&pass, password)?;
+        fs::set_permissions(&pass, fs::Permissions::from_mode(0o600))?;
+        let script = dir.join("askpass.sh");
+        fs::write(
+            &script,
+            format!("#!/bin/sh\ncat {}\n", shell_quote(&pass.display().to_string())),
+        )?;
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o700))?;
+        Ok(Askpass { dir, script })
+    }
+
+    fn envs(&self) -> Vec<(String, String)> {
+        vec![
+            ("SSH_ASKPASS".to_string(), self.script.display().to_string()),
+            ("SSH_ASKPASS_REQUIRE".to_string(), "force".to_string()),
+            ("DISPLAY".to_string(), ":0".to_string()),
+        ]
+    }
+}
+
+impl Drop for Askpass {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.dir);
+    }
+}
+
+// Password auth for one tool call: Some(guard) while the process runs.
+fn askpass_for(target: &Target, wd: &Path) -> Result<Option<Askpass>> {
+    match &target.password {
+        Some(pw) => Askpass::create(wd, pw).map(Some),
+        None => Ok(None),
+    }
 }
 
 fn ssh_argv(t: &Target) -> Vec<String> {
@@ -348,20 +583,31 @@ fn read_capped(mut reader: impl Read) -> (String, bool) {
     (String::from_utf8_lossy(&buf).into_owned(), truncated)
 }
 
-// `ssh`/`scp` with piped output, TMPDIR/TEMP/TMP pointed at Harness/tmp/,
-// a hard timeout (kill) and masked output.
-fn run_process(program: &str, argv: &[String], wd: &Path, timeout: Duration) -> Result<SshOutput> {
+// `ssh`/`scp`/`ssh-keygen` with piped output, TMPDIR/TEMP/TMP pointed at
+// Harness/tmp/, a hard timeout (kill) and masked output. `extra_env` carries
+// the askpass variables for password auth (never any secret in argv).
+fn run_process(
+    program: &str,
+    argv: &[String],
+    wd: &Path,
+    timeout: Duration,
+    extra_env: &[(String, String)],
+) -> Result<SshOutput> {
     let tmp = paths::harness_tmp_dir(wd);
     fs::create_dir_all(&tmp)?;
-    let mut child = match Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(argv)
         .stdin(Stdio::null())
         .env("TMPDIR", &tmp)
         .env("TEMP", &tmp)
         .env("TMP", &tmp)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    let mut child = match command.spawn()
     {
         Ok(c) => c,
         Err(e) => return Err(AppError::Io(format!("cannot run {program}: {e}"))),
@@ -619,7 +865,7 @@ impl Tool for SshListProfilesTool {
         "ssh_list_profiles"
     }
     fn description(&self) -> &str {
-        "List SSH profiles from Settings/config/ssh.json: name, host, user and port only; key paths and key material are never returned. Authentication uses keys/ssh-agent (BatchMode), passwords are never supported."
+        "List SSH profiles merged from Settings/config/ssh.json and the current project's datas.md (\"## SSH <name>\" sections; a datas entry replaces a config entry of the same name): name, host, user, port, source, auth (\"password\" | \"key\" | \"key+password\") and hasPassword. Passwords, key paths and key material are never returned; a profile with neither an explicit key nor a password still authenticates via ssh-agent (auth \"key\")."
     }
     fn parameters(&self) -> Value {
         json!({ "type": "object", "properties": {}, "required": [], "additionalProperties": false })
@@ -631,13 +877,11 @@ impl Tool for SshListProfilesTool {
         PermissionPolicy::Skip
     }
     fn execute(&self, _args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
-        let cfg = match load_config(&wd) {
-            Ok(c) => c,
+        let profiles = match all_profiles(ctx) {
+            Ok(p) => p,
             Err(e) => return Ok(envelope::<()>(Err(e))),
         };
-        let profiles: Vec<Value> = cfg
-            .profiles
+        let profiles: Vec<Value> = profiles
             .iter()
             .map(|p| {
                 json!({
@@ -645,6 +889,9 @@ impl Tool for SshListProfilesTool {
                     "host": p.host,
                     "user": p.user,
                     "port": p.port,
+                    "hasPassword": p.password.is_some(),
+                    "auth": auth_kind(p),
+                    "source": p.source,
                 })
             })
             .collect();
@@ -659,7 +906,7 @@ impl Tool for SshExecTool {
         "ssh_exec"
     }
     fn description(&self) -> &str {
-        "Run a command on a remote host via the system ssh CLI (BatchMode: keys/ssh-agent only, never prompts for a password; host keys follow accept-new by default). Target: a named profile from Settings/config/ssh.json (the profile wins over explicit fields) or explicit host/user/port/keyPath. Each call is a fresh non-interactive session: nothing persists between calls, so keep commands self-contained and drive package managers non-interactively (apt-get -y, DEBIAN_FRONTEND=noninteractive, sudo -n). By default the command runs as `bash -lc '<command>'` so PATH/profile apply; set loginShell=false to run it verbatim. Optional cwd runs it inside that remote directory. pty=true allocates a TTY (-tt) for programs that need one, but interactive prompts then hang until the timeout. timeoutSec defaults to 120 and is clamped to 10..1800; long installs should raise it or run detached (nohup ... > log 2>&1 &) and poll the log. Returns exitCode, stdout, stderr; output capped."
+        "Run a command on a remote host via the system ssh CLI (host keys follow accept-new by default). Target: a named profile from Settings/config/ssh.json or the current project's datas.md (the profile wins over explicit fields and carries its own key/password, so prefer profiles) or explicit host/user/port/keyPath/password. Key-only profiles run with BatchMode=yes (keys/ssh-agent); a profile or explicit password authenticates through SSH_ASKPASS (the secret never appears in argv, results or errors; exactly one prompt). With a key and a password, publickey is tried first. Each call is a fresh non-interactive session: nothing persists between calls, so keep commands self-contained and drive package managers non-interactively (apt-get -y, DEBIAN_FRONTEND=noninteractive, sudo -n). By default the command runs as `bash -lc '<command>'` so PATH/profile apply; set loginShell=false to run it verbatim. Optional cwd runs it inside that remote directory. pty=true allocates a TTY (-tt) for programs that need one, but interactive prompts then hang until the timeout. timeoutSec defaults to 120 and is clamped to 10..1800; long installs should raise it or run detached (nohup ... > log 2>&1 &) and poll the log. Returns exitCode, stdout, stderr; output capped."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -670,6 +917,7 @@ impl Tool for SshExecTool {
                 "user": { "type": "string" },
                 "port": { "type": "integer" },
                 "keyPath": { "type": "string" },
+                "password": { "type": "string" },
                 "command": { "type": "string" },
                 "timeoutSec": { "type": "integer" },
                 "loginShell": { "type": "boolean" },
@@ -701,7 +949,7 @@ impl Tool for SshExecTool {
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let wd = require_wd(ctx)?;
-        let target = match resolve_target(args, &wd) {
+        let target = match resolve_target(args, ctx) {
             Ok(t) => t,
             Err(e) => return Ok(target_error(e)),
         };
@@ -727,7 +975,9 @@ impl Tool for SshExecTool {
             timeout: clamp_timeout(args.get("timeoutSec").and_then(Value::as_i64)),
         };
         let argv = ssh_exec_argv(&target, command, &opts);
-        let out = run_process("ssh", &argv, &wd, opts.timeout)?;
+        let askpass = askpass_for(&target, &wd)?;
+        let envs = askpass.as_ref().map(|a| a.envs()).unwrap_or_default();
+        let out = run_process("ssh", &argv, &wd, opts.timeout, &envs)?;
         Ok(ToolResult::ok(json!({
             "target": target.label(),
             "exitCode": out.code,
@@ -762,9 +1012,9 @@ impl Tool for SshCopyTool {
     }
     fn description(&self) -> &str {
         if self.upload {
-            "Copy a local file or folder to the remote host via the system scp CLI (recursive=true adds -r). localPath is project-relative inside the project folder (project agent) or a resolved path (harness agent); remotePath is passed through to scp unchanged. Target resolution is the same as ssh_exec."
+            "Copy a local file or folder to the remote host via the system scp CLI (recursive=true adds -r). localPath is project-relative inside the project folder (project agent) or a resolved path (harness agent); remotePath is passed through to scp unchanged. Target and auth resolution is the same as ssh_exec (profiles from ssh.json and the current project's datas.md, key or askpass password auth)."
         } else {
-            "Copy a remote file or folder to the local disk via the system scp CLI (recursive=true adds -r). localPath is the landing path (project-contained for the project agent, resolved for the harness agent); remotePath is passed through to scp unchanged. Target resolution is the same as ssh_exec."
+            "Copy a remote file or folder to the local disk via the system scp CLI (recursive=true adds -r). localPath is the landing path (project-contained for the project agent, resolved for the harness agent); remotePath is passed through to scp unchanged. Target and auth resolution is the same as ssh_exec (profiles from ssh.json and the current project's datas.md, key or askpass password auth)."
         }
     }
     fn parameters(&self) -> Value {
@@ -776,6 +1026,7 @@ impl Tool for SshCopyTool {
                 "user": { "type": "string" },
                 "port": { "type": "integer" },
                 "keyPath": { "type": "string" },
+                "password": { "type": "string" },
                 "localPath": { "type": "string" },
                 "remotePath": { "type": "string" },
                 "recursive": { "type": "boolean" }
@@ -803,7 +1054,7 @@ impl Tool for SshCopyTool {
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let wd = require_wd(ctx)?;
-        let target = match resolve_target(args, &wd) {
+        let target = match resolve_target(args, ctx) {
             Ok(t) => t,
             Err(e) => return Ok(target_error(e)),
         };
@@ -823,7 +1074,9 @@ impl Tool for SshCopyTool {
             (remote.to_string(), local.display().to_string())
         };
         let argv = scp_argv(&target, &src, &dst, recursive);
-        let out = run_process("scp", &argv, &wd, SSH_TIMEOUT)?;
+        let askpass = askpass_for(&target, &wd)?;
+        let envs = askpass.as_ref().map(|a| a.envs()).unwrap_or_default();
+        let out = run_process("scp", &argv, &wd, SSH_TIMEOUT, &envs)?;
         Ok(ToolResult::ok(json!({
             "target": target.label(),
             "exitCode": out.code,
@@ -832,6 +1085,300 @@ impl Tool for SshCopyTool {
             "truncated": out.truncated,
         }))
         .capped(self.max_result_len()))
+    }
+}
+
+// ---- key generation and installation ----
+
+// Where ssh_generate_key puts a key when no path is given: .ssh/ inside the
+// current project (project agent) or Harness/tmp/ssh/ (harness agent).
+fn default_key_path(ctx: &ToolCtx, wd: &Path) -> Result<PathBuf> {
+    match ctx.project_id {
+        Some(pid) => {
+            let root = with_conn(ctx, |conn| projects::project_root(conn, wd, pid))?;
+            join_rel(&root, ".ssh/id_ed25519")
+        }
+        None => Ok(paths::harness_tmp_dir(wd).join("ssh").join("id_ed25519")),
+    }
+}
+
+pub struct SshGenerateKeyTool;
+
+impl Tool for SshGenerateKeyTool {
+    fn name(&self) -> &str {
+        "ssh_generate_key"
+    }
+    fn description(&self) -> &str {
+        "Generate a new ed25519 SSH keypair with the system ssh-keygen CLI (`ssh-keygen -t ed25519 -N '' -f <path>`, optional -C comment). path is a resolved path (~/wd-relative/absolute); it defaults to .ssh/id_ed25519 inside the current project folder (project agent) or Harness/tmp/ssh/id_ed25519 (harness agent). An existing key file is never overwritten. Returns privateKeyPath and publicKey (the .pub line); install the public key on a host with ssh_install_key and reference the private key as keyPath in profiles or calls."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "comment": { "type": "string" }
+            },
+            "required": [],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Check
+    }
+    fn danger_reason(&self, args: &Value, ctx: &ToolCtx) -> Option<String> {
+        let where_ = match (
+            args.get("path").and_then(Value::as_str),
+            ctx.working_dir.as_deref(),
+        ) {
+            (Some(raw), Some(wd)) if !raw.trim().is_empty() => shorten(&resolve_path(raw.trim(), wd)),
+            (_, Some(wd)) => match default_key_path(ctx, wd) {
+                Ok(p) => shorten(&p),
+                Err(_) => "папке по умолчанию".to_string(),
+            },
+            _ => "папке по умолчанию".to_string(),
+        };
+        Some(format!("генерация SSH-ключа ed25519 в {where_}"))
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let wd = require_wd(ctx)?;
+        let raw = args.get("path").and_then(Value::as_str).unwrap_or("").trim();
+        let path = if raw.is_empty() {
+            default_key_path(ctx, &wd)?
+        } else {
+            resolve_path(raw, &wd)
+        };
+        if path.exists() {
+            return Ok(ToolResult::err(
+                ToolErrorCode::InvalidArgs,
+                format!("refusing to overwrite existing key file: {}", shorten(&path)),
+            ));
+        }
+        let comment = args.get("comment").and_then(Value::as_str).unwrap_or("").trim();
+        if comment.chars().any(char::is_control) {
+            return Ok(ToolResult::err(
+                ToolErrorCode::InvalidArgs,
+                "comment must not contain control characters",
+            ));
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut argv = vec![
+            "-t".to_string(),
+            "ed25519".to_string(),
+            "-N".to_string(),
+            String::new(),
+            "-f".to_string(),
+            path.display().to_string(),
+        ];
+        if !comment.is_empty() {
+            argv.push("-C".to_string());
+            argv.push(comment.to_string());
+        }
+        let out = run_process("ssh-keygen", &argv, &wd, Duration::from_secs(30), &[])?;
+        if out.code != 0 {
+            return Ok(ToolResult::err(
+                ToolErrorCode::ExecutionError,
+                format!("ssh-keygen failed: {}", out.stderr.trim()),
+            ));
+        }
+        let public = match fs::read_to_string(format!("{}.pub", path.display())) {
+            Ok(text) => text.trim().to_string(),
+            Err(_) => String::new(),
+        };
+        Ok(ToolResult::ok(json!({
+            "privateKeyPath": path.display().to_string(),
+            "publicKey": public,
+        })))
+    }
+}
+
+// The idempotent remote command that appends a public key to
+// authorized_keys unless the exact line is already there. The key is
+// single-quoted; public keys are not secrets, but the quoting keeps the
+// command a single argv element whatever the comment field contains.
+fn install_key_command(public_key: &str) -> String {
+    let q = shell_quote(public_key);
+    format!(
+        "mkdir -p ~/.ssh; chmod 700 ~/.ssh; grep -qxF {q} ~/.ssh/authorized_keys || echo {q} >> ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys"
+    )
+}
+
+pub struct SshInstallKeyTool;
+
+impl Tool for SshInstallKeyTool {
+    fn name(&self) -> &str {
+        "ssh_install_key"
+    }
+    fn description(&self) -> &str {
+        "Install a local SSH public key into the remote account's authorized_keys (idempotent): reads <keyPath>.pub and runs `mkdir -p ~/.ssh; chmod 700 ~/.ssh; grep -qxF '<pub>' ~/.ssh/authorized_keys || echo '<pub>' >> ~/.ssh/authorized_keys; chmod 600 ~/.ssh/authorized_keys` in one session. Target and auth resolution is the same as ssh_exec: a profile (ssh.json or the current project's datas.md) or explicit host/user/port plus password (askpass) and/or keyPath. Typical flow: ssh_generate_key, then ssh_install_key with the existing password, then use the key in profiles. Returns exitCode and installed=true on success."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "profile": { "type": "string" },
+                "host": { "type": "string" },
+                "user": { "type": "string" },
+                "port": { "type": "integer" },
+                "password": { "type": "string" },
+                "keyPath": { "type": "string" }
+            },
+            "required": ["keyPath"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Check
+    }
+    fn danger_reason(&self, args: &Value, ctx: &ToolCtx) -> Option<String> {
+        let label = target_label(args, ctx);
+        Some(format!("установка SSH-ключа в authorized_keys на хосте {label}"))
+    }
+    fn max_result_len(&self) -> usize {
+        SSH_RESULT_CAP
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let wd = require_wd(ctx)?;
+        let target = match resolve_target(args, ctx) {
+            Ok(t) => t,
+            Err(e) => return Ok(target_error(e)),
+        };
+        let key_path = args.get("keyPath").and_then(Value::as_str).unwrap_or("").trim();
+        if key_path.is_empty() {
+            return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, "keyPath is empty"));
+        }
+        let pub_path = format!("{}.pub", expand_tilde(key_path).display());
+        let public = match fs::read_to_string(&pub_path) {
+            Ok(text) => text.trim().to_string(),
+            Err(_) => {
+                return Ok(ToolResult::err(
+                    ToolErrorCode::NotFound,
+                    format!("public key file not found: {pub_path} (generate a key first)"),
+                ))
+            }
+        };
+        if public.is_empty() || public.contains(['\n', '\r']) {
+            return Ok(ToolResult::err(
+                ToolErrorCode::InvalidArgs,
+                "public key must be a single line",
+            ));
+        }
+        let command = install_key_command(&public);
+        let opts = ExecOpts {
+            login_shell: false,
+            cwd: None,
+            pty: false,
+            timeout: SSH_TIMEOUT,
+        };
+        let argv = ssh_exec_argv(&target, &command, &opts);
+        let askpass = askpass_for(&target, &wd)?;
+        let envs = askpass.as_ref().map(|a| a.envs()).unwrap_or_default();
+        let out = run_process("ssh", &argv, &wd, SSH_TIMEOUT, &envs)?;
+        Ok(ToolResult::ok(json!({
+            "target": target.label(),
+            "exitCode": out.code,
+            "installed": out.code == 0,
+            "stdout": out.stdout,
+            "stderr": out.stderr,
+            "truncated": out.truncated,
+        }))
+        .capped(self.max_result_len()))
+    }
+}
+
+// ---- profile persistence in datas.md ----
+
+pub struct SshSaveProfileToDatasTool;
+
+impl Tool for SshSaveProfileToDatasTool {
+    fn name(&self) -> &str {
+        "ssh_save_profile_to_datas"
+    }
+    fn description(&self) -> &str {
+        "Save (add or update) an SSH profile as a \"## SSH <name>\" section in the current project's datas.md — the user's chosen storage for access data: host:, user:, port:, optional password: and key: lines. An existing section with the same name (any heading case) is replaced in place, otherwise appended; datas.md is created when missing. The password is written to the file but never echoed back by this or any other SSH tool; ssh_list_profiles only reports hasPassword/auth. The saved profile is immediately usable as \"profile\": \"<name>\" by ssh_exec/ssh_upload/ssh_download."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "host": { "type": "string" },
+                "user": { "type": "string" },
+                "port": { "type": "integer" },
+                "password": { "type": "string" },
+                "keyPath": { "type": "string" }
+            },
+            "required": ["name", "host", "user", "port"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let pid = ctx
+            .project_id
+            .ok_or_else(|| AppError::Invalid("no project bound to this agent run".into()))?;
+        let wd = require_wd(ctx)?;
+        let name = args.get("name").and_then(Value::as_str).unwrap_or("").trim().to_string();
+        if name.is_empty() || name.starts_with('#') || name.contains(['\n', '\r']) {
+            return Ok(ToolResult::err(
+                ToolErrorCode::InvalidArgs,
+                "name must be a single plain line without '#'",
+            ));
+        }
+        let host = args.get("host").and_then(Value::as_str).unwrap_or("").trim();
+        let user = args.get("user").and_then(Value::as_str).unwrap_or("").trim();
+        if !valid_host_or_user(host) {
+            return Ok(ToolResult::err(
+                ToolErrorCode::InvalidArgs,
+                format!("invalid ssh host {host:?}"),
+            ));
+        }
+        if !valid_host_or_user(user) {
+            return Ok(ToolResult::err(
+                ToolErrorCode::InvalidArgs,
+                format!("invalid ssh user {user:?}"),
+            ));
+        }
+        let port = args.get("port").and_then(Value::as_i64).unwrap_or(0);
+        if !(1..=65535).contains(&port) {
+            return Ok(ToolResult::err(
+                ToolErrorCode::InvalidArgs,
+                format!("ssh port {port} is out of range 1-65535"),
+            ));
+        }
+        let mut body = format!("host: {host}\nuser: {user}\nport: {port}");
+        if let Some(pw) = args.get("password").and_then(Value::as_str) {
+            if !pw.trim().is_empty() {
+                body.push_str(&format!("\npassword: {}", pw.trim()));
+            }
+        }
+        if let Some(k) = args.get("keyPath").and_then(Value::as_str) {
+            if !k.trim().is_empty() {
+                body.push_str(&format!("\nkey: {}", k.trim()));
+            }
+        }
+        let r = with_conn(ctx, |conn| {
+            let current = read_datas(conn, &wd, pid)?;
+            let title = datas_section_title(&current, &name);
+            let (updated, new_md) = upsert_section(&current, &title, &body);
+            write_datas(conn, &wd, pid, &new_md).map(|_| updated)
+        });
+        Ok(match r {
+            Ok(updated) => ToolResult::ok(json!({ "name": name, "updated": updated, "source": "datas" })),
+            Err(e) => envelope::<()>(Err(e)),
+        })
     }
 }
 
@@ -884,8 +1431,15 @@ mod tests {
             user: "deploy".into(),
             port,
             key_path: key.map(PathBuf::from),
+            password: None,
             strict_host_key: "accept-new",
         }
+    }
+
+    fn target_pw(port: u16, key: Option<&str>, password: Option<&str>) -> Target {
+        let mut t = target(port, key);
+        t.password = password.map(str::to_string);
+        t
     }
 
     fn opts(login_shell: bool, cwd: Option<&str>, pty: bool, timeout_secs: Option<i64>) -> ExecOpts {
@@ -1034,7 +1588,7 @@ mod tests {
         // profile wins over explicit fields
         let t = resolve_target(
             &json!({ "profile": "prod", "host": "ignored.ru", "user": "ignored" }),
-            &wd,
+            &harness_ctx(&wd),
         )
         .unwrap();
         assert_eq!(t.host, "example.ru");
@@ -1042,8 +1596,9 @@ mod tests {
         assert_eq!(t.port, 2222);
         assert_eq!(t.strict_host_key, "yes");
         assert_eq!(t.key_path.as_deref(), Some(key.as_path()));
+        assert_eq!(t.password, None);
         // unknown profile: not_found, message lists the known profiles
-        let err = resolve_target(&json!({ "profile": "ghost" }), &wd).unwrap_err();
+        let err = resolve_target(&json!({ "profile": "ghost" }), &harness_ctx(&wd)).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("not found") && msg.contains("prod"), "{msg}");
         let r = SshExecTool
@@ -1064,18 +1619,21 @@ mod tests {
                ] }"#,
         );
         assert_eq!(
-            resolve_target(&json!({ "profile": "off" }), &wd)
+            resolve_target(&json!({ "profile": "off" }), &harness_ctx(&wd))
                 .unwrap()
                 .strict_host_key,
             "no"
         );
         assert_eq!(
-            resolve_target(&json!({ "host": "example.ru", "user": "u" }), &wd)
-                .unwrap()
-                .strict_host_key,
+            resolve_target(
+                &json!({ "host": "example.ru", "user": "u" }),
+                &harness_ctx(&wd)
+            )
+            .unwrap()
+            .strict_host_key,
             "accept-new"
         );
-        let err = resolve_target(&json!({ "profile": "bad" }), &wd).unwrap_err();
+        let err = resolve_target(&json!({ "profile": "bad" }), &harness_ctx(&wd)).unwrap_err();
         assert!(err.to_string().contains("hostKeyPolicy"), "{err}");
         fs::remove_dir_all(&wd).unwrap();
     }
@@ -1094,17 +1652,35 @@ mod tests {
             (json!({ "host": "example.ru", "user": "u", "port": 70000 }), "range"),
         ];
         for (args, needle) in cases {
-            let err = resolve_target(&args, &wd).unwrap_err();
+            let err = resolve_target(&args, &harness_ctx(&wd)).unwrap_err();
             assert!(err.to_string().contains(needle), "{args}: {err}");
         }
-        let t = resolve_target(&json!({ "host": "example.ru", "user": "deploy" }), &wd).unwrap();
+        let t = resolve_target(
+            &json!({ "host": "example.ru", "user": "deploy" }),
+            &harness_ctx(&wd),
+        )
+        .unwrap();
         assert_eq!(t.port, 22);
         assert_eq!(t.strict_host_key, "accept-new");
         assert_eq!(t.key_path, None);
+        assert_eq!(t.password, None);
+        // an explicit ad-hoc password is carried on the target, empty ones dropped
+        let t = resolve_target(
+            &json!({ "host": "example.ru", "user": "deploy", "password": "hunter2" }),
+            &harness_ctx(&wd),
+        )
+        .unwrap();
+        assert_eq!(t.password.as_deref(), Some("hunter2"));
+        let t = resolve_target(
+            &json!({ "host": "example.ru", "user": "deploy", "password": "" }),
+            &harness_ctx(&wd),
+        )
+        .unwrap();
+        assert_eq!(t.password, None);
         // a missing keyPath is a clear not-found error, home shortened to ~
         let err = resolve_target(
             &json!({ "host": "example.ru", "user": "u", "keyPath": "~/definitely-missing-key" }),
-            &wd,
+            &harness_ctx(&wd),
         )
         .unwrap_err();
         let msg = err.to_string();
@@ -1315,6 +1891,8 @@ mod tests {
             Box::new(SshExecTool),
             Box::new(SshCopyTool::upload()),
             Box::new(SshCopyTool::download()),
+            Box::new(SshGenerateKeyTool),
+            Box::new(SshInstallKeyTool),
         ];
         for t in mutating {
             assert_eq!(t.class(), ToolClass::Mutating, "{}", t.name());
@@ -1358,6 +1936,355 @@ mod tests {
         assert!(validate_args(&copy, &json!({ "localPath": "a", "remotePath": "b", "recursive": "yes" }))
             .unwrap_err()
             .contains("boolean"));
+        // password is an accepted ad-hoc auth field on exec and copy
+        assert!(validate_args(&exec, &json!({ "command": "ls", "password": "p" })).is_ok());
+        assert!(validate_args(&copy, &json!({ "localPath": "a", "remotePath": "b", "password": "p" })).is_ok());
+        // key generation: everything optional, extras refused
+        let gen = SshGenerateKeyTool.parameters();
+        assert!(validate_args(&gen, &json!({})).is_ok());
+        assert!(validate_args(&gen, &json!({ "path": "p", "comment": "c" })).is_ok());
+        assert!(validate_args(&gen, &json!({ "bogus": 1 })).unwrap_err().contains("bogus"));
+        // install: keyPath required, target fields optional
+        let inst = SshInstallKeyTool.parameters();
+        assert!(validate_args(&inst, &json!({ "keyPath": "k" })).is_ok());
+        assert!(validate_args(&inst, &json!({ "profile": "p", "password": "x", "keyPath": "k" })).is_ok());
+        assert!(validate_args(&inst, &json!({ "host": "h" })).unwrap_err().contains("keyPath"));
+        // save-to-datas: the four core fields are required
+        assert_eq!(SshSaveProfileToDatasTool.class(), ToolClass::Mutating);
+        assert_eq!(SshSaveProfileToDatasTool.policy(), PermissionPolicy::Skip);
+        let save = SshSaveProfileToDatasTool.parameters();
+        assert!(validate_args(&save, &json!({ "name": "n", "host": "h", "user": "u", "port": 22 })).is_ok());
+        assert!(validate_args(&save, &json!({ "name": "n", "host": "h", "user": "u", "port": 22, "password": "p", "keyPath": "k" })).is_ok());
+        assert!(validate_args(&save, &json!({ "name": "n" })).unwrap_err().contains("host"));
+        assert!(validate_args(&save, &json!({ "name": "n", "host": "h", "user": "u", "port": "x" }))
+            .unwrap_err()
+            .contains("integer"));
+    }
+
+    #[test]
+    fn parse_datas_ssh_reads_valid_sections() {
+        let text = "# Project example.ru\n\nplain notes, host: not-a-profile\n\n\
+             ## SSH prod\nhost: example.ru\nuser: deploy\nport: 2222\npassword: s3cret\nkey: ~/.ssh/id_ed25519\nextra prose here\n\n\
+             ## FTP notes\nhost: ftp.example.ru\nlogin: user-1\n\n\
+             ## ssh staging\nHOST: stage.example.ru\nUser: web\nKeyPath: ~/keys/stage\n";
+        let ps = parse_datas_ssh(text);
+        assert_eq!(ps.len(), 2, "{ps:?}");
+        let prod = &ps[0];
+        assert_eq!(prod.name, "prod");
+        assert_eq!(prod.host, "example.ru");
+        assert_eq!(prod.user, "deploy");
+        assert_eq!(prod.port, 2222);
+        assert_eq!(prod.password.as_deref(), Some("s3cret"));
+        assert_eq!(prod.key_path.as_deref(), Some("~/.ssh/id_ed25519"));
+        assert_eq!(prod.source, "datas");
+        let staging = &ps[1];
+        assert_eq!(staging.name, "staging");
+        assert_eq!(staging.host, "stage.example.ru");
+        assert_eq!(staging.port, 22);
+        assert_eq!(staging.password, None);
+        assert_eq!(staging.key_path.as_deref(), Some("~/keys/stage"));
+    }
+
+    #[test]
+    fn parse_datas_ssh_skips_malformed_entries() {
+        let text = "## SSH nohost\nuser: u\n\n\
+             ## SSH nokey\nhost: example.ru\n\n\
+             ## SSH badport\nhost: example.ru\nuser: u\nport: abc\n\n\
+             ## SSH bigport\nhost: example.ru\nuser: u\nport: 99999\n\n\
+             ## SSH\nhost: example.ru\nuser: u\n\n\
+             ## SSH badhost\nhost: bad host\nuser: u\n\n\
+             ## SSH empty\n\n\
+             ## SSH ok\nhost: example.ru\nuser: u\n";
+        let ps = parse_datas_ssh(text);
+        assert_eq!(ps.len(), 1, "{ps:?}");
+        assert_eq!(ps[0].name, "ok");
+        // empty text: no profiles
+        assert!(parse_datas_ssh("").is_empty());
+    }
+
+    #[test]
+    fn list_profiles_merges_config_and_datas_and_never_leaks_secrets() {
+        let (root, ctx) = project_env("st-merge");
+        let wd = ctx.working_dir.clone().unwrap();
+        write_ssh_config(
+            &wd,
+            &json!({ "profiles": [
+                { "name": "web", "host": "web.example.ru", "user": "deploy", "port": 22, "keyPath": "/keys/web" },
+                { "name": "cfg", "host": "cfg.example.ru", "user": "u", "port": 2222 }
+            ] })
+            .to_string(),
+        );
+        fs::write(
+            root.join(paths::DATAS_MD),
+            "## SSH db\nhost: db.example.ru\nuser: admin\nport: 33\npassword: hunter2\n\n## SSH web\nhost: web2.example.ru\nuser: admin\npassword: datas-pw\n",
+        )
+        .unwrap();
+        let r = SshListProfilesTool.execute(&json!({}), &ctx).unwrap();
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        let text = data.to_string();
+        assert!(!text.contains("hunter2") && !text.contains("datas-pw"), "{text}");
+        assert!(!text.contains("keyPath") && !text.contains("/keys/web"), "{text}");
+        let by_name = |name: &str| -> Value {
+            data["profiles"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|p| p["name"] == name)
+                .cloned()
+                .unwrap_or(Value::Null)
+        };
+        // a datas entry replaces the config entry of the same name
+        let web = by_name("web");
+        assert_eq!(web["source"], "datas");
+        assert_eq!(web["host"], "web2.example.ru");
+        assert_eq!(web["hasPassword"], true);
+        assert_eq!(web["auth"], "password");
+        let dupes = data["profiles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| p["name"] == "web")
+            .count();
+        assert_eq!(dupes, 1, "{text}");
+        let db = by_name("db");
+        assert_eq!(db["source"], "datas");
+        assert_eq!(db["port"], 33);
+        assert_eq!(db["auth"], "password");
+        let cfg = by_name("cfg");
+        assert_eq!(cfg["source"], "config");
+        assert_eq!(cfg["hasPassword"], false);
+        // no explicit key/password: still key auth via ssh-agent
+        assert_eq!(cfg["auth"], "key");
+        // resolution from datas carries the password and key invisibly
+        let t = resolve_target(&json!({ "profile": "db" }), &ctx).unwrap();
+        assert_eq!(t.password.as_deref(), Some("hunter2"));
+        assert_eq!(t.port, 33);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn password_auth_switches_ssh_options_and_keeps_the_secret_out_of_argv() {
+        let o = opts(true, None, false, None);
+        // password only: BatchMode=no, exactly one prompt, no secret in argv
+        let argv = ssh_exec_argv(&target_pw(22, None, Some("hunter2")), "ls", &o);
+        let joined = argv.join(" ");
+        assert!(joined.contains("BatchMode=no"), "{joined}");
+        assert!(joined.contains("NumberOfPasswordPrompts=1"), "{joined}");
+        assert!(!joined.contains("BatchMode=yes"), "{joined}");
+        assert!(!joined.contains("hunter2"), "{joined}");
+        // key + password: -i stays, publickey is tried before the password
+        let argv = ssh_exec_argv(&target_pw(2222, Some("/keys/id"), Some("hunter2")), "ls", &o);
+        let joined = argv.join(" ");
+        assert!(joined.contains("-i /keys/id"), "{joined}");
+        assert!(
+            joined.contains("PreferredAuthentications=publickey,password,keyboard-interactive"),
+            "{joined}"
+        );
+        assert!(joined.contains("BatchMode=no"), "{joined}");
+        assert!(!joined.contains("hunter2"), "{joined}");
+        // key only: BatchMode=yes, no prompt plumbing at all
+        let joined = ssh_exec_argv(&target(22, Some("/keys/id")), "ls", &o).join(" ");
+        assert!(joined.contains("BatchMode=yes"), "{joined}");
+        assert!(!joined.contains("NumberOfPasswordPrompts"), "{joined}");
+        assert!(!joined.contains("PreferredAuthentications"), "{joined}");
+        // scp gets the same option set through common_opts
+        let sp = scp_argv(&target_pw(2222, None, Some("hunter2")), "a", "b", false);
+        let joined = sp.join(" ");
+        assert!(joined.contains("BatchMode=no"), "{joined}");
+        assert!(!joined.contains("hunter2"), "{joined}");
+    }
+
+    #[test]
+    fn askpass_files_are_private_and_removed_on_drop() {
+        use std::os::unix::fs::PermissionsExt;
+        let wd = temp_test_dir("st-askpass");
+        let a = Askpass::create(&wd, "hunter2").unwrap();
+        assert!(a.dir.starts_with(paths::harness_tmp_dir(&wd)), "{:?}", a.dir);
+        let pass = a.dir.join("pass");
+        assert_eq!(fs::metadata(&a.dir).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(fs::metadata(&pass).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::metadata(&a.script).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(fs::read_to_string(&pass).unwrap(), "hunter2");
+        // the script itself never embeds the secret, it cats the 0600 file
+        let script_text = fs::read_to_string(&a.script).unwrap();
+        assert!(!script_text.contains("hunter2"), "{script_text}");
+        let out = Command::new(&a.script).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "hunter2");
+        let envs = a.envs();
+        let get = |k: &str| {
+            envs.iter()
+                .find(|(name, _)| name == k)
+                .map(|(_, v)| v.clone())
+        };
+        assert_eq!(get("SSH_ASKPASS_REQUIRE").as_deref(), Some("force"));
+        assert_eq!(get("DISPLAY").as_deref(), Some(":0"));
+        assert_eq!(get("SSH_ASKPASS").as_deref(), a.script.to_str());
+        // success or failure alike: Drop removes the whole private dir
+        let dir = a.dir.clone();
+        drop(a);
+        assert!(!dir.exists() && !pass.exists());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn install_key_command_is_idempotent_and_quoted() {
+        let cmd = install_key_command("ssh-ed25519 AAAAC3NzaC1lZDI11 key comment");
+        assert!(cmd.contains("mkdir -p ~/.ssh"), "{cmd}");
+        assert!(cmd.contains("chmod 700 ~/.ssh"), "{cmd}");
+        assert!(
+            cmd.contains("grep -qxF 'ssh-ed25519 AAAAC3NzaC1lZDI11 key comment' ~/.ssh/authorized_keys"),
+            "{cmd}"
+        );
+        assert!(
+            cmd.contains("|| echo 'ssh-ed25519 AAAAC3NzaC1lZDI11 key comment' >> ~/.ssh/authorized_keys"),
+            "{cmd}"
+        );
+        assert!(cmd.ends_with("chmod 600 ~/.ssh/authorized_keys"), "{cmd}");
+        // an embedded single quote in the key comment is shell-escaped
+        let cmd = install_key_command("ssh-ed25519 AAA it's");
+        assert!(cmd.contains("'ssh-ed25519 AAA it'\\''s'"), "{cmd}");
+    }
+
+    #[test]
+    fn generate_key_creates_a_real_keypair_and_refuses_overwrite() {
+        let wd = temp_test_dir("st-keygen");
+        let ctx = harness_ctx(&wd);
+        let path = wd.join("keys/id_ed25519");
+        let r = SshGenerateKeyTool
+            .execute(
+                &json!({ "path": path.display().to_string(), "comment": "test@s" }),
+                &ctx,
+            )
+            .unwrap();
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        let public = data["publicKey"].as_str().unwrap();
+        assert!(public.starts_with("ssh-ed25519 "), "{public}");
+        assert!(public.contains("test@s"), "{public}");
+        assert!(path.is_file());
+        assert!(Path::new(&format!("{}.pub", path.display())).is_file());
+        assert_eq!(data["privateKeyPath"], path.display().to_string());
+        // an existing key file is never overwritten
+        let r = SshGenerateKeyTool
+            .execute(&json!({ "path": path.display().to_string() }), &ctx)
+            .unwrap();
+        assert_eq!(r.error.unwrap().code, "invalid_args");
+        // harness default: Harness/tmp/ssh/id_ed25519
+        let r = SshGenerateKeyTool.execute(&json!({}), &ctx).unwrap();
+        let p = r.data.unwrap()["privateKeyPath"].as_str().unwrap().to_string();
+        assert!(
+            p.starts_with(&paths::harness_tmp_dir(&wd).join("ssh").display().to_string()),
+            "{p}"
+        );
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn generate_key_defaults_inside_the_project_folder() {
+        let (root, ctx) = project_env("st-keygen-p");
+        let wd = ctx.working_dir.clone().unwrap();
+        let r = SshGenerateKeyTool.execute(&json!({}), &ctx).unwrap();
+        assert!(r.ok, "{:?}", r.error);
+        let p = r.data.unwrap()["privateKeyPath"].as_str().unwrap().to_string();
+        // project_root is canonicalized (/private/var on macOS), the raw
+        // project_env root is not: compare through canonicalize().
+        assert_eq!(
+            p,
+            root.canonicalize().unwrap().join(".ssh/id_ed25519").display().to_string()
+        );
+        assert!(root.join(".ssh/id_ed25519").is_file());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn save_profile_to_datas_appends_and_updates_in_place() {
+        let (root, ctx) = project_env("st-save");
+        let wd = ctx.working_dir.clone().unwrap();
+        let datas = root.join(paths::DATAS_MD);
+        let r = SshSaveProfileToDatasTool
+            .execute(
+                &json!({ "name": "prod", "host": "example.ru", "user": "deploy", "port": 2222, "password": "hunter2", "keyPath": "~/.ssh/id_ed25519" }),
+                &ctx,
+            )
+            .unwrap();
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.as_ref().unwrap()["updated"], false);
+        // the result never echoes the password
+        assert!(!r.data.unwrap().to_string().contains("hunter2"));
+        let text = fs::read_to_string(&datas).unwrap();
+        assert!(text.contains("## SSH prod"), "{text}");
+        assert!(text.contains("password: hunter2"), "{text}");
+        assert!(text.contains("key: ~/.ssh/id_ed25519"), "{text}");
+        // update replaces the section in place, the old password is gone
+        let r = SshSaveProfileToDatasTool
+            .execute(
+                &json!({ "name": "prod", "host": "example.ru", "user": "deploy", "port": 22, "password": "newpass" }),
+                &ctx,
+            )
+            .unwrap();
+        assert_eq!(r.data.unwrap()["updated"], true);
+        let text = fs::read_to_string(&datas).unwrap();
+        assert_eq!(text.matches("## SSH prod").count(), 1, "{text}");
+        assert!(!text.contains("hunter2"), "{text}");
+        let ps = parse_datas_ssh(&text);
+        assert_eq!(ps.len(), 1, "{ps:?}");
+        assert_eq!(ps[0].password.as_deref(), Some("newpass"));
+        assert_eq!(ps[0].port, 22);
+        assert_eq!(ps[0].key_path, None);
+        // a hand-written lowercase heading is updated in place, not duplicated
+        fs::write(&datas, "## ssh legacy\nhost: old.ru\nuser: old\nport: 22\n").unwrap();
+        let r = SshSaveProfileToDatasTool
+            .execute(&json!({ "name": "legacy", "host": "new.ru", "user": "u", "port": 22 }), &ctx)
+            .unwrap();
+        assert_eq!(r.data.unwrap()["updated"], true);
+        let text = fs::read_to_string(&datas).unwrap();
+        assert!(text.contains("## ssh legacy"), "{text}");
+        let ps = parse_datas_ssh(&text);
+        assert_eq!(ps.len(), 1, "{ps:?}");
+        assert_eq!(ps[0].host, "new.ru");
+        // missing datas.md is created
+        fs::remove_file(&datas).unwrap();
+        let r = SshSaveProfileToDatasTool
+            .execute(&json!({ "name": "fresh", "host": "f.example.ru", "user": "u", "port": 22 }), &ctx)
+            .unwrap();
+        assert!(r.ok, "{:?}", r.error);
+        let ps = parse_datas_ssh(&fs::read_to_string(&datas).unwrap());
+        assert_eq!(ps.len(), 1);
+        assert_eq!(ps[0].name, "fresh");
+        // bad args are refused
+        let r = SshSaveProfileToDatasTool
+            .execute(&json!({ "name": "#x", "host": "example.ru", "user": "u", "port": 22 }), &ctx)
+            .unwrap();
+        assert_eq!(r.error.unwrap().code, "invalid_args");
+        let r = SshSaveProfileToDatasTool
+            .execute(&json!({ "name": "n", "host": "example.ru", "user": "u", "port": 0 }), &ctx)
+            .unwrap();
+        assert_eq!(r.error.unwrap().code, "invalid_args");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn secrets_never_reach_danger_reasons_or_masked_output() {
+        let (root, ctx) = project_env("st-mask");
+        let wd = ctx.working_dir.clone().unwrap();
+        fs::write(
+            root.join(paths::DATAS_MD),
+            "## SSH db\nhost: db.example.ru\nuser: admin\npassword: hunter2\n",
+        )
+        .unwrap();
+        let reason = SshExecTool
+            .danger_reason(&json!({ "profile": "db", "command": "ls" }), &ctx)
+            .unwrap();
+        assert!(reason.contains("db.example.ru"), "{reason}");
+        assert!(!reason.contains("hunter2"), "{reason}");
+        let reason = SshInstallKeyTool
+            .danger_reason(&json!({ "profile": "db", "keyPath": "/keys/id" }), &ctx)
+            .unwrap();
+        assert!(!reason.contains("hunter2"), "{reason}");
+        // the journal masking covers datas.md-style password lines
+        assert_eq!(mask_secrets("password: hunter2"), "password: ***");
+        fs::remove_dir_all(&wd).unwrap();
     }
 
     #[test]

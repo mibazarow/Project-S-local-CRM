@@ -122,12 +122,17 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(super::git_tools::GitCommitTool),
         Arc::new(super::git_tools::GitPullTool),
         Arc::new(super::git_tools::GitPushTool),
-        // SSH tools via the system ssh/scp CLI with keys/ssh-agent; lazy
-        // discovered like the rest of the machine-wide set; see ssh_tools.rs.
+        // SSH tools via the system ssh/scp/ssh-keygen CLI: keys, ssh-agent
+        // and askpass passwords, profiles from ssh.json and the current
+        // project's datas.md; lazy discovered like the rest of the
+        // machine-wide set; see ssh_tools.rs.
         Arc::new(super::ssh_tools::SshListProfilesTool),
         Arc::new(super::ssh_tools::SshExecTool),
         Arc::new(super::ssh_tools::SshCopyTool::upload()),
         Arc::new(super::ssh_tools::SshCopyTool::download()),
+        Arc::new(super::ssh_tools::SshGenerateKeyTool),
+        Arc::new(super::ssh_tools::SshInstallKeyTool),
+        Arc::new(super::ssh_tools::SshSaveProfileToDatasTool),
         // macOS clipboard read/write via the system pbcopy/pbpaste, lazy
         // discovered like the rest of the machine-wide set; see clipboard_tools.rs.
         Arc::new(super::clipboard_tools::ClipboardGetTool::default()),
@@ -1976,7 +1981,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const DEFERRED_NAMES: [&str; 48] = [
+    const DEFERRED_NAMES: [&str; 51] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -2021,6 +2026,9 @@ mod tests {
         "ssh_exec",
         "ssh_upload",
         "ssh_download",
+        "ssh_generate_key",
+        "ssh_install_key",
+        "ssh_save_profile_to_datas",
         "schedule_create",
         "schedule_list",
         "schedule_pause",
@@ -2051,14 +2059,15 @@ mod tests {
             assert_eq!(tool(name).class(), ToolClass::ReadOnly, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
         }
-        for name in ["fs_write", "fs_copy", "fs_move", "crm_task_create", "crm_task_update", "crm_task_move", "datas_add", "create_skill"] {
+        for name in ["fs_write", "fs_copy", "fs_move", "crm_task_create", "crm_task_update", "crm_task_move", "datas_add", "create_skill", "ssh_save_profile_to_datas"] {
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
         }
+        assert_eq!(tool("ssh_save_profile_to_datas").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("fs_write").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("fs_copy").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("fs_move").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("create_skill").policy(), PermissionPolicy::Skip);
-        for name in ["fs_delete", "bash", "crm_task_delete", "git_commit", "git_pull", "git_push", "apply_patch", "ssh_exec", "ssh_upload", "ssh_download", "screenshot"] {
+        for name in ["fs_delete", "bash", "crm_task_delete", "git_commit", "git_pull", "git_push", "apply_patch", "ssh_exec", "ssh_upload", "ssh_download", "ssh_generate_key", "ssh_install_key", "screenshot"] {
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
             assert!(tool(name).danger_reason(&json!({}), &ToolCtx::default()).is_some(), "{name} danger_reason");

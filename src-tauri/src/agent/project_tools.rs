@@ -59,12 +59,16 @@ pub fn project_catalog() -> Catalog {
         Arc::new(crate::agent::git_tools::GitCommitTool),
         Arc::new(crate::agent::git_tools::GitPullTool),
         Arc::new(crate::agent::git_tools::GitPushTool),
-        // SSH tools via the system ssh/scp CLI with keys/ssh-agent; every
-        // mutating call is confirmed; see ssh_tools.rs for the safety rules.
+        // SSH tools via the system ssh/scp/ssh-keygen CLI: keys, ssh-agent
+        // and askpass passwords, profiles from ssh.json and the project's
+        // datas.md; every mutating call is confirmed; see ssh_tools.rs.
         Arc::new(crate::agent::ssh_tools::SshListProfilesTool),
         Arc::new(crate::agent::ssh_tools::SshExecTool),
         Arc::new(crate::agent::ssh_tools::SshCopyTool::upload()),
         Arc::new(crate::agent::ssh_tools::SshCopyTool::download()),
+        Arc::new(crate::agent::ssh_tools::SshGenerateKeyTool),
+        Arc::new(crate::agent::ssh_tools::SshInstallKeyTool),
+        Arc::new(crate::agent::ssh_tools::SshSaveProfileToDatasTool),
         // macOS clipboard read/write via the system pbcopy/pbpaste; every
         // call hits the general pasteboard; see clipboard_tools.rs.
         Arc::new(crate::agent::clipboard_tools::ClipboardGetTool::default()),
@@ -913,7 +917,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 44] = [
+    const TOOL_NAMES: [&str; 47] = [
         "search",
         "read_file",
         "list_tree",
@@ -945,6 +949,9 @@ mod tests {
         "ssh_exec",
         "ssh_upload",
         "ssh_download",
+        "ssh_generate_key",
+        "ssh_install_key",
+        "ssh_save_profile_to_datas",
         "clipboard_get",
         "clipboard_set",
         "webfetch",
