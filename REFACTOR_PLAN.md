@@ -5,7 +5,7 @@
 
 ## Текущее состояние
 - Закрыто: **Фазы 0–2** (тесты, бэкенд-перф/безопасность, zero-risk фронтенд), **S3.1–S3.6** (split `lib.rs`, split `harness_tools`, chat-run extract, loop-round extract, skills split, migration-table) и **S4.1** (chat-hook-dedupe).
-- Последний зелёный HEAD: `f23b488` — `cargo test` **777 passed / 19 ignored**, `npm test` **82 passed**, build OK.
+- Последний зелёный HEAD: `9ceb76a` — `npm test` **82 passed**, build OK; бэкенд в S4.1 не тронут, cargo-база `f23b488` (**777 passed / 19 ignored**).
 - Baseline-скриншоты: `/tmp/project-s-baseline/` (7 экранов).
 - Полный `npm run app:build` — только в финале.
 
@@ -25,7 +25,7 @@
 
 ## Фаза 4 — фронтенд-структура и перф
 
-### S4.1 chat-hook-dedupe — `done` (коммит `TBD`)
+### S4.1 chat-hook-dedupe — `done` (коммит `9ceb76a`)
 Три копии chat-run-обвязки (`ProjectChat` / `NotesChat` / `HarnessView`) → `src/components/chat/useChatRun.ts` (тот же `chatReducer`, те же 4 подписки — agent-event / agent-confirmation / agent-file / agent-context-compacted, тот же порядок событий и тот же flush очереди с задержкой 400 мс: dispatch `done`/`runError` → `onRunEnd` → `flushQueue` (clearQueue → combineQueued → через 400 мс enqueue при начавшемся run иначе send+IPC); роутинг payload→ключ и побочные эффекты (history-reload удалённых run'ов, `notifyTasksChanged`, `loadSessions`/`loadSchedules`) инжектятся через config, читаемый через ref — подписки пересоздаются на тех же deps, что раньше) + `ChatComposer.tsx` (авто-растущий textarea, `chat-input`/`chat-tools`/`chat-hint`/`queue-note`/`stop-btn`/`clear-btn`/`send-btn`/`attach-btn` — разметка, классы, svg и тексты идентичны инлайн-версиям; различия по вью — placeholder, disabled-условия, наличие attach — через пропсы). UX pin/regenerate/export → `resolvePinMessageId`/`resolveRegenerateTurn`/`runChatExport` в `chatShared`. Отклонение, найденное при сверке diff: рефакторинг потерял подписку `sessions-changed` → `loadSessions` в `HarnessView` (авто-заголовки, `rename_chat`, `chat_branch`, создаваемые фирами сессии) — восстановлена отдельным эффектом. `grow()` из обработчиков → `useLayoutEffect` на text со скипом mount: при программном cleared высота пересчитывается после обновления DOM (раньше мерилась по старому значению) — визуальный итог тот же. Проверки: `npm test` 82 passed, `npm run build` OK, `npx oxlint src` — только предупреждение в нетронутом `crossActions.ts`.
 
 - **S4.2 settings-tabs** — вкладка на компонент + `useDebouncedConfig`; save-on-blur тот же.
