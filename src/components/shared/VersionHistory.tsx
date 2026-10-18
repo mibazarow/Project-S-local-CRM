@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import * as ipc from "../../api/ipc";
 import type { VersionDto } from "../../api/types";
 import { IconClose } from "../files/icons";
+import Modal from "./Modal";
 
 interface Props {
   scope: "project" | "notes";
@@ -66,47 +67,40 @@ export default function VersionHistory({ scope, absPath, onRestore, onClose }: P
   };
 
   return (
-    <div
-      className="modal-backdrop"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="modal version-modal">
-        <button className="icon-btn small settings-close" title="Закрыть" onClick={onClose}>
-          <IconClose />
-        </button>
-        <h3>История версий</h3>
-        <div className="set-hint version-path">{absPath}</div>
-        {error && <div className="set-error">{error}</div>}
-        {versions === null ? (
-          <div className="set-hint">Загрузка…</div>
-        ) : versions.length === 0 ? (
-          <div className="set-hint">
-            Версий пока нет. Предыдущее содержимое сохраняется при правках заметок и действий агента.
-          </div>
-        ) : (
-          <div className="skill-list version-list">
-            {versions.map((v) => (
-              <div key={v.id} className="skill-item">
-                <div className="info">
-                  <div className="t">{fmtDate(v.createdAt)}</div>
-                  <div className="c">{v.bytes.toLocaleString("ru-RU")} Б</div>
-                </div>
-                <span className="version-actions">
-                  <button
-                    className="ghost-btn small"
-                    disabled={busyId !== null}
-                    onClick={() => void restore(v.id)}
-                  >
-                    {busyId === v.id ? "Восстановление…" : "Восстановить"}
-                  </button>
-                </span>
+    <Modal onClose={onClose} className="modal version-modal">
+      <button className="icon-btn small settings-close" title="Закрыть" onClick={onClose}>
+        <IconClose />
+      </button>
+      <h3>История версий</h3>
+      <div className="set-hint version-path">{absPath}</div>
+      {error && <div className="set-error">{error}</div>}
+      {versions === null ? (
+        <div className="set-hint">Загрузка…</div>
+      ) : versions.length === 0 ? (
+        <div className="set-hint">
+          Версий пока нет. Предыдущее содержимое сохраняется при правках заметок и действий агента.
+        </div>
+      ) : (
+        <div className="skill-list version-list">
+          {versions.map((v) => (
+            <div key={v.id} className="skill-item">
+              <div className="info">
+                <div className="t">{fmtDate(v.createdAt)}</div>
+                <div className="c">{v.bytes.toLocaleString("ru-RU")} Б</div>
               </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
+              <span className="version-actions">
+                <button
+                  className="ghost-btn small"
+                  disabled={busyId !== null}
+                  onClick={() => void restore(v.id)}
+                >
+                  {busyId === v.id ? "Восстановление…" : "Восстановить"}
+                </button>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </Modal>
   );
 }

@@ -3,6 +3,7 @@ import * as ipc from "../api/ipc";
 import type { AppConfig } from "../api/types";
 import { useDebouncedConfig } from "./settings/useDebouncedConfig";
 import { appToPatch, toAppForm, type AppForm } from "./settings/forms";
+import Modal from "./shared/Modal";
 import LlmTab from "./settings/LlmTab";
 import AgentTab from "./settings/AgentTab";
 import SkillsTab from "./settings/SkillsTab";
@@ -56,71 +57,64 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div
-      className="modal-backdrop"
-      onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
-      }}
-    >
-      <div className="modal settings-modal">
-        <nav className="settings-nav">
-          <div className="settings-title">Настройки</div>
-          <button
-            className={tab === "llm" ? "settings-tab active" : "settings-tab"}
-            onClick={() => openTab("llm")}
+    <Modal onClose={onClose} className="modal settings-modal">
+      <nav className="settings-nav">
+        <div className="settings-title">Настройки</div>
+        <button
+          className={tab === "llm" ? "settings-tab active" : "settings-tab"}
+          onClick={() => openTab("llm")}
+        >
+          Модель
+        </button>
+        <button
+          className={tab === "agent" ? "settings-tab active" : "settings-tab"}
+          onClick={() => openTab("agent")}
+        >
+          Агент
+        </button>
+        <button
+          className={tab === "skills" ? "settings-tab active" : "settings-tab"}
+          onClick={() => openTab("skills")}
+        >
+          Скиллы
+        </button>
+        <button
+          className={tab === "mcp" ? "settings-tab active" : "settings-tab"}
+          onClick={() => openTab("mcp")}
+        >
+          MCP
+        </button>
+        <button
+          className={tab === "other" ? "settings-tab active" : "settings-tab"}
+          onClick={() => openTab("other")}
+        >
+          Прочее
+        </button>
+      </nav>
+      <div className="settings-body">
+        <button className="icon-btn small settings-close" title="Закрыть" onClick={onClose}>
+          <svg
+            viewBox="0 0 24 24"
+            width="15"
+            height="15"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
           >
-            Модель
-          </button>
-          <button
-            className={tab === "agent" ? "settings-tab active" : "settings-tab"}
-            onClick={() => openTab("agent")}
-          >
-            Агент
-          </button>
-          <button
-            className={tab === "skills" ? "settings-tab active" : "settings-tab"}
-            onClick={() => openTab("skills")}
-          >
-            Скиллы
-          </button>
-          <button
-            className={tab === "mcp" ? "settings-tab active" : "settings-tab"}
-            onClick={() => openTab("mcp")}
-          >
-            MCP
-          </button>
-          <button
-            className={tab === "other" ? "settings-tab active" : "settings-tab"}
-            onClick={() => openTab("other")}
-          >
-            Прочее
-          </button>
-        </nav>
-        <div className="settings-body">
-          <button className="icon-btn small settings-close" title="Закрыть" onClick={onClose}>
-            <svg
-              viewBox="0 0 24 24"
-              width="15"
-              height="15"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-            >
-              <path d="M18 6 6 18M6 6l12 12" />
-            </svg>
-          </button>
-          <LlmTab active={tab === "llm"} error={error} setError={setError} />
-          {opened.agent && (
-            <AgentTab active={tab === "agent"} error={error} setError={setError} app={app} />
-          )}
-          {opened.skills && <SkillsTab active={tab === "skills"} />}
-          {opened.mcp && <McpTab active={tab === "mcp"} />}
-          {opened.other && (
-            <OtherTab active={tab === "other"} error={error} setError={setError} app={app} />
-          )}
-        </div>
+            <path d="M18 6 6 18M6 6l12 12" />
+          </svg>
+        </button>
+        <LlmTab active={tab === "llm"} error={error} setError={setError} />
+        {opened.agent && (
+          <AgentTab active={tab === "agent"} error={error} setError={setError} app={app} />
+        )}
+        {opened.skills && <SkillsTab active={tab === "skills"} />}
+        {opened.mcp && <McpTab active={tab === "mcp"} />}
+        {opened.other && (
+          <OtherTab active={tab === "other"} error={error} setError={setError} app={app} />
+        )}
       </div>
-    </div>
+    </Modal>
   );
 }

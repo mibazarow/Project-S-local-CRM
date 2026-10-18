@@ -131,3 +131,36 @@ describe("SettingsModal lazy tabs", () => {
     }
   });
 });
+
+describe("SettingsModal close behavior", () => {
+  it("closes on backdrop click", async () => {
+    const onClose = vi.fn();
+    await act(async () => {
+      root.render(<SettingsModal onClose={onClose} />);
+    });
+    await click(container.querySelector<HTMLElement>(".modal-backdrop")!);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not close on Escape", async () => {
+    const onClose = vi.fn();
+    await act(async () => {
+      root.render(<SettingsModal onClose={onClose} />);
+    });
+    await act(async () => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+    });
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("closes on the close button, not on content clicks", async () => {
+    const onClose = vi.fn();
+    await act(async () => {
+      root.render(<SettingsModal onClose={onClose} />);
+    });
+    await click(container.querySelector<HTMLElement>(".settings-body")!);
+    expect(onClose).not.toHaveBeenCalled();
+    await click(container.querySelector<HTMLElement>(".settings-close")!);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+});
