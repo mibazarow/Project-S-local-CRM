@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -5,8 +6,22 @@ import type { ProjectDto, TaskDto, TaskPatch } from "../../api/types";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-const tasksList = vi.hoisted(() => vi.fn(async (): Promise<TaskDto[]> => [task]));
+// Mutable task list the mocked tasksList returns, so focus/drag tests can
+// stage several cards in one column while other tests keep the single-task set.
+const taskHolder = vi.hoisted((): { tasks: TaskDto[] } => ({ tasks: [] }));
+const tasksList = vi.hoisted(() => vi.fn(async (): Promise<TaskDto[]> => taskHolder.tasks));
 const taskCreate = vi.hoisted(() => vi.fn(async (): Promise<TaskDto> => task));
+const taskMove = vi.hoisted(
+  () =>
+    vi.fn(
+      async (id: number, status: string, position: number): Promise<TaskDto> => ({
+        ...task,
+        id,
+        status,
+        position,
+      }),
+    ),
+);
 const taskUpdate = vi.hoisted(
   () =>
     vi.fn(async (_id: number, patch: TaskPatch): Promise<TaskDto> => ({
@@ -25,7 +40,7 @@ vi.mock("../../api/ipc", () => ({
   onProjectsChanged: vi.fn(async () => () => {}),
   tasksList,
   taskCreate,
-  taskMove: vi.fn(async () => task),
+  taskMove,
   taskUpdate,
   taskDelete: vi.fn(async () => undefined),
   setTaskColumns: vi.fn(async () => undefined),
@@ -74,6 +89,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  taskHolder.tasks = [task];
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -214,5 +230,170 @@ describe("KanbanBoard priority toggle", () => {
     expect(container.querySelector(".task-card")!.className).not.toContain("priority");
 
     task.isPriority = false;
+  });
+});
+
+const makeTask = (o: Partial<TaskDto>): TaskDto => ({
+  id: 1,
+  projectId: 1,
+  title: "T",
+  status: "new",
+  comment: null,
+  dueDate: null,
+  dueTime: "07:00",
+  remindAt: null,
+  position: 1,
+  createdAt: "2026-01-01 09:00:00",
+  closedAt: null,
+  overdue: false,
+  isPriority: false,
+  checklist: [],
+  recurrence: "none",
+  spentMs: 0,
+  startedAt: null,
+  ...o,
+});
+
+describe("KanbanBoard focus from Today", () => {
+  let scrollSpy: ReturnType<typeof vi.fn>;
+  let origRect: (() => DOMRect) | undefined;
+
+  beforeEach(() => {
+    scrollSpy = vi.fn();
+    (Element.prototype as unknown as { scrollIntoView: unknown }).scrollIntoView = scrollSpy;
+  });
+
+  afterEach(() => {
+    if (origRect) {
+      HTMLElement.prototype.getBoundingClientRect = origRect;
+      origRect = undefined;
+    }
+  });
+
+  const columnCardIds = (status: string) =>
+    Array.from(
+      container.querySelectorAll(`.task-col[data-status="${status}"] .task-card[data-id]`),
+    ).map((el) => Number((el as HTMLElement).dataset.id));
+
+  it("raises the focused task to the top of its column, pulses and scrolls", async () => {
+    taskHolder.tasks = [
+      makeTask({ id: 1, position: 1 }),
+      makeTask({ id: 2, position: 2 }),
+      makeTask({ id: 3, position: 3 }),
+    ];
+    await act(async () => {
+      root.render(
+        <AppProvider>
+          <KanbanBoard project={project} tasksVersion={0} highlightTaskId={3} />
+        </AppProvider>,
+      );
+    });
+    await settle();
+    expect(columnCardIds("new")).toEqual([3, 1, 2]);
+    const focused = container.querySelector('.task-card[data-id="3"]')!;
+    expect(focused.className).toContain("highlight");
+    expect(scrollSpy).toHaveBeenCalled();
+  });
+
+  it("restores the original order once focus clears", async () => {
+    taskHolder.tasks = [
+      makeTask({ id: 1, position: 1 }),
+      makeTask({ id: 2, position: 2 }),
+      makeTask({ id: 3, position: 3 }),
+    ];
+    await act(async () => {
+      root.render(
+        <AppProvider>
+          <KanbanBoard project={project} tasksVersion={0} highlightTaskId={3} />
+        </AppProvider>,
+      );
+    });
+    await settle();
+    expect(columnCardIds("new")).toEqual([3, 1, 2]);
+
+    await act(async () => {
+      root.render(
+        <AppProvider>
+          <KanbanBoard project={project} tasksVersion={0} highlightTaskId={null} />
+        </AppProvider>,
+      );
+    });
+    await settle();
+    expect(columnCardIds("new")).toEqual([1, 2, 3]);
+    expect(container.querySelector(".task-card.highlight")).toBeNull();
+  });
+
+  it("the pulse animation runs exactly 3 times and is disabled under reduced motion", () => {
+    const css = readFileSync("src/styles/app.css", "utf8");
+    const rule = css.match(/\.task-card\.highlight \{[^}]*\}/);
+    expect(rule, "the highlight rule must exist").not.toBeNull();
+    expect(rule![0]).toContain("animation-iteration-count: 3");
+    const reduced = css.match(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\n\}/);
+    expect(reduced, "the reduced-motion block must exist").not.toBeNull();
+    expect(reduced![0]).toContain(".task-card.highlight { animation: none");
+  });
+
+  it("drag/drop after focus still computes the new position from real neighbors", async () => {
+    taskHolder.tasks = [
+      makeTask({ id: 1, position: 1 }),
+      makeTask({ id: 2, position: 2 }),
+      makeTask({ id: 3, position: 3 }),
+    ];
+    origRect = HTMLElement.prototype.getBoundingClientRect;
+    const rect = (left: number, top: number, width: number, height: number) =>
+      ({
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+        width,
+        height,
+        x: left,
+        y: top,
+        toJSON() {},
+      }) as DOMRect;
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      const status = this.dataset.status;
+      if (status) {
+        const left = status === "new" ? 0 : status === "progress" ? 300 : 600;
+        return rect(left, 0, 300, 1000);
+      }
+      const id = this.dataset.id;
+      if (id) return rect(0, (Number(id) - 1) * 100, 300, 100);
+      return rect(0, 0, 0, 0);
+    };
+
+    await act(async () => {
+      root.render(
+        <AppProvider>
+          <KanbanBoard project={project} tasksVersion={0} highlightTaskId={3} />
+        </AppProvider>,
+      );
+    });
+    await settle();
+    // Focused task 3 is raised to the top for display before the drag starts.
+    expect(columnCardIds("new")).toEqual([3, 1, 2]);
+
+    const cardA = container.querySelector('.task-card[data-id="1"]')!;
+    const fire = (target: EventTarget, type: string, x: number, y: number) =>
+      act(() => {
+        target.dispatchEvent(
+          new MouseEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            button: 0,
+            clientX: x,
+            clientY: y,
+          }),
+        );
+      });
+    fire(cardA, "pointerdown", 50, 50);
+    fire(window, "pointermove", 50, 120);
+    fire(window, "pointermove", 50, 250);
+    fire(window, "pointerup", 50, 250);
+    await settle();
+
+    // Real order [1,2,3]: dropping card 1 at the end lands after card 3 (pos 3) → 4.
+    expect(taskMove).toHaveBeenCalledWith(1, "new", 4);
   });
 });

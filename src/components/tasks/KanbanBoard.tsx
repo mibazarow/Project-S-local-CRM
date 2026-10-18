@@ -223,6 +223,23 @@ export default function KanbanBoard({ project, tasksVersion, highlightTaskId }: 
     },
   });
 
+  // Focus view override: while a task is focused (highlighted) it is raised to
+  // the top of its own column for visibility. This is display-only — the real
+  // fractional `position` values and the DB order are untouched, and the drop
+  // math above keeps reading `byStatus` (real order). The override is suspended
+  // while dragging so the DOM order matches `byStatus` and a drop after focus
+  // still computes positions from the real neighbors.
+  const displayByStatus = useMemo(() => {
+    if (highlightTaskId == null || draggingId !== null) return byStatus;
+    const map: Record<string, TaskDto[]> = { ...byStatus };
+    for (const status of Object.keys(map)) {
+      const arr = map[status];
+      const idx = arr.findIndex((t) => t.id === highlightTaskId);
+      if (idx > 0) map[status] = [arr[idx], ...arr.slice(0, idx), ...arr.slice(idx + 1)];
+    }
+    return map;
+  }, [byStatus, highlightTaskId, draggingId]);
+
   // Reload on every tasks-changed bump for this project (agent or user
   // mutation). Debounced so a burst of tool calls lands as one fetch, and
   // the cancelled flag keeps a late response from overwriting a newer one.
@@ -341,7 +358,7 @@ export default function KanbanBoard({ project, tasksVersion, highlightTaskId }: 
       {tasks && (
         <div className="task-board" ref={boardRef}>
           {STATUSES.map((status, i) => {
-            const cards = byStatus[status];
+            const cards = displayByStatus[status];
             const over = dropTarget !== null && dropTarget.container === status;
             const dropIndex = over ? dropTarget.index : null;
             const nodes: ReactNode[] = [];

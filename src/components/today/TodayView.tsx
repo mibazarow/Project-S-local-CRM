@@ -145,7 +145,7 @@ function TaskRow({
 }: {
   twp: TaskWithProject;
   overdue?: boolean;
-  onOpen: (projectId: number) => void;
+  onOpen: (projectId: number, taskId: number) => void;
 }) {
   const { task, project } = twp;
   return (
@@ -153,9 +153,9 @@ function TaskRow({
       className="today-row"
       role="button"
       tabIndex={0}
-      onClick={() => onOpen(project.id)}
+      onClick={() => onOpen(project.id, task.id)}
       onKeyDown={(e) => {
-        if (e.key === "Enter") onOpen(project.id);
+        if (e.key === "Enter") onOpen(project.id, task.id);
       }}
     >
       <span className="today-row-title">{task.title}</span>
@@ -269,8 +269,11 @@ export default function TodayView({ onTab }: Props) {
     };
   }, [reload, scheduleReload]);
 
-  const openTask = (projectId: number) => {
+  // Reuse the command-palette task navigation path: open the project, ask
+  // FilesPanel to switch to «Задачи» and focus (raise + pulse) this task.
+  const openTask = (projectId: number, taskId: number) => {
     void actions.openProject(projectId);
+    actions.requestTask(taskId);
     onTab("projects");
   };
 
