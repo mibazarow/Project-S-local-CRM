@@ -18,7 +18,10 @@ use crate::config::{self, AppConfig, ConfigKind, LlmConfig};
 use crate::db;
 use crate::embed;
 use crate::error::{AppError, Result};
-use crate::llm::{self, ChatMessage, ChatParams, ContentPart, MessageContent, Role, ToolCall};
+use crate::llm::{
+    self, sanitize_tool_history, ChatMessage, ChatParams, ContentPart, MessageContent, Role,
+    ToolCall,
+};
 use crate::memory;
 use crate::paths;
 use crate::projects;
@@ -470,7 +473,12 @@ pub fn load_history(
             reasoning_content: reasoning,
         });
     }
-    Ok(out)
+    // The model-facing view is repaired on load: truncation, regeneration,
+    // branching, compaction or a run killed mid-tool can leave an assistant
+    // turn with tool_calls whose tool results are gone (HTTP 400 at send
+    // time). The stored rows stay append-only and untouched; every run path
+    // (project/harness/notes/schedule) builds its context through here.
+    Ok(sanitize_tool_history(&out))
 }
 
 // Canonical project root for the chat's project; None for harness chats,
@@ -1034,7 +1042,11 @@ fn run_agent_inner(
     if let Some(up_to_position) = ctx.new_checkpoint_up_to {
         let _ = app.emit(
             "agent-context-compacted",
-            json!({ "chatId": chat_id, "upToPosition": up_to_position }),
+            json!({
+                "chatId": chat_id,
+                "upToPosition": up_to_position,
+                "summary": ctx.new_summary.unwrap_or_default(),
+            }),
         );
     }
 
@@ -1366,6 +1378,102 @@ mod tests {
         assert_eq!(dtos[1].tool_calls[0]["name"], "read_file");
         assert_eq!(dtos[2].tool_call_id.as_deref(), Some("c1"));
         assert!(dtos[0].position < dtos[1].position);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // Wire-level check: every assistant tool_calls turn is followed by a tool
+    // message per tool_call_id before the next assistant turn (or the end).
+    fn tool_groups_are_closed(messages: &[ChatMessage]) -> bool {
+        let mut pending: Vec<String> = Vec::new();
+        for m in messages {
+            if m.role == Role::Tool {
+                match m.tool_call_id.as_ref().and_then(|id| pending.iter().position(|p| p == id)) {
+                    Some(pos) => { pending.remove(pos); }
+                    None => return false,
+                }
+                continue;
+            }
+            if !pending.is_empty() {
+                return false;
+            }
+            if m.role == Role::Assistant {
+                pending = m.tool_calls.iter().map(|tc| tc.id.clone()).collect();
+            }
+        }
+        pending.is_empty()
+    }
+
+    #[test]
+    fn load_history_closes_open_tool_calls_with_synthetic_results() {
+        let (wd, conn, pid) = setup("chat-sanitize-load");
+        let chat_id = ensure_project_chat(&conn, pid).unwrap();
+        append_message(&conn, chat_id, Role::User, Some("go"), &[], None, None).unwrap();
+        let calls = vec![
+            call("c1", "read_file", json!({ "rel_path": "a.md" })),
+            call("c2", "read_file", json!({ "rel_path": "b.md" })),
+        ];
+        append_message(&conn, chat_id, Role::Assistant, None, &calls, None, None).unwrap();
+        // Only c1's result was persisted (a killed run lost c2's).
+        append_message(&conn, chat_id, Role::Tool, Some("{\"ok\":true}"), &[], Some("c1"), None)
+            .unwrap();
+
+        let hist = load_history(&conn, chat_id, false).unwrap();
+        assert_eq!(hist.len(), 4, "the synthetic tool message closes the group");
+        assert_eq!(hist[3].role, Role::Tool);
+        assert_eq!(hist[3].tool_call_id.as_deref(), Some("c2"));
+        let envelope: Value = serde_json::from_str(hist[3].text_content().unwrap()).unwrap();
+        assert_eq!(envelope["ok"], json!(false));
+        assert_eq!(envelope["error"]["code"], "cancelled");
+        assert_eq!(envelope["error"]["message"], "tool result missing");
+        assert!(tool_groups_are_closed(&hist));
+        // The stored rows stay untouched: the repair is model-facing only.
+        let stored: i64 = conn
+            .query_row("SELECT count(*) FROM messages WHERE chat_id = ?1", params![chat_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, 3);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn truncate_after_at_tool_call_turn_loads_a_valid_history() {
+        let (wd, conn, pid) = setup("chat-sanitize-truncate");
+        let chat_id = ensure_project_chat(&conn, pid).unwrap();
+        append_message(&conn, chat_id, Role::User, Some("go"), &[], None, None).unwrap();
+        let calls = vec![
+            call("c1", "read_file", json!({ "rel_path": "a.md" })),
+            call("c2", "read_file", json!({ "rel_path": "b.md" })),
+        ];
+        let asst = append_message(&conn, chat_id, Role::Assistant, None, &calls, None, None).unwrap();
+        append_message(&conn, chat_id, Role::Tool, Some("r1"), &[], Some("c1"), None).unwrap();
+        append_message(&conn, chat_id, Role::Tool, Some("r2"), &[], Some("c2"), None).unwrap();
+        append_message(&conn, chat_id, Role::Assistant, Some("done"), &[], None, None).unwrap();
+
+        // Regenerate at the tool-call turn: the tool results go with the tail.
+        assert_eq!(truncate_after(&conn, chat_id, asst.id).unwrap(), 3);
+        let hist = load_history(&conn, chat_id, false).unwrap();
+        assert_eq!(hist.len(), 4);
+        assert_eq!(hist[1].role, Role::Assistant);
+        assert_eq!(hist[1].tool_calls.len(), 2);
+        assert!(tool_groups_are_closed(&hist), "truncated history must be valid");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn branch_at_tool_call_turn_loads_a_valid_history() {
+        let (wd, conn, _pid) = setup("chat-sanitize-branch");
+        let session = crate::harness::create_session(&conn, Some("s")).unwrap();
+        let chat_id = crate::harness::session_chat_id(&conn, session.id).unwrap();
+        append_message(&conn, chat_id, Role::User, Some("go"), &[], None, None).unwrap();
+        let calls = vec![call("c1", "read_file", json!({ "rel_path": "a.md" }))];
+        let asst = append_message(&conn, chat_id, Role::Assistant, None, &calls, None, None).unwrap();
+
+        // Branch right at the tool-call turn: the copy has no tool result.
+        let branch = branch_chat(&conn, chat_id, asst.id).unwrap();
+        let hist = load_history(&conn, branch.chat_id, false).unwrap();
+        assert_eq!(hist.len(), 3);
+        assert_eq!(hist[2].role, Role::Tool);
+        assert_eq!(hist[2].tool_call_id.as_deref(), Some("c1"));
+        assert!(tool_groups_are_closed(&hist), "branched history must be valid");
         fs::remove_dir_all(&wd).unwrap();
     }
 

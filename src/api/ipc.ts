@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  AgentCompactionEvent,
   AgentEventPayload,
   AgentFileEvent,
   AttachmentDto,
@@ -612,6 +613,11 @@ export const onAgentConfirmation = (handler: (payload: ConfirmationRequestPayloa
 // Emitted by the send_file tool after the agent attached a file to a chat.
 export const onAgentFile = (handler: (payload: AgentFileEvent) => void) =>
   listen<AgentFileEvent>("agent-file", (e) => handler(e.payload));
+
+// Emitted when a run's context crossed the compaction threshold and a new
+// checkpoint summary was written (the summary rides the event only).
+export const onAgentCompaction = (handler: (payload: AgentCompactionEvent) => void) =>
+  listen<AgentCompactionEvent>("agent-context-compacted", (e) => handler(e.payload));
 
 export const onSchedulesChanged = (handler: () => void) =>
   listen<unknown>("schedules-changed", () => handler());

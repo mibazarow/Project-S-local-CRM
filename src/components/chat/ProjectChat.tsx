@@ -4,6 +4,7 @@ import { useApp } from "../../state/AppStore";
 import type { AgentEventPayload, MessageAttachmentDto } from "../../api/types";
 import {
   chatReducer,
+  combineQueued,
   historyToItems,
   summarizeArgs,
   toMessage,
@@ -67,11 +68,34 @@ export default function ProjectChat({ projectId, projectName }: Props) {
       .catch(() => dispatch({ type: "loaded", key: projectId, items: [] }));
   }, [projectId]);
 
+  // When a run finishes (done/error/cancelled), flush the queued messages as
+  // one combined user turn. A short delay lets the finished run persist its
+  // final answer before the new run's user turn is appended; if another run
+  // started meanwhile the text is re-queued for its end.
+  const flushQueue = (key: number) => {
+    const queued = stateRef.current[key]?.queue ?? [];
+    if (queued.length === 0) return;
+    dispatch({ type: "clearQueue", key });
+    const combined = combineQueued(queued);
+    setTimeout(() => {
+      if (stateRef.current[key]?.run) {
+        dispatch({ type: "enqueue", key, text: combined });
+        return;
+      }
+      dispatch({ type: "send", key, text: combined, attachments: [] });
+      void ipc
+        .sendProjectMessage(key, combined)
+        .then((chat) => rememberChatId(key, chat))
+        .catch((e) => dispatch({ type: "sendFailed", key, message: toMessage(e) }));
+    }, 400);
+  };
+
   useEffect(() => {
     let cancelled = false;
     let unEvent: (() => void) | undefined;
     let unConfirm: (() => void) | undefined;
     let unFile: (() => void) | undefined;
+    let unCompaction: (() => void) | undefined;
     const onEvent = (p: AgentEventPayload) => {
       if (p.projectId == null) return; // harness-session events carry sessionId
       const key = p.projectId;
@@ -99,10 +123,12 @@ export default function ProjectChat({ projectId, projectName }: Props) {
           // Defensive: the run may have created/moved tasks; the kanban
           // refetches even if a tasks-changed event raced the run end.
           actions.notifyTasksChanged();
+          flushQueue(key);
           break;
         case "error":
           dispatch({ type: "runError", key, message: p.event.message });
           actions.notifyTasksChanged();
+          flushQueue(key);
           break;
         case "confirmationRequested":
           break; // the id-bearing copy arrives as "agent-confirmation"
@@ -124,11 +150,21 @@ export default function ProjectChat({ projectId, projectName }: Props) {
         dispatch({ type: "agentFile", key: Number(entry[0]), payload: p });
       })
       .then((u) => (cancelled ? u() : (unFile = u)));
+    // Context compaction: the event carries only chatId, so route it through
+    // the remembered project -> chat map; the summary shows as a status item.
+    void ipc
+      .onAgentCompaction((p) => {
+        const entry = Object.entries(chatIdsRef.current).find(([, chat]) => chat === p.chatId);
+        if (!entry) return;
+        dispatch({ type: "compaction", key: Number(entry[0]), summary: p.summary });
+      })
+      .then((u) => (cancelled ? u() : (unCompaction = u)));
     return () => {
       cancelled = true;
       unEvent?.();
       unConfirm?.();
       unFile?.();
+      unCompaction?.();
     };
   }, [actions]);
 
@@ -181,7 +217,21 @@ export default function ProjectChat({ projectId, projectName }: Props) {
     })();
   };
 
-  const send = () => sendText(text);
+  // While a run is live the composer stays enabled: sending queues the text
+  // (flushed as one combined turn when the run finishes) instead of starting
+  // a second run.
+  const send = () => {
+    if (projectId == null) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    if (running) {
+      dispatch({ type: "enqueue", key: projectId, text: trimmed });
+      setText("");
+      grow();
+      return;
+    }
+    sendText(text);
+  };
 
   // Cross-entity quick action: deliver a prebuilt question through the normal
   // send flow once this project's chat is idle (a live run defers delivery).
@@ -379,6 +429,11 @@ export default function ProjectChat({ projectId, projectName }: Props) {
             <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.49-8.48" /></svg>
           </button>
           <span className="chat-hint">Shift+Enter — перенос строки, Enter — отправить</span>
+          {(slice?.queue.length ?? 0) > 0 && (
+            <span className="queue-note" title="Уйдёт одним сообщением, когда агент закончит">
+              В очереди: {slice?.queue.length}
+            </span>
+          )}
           {running ? (
             <button className="ghost-btn small stop-btn" type="button" onClick={stop}>
               Стоп
@@ -400,8 +455,8 @@ export default function ProjectChat({ projectId, projectName }: Props) {
           <button
             className="icon-btn send-btn"
             type="button"
-            title="Отправить"
-            disabled={running || !text.trim()}
+            title={running ? "Отправить в очередь" : "Отправить"}
+            disabled={!text.trim()}
             onClick={send}
           >
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4 20-7z" /></svg>

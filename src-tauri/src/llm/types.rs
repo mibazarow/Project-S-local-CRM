@@ -167,6 +167,61 @@ impl ChatMessage {
     }
 }
 
+// Envelope of the synthetic tool result the sanitizer appends for a
+// tool_call whose real result never made it into the transcript.
+pub const MISSING_TOOL_RESULT_ENVELOPE: &str =
+    r#"{"ok":false,"error":{"code":"cancelled","message":"tool result missing"}}"#;
+
+// Repairs the model-facing view of a transcript so the API never sees an
+// assistant turn with `tool_calls` that lacks a `tool` message for one of its
+// tool_call_ids (HTTP 400 "An assistant message with 'tool_calls' must be
+// followed by tool messages responding to each 'tool_call_id'"). Truncation,
+// regeneration, branching, compaction or a run killed mid-tool can leave such
+// holes in the stored rows; the stored transcript itself is never rewritten.
+// Rules:
+//   * every tool_call_id of an assistant turn gets a tool message before the
+//     next assistant turn (or the end): missing ones are closed in place with
+//     a synthetic `cancelled` envelope, the assistant turn itself is kept so
+//     the context survives;
+//   * a tool message whose tool_call_id matches no open tool_call (orphan,
+//     duplicate, or left over from a truncation) is dropped;
+//   * everything else keeps its order and content untouched.
+pub fn sanitize_tool_history(messages: &[ChatMessage]) -> Vec<ChatMessage> {
+    fn close_pending(out: &mut Vec<ChatMessage>, pending: &mut Vec<String>) {
+        for id in pending.drain(..) {
+            out.push(ChatMessage::tool_result(id, MISSING_TOOL_RESULT_ENVELOPE));
+        }
+    }
+    let mut out: Vec<ChatMessage> = Vec::with_capacity(messages.len());
+    // tool_call ids of the assistant turn whose results are still expected.
+    let mut pending: Vec<String> = Vec::new();
+    for msg in messages {
+        if msg.role == Role::Tool {
+            // A tool result only belongs to the currently open tool_calls
+            // group; anything else (no open group, unknown or duplicate id)
+            // is an orphan and is dropped.
+            if let Some(pos) = msg
+                .tool_call_id
+                .as_ref()
+                .and_then(|id| pending.iter().position(|p| p == id))
+            {
+                pending.remove(pos);
+                out.push(msg.clone());
+            }
+            continue;
+        }
+        // Any other message closes the open group: ids still without a result
+        // get their synthetic envelope before this message is appended.
+        close_pending(&mut out, &mut pending);
+        if msg.role == Role::Assistant && !msg.tool_calls.is_empty() {
+            pending = msg.tool_calls.iter().map(|tc| tc.id.clone()).collect();
+        }
+        out.push(msg.clone());
+    }
+    close_pending(&mut out, &mut pending);
+    out
+}
+
 // Hand-written to guarantee the exact OpenAI wire shape (snake_case keys,
 // `tool_calls` wrapped as {id, type, function{name, arguments-as-string}}).
 impl Serialize for ChatMessage {
@@ -352,5 +407,145 @@ mod tests {
                 .get("reasoning_content")
                 .is_none()
         );
+    }
+
+    fn call(id: &str) -> ToolCall {
+        ToolCall::new(id.into(), "f".into(), "{}".into())
+    }
+
+    fn asst_calls(ids: &[&str]) -> ChatMessage {
+        ChatMessage::assistant_tool_calls(ids.iter().copied().map(call).collect())
+    }
+
+    // Wire-level check: every assistant tool_calls turn is followed by a tool
+    // message per tool_call_id before the next assistant turn (or the end).
+    fn tool_groups_are_closed(messages: &[ChatMessage]) -> bool {
+        let mut pending: Vec<String> = Vec::new();
+        for m in messages {
+            if m.role == Role::Tool {
+                match m.tool_call_id.as_ref().and_then(|id| pending.iter().position(|p| p == id)) {
+                    Some(pos) => { pending.remove(pos); }
+                    None => return false,
+                }
+                continue;
+            }
+            if !pending.is_empty() {
+                return false;
+            }
+            if m.role == Role::Assistant {
+                pending = m.tool_calls.iter().map(|tc| tc.id.clone()).collect();
+            }
+        }
+        pending.is_empty()
+    }
+
+    #[test]
+    fn sanitize_adds_synthetic_tool_result_for_missing_ids() {
+        // assistant with 2 tool_calls, only 1 tool result → the missing one
+        // is closed in place with the cancelled envelope.
+        let history = vec![
+            ChatMessage::user("go"),
+            asst_calls(&["c1", "c2"]),
+            ChatMessage::tool_result("c1", "{\"ok\":true}"),
+            ChatMessage::assistant("done"),
+        ];
+        let out = sanitize_tool_history(&history);
+        assert_eq!(out.len(), 5);
+        assert_eq!(out[1].role, Role::Assistant);
+        assert_eq!(out[1].tool_calls.len(), 2);
+        assert_eq!(out[2].tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(out[2].text_content(), Some("{\"ok\":true}"));
+        assert_eq!(out[3].role, Role::Tool);
+        assert_eq!(out[3].tool_call_id.as_deref(), Some("c2"));
+        let envelope: serde_json::Value =
+            serde_json::from_str(out[3].text_content().unwrap()).unwrap();
+        assert_eq!(envelope["ok"], json!(false));
+        assert_eq!(envelope["error"]["code"], "cancelled");
+        assert_eq!(envelope["error"]["message"], "tool result missing");
+        assert_eq!(out[4].text_content(), Some("done"));
+        assert!(tool_groups_are_closed(&out));
+    }
+
+    #[test]
+    fn sanitize_closes_groups_at_the_end_of_the_history() {
+        let out = sanitize_tool_history(&[asst_calls(&["c1"])]);
+        assert_eq!(out.len(), 2);
+        assert_eq!(out[1].tool_call_id.as_deref(), Some("c1"));
+        assert!(tool_groups_are_closed(&out));
+    }
+
+    #[test]
+    fn sanitize_drops_orphan_and_duplicate_tool_messages() {
+        let history = vec![
+            ChatMessage::tool_result("ghost", "orphan before any tool_calls"),
+            ChatMessage::user("go"),
+            asst_calls(&["c1"]),
+            ChatMessage::tool_result("c1", "first"),
+            ChatMessage::tool_result("c1", "duplicate"),
+            ChatMessage::tool_result("other", "no such open id"),
+            ChatMessage::assistant("done"),
+        ];
+        let out = sanitize_tool_history(&history);
+        assert_eq!(out.len(), 4);
+        assert_eq!(out[0].role, Role::User);
+        assert_eq!(out[1].role, Role::Assistant);
+        assert_eq!(out[2].tool_call_id.as_deref(), Some("c1"));
+        assert_eq!(out[2].text_content(), Some("first"));
+        assert_eq!(out[3].text_content(), Some("done"));
+        assert!(tool_groups_are_closed(&out));
+    }
+
+    #[test]
+    fn sanitize_keeps_valid_transcripts_untouched() {
+        let history = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("go"),
+            asst_calls(&["c1", "c2"]),
+            ChatMessage::tool_result("c1", "r1"),
+            ChatMessage::tool_result("c2", "r2"),
+            ChatMessage::assistant("done"),
+        ];
+        let out = sanitize_tool_history(&history);
+        assert_eq!(
+            serde_json::to_string(&out).unwrap(),
+            serde_json::to_string(&history).unwrap()
+        );
+    }
+
+    #[test]
+    fn sanitized_history_gives_the_api_body_no_orphan_tool_calls() {
+        // The exact 400 shape: an assistant tool_calls turn with a missing
+        // tool result. After sanitizing, the serialized request body must
+        // answer every tool_call_id with a following tool message.
+        let broken = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("go"),
+            asst_calls(&["c1", "c2"]),
+            ChatMessage::tool_result("c1", "r1"),
+        ];
+        assert!(!tool_groups_are_closed(&broken));
+        let params = crate::llm::ChatParams {
+            model: "m".into(),
+            temperature: None,
+            max_tokens: None,
+            reasoning_effort: None,
+        };
+        let body = crate::llm::build_body(&sanitize_tool_history(&broken), None, &params, false);
+        let msgs = body["messages"].as_array().unwrap();
+        for (i, m) in msgs.iter().enumerate() {
+            let ids: Vec<&str> = m["tool_calls"]
+                .as_array()
+                .map(|arr| arr.iter().map(|tc| tc["id"].as_str().unwrap()).collect())
+                .unwrap_or_default();
+            for id in ids {
+                let answered = msgs[i + 1..]
+                    .iter()
+                    .take_while(|next| next["role"] != "assistant")
+                    .any(|next| {
+                        next["role"] == "tool" && next["tool_call_id"].as_str() == Some(id)
+                    });
+                assert!(answered, "tool_call {id} has no tool message in the body");
+            }
+        }
     }
 }

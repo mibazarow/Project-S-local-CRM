@@ -105,11 +105,16 @@ fn load_config(wd: &Path) -> Result<SshConfig> {
 //   key: ~/.ssh/id_ed25519
 //
 // The heading is matched case-insensitively ("## ssh prod") and the section
-// runs to the next "##" heading or EOF. Field names are case-insensitive
-// ("Host:", "PASSWORD:"); "key" and "keyPath" are both accepted. Any other
-// text and all other sections are ignored. An entry is malformed (skipped
-// whole) when its name, host or user is missing/invalid or its port line
-// is unparsable; a missing port defaults to 22.
+// runs to the next "##" heading or EOF. Hand-written sections are accepted
+// too: any other non-empty "## <title>" heading starts a candidate whose
+// name is the title ("## Доступ к серверу"), field lines may carry bullet
+// markers ("- host: ...") and Russian labels ("Хост:", "Пользователь:",
+// "Порт:", "Пароль:", "Ключ:") map to the canonical keys, so a section the
+// user wrote by hand is usable without reformatting. Field names are
+// case-insensitive ("Host:", "PASSWORD:"); "key" and "keyPath" are both
+// accepted. Any other text and all other sections are ignored. An entry is
+// malformed (skipped whole) when its name, host or user is missing/invalid
+// or its port line is unparsable; a missing port defaults to 22.
 pub(crate) fn parse_datas_ssh(text: &str) -> Vec<SshProfile> {
     let mut profiles: Vec<SshProfile> = Vec::new();
     let mut current: Option<(String, Vec<(String, String)>)> = None;
@@ -122,17 +127,21 @@ pub(crate) fn parse_datas_ssh(text: &str) -> Vec<SshProfile> {
             let rest = trimmed.trim_start_matches('#').trim();
             let mut words = rest.splitn(2, char::is_whitespace);
             let head = words.next().unwrap_or("");
-            let name = words.next().unwrap_or("").trim().to_string();
-            if head.eq_ignore_ascii_case("ssh") && !name.is_empty() {
-                current = Some((name, Vec::new()));
+            let tail = words.next().unwrap_or("").trim().to_string();
+            if head.eq_ignore_ascii_case("ssh") {
+                if !tail.is_empty() {
+                    current = Some((tail, Vec::new()));
+                }
+            } else if !rest.is_empty() {
+                current = Some((rest.to_string(), Vec::new()));
             }
             continue;
         }
         if let Some((_, fields)) = &mut current {
-            if let Some((key, value)) = trimmed.split_once(':') {
-                let key = key.trim().to_ascii_lowercase();
-                if matches!(key.as_str(), "host" | "user" | "port" | "password" | "key" | "keypath") {
-                    fields.push((key, value.trim().to_string()));
+            let line = trimmed.trim_start_matches(['-', '*', '+']).trim();
+            if let Some((key, value)) = line.split_once(':') {
+                if let Some(key) = normalize_datas_key(&key.trim().to_lowercase()) {
+                    fields.push((key.to_string(), value.trim().to_string()));
                 }
             }
         }
@@ -141,6 +150,19 @@ pub(crate) fn parse_datas_ssh(text: &str) -> Vec<SshProfile> {
         profiles.push(p);
     }
     profiles
+}
+
+// Canonical field key for a datas.md line label, English or Russian; None
+// for anything that is not a connection field.
+fn normalize_datas_key(key: &str) -> Option<&'static str> {
+    Some(match key {
+        "host" | "хост" => "host",
+        "user" | "пользователь" => "user",
+        "port" | "порт" => "port",
+        "password" | "пароль" => "password",
+        "key" | "keypath" | "ключ" => "key",
+        _ => return None,
+    })
 }
 
 // Turns one parsed section into a profile; None when the entry is malformed.
@@ -176,14 +198,16 @@ fn build_datas_profile((name, fields): (String, Vec<(String, String)>)) -> Optio
 
 // The exact heading title under which a profile named `name` already lives
 // in datas.md (case-insensitive match so a hand-written "## ssh prod" is
-// updated in place instead of duplicated); the canonical form otherwise.
+// updated in place instead of duplicated; a hand-written section named just
+// after the profile, "## Доступ к серверу", is matched too); the canonical
+// form otherwise.
 fn datas_section_title(md: &str, name: &str) -> String {
     let want = format!("ssh {name}");
     for line in md.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("##") {
             let rest = trimmed.trim_start_matches('#').trim();
-            if rest.eq_ignore_ascii_case(&want) {
+            if rest.eq_ignore_ascii_case(&want) || rest.eq_ignore_ascii_case(name) {
                 return rest.to_string();
             }
         }
@@ -343,9 +367,9 @@ fn resolve_target(args: &Value, ctx: &ToolCtx) -> Result<Target> {
         let profiles = all_profiles(ctx)?;
         let p = profiles.iter().find(|p| p.name == profile).ok_or_else(|| {
             let names: Vec<&str> = profiles.iter().map(|p| p.name.as_str()).collect();
-            let known = if names.is_empty() {
-                "none".to_string()
-            } else {
+        let known = if names.is_empty() {
+            "none (add a \"## SSH <name>\" section with host:/user: lines to the project's datas.md or a profile to Settings/config/ssh.json)".to_string()
+        } else {
                 names.join(", ")
             };
             AppError::Invalid(format!(
@@ -906,7 +930,7 @@ impl Tool for SshListProfilesTool {
         "ssh_list_profiles"
     }
     fn description(&self) -> &str {
-        "List SSH profiles merged from Settings/config/ssh.json and the current project's datas.md (\"## SSH <name>\" sections; a datas entry replaces a config entry of the same name): name, host, user, port, source, auth (\"password\" | \"key\" | \"key+password\") and hasPassword. Passwords, key paths and key material are never returned; a profile with neither an explicit key nor a password still authenticates via ssh-agent (auth \"key\")."
+        "List SSH profiles merged from Settings/config/ssh.json and the current project's datas.md (\"## SSH <name>\" sections; hand-written sections with host/user fields under any heading, Russian labels (Хост:, Пользователь:, Порт:, Пароль:, Ключ:) and bullet lists are recognized too; a datas entry replaces a config entry of the same name): name, host, user, port, source, auth (\"password\" | \"key\" | \"key+password\") and hasPassword. Passwords, key paths and key material are never returned; a profile with neither an explicit key nor a password still authenticates via ssh-agent (auth \"key\")."
     }
     fn parameters(&self) -> Value {
         json!({ "type": "object", "properties": {}, "required": [], "additionalProperties": false })
@@ -2117,6 +2141,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_datas_ssh_accepts_russian_freeform_sections() {
+        let text = "# notes\n\n## Доступ к серверу\n\n- Хост: 192.0.2.10\n- Пользователь: ivan\n- Порт: 2222\n- Пароль: secret-1!\n- Ключ: ~/.ssh/id_ed25519\n- SSH: `ssh ivan@192.0.2.10` (порт по умолчанию 22)\n\n## Notes\njust prose, no fields\n";
+        let ps = parse_datas_ssh(text);
+        assert_eq!(ps.len(), 1, "{ps:?}");
+        let p = &ps[0];
+        assert_eq!(p.name, "Доступ к серверу");
+        assert_eq!(p.host, "192.0.2.10");
+        assert_eq!(p.user, "ivan");
+        assert_eq!(p.port, 2222);
+        assert_eq!(p.password.as_deref(), Some("secret-1!"));
+        assert_eq!(p.key_path.as_deref(), Some("~/.ssh/id_ed25519"));
+        assert_eq!(p.source, "datas");
+    }
+
+    #[test]
     fn parse_datas_ssh_skips_malformed_entries() {
         let text = "## SSH nohost\nuser: u\n\n\
              ## SSH nokey\nhost: example.ru\n\n\
@@ -2431,6 +2470,79 @@ mod tests {
             .unwrap();
         let data = r.data.expect("live run must return data");
         assert_eq!(data["stdout"].as_str().unwrap().trim(), "hi");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // Full live path over a hand-written Russian datas.md section: profile
+    // discovery, askpass password auth, ssh_exec and an scp upload/download
+    // round-trip under /tmp with remote cleanup. Credentials come from the
+    // environment only: SSH_TEST_HOST, SSH_TEST_USER, SSH_TEST_PASSWORD and
+    // the optional SSH_TEST_PORT (default 22).
+    #[test]
+    #[ignore = "live ssh: set SSH_TEST_HOST/SSH_TEST_USER/SSH_TEST_PASSWORD (optional SSH_TEST_PORT)"]
+    fn live_ssh_profile_exec_and_scp_roundtrip() {
+        let host = std::env::var("SSH_TEST_HOST").expect("SSH_TEST_HOST");
+        let user = std::env::var("SSH_TEST_USER").expect("SSH_TEST_USER");
+        let password = std::env::var("SSH_TEST_PASSWORD").expect("SSH_TEST_PASSWORD");
+        let port: u16 = std::env::var("SSH_TEST_PORT")
+            .ok()
+            .map(|p| p.parse().expect("SSH_TEST_PORT must be a number"))
+            .unwrap_or(22);
+        let (root, ctx) = project_env("st-live-profile");
+        let wd = ctx.working_dir.clone().unwrap();
+        fs::write(
+            root.join(paths::DATAS_MD),
+            format!(
+                "## Доступ к серверу\n\n- Хост: {host}\n- Пользователь: {user}\n- Порт: {port}\n- Пароль: {password}\n- SSH: `ssh {user}@{host}`\n"
+            ),
+        )
+        .unwrap();
+        // the hand-written section is discovered as a password profile
+        let ps = datas_profiles(&ctx);
+        assert_eq!(ps.len(), 1, "{ps:?}");
+        assert_eq!(ps[0].name, "Доступ к серверу");
+        assert_eq!(auth_kind(&ps[0]), "password");
+        // ssh_exec through the profile: askpass auth, login shell
+        let r = SshExecTool
+            .execute(
+                &json!({ "profile": "Доступ к серверу", "command": "echo SSH_OK; uname -a; whoami; df -h / | tail -1" }),
+                &ctx,
+            )
+            .unwrap();
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["exitCode"], 0, "{data}");
+        let stdout = data["stdout"].as_str().unwrap();
+        assert!(stdout.contains("SSH_OK"), "{stdout}");
+        assert!(!data.to_string().contains(&password), "secret leaked in result");
+        // scp round-trip under /tmp, then remote cleanup
+        let marker = format!("project-s-live-{}", std::process::id());
+        fs::write(root.join("live-upload.txt"), &marker).unwrap();
+        let remote = format!("/tmp/{marker}.txt");
+        let r = SshCopyTool::upload()
+            .execute(
+                &json!({ "profile": "Доступ к серверу", "localPath": "live-upload.txt", "remotePath": remote }),
+                &ctx,
+            )
+            .unwrap();
+        let data = r.data.unwrap();
+        assert_eq!(data["exitCode"], 0, "{data}");
+        let r = SshCopyTool::download()
+            .execute(
+                &json!({ "profile": "Доступ к серверу", "localPath": "live-readback.txt", "remotePath": remote }),
+                &ctx,
+            )
+            .unwrap();
+        let data = r.data.unwrap();
+        assert_eq!(data["exitCode"], 0, "{data}");
+        assert_eq!(fs::read_to_string(root.join("live-readback.txt")).unwrap(), marker);
+        let r = SshExecTool
+            .execute(
+                &json!({ "profile": "Доступ к серверу", "command": format!("rm -f {remote}") }),
+                &ctx,
+            )
+            .unwrap();
+        assert_eq!(r.data.unwrap()["exitCode"], 0);
         fs::remove_dir_all(&wd).unwrap();
     }
 }

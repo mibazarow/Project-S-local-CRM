@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import type { ChecklistItem, TaskDto, TaskPatch } from "../../api/types";
-import RenameInput from "../files/RenameInput";
 import {
   IconAskAgent,
   IconCalendar,
@@ -84,6 +83,72 @@ function CommentInput({
       }}
       onBlur={() => finish(true)}
     />
+  );
+}
+
+function TitleInput({
+  value,
+  onCommit,
+  onCancel,
+}: {
+  value: string;
+  onCommit: (value: string) => void;
+  onCancel: () => void;
+}) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const done = useRef(false);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, []);
+
+  const finish = (commit: boolean) => {
+    if (done.current) return;
+    done.current = true;
+    if (!commit) {
+      onCancel();
+      return;
+    }
+    const next = ref.current?.value.trim() ?? "";
+    if (!next) onCancel();
+    else onCommit(next);
+  };
+
+  return (
+    <div className="task-title-edit" onMouseDown={(e) => e.stopPropagation()}>
+      <textarea
+        ref={ref}
+        className="rename-input"
+        defaultValue={value}
+        rows={Math.min(6, Math.max(2, value.split("\n").length))}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+            e.preventDefault();
+            finish(true);
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            finish(false);
+          }
+        }}
+      />
+      <div className="task-title-edit-actions">
+        <button
+          className="mini-btn"
+          title="Сохранить (⌘Enter)"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => finish(true)}
+        >
+          <IconCheck />
+        </button>
+        <button className="mini-btn danger" title="Отменить" onClick={() => finish(false)}>
+          <IconClose />
+        </button>
+      </div>
+    </div>
   );
 }
 
@@ -297,7 +362,7 @@ export default function TaskCard({
       onPointerDown={mode === null ? onPointerDown : undefined}
     >
       {mode === "title" ? (
-        <RenameInput
+        <TitleInput
           value={task.title}
           onCommit={commitTitle}
           onCancel={() => setMode(null)}

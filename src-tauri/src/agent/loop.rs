@@ -11,7 +11,10 @@ use super::permissions::{ConfirmDecision, ConfirmRequest, Confirmer};
 use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{coerce_args, validate_args, PermissionPolicy, Tool, ToolCtx};
 use crate::error::Result;
-use crate::llm::{ChatEvent, ChatMessage, ChatOutcome, ChatParams, LlmClient, ToolCall, ToolSpec};
+use crate::llm::{
+    sanitize_tool_history, ChatEvent, ChatMessage, ChatOutcome, ChatParams, LlmClient, ToolCall,
+    ToolSpec,
+};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -250,7 +253,10 @@ fn run_inner(
     mut on_message: impl FnMut(&ChatMessage),
     clock: Option<Box<dyn Fn() -> Duration + Send>>,
 ) -> Result<AgentRunResult> {
-    let mut messages = config.messages.clone();
+    // The pre-built transcript is sanitized as a last-line guard: a caller
+    // that assembled its history outside chat::load_history must still never
+    // send an assistant tool_calls turn without its tool results (HTTP 400).
+    let mut messages = sanitize_tool_history(&config.messages);
 
     let ctx = ToolCtx {
         project_id: config.project_id,
@@ -391,7 +397,18 @@ fn run_inner(
                 &mut emit,
             );
             let ok = envelope.ok;
-            let envelope_json = serde_json::to_value(&envelope)?;
+            // The envelope serialization must never abort the run with `?`:
+            // an early return here would persist the assistant tool_calls
+            // turn without its tool result and poison every later request.
+            let envelope_json = serde_json::to_value(&envelope).unwrap_or_else(|e| {
+                json!({
+                    "ok": false,
+                    "error": {
+                        "code": "execution_error",
+                        "message": format!("tool result could not be serialized: {e}"),
+                    },
+                })
+            });
             emit(AgentEvent::ToolCallFinished {
                 name: tc.name.clone(),
                 ok,
@@ -404,10 +421,14 @@ fn run_inner(
             if ok {
                 crate::links::auto_link_from_tool_ctx(&ctx, &tc.name, &tc.arguments, &envelope_json);
             }
-            let tool_msg = ChatMessage::tool_result(
-                &tc.id,
-                serde_json::to_string(&envelope_json)?,
-            );
+            // Every tool call — success, error, denied, timeout, hidden,
+            // unknown, invalid args or a killed run — reaches this line and
+            // appends its tool message before the next assistant turn.
+            let tool_content = serde_json::to_string(&envelope_json).unwrap_or_else(|_| {
+                r#"{"ok":false,"error":{"code":"execution_error","message":"tool result could not be serialized"}}"#
+                    .to_string()
+            });
+            let tool_msg = ChatMessage::tool_result(&tc.id, tool_content);
             on_message(&tool_msg);
             messages.push(tool_msg);
             watchdog.note_progress();
@@ -911,6 +932,51 @@ mod tests {
         let envelope = envelope_for(&events, "echo");
         assert_eq!(envelope["error"]["code"], "denied_by_user");
         assert!(events.iter().any(|e| matches!(e, AgentEvent::ConfirmationRequested { tool, .. } if tool == "echo")));
+    }
+
+    // Wire-level check: every assistant tool_calls turn is followed by a tool
+    // message per tool_call_id before the next assistant turn (or the end).
+    fn tool_groups_are_closed(messages: &[ChatMessage]) -> bool {
+        let mut pending: Vec<String> = Vec::new();
+        for m in messages {
+            if m.role == Role::Tool {
+                match m.tool_call_id.as_ref().and_then(|id| pending.iter().position(|p| p == id)) {
+                    Some(pos) => { pending.remove(pos); }
+                    None => return false,
+                }
+                continue;
+            }
+            if !pending.is_empty() {
+                return false;
+            }
+            if m.role == Role::Assistant {
+                pending = m.tool_calls.iter().map(|tc| tc.id.clone()).collect();
+            }
+        }
+        pending.is_empty()
+    }
+
+    #[test]
+    fn denied_tool_still_sends_a_valid_next_request() {
+        let backend = ScriptedBackend::new(vec![
+            tools_outcome(vec![
+                call("c1", "echo", json!({ "text": "a" })),
+                call("c2", "echo", json!({ "text": "b" })),
+            ]),
+            tools_outcome(vec![finish_call("recovered")]),
+        ]);
+        let mut catalog = catalog_with(Some(EchoTool::new(PermissionPolicy::Check)));
+        let mut state = AgentState {
+            backend: &backend,
+            catalog: &mut catalog,
+        };
+        let result = run(&mut state, &config(8), &DenyAllConfirmer, |_| {}).unwrap();
+        assert_eq!(result.answer, "recovered");
+        // The second request must answer every tool_call of the first round,
+        // the denied ones included (denied_by_user tool messages): an open
+        // group here is exactly the HTTP 400 this fix prevents.
+        let second = backend.seen.lock().unwrap()[1].clone();
+        assert!(tool_groups_are_closed(&second), "next request has an open tool_calls group");
     }
 
     #[test]

@@ -5,6 +5,7 @@ import {
   useState,
   type FormEvent,
   type KeyboardEvent,
+  type ReactNode,
 } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import * as ipc from "../api/ipc";
@@ -319,6 +320,53 @@ function detectContextToken(model: string): { token: string; tokens: number } | 
 }
 
 const DEFAULT_CONTEXT_WINDOW = 100_000;
+
+// Presentational wrappers for the redesigned settings layout: a titled card
+// block and a label + control + hint field row. No state, no behavior.
+function Card({
+  title,
+  desc,
+  children,
+}: {
+  title: string;
+  desc?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <section className="set-card">
+      <div className="set-card-head">
+        <div className="set-card-title">{title}</div>
+        {desc != null && <div className="set-card-desc">{desc}</div>}
+      </div>
+      {children}
+    </section>
+  );
+}
+
+function Field({
+  label,
+  hint,
+  error,
+  wide,
+  children,
+}: {
+  label: string;
+  hint?: ReactNode;
+  error?: string | null;
+  wide?: boolean;
+  children?: ReactNode;
+}) {
+  return (
+    <div className={wide ? "set-field wide" : "set-field"}>
+      <div className="set-field-info">
+        <label className="set-field-label">{label}</label>
+        {hint != null && <div className="set-field-hint">{hint}</div>}
+        {error && <div className="set-field-hint set-field-error">{error}</div>}
+      </div>
+      {children != null && <div className="set-field-control">{children}</div>}
+    </div>
+  );
+}
 
 export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [tab, setTab] = useState<"llm" | "agent" | "skills" | "mcp" | "other">("llm");
@@ -1219,301 +1267,344 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
             </svg>
           </button>
           {tab === "llm" && (
-            <>
-              <div className="set-row">
-                <label>Endpoint (OpenAI-совместимый)</label>
-                <input
-                  type="text"
-                  value={llmForm?.baseUrl ?? ""}
-                  onChange={(e) => updateLlmForm({ baseUrl: e.target.value })}
-                  onFocus={focusLlmField("baseUrl")}
-                  onBlur={blurLlmField}
-                  placeholder="https://api.example.com/v1"
-                />
-                <div className="set-hint">Базовый адрес провайдера модели, как у OpenAI.</div>
-              </div>
-              <div className="set-row">
-                <label>API-ключ</label>
-                <div className="llm-key-row">
+            <div className="settings-content">
+              <Card
+                title="Подключение"
+                desc="Endpoint и ключ OpenAI-совместимого провайдера. Изменения сохраняются автоматически."
+              >
+                <Field label="Endpoint" wide hint="Базовый адрес провайдера модели, как у OpenAI.">
                   <input
-                    type={revealKey ? "text" : "password"}
-                    value={llmForm?.apiKey ?? ""}
-                    onChange={(e) => updateLlmForm({ apiKey: e.target.value })}
-                    onFocus={focusLlmField("apiKey")}
+                    type="text"
+                    value={llmForm?.baseUrl ?? ""}
+                    onChange={(e) => updateLlmForm({ baseUrl: e.target.value })}
+                    onFocus={focusLlmField("baseUrl")}
                     onBlur={blurLlmField}
-                    autoComplete="off"
-                    spellCheck={false}
+                    placeholder="https://api.example.com/v1"
                   />
-                  <button className="ghost-btn small" onClick={() => setRevealKey((v) => !v)}>
-                    {revealKey ? "Скрыть" : "Показать"}
-                  </button>
-                </div>
-                <div className="set-hint">Хранится в llm.json в открытом виде (см. ТЗ 3.4).</div>
-              </div>
-              <div className="set-row">
-                <label>Модель</label>
-                <div className="model-row">
-                  <ModelCombobox
-                    value={llmForm?.model ?? ""}
-                    models={llmModels}
-                    onChange={(model) => updateLlmForm({ model })}
-                    onFocus={focusLlmField("model")}
-                    onBlur={blurLlmField}
-                  />
+                </Field>
+                <Field label="API-ключ" wide hint="Хранится в llm.json в открытом виде (см. ТЗ 3.4).">
+                  <div className="llm-key-row">
+                    <input
+                      type={revealKey ? "text" : "password"}
+                      value={llmForm?.apiKey ?? ""}
+                      onChange={(e) => updateLlmForm({ apiKey: e.target.value })}
+                      onFocus={focusLlmField("apiKey")}
+                      onBlur={blurLlmField}
+                      autoComplete="off"
+                      spellCheck={false}
+                    />
+                    <button className="ghost-btn small" onClick={() => setRevealKey((v) => !v)}>
+                      {revealKey ? "Скрыть" : "Показать"}
+                    </button>
+                  </div>
+                </Field>
+                <Field
+                  label="Модель"
+                  wide
+                  hint="Список подтягивается с endpoint’а; можно вписать любое название вручную."
+                  error={llmModelsError}
+                >
+                  <div className="model-row">
+                    <ModelCombobox
+                      value={llmForm?.model ?? ""}
+                      models={llmModels}
+                      onChange={(model) => updateLlmForm({ model })}
+                      onFocus={focusLlmField("model")}
+                      onBlur={blurLlmField}
+                    />
+                    <button
+                      className="ghost-btn small"
+                      disabled={llmBusy !== null}
+                      onClick={() => runLlmAction("models")}
+                    >
+                      {llmBusy === "models" && <span className="spinner"></span>}
+                      {llmBusy === "models" ? "Загрузка…" : "Загрузить модели"}
+                    </button>
+                  </div>
+                </Field>
+                <div className="set-actions">
                   <button
-                    className="ghost-btn small"
+                    className="ghost-btn"
                     disabled={llmBusy !== null}
-                    onClick={() => runLlmAction("models")}
+                    onClick={() => runLlmAction("test")}
                   >
-                    {llmBusy === "models" && <span className="spinner"></span>}
-                    {llmBusy === "models" ? "Загрузка…" : "Загрузить модели"}
+                    {llmBusy === "test" && <span className="spinner"></span>}
+                    {llmBusy === "test" ? "Проверка…" : "Проверить подключение"}
+                  </button>
+                  {llmTest && (
+                    <div className={llmTest.ok ? "llm-test ok" : "llm-test err"}>
+                      <span className="mark">{llmTest.ok ? "✓" : "✕"}</span>
+                      {llmTest.message}
+                    </div>
+                  )}
+                </div>
+              </Card>
+              <Card title="Генерация" desc="Параметры запросов к модели.">
+                <Field
+                  label="Окно контекста, токенов"
+                  hint={
+                    ctxAutoFilled
+                      ? `Заполнено по названию модели (${ctxAutoFilled.token}) — можно исправить руками.`
+                      : detectContextToken(llmForm?.model ?? "")
+                        ? "В поле уже вписано значение — оно не меняется автоматически."
+                        : "Размер не угадывается по названию модели — заполни вручную."
+                  }
+                >
+                  <input
+                    className="narrow"
+                    type="text"
+                    inputMode="numeric"
+                    value={llmForm?.contextWindow ?? ""}
+                    onChange={(e) => {
+                      ctxUserEditedRef.current = true;
+                      setCtxAutoFilled(null);
+                      updateLlmForm({ contextWindow: e.target.value });
+                    }}
+                    onFocus={focusLlmField("contextWindow")}
+                    onBlur={blurLlmField}
+                  />
+                </Field>
+                <Field
+                  label="Temperature"
+                  hint="Фиксирована для каждого агента и не настраивается: проекты и сессии харнеса — 0.2, заметки — 0.4. Поле в llm.json игнорируется."
+                />
+                <Field
+                  label="Максимум токенов в ответе"
+                  hint="Пусто — без ограничения со стороны приложения."
+                >
+                  <input
+                    className="narrow"
+                    type="text"
+                    inputMode="numeric"
+                    value={llmForm?.maxTokens ?? ""}
+                    onChange={(e) => updateLlmForm({ maxTokens: e.target.value })}
+                    onFocus={focusLlmField("maxTokens")}
+                    onBlur={blurLlmField}
+                  />
+                </Field>
+                <Field
+                  label="Уровень размышлений"
+                  hint="Сколько модель думает перед ответом (reasoning_effort). Ход мыслей показывается свёрнутым блоком «Размышления» в чате и отправляется обратно модели в следующем запросе. Если провайдер не принимает reasoning_effort, ошибка придёт в чат."
+                >
+                  <select
+                    value={llmForm?.thinkingLevel ?? "medium"}
+                    onChange={(e) => {
+                      updateLlmForm({
+                        thinkingLevel: e.target.value as "off" | "low" | "medium" | "high",
+                      });
+                      void flushLlmSave();
+                    }}
+                  >
+                    <option value="off">Выключено</option>
+                    <option value="low">Низкий</option>
+                    <option value="medium">Средний</option>
+                    <option value="high">Высокий</option>
+                  </select>
+                </Field>
+              </Card>
+              <Card
+                title="Распознавание изображений (vision)"
+                desc={
+                  <>
+                    Статус: {visionLabel(vision)}
+                    {vision?.overridden ? " (задано вручную)" : ""}
+                    {vision?.reason ? ` — ${vision.reason}` : ""}
+                  </>
+                }
+              >
+                <Field
+                  label="Отправлять изображения модели"
+                  hint="Если провайдер не поддерживает vision, изображения из чата не будут отправлены модели."
+                >
+                  <select
+                    value={llmForm?.vision ?? "auto"}
+                    onChange={(e) => {
+                      updateLlmForm({ vision: e.target.value as "auto" | "yes" | "no" });
+                      void flushLlmSave();
+                    }}
+                  >
+                    <option value="auto">Авто (определять)</option>
+                    <option value="yes">Да</option>
+                    <option value="no">Нет</option>
+                  </select>
+                </Field>
+                <div className="set-actions">
+                  <button className="ghost-btn" disabled={visionBusy} onClick={probeVision}>
+                    {visionBusy ? "Проверка…" : "Проверить"}
                   </button>
                 </div>
-                <div className="set-hint">
-                  Список подтягивается с endpoint’а; можно вписать любое название вручную.
-                </div>
-                {llmModelsError && <div className="set-error">{llmModelsError}</div>}
-              </div>
-              <div className="set-row">
-                <label>Окно контекста, токенов</label>
-                <input
-                  className="narrow"
-                  type="text"
-                  inputMode="numeric"
-                  value={llmForm?.contextWindow ?? ""}
-                  onChange={(e) => {
-                    ctxUserEditedRef.current = true;
-                    setCtxAutoFilled(null);
-                    updateLlmForm({ contextWindow: e.target.value });
-                  }}
-                  onFocus={focusLlmField("contextWindow")}
-                  onBlur={blurLlmField}
-                />
-                <div className="set-hint">
-                  {ctxAutoFilled
-                    ? `Заполнено по названию модели (${ctxAutoFilled.token}) — можно исправить руками.`
-                    : detectContextToken(llmForm?.model ?? "")
-                      ? "В поле уже вписано значение — оно не меняется автоматически."
-                      : "Размер не угадывается по названию модели — заполни вручную."}
-                </div>
-              </div>
-              <div className="set-row">
-                <label>Temperature</label>
-                <div className="set-hint">
-                  Фиксирована для каждого агента и не настраивается: проекты и сессии харнеса —
-                  0.2, заметки — 0.4. Поле в llm.json игнорируется.
-                </div>
-              </div>
-              <div className="set-row">
-                <label>Максимум токенов в ответе (необязательно)</label>
-                <input
-                  className="narrow"
-                  type="text"
-                  inputMode="numeric"
-                  value={llmForm?.maxTokens ?? ""}
-                  onChange={(e) => updateLlmForm({ maxTokens: e.target.value })}
-                  onFocus={focusLlmField("maxTokens")}
-                  onBlur={blurLlmField}
-                />
-                <div className="set-hint">Пусто — без ограничения со стороны приложения.</div>
-              </div>
-              <div className="set-row">
-                <label>Уровень размышлений</label>
-                <select
-                  value={llmForm?.thinkingLevel ?? "medium"}
-                  onChange={(e) => {
-                    updateLlmForm({
-                      thinkingLevel: e.target.value as "off" | "low" | "medium" | "high",
-                    });
-                    void flushLlmSave();
-                  }}
-                >
-                  <option value="off">Выключено</option>
-                  <option value="low">Низкий</option>
-                  <option value="medium">Средний</option>
-                  <option value="high">Высокий</option>
-                </select>
-                <div className="set-hint">
-                  Сколько модель думает перед ответом (reasoning_effort). Ход мыслей показывается
-                  свёрнутым блоком «Размышления» в чате и отправляется обратно модели в следующем
-                  запросе. Если провайдер не принимает reasoning_effort, ошибка придёт в чат.
-                </div>
-              </div>
-              <div className="set-row">
-                <label>Распознавание изображений (vision)</label>
-                <div className="set-hint">
-                  Статус: {visionLabel(vision)}
-                  {vision?.overridden ? " (задано вручную)" : ""}
-                </div>
-                {vision?.reason && <div className="set-hint">{vision.reason}</div>}
-                <select
-                  value={llmForm?.vision ?? "auto"}
-                  onChange={(e) => {
-                    updateLlmForm({ vision: e.target.value as "auto" | "yes" | "no" });
-                    void flushLlmSave();
-                  }}
-                >
-                  <option value="auto">Авто (определять)</option>
-                  <option value="yes">Да</option>
-                  <option value="no">Нет</option>
-                </select>
-                <div className="set-hint">
-                  Если провайдер не поддерживает vision, изображения из чата не будут отправлены модели.
-                </div>
-                <button className="ghost-btn" disabled={visionBusy} onClick={probeVision}>
-                  {visionBusy ? "Проверка…" : "Проверить"}
-                </button>
-              </div>
-              <div className="llm-actions">
-                <button
-                  className="ghost-btn"
-                  disabled={llmBusy !== null}
-                  onClick={() => runLlmAction("test")}
-                >
-                  {llmBusy === "test" && <span className="spinner"></span>}
-                  {llmBusy === "test" ? "Проверка…" : "Проверить подключение"}
-                </button>
-              </div>
-              {llmTest && (
-                <div className={llmTest.ok ? "llm-test ok" : "llm-test err"}>
-                  <span className="mark">{llmTest.ok ? "✓" : "✕"}</span>
-                  {llmTest.message}
-                </div>
-              )}
+              </Card>
               {error && <div className="set-error">{error}</div>}
-            </>
+            </div>
           )}
           {tab === "agent" && (
-            <>
-              <div className="set-row switch-row">
-                <label>Полный автопилот (все разрешения без подтверждений)</label>
-                <label className="switch">
+            <div className="settings-content">
+              <Card title="Автопилот">
+                <Field
+                  label="Полный автопилот (все разрешения без подтверждений)"
+                  hint="Опасно: агент выполняет любые действия без подтверждений. По умолчанию выключено."
+                >
+                  <label className="switch">
+                    <input
+                      type="checkbox"
+                      checked={appForm?.autopilot ?? false}
+                      onChange={(e) => updateAppForm({ autopilot: e.target.checked })}
+                    />
+                    <span className="track"></span>
+                  </label>
+                </Field>
+              </Card>
+              <Card title="Индексация" desc="Ограничения на файлы, попадающие в поиск по проектам.">
+                <Field
+                  label="Максимальный размер файла, МБ"
+                  hint="Файлы больше этого размера в индекс не попадают. По умолчанию 10 МБ."
+                >
                   <input
-                    type="checkbox"
-                    checked={appForm?.autopilot ?? false}
-                    onChange={(e) => updateAppForm({ autopilot: e.target.checked })}
+                    className="narrow"
+                    type="text"
+                    inputMode="decimal"
+                    value={form?.maxMb ?? ""}
+                    onChange={(e) => updateForm({ maxMb: e.target.value })}
+                    onFocus={focusField("maxMb")}
+                    onBlur={blurField}
                   />
-                  <span className="track"></span>
-                </label>
-              </div>
-              <div className="set-hint">
-                Опасно: агент выполняет любые действия без подтверждений. По умолчанию выключено.
-              </div>
-              <div className="schedule-group-title">Индексация</div>
-              <div className="set-row">
-                <label>Максимальный размер файла, МБ</label>
-                <input
-                  className="narrow"
-                  type="text"
-                  inputMode="decimal"
-                  value={form?.maxMb ?? ""}
-                  onChange={(e) => updateForm({ maxMb: e.target.value })}
-                  onFocus={focusField("maxMb")}
-                  onBlur={blurField}
-                />
-                <div className="set-hint">
-                  Файлы больше этого размера в индекс не попадают. По умолчанию 10 МБ.
+                </Field>
+                <Field
+                  label="Лимит извлечённого текста, символов"
+                  hint="Из одного большого файла берётся не больше этого куска текста. По умолчанию 1 000 000 символов."
+                >
+                  <input
+                    className="narrow"
+                    type="text"
+                    inputMode="numeric"
+                    value={form?.maxChars ?? ""}
+                    onChange={(e) => updateForm({ maxChars: e.target.value })}
+                    onFocus={focusField("maxChars")}
+                    onBlur={blurField}
+                  />
+                </Field>
+                <Field
+                  label="Исключать из индекса (через запятую)"
+                  wide
+                  hint="Папки, которые поиск по проекту никогда не увидит."
+                >
+                  <input
+                    type="text"
+                    value={form?.excludeDirs ?? ""}
+                    onChange={(e) => updateForm({ excludeDirs: e.target.value })}
+                    onFocus={focusField("excludeDirs")}
+                    onBlur={blurField}
+                  />
+                </Field>
+              </Card>
+              <Card title="Переиндексация" desc="Полное перестроение индекса по всем проектам.">
+                <div className="set-actions">
+                  <button className="ghost-btn" disabled={reindexBusy} onClick={reindex}>
+                    {reindexBusy ? "Переиндексация…" : "Переиндексировать"}
+                  </button>
                 </div>
-              </div>
-              <div className="set-row">
-                <label>Лимит извлечённого текста, символов</label>
-                <input
-                  className="narrow"
-                  type="text"
-                  inputMode="numeric"
-                  value={form?.maxChars ?? ""}
-                  onChange={(e) => updateForm({ maxChars: e.target.value })}
-                  onFocus={focusField("maxChars")}
-                  onBlur={blurField}
-                />
-                <div className="set-hint">
-                  Из одного большого файла берётся не больше этого куска текста. По умолчанию
-                  1 000 000 символов.
-                </div>
-              </div>
-              <div className="set-row">
-                <label>Исключать из индекса (через запятую)</label>
-                <input
-                  type="text"
-                  value={form?.excludeDirs ?? ""}
-                  onChange={(e) => updateForm({ excludeDirs: e.target.value })}
-                  onFocus={focusField("excludeDirs")}
-                  onBlur={blurField}
-                />
-                <div className="set-hint">Папки, которые поиск по проекту никогда не увидит.</div>
-              </div>
-              <button className="ghost-btn" disabled={reindexBusy} onClick={reindex}>
-                {reindexBusy ? "Переиндексация…" : "Переиндексировать"}
-              </button>
-              {reindexNote && <div className="set-hint">{reindexNote}</div>}
-
-              <div className="schedule-group-title">Семантический поиск</div>
-              <div className="set-hint">
-                Семантический поиск включён всегда: поиск по словам и по смыслу работают вместе
-                (локальная модель EmbeddingGemma 2, векторы 768). Отключить или подстроить его
-                нельзя.
-              </div>
-              {embed && (
-                <div className="set-hint">
-                  Статус модели:{" "}
-                  {embed.available
-                    ? "скачана, активна"
-                    : embed.modelPresent
-                      ? "файлы на месте, но модель недоступна"
-                      : "не скачана — сейчас поиск только по словам"}
-                </div>
-              )}
-              {embed?.reason && <div className="set-hint">{embed.reason}</div>}
+                {reindexNote && <div className="set-note">{reindexNote}</div>}
+              </Card>
+              <Card
+                title="Семантический поиск"
+                desc="Семантический поиск включён всегда: поиск по словам и по смыслу работают вместе (локальная модель EmbeddingGemma 2, векторы 768). Отключить или подстроить его нельзя."
+              >
+                {embed && (
+                  <div className="set-note">
+                    Статус модели:{" "}
+                    {embed.available
+                      ? "скачана, активна"
+                      : embed.modelPresent
+                        ? "файлы на месте, но модель недоступна"
+                        : "не скачана — сейчас поиск только по словам"}
+                  </div>
+                )}
+                {embed?.reason && <div className="set-note">{embed.reason}</div>}
+              </Card>
               {error && <div className="set-error">{error}</div>}
-            </>
+            </div>
           )}
           {tab === "skills" && (
-            <>
-              <div className="set-row switch-row">
-                <label>Перезаписывать при импорте</label>
-                <label className="switch">
+            <div className="settings-content">
+              <Card
+                title="Импорт скиллов"
+                desc="Загрузка скиллов из папки, архива или git-репозитория."
+              >
+                <Field
+                  label="Перезаписывать при импорте"
+                  hint="Заменяет уже установленный пользовательский скилл с тем же именем."
+                >
+                  <label className="switch">
+                    <input
+                      type="checkbox"
+                      checked={overwrite}
+                      onChange={(e) => setOverwrite(e.target.checked)}
+                    />
+                    <span className="track"></span>
+                  </label>
+                </Field>
+                <Field
+                  label="Git-адрес репозитория со скиллами"
+                  wide
+                  hint="Нужен для кнопки «Импорт из git»; требуется системный git."
+                >
                   <input
-                    type="checkbox"
-                    checked={overwrite}
-                    onChange={(e) => setOverwrite(e.target.checked)}
+                    type="text"
+                    value={gitUrl}
+                    onChange={(e) => setGitUrl(e.target.value)}
+                    placeholder="https://github.com/example/skills"
+                    spellCheck={false}
                   />
-                  <span className="track"></span>
-                </label>
-              </div>
-              <div className="set-hint">
-                Заменяет уже установленный пользовательский скилл с тем же именем.
-              </div>
-              <div className="llm-actions">
-                <button className="ghost-btn" disabled={skillsBusy} onClick={() => void doImport("folder")}>
-                  Импорт из папки
-                </button>
-                <button className="ghost-btn" disabled={skillsBusy} onClick={() => void doImport("zip")}>
-                  Импорт из .zip
-                </button>
-                <button className="ghost-btn" disabled={skillsBusy} onClick={() => void doImport("git")}>
-                  Импорт из git
-                </button>
-              </div>
-              <div className="set-row">
-                <label>Git-адрес репозитория со скиллами</label>
-                <input
-                  type="text"
-                  value={gitUrl}
-                  onChange={(e) => setGitUrl(e.target.value)}
-                  placeholder="https://github.com/example/skills"
-                  spellCheck={false}
-                />
-                <div className="set-hint">Нужен для кнопки «Импорт из git»; требуется системный git.</div>
-              </div>
-              <button className="ghost-btn" disabled={skillsBusy} onClick={installBuiltin}>
-                Установить встроенные
-              </button>
-              <div className="set-hint">Копирует набор встроенных скиллов приложения в папку настроек.</div>
-              <details className="mcp-guide">
-                <summary>Создать скилл</summary>
-                <form className="schedule-form" onSubmit={createSkill}>
-                  <div className="set-row">
-                    <label>Имя (slug)</label>
+                </Field>
+                <div className="set-actions">
+                  <button
+                    className="ghost-btn"
+                    disabled={skillsBusy}
+                    onClick={() => void doImport("folder")}
+                  >
+                    Импорт из папки
+                  </button>
+                  <button
+                    className="ghost-btn"
+                    disabled={skillsBusy}
+                    onClick={() => void doImport("zip")}
+                  >
+                    Импорт из .zip
+                  </button>
+                  <button
+                    className="ghost-btn"
+                    disabled={skillsBusy}
+                    onClick={() => void doImport("git")}
+                  >
+                    Импорт из git
+                  </button>
+                </div>
+                {importResults && (
+                  <div className="skill-results">
+                    {importResults.map((r, i) => (
+                      <div key={`${r.name}-${i}`} className={r.ok ? "set-note" : "set-error"}>
+                        {r.name}: {r.ok ? "импортирован" : r.error}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </Card>
+              <Card
+                title="Встроенные скиллы"
+                desc="Копирует набор встроенных скиллов приложения в папку настроек."
+              >
+                <div className="set-actions">
+                  <button className="ghost-btn" disabled={skillsBusy} onClick={installBuiltin}>
+                    Установить встроенные
+                  </button>
+                </div>
+              </Card>
+              <Card title="Создать скилл" desc="Новый пользовательский скилл появится в списке ниже.">
+                <form className="set-form" onSubmit={createSkill}>
+                  <Field
+                    label="Имя (slug)"
+                    hint="Строчные латинские буквы, цифры и дефис; по этому имени агент и вызывает скилл."
+                  >
                     <input
                       type="text"
                       value={skillForm.name}
@@ -1521,21 +1612,16 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                       placeholder="my-skill"
                       spellCheck={false}
                     />
-                    <div className="set-hint">
-                      Строчные латинские буквы, цифры и дефис; по этому имени агент и вызывает скилл.
-                    </div>
-                  </div>
-                  <div className="set-row">
-                    <label>Описание (одна строка)</label>
+                  </Field>
+                  <Field label="Описание (одна строка)">
                     <input
                       type="text"
                       value={skillForm.description}
                       onChange={(e) => setSkillForm({ ...skillForm, description: e.target.value })}
                       placeholder="Что делает этот скилл"
                     />
-                  </div>
-                  <div className="set-row">
-                    <label>Тип</label>
+                  </Field>
+                  <Field label="Тип">
                     <select
                       value={skillForm.kind}
                       onChange={(e) =>
@@ -1546,9 +1632,8 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                       <option value="script">script (скрипт)</option>
                       <option value="extension">extension (расширение)</option>
                     </select>
-                  </div>
-                  <div className="set-row">
-                    <label>Тело скилла (markdown, необязательно)</label>
+                  </Field>
+                  <Field label="Тело скилла (markdown, необязательно)" wide>
                     <textarea
                       rows={6}
                       value={skillForm.body}
@@ -1556,80 +1641,73 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                       placeholder="Полные инструкции для агента…"
                       spellCheck={false}
                     />
-                  </div>
-                  <div className="set-row switch-row">
-                    <label>перезаписать, если существует</label>
+                  </Field>
+                  <Field label="перезаписать, если существует">
                     <label className="switch">
                       <input
                         type="checkbox"
                         checked={skillForm.overwrite}
-                        onChange={(e) => setSkillForm({ ...skillForm, overwrite: e.target.checked })}
+                        onChange={(e) =>
+                          setSkillForm({ ...skillForm, overwrite: e.target.checked })
+                        }
                       />
                       <span className="track"></span>
                     </label>
-                  </div>
-                  <div className="form-actions">
+                  </Field>
+                  <div className="set-actions">
                     <button className="primary-btn small" type="submit" disabled={skillCreateBusy}>
                       {skillCreateBusy ? "Создание…" : "Создать"}
                     </button>
                   </div>
                   {skillFormError && <div className="set-error">{skillFormError}</div>}
-                  {skillNote && <div className="set-hint">{skillNote}</div>}
+                  {skillNote && <div className="set-note">{skillNote}</div>}
                 </form>
-              </details>
-              {importResults && (
-                <div className="skill-results">
-                  {importResults.map((r, i) => (
-                    <div key={`${r.name}-${i}`} className={r.ok ? "set-hint" : "set-error"}>
-                      {r.name}: {r.ok ? "импортирован" : r.error}
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="schedule-group-title">Список скиллов</div>
-              {skills === null ? (
-                <div className="set-hint">Загрузка…</div>
-              ) : skills.length === 0 ? (
-                <div className="set-hint">Скиллов нет. Установи встроенные или импортируй свои.</div>
-              ) : (
-                <div className="skill-list">
-                  {skills.map((s, i) =>
-                    s.error ? (
-                      <div key={`${s.name}-${i}`} className="skill-item skill-item-error">
-                        <div className="info">
-                          <div className="t">{s.name || "(без имени)"}</div>
-                          <div className="c">{s.error}</div>
+              </Card>
+              <Card title="Список скиллов">
+                {skills === null ? (
+                  <div className="set-empty">Загрузка…</div>
+                ) : skills.length === 0 ? (
+                  <div className="set-empty">Скиллов нет. Установи встроенные или импортируй свои.</div>
+                ) : (
+                  <div className="set-list">
+                    {skills.map((s, i) =>
+                      s.error ? (
+                        <div key={`${s.name}-${i}`} className="skill-item skill-item-error">
+                          <div className="info">
+                            <div className="t">{s.name || "(без имени)"}</div>
+                            <div className="c">{s.error}</div>
+                          </div>
+                          {s.builtin && <span className="badge">встроенный</span>}
                         </div>
-                        {s.builtin && <span className="badge">встроенный</span>}
-                      </div>
-                    ) : (
-                      <div key={`${s.name}-${i}`} className="skill-item">
-                        <div className="info">
-                          <div className="t">{s.name}</div>
-                          <div className="c">{s.description}</div>
+                      ) : (
+                        <div key={`${s.name}-${i}`} className="skill-item">
+                          <div className="info">
+                            <div className="t">{s.name}</div>
+                            <div className="c">{s.description}</div>
+                          </div>
+                          {s.builtin && <span className="badge">встроенный</span>}
+                          <label className="switch">
+                            <input
+                              type="checkbox"
+                              checked={s.enabled}
+                              onChange={(e) => toggleSkill(s.name, e.target.checked)}
+                            />
+                            <span className="track"></span>
+                          </label>
                         </div>
-                        {s.builtin && <span className="badge">встроенный</span>}
-                        <label className="switch">
-                          <input
-                            type="checkbox"
-                            checked={s.enabled}
-                            onChange={(e) => toggleSkill(s.name, e.target.checked)}
-                          />
-                          <span className="track"></span>
-                        </label>
-                      </div>
-                    ),
-                  )}
-                </div>
-              )}
+                      ),
+                    )}
+                  </div>
+                )}
+              </Card>
               {skillsError && <div className="set-error">{skillsError}</div>}
-            </>
+            </div>
           )}
           {tab === "mcp" && (
-            <>
-              <details className="mcp-guide">
+            <div className="settings-content">
+              <details className="set-card">
                 <summary>Как подключить MCP-сервер</summary>
-                <div className="mcp-guide-body">
+                <div className="set-card-body">
                   <div>
                     Локально (stdio): команда <code>npx</code>, аргументы — по одному на строку:{" "}
                     <code>-y @modelcontextprotocol/server-filesystem /path</code>
@@ -1644,309 +1722,341 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                   </div>
                 </div>
               </details>
-              <div className="llm-actions">
-                <button className="ghost-btn" disabled={mcpBusy} onClick={reloadMcp}>
-                  Перезагрузить
-                </button>
-              </div>
-              <div className="set-hint">Перечитывает mcp.json и перезапускает серверы.</div>
-              <div className="schedule-group-title">Серверы</div>
-              {mcp === null ? (
-                <div className="set-hint">Загрузка…</div>
-              ) : mcp.length === 0 ? (
-                <div className="set-hint">Серверов нет. Добавь первый ниже.</div>
-              ) : (
-                <div className="mcp-list">
-                  {mcp.map((s, i) => (
-                    <div key={`${s.name}-${i}`} className="mcp-item">
-                      <div className="info">
-                        <div className="t">{s.name}</div>
-                        <div className="c">
-                          {s.status === "running" ? `инструментов: ${s.toolCount}` : ""}
-                          {s.error ? (s.status === "running" ? ` · ${s.error}` : s.error) : ""}
-                        </div>
-                      </div>
-                      <span className="badge">{s.transport}</span>
-                      <span className={`badge st-${s.status === "running" ? "active" : s.status}`}>
-                        {s.status === "running" ? "запущен" : s.status === "error" ? "ошибка" : "выключен"}
-                      </span>
-                      <span className="mcp-actions">
-                        <button className="ghost-btn small" onClick={() => startMcpEdit(s.name)}>
-                          Изменить
-                        </button>
-                        <button className="ghost-btn small" onClick={() => void deleteMcpServer(s.name)}>
-                          Удалить
-                        </button>
-                      </span>
-                      <label className="switch">
-                        <input
-                          type="checkbox"
-                          checked={s.enabled}
-                          disabled={mcpBusy}
-                          onChange={(e) => void toggleMcp(s.name, e.target.checked)}
-                        />
-                        <span className="track"></span>
-                      </label>
-                    </div>
-                  ))}
-                </div>
-              )}
-              {mcpError && <div className="set-error">{mcpError}</div>}
-              <div className="schedule-group-title">
-                {mcpEditing === null ? "Добавить сервер" : `Изменить сервер «${mcpEditing}»`}
-              </div>
-              <form className="schedule-form" onSubmit={(e) => void saveMcpServer(e)}>
-                <div className="set-row">
-                  <label>Имя сервера</label>
-                  <input
-                    type="text"
-                    value={mcpForm.name}
-                    onChange={(e) => setMcpForm({ ...mcpForm, name: e.target.value })}
-                    placeholder="example-mcp"
-                    spellCheck={false}
-                  />
-                  <div className="set-hint">
-                    Латиница, цифры, дефис и подчёркивание — по имени сервера называются его
-                    инструменты.
-                  </div>
-                </div>
-                <div className="set-row">
-                  <label>Тип транспорта</label>
-                  <select
-                    value={mcpForm.transport}
-                    onChange={(e) =>
-                      setMcpForm({ ...mcpForm, transport: e.target.value as McpTransportKind })
-                    }
-                  >
-                    <option value="stdio">stdio (локальный процесс)</option>
-                    <option value="http">http (по адресу)</option>
-                    <option value="sse">sse (по адресу, legacy)</option>
-                  </select>
-                </div>
-                {mcpForm.transport === "stdio" ? (
-                  <>
-                    <div className="set-row">
-                      <label>Команда</label>
-                      <input
-                        type="text"
-                        value={mcpForm.command}
-                        onChange={(e) => setMcpForm({ ...mcpForm, command: e.target.value })}
-                        placeholder="npx"
-                        spellCheck={false}
-                      />
-                      <div className="set-hint">Программа, запускающая сервер (npx, node, python).</div>
-                    </div>
-                    <div className="set-row">
-                      <label>Аргументы (по одному на строку или через пробел)</label>
-                      <textarea
-                        rows={2}
-                        value={mcpForm.args}
-                        onChange={(e) => setMcpForm({ ...mcpForm, args: e.target.value })}
-                        placeholder={"-y\n@example/mcp-server\n/path"}
-                        spellCheck={false}
-                      />
-                      {mcpArgsPreview.length > 0 && (
-                        <div className="mcp-chips">
-                          {mcpArgsPreview.map((a, i) => (
-                            <span key={i} className="mcp-chip">
-                              {a}
-                            </span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    <div className="set-row">
-                      <label>Переменные окружения (необязательно)</label>
-                      <textarea
-                        rows={2}
-                        value={mcpForm.env}
-                        onChange={(e) => setMcpForm({ ...mcpForm, env: e.target.value })}
-                        placeholder="API_KEY=secret — по одной строке KEY=VALUE"
-                        spellCheck={false}
-                      />
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div className="set-row">
-                      <label>URL сервера</label>
-                      <input
-                        type="text"
-                        value={mcpForm.url}
-                        onChange={(e) => setMcpForm({ ...mcpForm, url: e.target.value })}
-                        placeholder="https://mcp.example.com/mcp"
-                        spellCheck={false}
-                      />
-                      <div className="set-hint">
-                        Адрес http/sse-сервера; адреса облачных метаданных запрещены.
-                      </div>
-                    </div>
-                    <div className="set-row">
-                      <label>Заголовки (необязательно)</label>
-                      <textarea
-                        rows={2}
-                        value={mcpForm.headers}
-                        onChange={(e) => setMcpForm({ ...mcpForm, headers: e.target.value })}
-                        placeholder={"Authorization: Bearer …\nX-Api-Key=…"}
-                        spellCheck={false}
-                      />
-                    </div>
-                  </>
-                )}
-                <div className="form-actions">
-                  <button className="primary-btn small" type="submit" disabled={mcpBusy}>
-                    {mcpEditing === null ? "Добавить" : "Сохранить"}
+              <Card title="Серверы" desc="Перечитывает mcp.json и перезапускает серверы.">
+                <div className="set-actions">
+                  <button className="ghost-btn" disabled={mcpBusy} onClick={reloadMcp}>
+                    Перезагрузить
                   </button>
-                  {mcpEditing !== null && (
-                    <button className="ghost-btn small" type="button" onClick={cancelMcpEdit}>
-                      Отмена
-                    </button>
-                  )}
                 </div>
-                {mcpFormError && <div className="set-error">{mcpFormError}</div>}
-              </form>
-            </>
+                {mcp === null ? (
+                  <div className="set-empty">Загрузка…</div>
+                ) : mcp.length === 0 ? (
+                  <div className="set-empty">Серверов нет. Добавь первый ниже.</div>
+                ) : (
+                  <div className="set-list">
+                    {mcp.map((s, i) => (
+                      <div key={`${s.name}-${i}`} className="mcp-item">
+                        <div className="info">
+                          <div className="t">{s.name}</div>
+                          <div className="c">
+                            {s.status === "running" ? `инструментов: ${s.toolCount}` : ""}
+                            {s.error ? (s.status === "running" ? ` · ${s.error}` : s.error) : ""}
+                          </div>
+                        </div>
+                        <span className="badge">{s.transport}</span>
+                        <span
+                          className={`badge st-${s.status === "running" ? "active" : s.status}`}
+                        >
+                          {s.status === "running"
+                            ? "запущен"
+                            : s.status === "error"
+                              ? "ошибка"
+                              : "выключен"}
+                        </span>
+                        <span className="mcp-actions">
+                          <button className="ghost-btn small" onClick={() => startMcpEdit(s.name)}>
+                            Изменить
+                          </button>
+                          <button
+                            className="ghost-btn small"
+                            onClick={() => void deleteMcpServer(s.name)}
+                          >
+                            Удалить
+                          </button>
+                        </span>
+                        <label className="switch">
+                          <input
+                            type="checkbox"
+                            checked={s.enabled}
+                            disabled={mcpBusy}
+                            onChange={(e) => void toggleMcp(s.name, e.target.checked)}
+                          />
+                          <span className="track"></span>
+                        </label>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {mcpError && <div className="set-error">{mcpError}</div>}
+              </Card>
+              <Card
+                title={mcpEditing === null ? "Добавить сервер" : `Изменить сервер «${mcpEditing}»`}
+                desc="Сервер сохраняется в mcp.json и сразу перезапускается."
+              >
+                <form className="set-form" onSubmit={(e) => void saveMcpServer(e)}>
+                  <Field
+                    label="Имя сервера"
+                    hint="Латиница, цифры, дефис и подчёркивание — по имени сервера называются его инструменты."
+                  >
+                    <input
+                      type="text"
+                      value={mcpForm.name}
+                      onChange={(e) => setMcpForm({ ...mcpForm, name: e.target.value })}
+                      placeholder="example-mcp"
+                      spellCheck={false}
+                    />
+                  </Field>
+                  <Field label="Тип транспорта">
+                    <select
+                      value={mcpForm.transport}
+                      onChange={(e) =>
+                        setMcpForm({ ...mcpForm, transport: e.target.value as McpTransportKind })
+                      }
+                    >
+                      <option value="stdio">stdio (локальный процесс)</option>
+                      <option value="http">http (по адресу)</option>
+                      <option value="sse">sse (по адресу, legacy)</option>
+                    </select>
+                  </Field>
+                  {mcpForm.transport === "stdio" ? (
+                    <>
+                      <Field label="Команда" hint="Программа, запускающая сервер (npx, node, python).">
+                        <input
+                          type="text"
+                          value={mcpForm.command}
+                          onChange={(e) => setMcpForm({ ...mcpForm, command: e.target.value })}
+                          placeholder="npx"
+                          spellCheck={false}
+                        />
+                      </Field>
+                      <Field label="Аргументы (по одному на строку или через пробел)" wide>
+                        <textarea
+                          rows={2}
+                          value={mcpForm.args}
+                          onChange={(e) => setMcpForm({ ...mcpForm, args: e.target.value })}
+                          placeholder={"-y\n@example/mcp-server\n/path"}
+                          spellCheck={false}
+                        />
+                        {mcpArgsPreview.length > 0 && (
+                          <div className="mcp-chips">
+                            {mcpArgsPreview.map((a, i) => (
+                              <span key={i} className="mcp-chip">
+                                {a}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </Field>
+                      <Field label="Переменные окружения (необязательно)" wide hint="По одной строке KEY=VALUE.">
+                        <textarea
+                          rows={2}
+                          value={mcpForm.env}
+                          onChange={(e) => setMcpForm({ ...mcpForm, env: e.target.value })}
+                          placeholder="API_KEY=secret — по одной строке KEY=VALUE"
+                          spellCheck={false}
+                        />
+                      </Field>
+                    </>
+                  ) : (
+                    <>
+                      <Field
+                        label="URL сервера"
+                        wide
+                        hint="Адрес http/sse-сервера; адреса облачных метаданных запрещены."
+                      >
+                        <input
+                          type="text"
+                          value={mcpForm.url}
+                          onChange={(e) => setMcpForm({ ...mcpForm, url: e.target.value })}
+                          placeholder="https://mcp.example.com/mcp"
+                          spellCheck={false}
+                        />
+                      </Field>
+                      <Field
+                        label="Заголовки (необязательно)"
+                        wide
+                        hint="Строки вида Authorization: Bearer … или KEY=VALUE."
+                      >
+                        <textarea
+                          rows={2}
+                          value={mcpForm.headers}
+                          onChange={(e) => setMcpForm({ ...mcpForm, headers: e.target.value })}
+                          placeholder={"Authorization: Bearer …\nX-Api-Key=…"}
+                          spellCheck={false}
+                        />
+                      </Field>
+                    </>
+                  )}
+                  <div className="set-actions">
+                    <button className="primary-btn small" type="submit" disabled={mcpBusy}>
+                      {mcpEditing === null ? "Добавить" : "Сохранить"}
+                    </button>
+                    {mcpEditing !== null && (
+                      <button className="ghost-btn small" type="button" onClick={cancelMcpEdit}>
+                        Отмена
+                      </button>
+                    )}
+                  </div>
+                  {mcpFormError && <div className="set-error">{mcpFormError}</div>}
+                </form>
+              </Card>
+            </div>
           )}
           {tab === "other" && (
-            <>
-              <div className="set-row">
-                <label>Рабочая директория</label>
-                <div className="path-value">{workingDir ?? "—"}</div>
-              </div>
-              <div className="set-row">
-                <label>Директория настроек</label>
-                <div className="path-value">{configDir || "—"}</div>
-              </div>
-              <div className="set-row">
-                <label>Автоудаление сессий харнеса, дней</label>
-                <input
-                  className="narrow"
-                  type="text"
-                  inputMode="numeric"
-                  value={appForm?.sessionTtlDays ?? ""}
-                  onChange={(e) => updateAppForm({ sessionTtlDays: e.target.value })}
-                  onFocus={focusAppField("sessionTtlDays")}
-                  onBlur={blurAppField}
-                />
-                <div className="set-hint">
-                  Сессии без активности дольше этого срока удаляются при запуске. 0 — отключено.
-                </div>
-              </div>
-              <div className="set-row">
-                <label>Автоочистка Harness/tmp, дней</label>
-                <input
-                  className="narrow"
-                  type="text"
-                  inputMode="numeric"
-                  value={appForm?.tmpRetentionDays ?? ""}
-                  onChange={(e) => updateAppForm({ tmpRetentionDays: e.target.value })}
-                  onFocus={focusAppField("tmpRetentionDays")}
-                  onBlur={blurAppField}
-                />
-                <div className="set-hint">
-                  Файлы в Harness/tmp старше этого срока стираются при запуске. 0 — не стирать.
-                </div>
-              </div>
-              <div className="set-row">
-                <label>Хранение журнала запусков, дней</label>
-                <input
-                  className="narrow"
-                  type="text"
-                  inputMode="numeric"
-                  value={appForm?.logRetentionDays ?? ""}
-                  onChange={(e) => updateAppForm({ logRetentionDays: e.target.value })}
-                  onFocus={focusAppField("logRetentionDays")}
-                  onBlur={blurAppField}
-                />
-                <div className="set-hint">
-                  Записи журнала старше этого срока удаляются при запуске. 0 — не удалять.
-                </div>
-              </div>
-              <div className="schedule-group-title">Резервные копии</div>
-              <div className="set-row">
-                <label>Интервал автокопий, дней</label>
-                <input
-                  className="narrow"
-                  type="text"
-                  inputMode="numeric"
-                  value={appForm?.backupIntervalDays ?? ""}
-                  onChange={(e) => updateAppForm({ backupIntervalDays: e.target.value })}
-                  onFocus={focusAppField("backupIntervalDays")}
-                  onBlur={blurAppField}
-                />
-                <div className="set-hint">Каждые N дней при запуске создаётся копия. 0 — выключено.</div>
-              </div>
-              <div className="set-row">
-                <label>Хранить копий</label>
-                <input
-                  className="narrow"
-                  type="text"
-                  inputMode="numeric"
-                  value={appForm?.backupKeep ?? ""}
-                  onChange={(e) => updateAppForm({ backupKeep: e.target.value })}
-                  onFocus={focusAppField("backupKeep")}
-                  onBlur={blurAppField}
-                />
-                <div className="set-hint">Сколько последних копий остаётся на диске. 0 — одна.</div>
-              </div>
-              <div className="set-hint">
-                {backupStatus === null
-                  ? "Статус резервных копий недоступен."
-                  : `Последняя: ${
-                      backupStatus.lastBackupAt ? fmtRfc(backupStatus.lastBackupAt) : "ещё не делалась"
-                    } · на диске: ${backupStatus.count} · ${
-                      backupStatus.intervalDays === 0
-                        ? "автовыключено"
-                        : backupStatus.due
-                          ? "пора сделать сейчас"
-                          : `авто: каждые ${backupStatus.intervalDays} дн.`
-                    }`}
-              </div>
-              <div className="llm-actions">
-                <button className="ghost-btn" disabled={tmpBusy} onClick={clearTmp}>
-                  {tmpBusy ? "Очистка…" : "Очистить Harness/tmp"}
-                </button>
-                <button className="ghost-btn" disabled={backupBusy} onClick={runBackup}>
-                  {backupBusy ? "Создание…" : "Резервная копия"}
-                </button>
-              </div>
-              {tmpNote && <div className="set-hint">{tmpNote}</div>}
-              {backupNote && <div className="set-hint">{backupNote}</div>}
-              {backups && <div className="set-hint">Резервные копии по умолчанию: {backups}</div>}
-              <div className="set-row switch-row">
-                <label>Запускаться с системой</label>
-                <label className="switch">
-                  <input
-                    type="checkbox"
-                    checked={autostart ?? false}
-                    disabled={autostart === null || autostartBusy}
-                    onChange={(e) => toggleAutostart(e.target.checked)}
-                  />
-                  <span className="track"></span>
-                </label>
-              </div>
-              <div className="set-hint">
-                macOS LaunchAgent, чтобы расписания работали без открытого окна. По умолчанию
-                выключено.
-              </div>
-              <div className="schedule-group-title">Импорт/Экспорт</div>
-              <div className="set-row">
-                <label>Куда импортировать</label>
-                <select
-                  value={importTarget}
-                  onChange={(e) => setImportTarget(e.target.value as "project" | "notes")}
+            <div className="settings-content">
+              <Card title="Расположение" desc="Папки, где приложение хранит данные и настройки.">
+                <Field label="Рабочая директория" wide>
+                  <div className="path-value">{workingDir ?? "—"}</div>
+                </Field>
+                <Field label="Директория настроек" wide>
+                  <div className="path-value">{configDir || "—"}</div>
+                </Field>
+              </Card>
+              <Card
+                title="Резервные копии"
+                desc={
+                  backupStatus === null
+                    ? "Статус резервных копий недоступен."
+                    : `Последняя: ${
+                        backupStatus.lastBackupAt ? fmtRfc(backupStatus.lastBackupAt) : "ещё не делалась"
+                      } · на диске: ${backupStatus.count} · ${
+                        backupStatus.intervalDays === 0
+                          ? "автовыключено"
+                          : backupStatus.due
+                            ? "пора сделать сейчас"
+                            : `авто: каждые ${backupStatus.intervalDays} дн.`
+                      }`
+                }
+              >
+                <Field
+                  label="Интервал автокопий, дней"
+                  hint="Каждые N дней при запуске создаётся копия. 0 — выключено."
                 >
-                  <option value="project">Проект</option>
-                  <option value="notes">Заметки</option>
-                </select>
-              </div>
-              {importTarget === "project" && (
-                <div className="set-row">
-                  <label>Проект для импорта</label>
+                  <input
+                    className="narrow"
+                    type="text"
+                    inputMode="numeric"
+                    value={appForm?.backupIntervalDays ?? ""}
+                    onChange={(e) => updateAppForm({ backupIntervalDays: e.target.value })}
+                    onFocus={focusAppField("backupIntervalDays")}
+                    onBlur={blurAppField}
+                  />
+                </Field>
+                <Field label="Хранить копий" hint="Сколько последних копий остаётся на диске. 0 — одна.">
+                  <input
+                    className="narrow"
+                    type="text"
+                    inputMode="numeric"
+                    value={appForm?.backupKeep ?? ""}
+                    onChange={(e) => updateAppForm({ backupKeep: e.target.value })}
+                    onFocus={focusAppField("backupKeep")}
+                    onBlur={blurAppField}
+                  />
+                </Field>
+                <div className="set-actions">
+                  <button className="ghost-btn" disabled={backupBusy} onClick={runBackup}>
+                    {backupBusy ? "Создание…" : "Резервная копия"}
+                  </button>
+                </div>
+                {backupNote && <div className="set-note">{backupNote}</div>}
+                {backups && <div className="set-note">Резервные копии по умолчанию: {backups}</div>}
+              </Card>
+              <Card
+                title="Корзина"
+                desc="Удалённые файлы, папки и задачи попадают в корзину и хранятся 30 дней."
+              >
+                {trash === null ? (
+                  <div className="set-empty">Загрузка…</div>
+                ) : trash.length === 0 ? (
+                  <div className="set-empty">Корзина пуста.</div>
+                ) : (
+                  <div className="set-list">
+                    {trash.map((t) => (
+                      <div key={t.id} className="skill-item">
+                        <div className="info">
+                          <div className="t">{t.name || "(без имени)"}</div>
+                          <div className="c">{t.originalPath}</div>
+                          <div className="c">удалено {fmtLocal(t.deletedAt)}</div>
+                        </div>
+                        <span className="badge">{t.kind}</span>
+                        <span className="badge st-disabled">{t.scope}</span>
+                        <span className="item-actions">
+                          <button
+                            className="ghost-btn small"
+                            disabled={trashBusyId !== null}
+                            onClick={() => restoreTrash(t.id)}
+                          >
+                            {trashBusyId === t.id ? "…" : "Восстановить"}
+                          </button>
+                          <button
+                            className="ghost-btn small danger"
+                            disabled={trashBusyId !== null}
+                            onClick={() => purgeTrash(t.id, t.name)}
+                          >
+                            Удалить навсегда
+                          </button>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {trashError && <div className="set-error">{trashError}</div>}
+              </Card>
+              <Card
+                title="Импорт и экспорт"
+                desc="Импорт папок, архивов и Obsidian vault; экспорт проекта или заметок в .zip."
+              >
+                <Field label="Куда импортировать">
                   <select
-                    value={importProjectId ?? ""}
+                    value={importTarget}
+                    onChange={(e) => setImportTarget(e.target.value as "project" | "notes")}
+                  >
+                    <option value="project">Проект</option>
+                    <option value="notes">Заметки</option>
+                  </select>
+                </Field>
+                {importTarget === "project" && (
+                  <Field label="Проект для импорта">
+                    <select
+                      value={importProjectId ?? ""}
+                      onChange={(e) =>
+                        setImportProjectId(e.target.value ? Number(e.target.value) : null)
+                      }
+                    >
+                      <option value="">— выбери проект —</option>
+                      {projects.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name}
+                        </option>
+                      ))}
+                    </select>
+                  </Field>
+                )}
+                <div className="set-actions">
+                  <button
+                    className="ghost-btn"
+                    disabled={importBusy}
+                    onClick={() => void runImport("folder")}
+                  >
+                    Папка
+                  </button>
+                  <button
+                    className="ghost-btn"
+                    disabled={importBusy}
+                    onClick={() => void runImport("archive")}
+                  >
+                    Архив .zip
+                  </button>
+                  <button
+                    className="ghost-btn"
+                    disabled={importBusy}
+                    onClick={() => void runImport("obsidian")}
+                  >
+                    Obsidian vault
+                  </button>
+                </div>
+                <div className="set-note">
+                  Папка и архив идут в выбранную цель, Obsidian vault — в заметки без служебных
+                  папок (.obsidian, .trash, .git). При совпадении имени добавляется суффикс « copy»,
+                  файлы не перезаписываются.
+                </div>
+                {importNote && <div className="set-note">{importNote}</div>}
+                {importError && <div className="set-error">{importError}</div>}
+                <Field label="Проект для экспорта">
+                  <select
+                    value={exportProjectId ?? ""}
                     onChange={(e) =>
-                      setImportProjectId(e.target.value ? Number(e.target.value) : null)
+                      setExportProjectId(e.target.value ? Number(e.target.value) : null)
                     }
                   >
                     <option value="">— выбери проект —</option>
@@ -1956,97 +2066,95 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                       </option>
                     ))}
                   </select>
+                </Field>
+                <div className="set-actions">
+                  <button
+                    className="ghost-btn"
+                    disabled={exportBusy}
+                    onClick={() => void doExport("project")}
+                  >
+                    Экспорт проекта
+                  </button>
+                  <button
+                    className="ghost-btn"
+                    disabled={exportBusy}
+                    onClick={() => void doExport("notes")}
+                  >
+                    Экспорт заметок
+                  </button>
                 </div>
-              )}
-              <div className="llm-actions">
-                <button className="ghost-btn" disabled={importBusy} onClick={() => void runImport("folder")}>
-                  Папка
-                </button>
-                <button className="ghost-btn" disabled={importBusy} onClick={() => void runImport("archive")}>
-                  Архив .zip
-                </button>
-                <button className="ghost-btn" disabled={importBusy} onClick={() => void runImport("obsidian")}>
-                  Obsidian vault
-                </button>
-              </div>
-              <div className="set-hint">
-                Папка и архив идут в выбранную цель, Obsidian vault — в заметки без служебных папок
-                (.obsidian, .trash, .git). При совпадении имени добавляется суффикс « copy», файлы не
-                перезаписываются.
-              </div>
-              {importNote && <div className="set-hint">{importNote}</div>}
-              {importError && <div className="set-error">{importError}</div>}
-              <div className="set-row">
-                <label>Проект для экспорта</label>
-                <select
-                  value={exportProjectId ?? ""}
-                  onChange={(e) =>
-                    setExportProjectId(e.target.value ? Number(e.target.value) : null)
-                  }
+                <div className="set-note">
+                  Проект и заметки упаковываются в .zip: диалог предлагает имя, папку выбираешь сам.
+                </div>
+                {exportNote && <div className="set-note">{exportNote}</div>}
+                {exportError && <div className="set-error">{exportError}</div>}
+              </Card>
+              <Card title="Обслуживание" desc="Автоочистка при запуске и запуск с системой.">
+                <Field
+                  label="Автоудаление сессий харнеса, дней"
+                  hint="Сессии без активности дольше этого срока удаляются при запуске. 0 — отключено."
                 >
-                  <option value="">— выбери проект —</option>
-                  {projects.map((p) => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div className="llm-actions">
-                <button className="ghost-btn" disabled={exportBusy} onClick={() => void doExport("project")}>
-                  Экспорт проекта
-                </button>
-                <button className="ghost-btn" disabled={exportBusy} onClick={() => void doExport("notes")}>
-                  Экспорт заметок
-                </button>
-              </div>
-              <div className="set-hint">
-                Проект и заметки упаковываются в .zip: диалог предлагает имя, папку выбираешь сам.
-              </div>
-              {exportNote && <div className="set-hint">{exportNote}</div>}
-              {exportError && <div className="set-error">{exportError}</div>}
-              <div className="schedule-group-title">Корзина</div>
-              <div className="set-hint">
-                Удалённые файлы, папки и задачи попадают в корзину и хранятся 30 дней.
-              </div>
-              {trash === null ? (
-                <div className="set-hint">Загрузка…</div>
-              ) : trash.length === 0 ? (
-                <div className="set-hint">Корзина пуста.</div>
-              ) : (
-                <div className="skill-list">
-                  {trash.map((t) => (
-                    <div key={t.id} className="skill-item">
-                      <div className="info">
-                        <div className="t">{t.name || "(без имени)"}</div>
-                        <div className="c">{t.originalPath}</div>
-                        <div className="c">удалено {fmtLocal(t.deletedAt)}</div>
-                      </div>
-                      <span className="badge">{t.kind}</span>
-                      <span className="badge st-disabled">{t.scope}</span>
-                      <span className="item-actions">
-                        <button
-                          className="ghost-btn small"
-                          disabled={trashBusyId !== null}
-                          onClick={() => restoreTrash(t.id)}
-                        >
-                          {trashBusyId === t.id ? "…" : "Восстановить"}
-                        </button>
-                        <button
-                          className="ghost-btn small danger"
-                          disabled={trashBusyId !== null}
-                          onClick={() => purgeTrash(t.id, t.name)}
-                        >
-                          Удалить навсегда
-                        </button>
-                      </span>
-                    </div>
-                  ))}
+                  <input
+                    className="narrow"
+                    type="text"
+                    inputMode="numeric"
+                    value={appForm?.sessionTtlDays ?? ""}
+                    onChange={(e) => updateAppForm({ sessionTtlDays: e.target.value })}
+                    onFocus={focusAppField("sessionTtlDays")}
+                    onBlur={blurAppField}
+                  />
+                </Field>
+                <Field
+                  label="Автоочистка Harness/tmp, дней"
+                  hint="Файлы в Harness/tmp старше этого срока стираются при запуске. 0 — не стирать."
+                >
+                  <input
+                    className="narrow"
+                    type="text"
+                    inputMode="numeric"
+                    value={appForm?.tmpRetentionDays ?? ""}
+                    onChange={(e) => updateAppForm({ tmpRetentionDays: e.target.value })}
+                    onFocus={focusAppField("tmpRetentionDays")}
+                    onBlur={blurAppField}
+                  />
+                </Field>
+                <Field
+                  label="Хранение журнала запусков, дней"
+                  hint="Записи журнала старше этого срока удаляются при запуске. 0 — не удалять."
+                >
+                  <input
+                    className="narrow"
+                    type="text"
+                    inputMode="numeric"
+                    value={appForm?.logRetentionDays ?? ""}
+                    onChange={(e) => updateAppForm({ logRetentionDays: e.target.value })}
+                    onFocus={focusAppField("logRetentionDays")}
+                    onBlur={blurAppField}
+                  />
+                </Field>
+                <Field
+                  label="Запускаться с системой"
+                  hint="macOS LaunchAgent, чтобы расписания работали без открытого окна. По умолчанию выключено."
+                >
+                  <label className="switch">
+                    <input
+                      type="checkbox"
+                      checked={autostart ?? false}
+                      disabled={autostart === null || autostartBusy}
+                      onChange={(e) => toggleAutostart(e.target.checked)}
+                    />
+                    <span className="track"></span>
+                  </label>
+                </Field>
+                <div className="set-actions">
+                  <button className="ghost-btn" disabled={tmpBusy} onClick={clearTmp}>
+                    {tmpBusy ? "Очистка…" : "Очистить Harness/tmp"}
+                  </button>
                 </div>
-              )}
-              {trashError && <div className="set-error">{trashError}</div>}
+                {tmpNote && <div className="set-note">{tmpNote}</div>}
+              </Card>
               {error && <div className="set-error">{error}</div>}
-            </>
+            </div>
           )}
         </div>
       </div>

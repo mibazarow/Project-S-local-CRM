@@ -143,6 +143,9 @@ pub struct ContextOutcome {
     pub messages: Vec<ChatMessage>,
     // Set when this call wrote a new checkpoint row (for the UI event).
     pub new_checkpoint_up_to: Option<i64>,
+    // The summary text of that new checkpoint (for the UI event): it rides
+    // the event only, never persisted as a chat message.
+    pub new_summary: Option<String>,
 }
 
 // Builds the model-facing transcript: system prompt + checkpoint summaries +
@@ -175,6 +178,7 @@ pub fn build_context(
         return Ok(ContextOutcome {
             messages: full,
             new_checkpoint_up_to: None,
+            new_summary: None,
         });
     }
 
@@ -196,6 +200,7 @@ pub fn build_context(
         return Ok(ContextOutcome {
             messages: full,
             new_checkpoint_up_to: None,
+            new_summary: None,
         });
     }
 
@@ -204,6 +209,7 @@ pub fn build_context(
         messages.push(ChatMessage::assistant(format!("{SUMMARY_PREFIX}\n{summary}")));
     }
     let mut new_checkpoint_up_to = None;
+    let mut new_summary = None;
     if boundary as i64 > last_up_to {
         let expired = &history[last_up_to as usize..boundary];
         // Durable facts (SPEC 6.3): before the expired range disappears into
@@ -235,12 +241,14 @@ pub fn build_context(
                 )?;
                 messages.push(ChatMessage::assistant(format!("{SUMMARY_PREFIX}\n{summary}")));
                 new_checkpoint_up_to = Some(boundary as i64);
+                new_summary = Some(summary);
             }
             // LLM failure: fall back to the uncompacted history, chat goes on.
             Err(_) => {
                 return Ok(ContextOutcome {
                     messages: full,
                     new_checkpoint_up_to: None,
+                    new_summary: None,
                 })
             }
         }
@@ -249,6 +257,7 @@ pub fn build_context(
     Ok(ContextOutcome {
         messages,
         new_checkpoint_up_to,
+        new_summary,
     })
 }
 
@@ -579,6 +588,17 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].1, "SUMMARY BODY");
         assert_eq!(out.new_checkpoint_up_to, Some(rows[0].0));
+        // The summary text rides the outcome for the UI event and is never
+        // persisted as a chat message (only the `summaries` table holds it).
+        assert_eq!(out.new_summary.as_deref(), Some("SUMMARY BODY"));
+        let as_message: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM messages WHERE chat_id = ?1 AND content LIKE '%SUMMARY BODY%'",
+                params![chat_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(as_message, 0);
         assert_eq!(out.messages[0].role, Role::System);
         assert!(out.messages[1].text_content()
             .unwrap()
@@ -792,6 +812,57 @@ mod tests {
         assert!(tail.len() < 46);
         assert_eq!(tail.last().unwrap().text_content(), Some("final"));
         fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // Compaction must never leave an open tool_calls group in the model-facing
+    // output: the fold boundary, the summary turns and the kept tail all have
+    // to keep every assistant tool_calls turn answered by tool messages.
+    #[test]
+    fn compaction_output_keeps_every_tool_call_group_closed() {
+        let (wd, conn, chat_id) = setup("ctx-sanitize");
+        // Tool units with two calls each: assistant(c{i}a, c{i}b) + two results.
+        for i in 0..15 {
+            append_message(&conn, chat_id, Role::User, Some(&big_text("q", 20)), &[], None, None)
+                .unwrap();
+            let calls = vec![
+                ToolCall::new(format!("c{i}a"), "read_file".into(), json!({ "rel_path": big_text("f", 20) }).to_string()),
+                ToolCall::new(format!("c{i}b"), "read_file".into(), json!({ "rel_path": big_text("g", 20) }).to_string()),
+            ];
+            append_message(&conn, chat_id, Role::Assistant, None, &calls, None, None).unwrap();
+            append_message(&conn, chat_id, Role::Tool, Some(&big_text("r", 40)), &[], Some(&format!("c{i}a")), None)
+                .unwrap();
+            append_message(&conn, chat_id, Role::Tool, Some(&big_text("s", 40)), &[], Some(&format!("c{i}b")), None)
+                .unwrap();
+        }
+        append_message(&conn, chat_id, Role::User, Some("final"), &[], None, None).unwrap();
+        let backend = FakeBackend::ok("S");
+        let out = build_context(&conn, chat_id, "sys", "", 1000, 80, &backend, &params(), false).unwrap();
+        assert!(
+            tool_groups_are_closed(&out.messages),
+            "compacted context has an open tool_calls group"
+        );
+        assert_eq!(out.messages.last().unwrap().text_content(), Some("final"));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    fn tool_groups_are_closed(messages: &[ChatMessage]) -> bool {
+        let mut pending: Vec<String> = Vec::new();
+        for m in messages {
+            if m.role == Role::Tool {
+                match m.tool_call_id.as_ref().and_then(|id| pending.iter().position(|p| p == id)) {
+                    Some(pos) => { pending.remove(pos); }
+                    None => return false,
+                }
+                continue;
+            }
+            if !pending.is_empty() {
+                return false;
+            }
+            if m.role == Role::Assistant {
+                pending = m.tool_calls.iter().map(|tc| tc.id.clone()).collect();
+            }
+        }
+        pending.is_empty()
     }
 
     // Hysteresis: the kept tail is sized to ~60% of the window, not the old

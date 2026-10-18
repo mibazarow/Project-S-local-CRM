@@ -10,6 +10,7 @@ import type {
 } from "../../api/types";
 import {
   chatReducer,
+  combineQueued,
   historyToItems,
   summarizeArgs,
   toMessage,
@@ -193,15 +194,6 @@ function ScheduleItem({
   onOpen: (s: ScheduleDto) => void;
 }) {
   const s = schedule;
-  // Full details for the «?» tooltip: the whole prompt, the raw spec and the
-  // next run — the row itself only carries the short title.
-  const details = [
-    s.prompt ? `Задание: ${s.prompt}` : null,
-    `Расписание: ${s.spec}`,
-    s.nextRunAt ? `Следующий запуск: ${formatInstant(s.nextRunAt)}` : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
   return (
     <div
       className="schedule-item"
@@ -214,16 +206,7 @@ function ScheduleItem({
       }}
     >
       <div className="info">
-        <div className="t">
-          {s.title ?? s.spec}
-          <span
-            className="schedule-help"
-            title={details}
-            onClick={(e) => e.stopPropagation()}
-          >
-            ?
-          </span>
-        </div>
+        <div className="t">{s.title ?? s.spec}</div>
         <div className="c">
           {KIND_LABEL[s.kind] ?? s.kind}
           {" · "}
@@ -422,6 +405,30 @@ export default function HarnessView() {
       .catch(() => dispatch({ type: "loaded", key: activeId, items: [] }));
   }, [activeId]);
 
+  // When a run finishes (done/error/cancelled), flush the queued messages as
+  // one combined user turn; a short delay lets the finished run persist its
+  // final answer first, and a run that started meanwhile re-queues the text.
+  const flushQueue = (key: number) => {
+    const queued = chatRef.current[key]?.queue ?? [];
+    if (queued.length === 0) return;
+    dispatch({ type: "clearQueue", key });
+    const combined = combineQueued(queued);
+    setTimeout(() => {
+      if (chatRef.current[key]?.run) {
+        dispatch({ type: "enqueue", key, text: combined });
+        return;
+      }
+      dispatch({ type: "send", key, text: combined, attachments: [] });
+      void ipc
+        .sendSessionMessage(key, combined)
+        .then((chatId) => {
+          rememberChatId(key, chatId);
+          return loadSessions();
+        })
+        .catch((e) => dispatch({ type: "sendFailed", key, message: toMessage(e) }));
+    }, 400);
+  };
+
   // One shared event stream: harness runs are routed by sessionId. A run
   // started outside this view (a fired schedule) streams live too: the first
   // incoming event opens the run slice (chatReducer), so the open session
@@ -434,6 +441,7 @@ export default function HarnessView() {
     let unConfirm: (() => void) | undefined;
     let unSessions: (() => void) | undefined;
     let unFile: (() => void) | undefined;
+    let unCompaction: (() => void) | undefined;
     const reloadHistory = (key: number) => {
       void ipc
         .harnessSessionHistory(key)
@@ -476,6 +484,7 @@ export default function HarnessView() {
           // their change events can race the run's done event.
           void loadSessions();
           void loadSchedules();
+          flushQueue(key);
           break;
         }
         case "error": {
@@ -486,6 +495,7 @@ export default function HarnessView() {
           }
           void loadSessions();
           void loadSchedules();
+          flushQueue(key);
           break;
         }
         case "confirmationRequested":
@@ -514,12 +524,22 @@ export default function HarnessView() {
         dispatch({ type: "agentFile", key: Number(entry[0]), payload: p });
       })
       .then((u) => (cancelled ? u() : (unFile = u)));
+    // Context compaction: the event carries only chatId, so route it through
+    // the remembered session -> chat map; the summary shows as a status item.
+    void ipc
+      .onAgentCompaction((p) => {
+        const entry = Object.entries(sessionChatIdsRef.current).find(([, chat]) => chat === p.chatId);
+        if (!entry) return;
+        dispatch({ type: "compaction", key: Number(entry[0]), summary: p.summary });
+      })
+      .then((u) => (cancelled ? u() : (unCompaction = u)));
     return () => {
       cancelled = true;
       unEvent?.();
       unConfirm?.();
       unSessions?.();
       unFile?.();
+      unCompaction?.();
     };
   }, [loadSessions, loadSchedules]);
 
@@ -568,9 +588,9 @@ export default function HarnessView() {
     ta.style.height = Math.min(ta.scrollHeight, 10 * lh + 16) + "px";
   };
 
-  const send = () => {
+  const sendText = (value: string) => {
     if (running) return;
-    const trimmed = text.trim();
+    const trimmed = value.trim();
     if (!trimmed) return;
     void (async () => {
       // Auto-create on send: with no active session (empty list or the agent
@@ -625,6 +645,21 @@ export default function HarnessView() {
         })
         .catch((e) => dispatch({ type: "sendFailed", key: sessionId, message: toMessage(e) }));
     })();
+  };
+
+  // While a run is live the composer stays enabled: sending queues the text
+  // (flushed as one combined turn when the run finishes) instead of starting
+  // a second run.
+  const send = () => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    if (running && activeId != null) {
+      dispatch({ type: "enqueue", key: activeId, text: trimmed });
+      setText("");
+      grow();
+      return;
+    }
+    sendText(text);
   };
 
   const resolve = (decision: "allow" | "deny" | "allowAlways") => {
@@ -963,6 +998,11 @@ export default function HarnessView() {
               <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.49-8.48" /></svg>
             </button>
             <span className="chat-hint">Shift+Enter — перенос строки, Enter — отправить</span>
+            {(slice?.queue.length ?? 0) > 0 && (
+              <span className="queue-note" title="Уйдёт одним сообщением, когда агент закончит">
+                В очереди: {slice?.queue.length}
+              </span>
+            )}
             {running ? (
               <button className="ghost-btn small stop-btn" type="button" onClick={stop}>
                 Стоп
@@ -984,8 +1024,8 @@ export default function HarnessView() {
             <button
               className="icon-btn send-btn"
               type="button"
-              title="Отправить"
-              disabled={running || !text.trim()}
+              title={running ? "Отправить в очередь" : "Отправить"}
+              disabled={!text.trim()}
               onClick={send}
             >
               <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4 20-7z" /></svg>

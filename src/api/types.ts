@@ -443,6 +443,16 @@ export interface AgentFileEvent {
   caption: string;
 }
 
+// chat::run_agent_inner — payload of the "agent-context-compacted" event
+// emitted when a run's build_context folds old turns into a new checkpoint.
+// summary is the new checkpoint text shown as a collapsible status item; it
+// is never persisted as a chat message.
+export interface AgentCompactionEvent {
+  chatId: number;
+  upToPosition: number;
+  summary: string;
+}
+
 // chat::AgentEventPayload — project chats carry projectId, harness sessions
 // carry sessionId, notes-chat runs carry notes: true (chatId only).
 export interface AgentEventPayload {

@@ -43,7 +43,7 @@ function AddTaskForm({
   onCommit: (draft: NewTaskDraft) => void;
   onCancel: () => void;
 }) {
-  const titleRef = useRef<HTMLInputElement>(null);
+  const titleRef = useRef<HTMLTextAreaElement>(null);
   const [due, setDue] = useState("");
   const [priority, setPriority] = useState(false);
   const done = useRef(false);
@@ -60,17 +60,22 @@ function AddTaskForm({
     else onCommit({ title, dueDate: due || null, isPriority: priority });
   };
 
-  const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Enter") submit();
+  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Enter inserts a newline; Cmd/Ctrl+Enter saves.
+    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      submit();
+    }
     if (e.key === "Escape") onCancel();
   };
 
   return (
-    <div className="task-add-form" onKeyDown={onKeyDown}>
-      <input
+    <div className="task-add-form">
+      <textarea
         ref={titleRef}
         className="rename-input"
         placeholder="Новая задача…"
+        rows={2}
         onKeyDown={onKeyDown}
       />
       <input

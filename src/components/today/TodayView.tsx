@@ -66,21 +66,132 @@ function todayLabel(): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
+// Русская плюрализация счётчика (задача / задачи / задач).
+function plural(n: number, one: string, few: string, many: string): string {
+  const m10 = n % 10;
+  const m100 = n % 100;
+  if (m10 === 1 && m100 !== 11) return one;
+  if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
+  return many;
+}
+
+// Короткая строка-состояние под датой: куда смотреть в первую очередь.
+function greetingLine(d: TodayData): string {
+  if (d.overdue.length) {
+    return `Просрочено ${d.overdue.length} ${plural(d.overdue.length, "задача", "задачи", "задач")} — начните с них.`;
+  }
+  if (d.soon.length) {
+    return `На ближайшую неделю — ${d.soon.length} ${plural(d.soon.length, "задача", "задачи", "задач")}.`;
+  }
+  if (d.schedules.length) {
+    return `Просроченных задач нет. Активных расписаний: ${d.schedules.length}.`;
+  }
+  return "Просроченных задач нет. На сегодня всё спокойно.";
+}
+
 const RefreshIcon = () => (
   <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
     <path d="M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6" />
   </svg>
 );
 
-function Card({ title, count, children }: { title: string; count?: number; children: ReactNode }) {
+const IconAlert = () => (
+  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 3.5 2.8 19.5h18.4L12 3.5z" />
+    <path d="M12 10v4M12 17h.01" />
+  </svg>
+);
+
+const IconCalendar = () => (
+  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="5" width="18" height="16" rx="2" />
+    <path d="M8 3v4M16 3v4M3 10h18" />
+  </svg>
+);
+
+const IconClock = () => (
+  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7.5V12l3 2" />
+  </svg>
+);
+
+const IconTarget = () => (
+  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="12" cy="12" r="9" />
+    <circle cx="12" cy="12" r="5" />
+    <circle cx="12" cy="12" r="1.4" />
+  </svg>
+);
+
+const IconNote = () => (
+  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z" />
+    <path d="M14 3v5h5M9 13h6M9 17h4" />
+  </svg>
+);
+
+const IconChat = () => (
+  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+  </svg>
+);
+
+interface CardProps {
+  icon: ReactNode;
+  title: string;
+  count?: number;
+  danger?: boolean;
+  action?: { label: string; onClick: () => void };
+  children: ReactNode;
+}
+
+function Card({ icon, title, count, danger, action, children }: CardProps) {
   return (
     <section className="today-card">
-      <div className="today-card-title">
-        {title}
-        {count != null && count > 0 && <span className="today-count">{count}</span>}
-      </div>
+      <header className="today-card-head">
+        <span className={`today-card-icon${danger ? " is-danger" : ""}`}>{icon}</span>
+        <h3 className="today-card-title">{title}</h3>
+        {count != null && (
+          <span className={`today-count${count === 0 ? " is-zero" : ""}`}>{count}</span>
+        )}
+        {action && (
+          <button className="today-card-all" type="button" onClick={action.onClick}>
+            {action.label}
+          </button>
+        )}
+      </header>
       <div className="today-list">{children}</div>
     </section>
+  );
+}
+
+function TaskRow({
+  twp,
+  overdue,
+  onOpen,
+}: {
+  twp: TaskWithProject;
+  overdue?: boolean;
+  onOpen: (projectId: number) => void;
+}) {
+  const { task, project } = twp;
+  return (
+    <div
+      className="today-row"
+      role="button"
+      tabIndex={0}
+      onClick={() => onOpen(project.id)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") onOpen(project.id);
+      }}
+    >
+      <span className="today-row-title">{task.title}</span>
+      <span className="today-row-meta">
+        <span className="today-row-proj">{project.name}</span>
+        <span className={`today-row-date${overdue ? " is-overdue" : ""}`}>{formatDue(task.dueDate!)}</span>
+      </span>
+    </div>
   );
 }
 
@@ -254,85 +365,91 @@ export default function TodayView({ onTab }: Props) {
     }
   };
 
+  const activeGoals = data ? data.objectives.filter((o) => o.status !== "done").length : 0;
+
   return (
     <main className="view active today-view">
       <div className="center">
-        <div className="center-head">
-          <h2>{todayLabel()}</h2>
+        <header className="today-header">
+          <div className="today-header-top">
+            <div className="today-title-block">
+              <h2 className="today-date">{todayLabel()}</h2>
+              <p className="today-greeting">{data ? greetingLine(data) : "Загрузка…"}</p>
+            </div>
+            <button
+              className="icon-btn small today-refresh"
+              type="button"
+              title="Обновить"
+              onClick={() => void reload()}
+            >
+              <RefreshIcon />
+            </button>
+          </div>
+
           {data && (
-            <span className="today-head-counts">
-              <span className={data.overdue.length ? "badge st-overdue" : "badge"}>
-                просрочено {data.overdue.length}
-              </span>
-              <span className="badge">на неделе {data.soon.length}</span>
-              <span className="badge">расписаний {data.schedules.length}</span>
-            </span>
+            <div className="today-summary">
+              <div className={`today-chip${data.overdue.length ? " is-danger" : ""}`}>
+                <span className="today-chip-label">Просрочено</span>
+                <span className="today-chip-value">{data.overdue.length}</span>
+              </div>
+              <div className="today-chip">
+                <span className="today-chip-label">На неделе</span>
+                <span className="today-chip-value">{data.soon.length}</span>
+              </div>
+              <div className="today-chip">
+                <span className="today-chip-label">Расписаний</span>
+                <span className="today-chip-value">{data.schedules.length}</span>
+              </div>
+              <div className="today-chip">
+                <span className="today-chip-label">Целей в работе</span>
+                <span className="today-chip-value">{activeGoals}</span>
+              </div>
+            </div>
           )}
-          <button className="icon-btn small" type="button" title="Обновить" onClick={() => void reload()}>
-            <RefreshIcon />
-          </button>
-        </div>
+        </header>
 
         <div className="center-body">
           {error && <div className="tree-error">{error}</div>}
           {!data && !error && <div className="empty-note">Загрузка…</div>}
           {data && (
             <div className="today-grid">
-              <Card title="Просрочено" count={data.overdue.length}>
+              <Card
+                icon={<IconAlert />}
+                title="Просрочено"
+                count={data.overdue.length}
+                danger={data.overdue.length > 0}
+              >
                 {data.overdue.length === 0 && (
-                  <div className="empty-note">Просроченных задач нет.</div>
+                  <div className="today-empty">Просроченных задач нет.</div>
                 )}
-                {data.overdue.map(({ task, project }) => (
-                  <div
-                    className="today-item"
-                    key={`o-${task.id}`}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => openTask(project.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") openTask(project.id);
-                    }}
-                  >
-                    <span className="t">{task.title}</span>
-                    <span className="m">
-                      <span className="proj">{project.name}</span>
-                      <span className="red">{formatDue(task.dueDate!)}</span>
-                    </span>
-                  </div>
+                {data.overdue.map((twp) => (
+                  <TaskRow key={`o-${twp.task.id}`} twp={twp} overdue onOpen={openTask} />
                 ))}
               </Card>
 
-              <Card title="Скоро (7 дней)" count={data.soon.length}>
+              <Card icon={<IconCalendar />} title="Скоро (7 дней)" count={data.soon.length}>
                 {data.soon.length === 0 && (
-                  <div className="empty-note">На ближайшую неделю задач нет.</div>
+                  <div className="today-empty">На ближайшую неделю задач нет.</div>
                 )}
-                {data.soon.map(({ task, project }) => (
-                  <div
-                    className="today-item"
-                    key={`s-${task.id}`}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => openTask(project.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") openTask(project.id);
-                    }}
-                  >
-                    <span className="t">{task.title}</span>
-                    <span className="m">
-                      <span className="proj">{project.name}</span>
-                      <span>{formatDue(task.dueDate!)}</span>
-                    </span>
-                  </div>
+                {data.soon.map((twp) => (
+                  <TaskRow key={`s-${twp.task.id}`} twp={twp} onOpen={openTask} />
                 ))}
               </Card>
 
-              <Card title="Расписания" count={data.schedules.length}>
+              <Card
+                icon={<IconClock />}
+                title="Расписания"
+                count={data.schedules.length}
+                action={{ label: "все", onClick: () => onTab("harness") }}
+              >
                 {data.schedules.length === 0 && (
-                  <div className="empty-note">Активных расписаний нет. Создайте их во вкладке «Харнес».</div>
+                  <div className="today-empty">
+                    Активных расписаний нет. Создайте их во вкладке «Харнес».
+                  </div>
                 )}
                 {data.schedules.map((s) => (
                   <div
-                    className="today-item"
+                    className="today-row"
                     key={`sc-${s.id}`}
                     role="button"
                     tabIndex={0}
@@ -342,20 +459,17 @@ export default function TodayView({ onTab }: Props) {
                       if (e.key === "Enter") void openSchedule(s);
                     }}
                   >
-                    <span className="t">{s.title ?? s.spec}</span>
-                    <span className="m">
-                      <span>
-                        {s.nextRunAt ? `след.: ${formatInstant(s.nextRunAt)}` : "без ближайшего запуска"}
+                    <span className="today-row-title">{s.title ?? s.spec}</span>
+                    <span className="today-row-meta">
+                      <span className="today-row-date">
+                        {s.nextRunAt ? `след.: ${formatInstant(s.nextRunAt)}` : "без запуска"}
                       </span>
                     </span>
                   </div>
                 ))}
               </Card>
 
-              <Card
-                title="Цели"
-                count={data.objectives.filter((o) => o.status !== "done").length}
-              >
+              <Card icon={<IconTarget />} title="Цели" count={activeGoals}>
                 <form
                   className="obj-add"
                   onSubmit={(e) => {
@@ -376,12 +490,12 @@ export default function TodayView({ onTab }: Props) {
                     placeholder="Шаги, по одному в строке (необязательно)"
                     rows={2}
                   />
-                  <button className="mini-btn" type="submit" disabled={!newTitle.trim()}>
+                  <button className="ghost-btn small" type="submit" disabled={!newTitle.trim()}>
                     Добавить
                   </button>
                 </form>
                 {data.objectives.length === 0 && (
-                  <div className="empty-note">Целей пока нет.</div>
+                  <div className="today-empty">Целей пока нет.</div>
                 )}
                 {data.objectives.map((o) => {
                   const pct = o.totalSteps ? Math.round((o.doneSteps / o.totalSteps) * 100) : 0;
@@ -462,11 +576,17 @@ export default function TodayView({ onTab }: Props) {
                 })}
               </Card>
 
-              <Card title="Свежие заметки">
-                {data.notes.length === 0 && <div className="empty-note">Заметок пока нет.</div>}
+              <Card
+                icon={<IconNote />}
+                title="Свежие заметки"
+                action={{ label: "все", onClick: () => onTab("notes") }}
+              >
+                {data.notes.length === 0 && (
+                  <div className="today-empty">Заметок пока нет.</div>
+                )}
                 {data.notes.map((n) => (
                   <div
-                    className="today-item"
+                    className="today-row"
                     key={`n-${n.relPath}`}
                     role="button"
                     tabIndex={0}
@@ -475,19 +595,25 @@ export default function TodayView({ onTab }: Props) {
                       if (e.key === "Enter") openNote(n.relPath);
                     }}
                   >
-                    <span className="t">{n.name}</span>
-                    <span className="m">
-                      <span>{formatModified(n.modified)}</span>
+                    <span className="today-row-title">{n.name}</span>
+                    <span className="today-row-meta">
+                      <span className="today-row-date">{formatModified(n.modified)}</span>
                     </span>
                   </div>
                 ))}
               </Card>
 
-              <Card title="Последние чаты">
-                {data.sessions.length === 0 && <div className="empty-note">Сессий пока нет.</div>}
+              <Card
+                icon={<IconChat />}
+                title="Последние чаты"
+                action={{ label: "все", onClick: () => onTab("harness") }}
+              >
+                {data.sessions.length === 0 && (
+                  <div className="today-empty">Сессий пока нет.</div>
+                )}
                 {data.sessions.map((s) => (
                   <div
-                    className="today-item"
+                    className="today-row"
                     key={`c-${s.id}`}
                     role="button"
                     tabIndex={0}
@@ -496,9 +622,9 @@ export default function TodayView({ onTab }: Props) {
                       if (e.key === "Enter") openSession(s.id);
                     }}
                   >
-                    <span className="t">{s.title ?? "Новая сессия"}</span>
-                    <span className="m">
-                      <span>{formatActivity(s.lastActiveAt)}</span>
+                    <span className="today-row-title">{s.title ?? "Новая сессия"}</span>
+                    <span className="today-row-meta">
+                      <span className="today-row-date">{formatActivity(s.lastActiveAt)}</span>
                     </span>
                   </div>
                 ))}

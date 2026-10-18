@@ -4,6 +4,7 @@ import { useApp } from "../../state/AppStore";
 import type { AgentEventPayload } from "../../api/types";
 import {
   chatReducer,
+  combineQueued,
   historyToItems,
   summarizeArgs,
   toMessage,
@@ -56,11 +57,32 @@ export default function NotesChat() {
     };
   }, []);
 
+  // When a run finishes (done/error/cancelled), flush the queued messages as
+  // one combined user turn; a short delay lets the finished run persist its
+  // final answer first, and a run that started meanwhile re-queues the text.
+  const flushQueue = (key: number) => {
+    const queued = stateRef.current[key]?.queue ?? [];
+    if (queued.length === 0) return;
+    dispatch({ type: "clearQueue", key });
+    const combined = combineQueued(queued);
+    setTimeout(() => {
+      if (stateRef.current[key]?.run) {
+        dispatch({ type: "enqueue", key, text: combined });
+        return;
+      }
+      dispatch({ type: "send", key, text: combined, attachments: [] });
+      void ipc
+        .sendNotesMessage(combined)
+        .catch((e) => dispatch({ type: "sendFailed", key, message: toMessage(e) }));
+    }, 400);
+  };
+
   useEffect(() => {
     let cancelled = false;
     let unEvent: (() => void) | undefined;
     let unConfirm: (() => void) | undefined;
     let unFile: (() => void) | undefined;
+    let unCompaction: (() => void) | undefined;
     const reloadHistory = (key: number) => {
       void ipc
         .notesChatHistory()
@@ -98,6 +120,7 @@ export default function NotesChat() {
           // Defensive: refresh the kanban after every run, whatever the
           // agent touched (its change events can race the run's done event).
           actions.notifyTasksChanged();
+          flushQueue(key);
           break;
         }
         case "error": {
@@ -105,6 +128,7 @@ export default function NotesChat() {
           dispatch({ type: "runError", key, message: p.event.message });
           if (!run || !run.local) reloadHistory(key);
           actions.notifyTasksChanged();
+          flushQueue(key);
           break;
         }
         case "confirmationRequested":
@@ -131,11 +155,20 @@ export default function NotesChat() {
         dispatch({ type: "agentFile", key: p.chatId, payload: p });
       })
       .then((u) => (cancelled ? u() : (unFile = u)));
+    // Context compaction: the notes chat is a per-working-dir singleton, so
+    // the event's chatId matches the locally known id.
+    void ipc
+      .onAgentCompaction((p) => {
+        if (p.chatId !== chatIdRef.current) return;
+        dispatch({ type: "compaction", key: p.chatId, summary: p.summary });
+      })
+      .then((u) => (cancelled ? u() : (unCompaction = u)));
     return () => {
       cancelled = true;
       unEvent?.();
       unConfirm?.();
       unFile?.();
+      unCompaction?.();
     };
   }, [actions]);
 
@@ -153,9 +186,9 @@ export default function NotesChat() {
     ta.style.height = Math.min(ta.scrollHeight, 10 * lh + 16) + "px";
   };
 
-  const send = () => {
+  const sendText = (value: string) => {
     if (chatId == null || running) return;
-    const trimmed = text.trim();
+    const trimmed = value.trim();
     if (!trimmed) return;
     setText("");
     grow();
@@ -163,6 +196,21 @@ export default function NotesChat() {
     void ipc
       .sendNotesMessage(trimmed)
       .catch((e) => dispatch({ type: "sendFailed", key: chatId, message: toMessage(e) }));
+  };
+
+  // While a run is live the composer stays enabled: sending queues the text
+  // (flushed as one combined turn when the run finishes).
+  const send = () => {
+    if (chatId == null) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    if (running) {
+      dispatch({ type: "enqueue", key: chatId, text: trimmed });
+      setText("");
+      grow();
+      return;
+    }
+    sendText(text);
   };
 
   const resolve = (decision: "allow" | "deny" | "allowAlways") => {
@@ -271,6 +319,11 @@ export default function NotesChat() {
         />
         <div className="chat-tools">
           <span className="chat-hint">Shift+Enter — перенос строки, Enter — отправить</span>
+          {(slice?.queue.length ?? 0) > 0 && (
+            <span className="queue-note" title="Уйдёт одним сообщением, когда агент закончит">
+              В очереди: {slice?.queue.length}
+            </span>
+          )}
           {running ? (
             <button className="ghost-btn small stop-btn" type="button" onClick={stop}>
               Стоп
@@ -291,8 +344,8 @@ export default function NotesChat() {
           <button
             className="icon-btn send-btn"
             type="button"
-            title="Отправить"
-            disabled={running || chatId == null || !text.trim()}
+            title={running ? "Отправить в очередь" : "Отправить"}
+            disabled={chatId == null || !text.trim()}
             onClick={send}
           >
             <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4 20-7z" /></svg>

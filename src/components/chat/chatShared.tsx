@@ -48,6 +48,14 @@ export interface Step {
   status: StepStatus;
 }
 
+// A context-compaction status item: the checkpoint summary arrives on the
+// "agent-context-compacted" event (never as a chat message) and renders as a
+// collapsed «Лимит контекста — делаю резюме» block inside the agent bubble.
+export interface Compaction {
+  key: number;
+  summary: string;
+}
+
 // A rendered attachment. Agent-sent files (send_file) additionally carry the
 // id of the message that owns them plus the 0-based index inside that message:
 // their savedPath is resolved by the chat's kind, so reads/opens go through
@@ -77,6 +85,8 @@ export interface ChatItem {
   // mapping for pin/regenerate skips these.
   synthetic?: boolean;
   steps: Step[];
+  // Context-compaction status items surfaced during this agent turn.
+  compactions: Compaction[];
   note: string | null;
   error: string | null;
 }
@@ -86,6 +96,8 @@ export interface Run {
   // Thinking trace streamed live for the running turn.
   reasoning: string;
   steps: Step[];
+  // Context-compaction status items streamed live for the running turn.
+  compactions: Compaction[];
   error: string | null;
   // True when this view started the run itself ("send"). A run that only
   // arrives as events (a fired schedule) is remote: it is finalized from
@@ -99,6 +111,9 @@ export interface Slice {
   run: Run | null;
   confirmations: ConfirmationRequestPayload[];
   sendError: string | null;
+  // Messages typed while a run is live: held per chat and flushed as one
+  // combined user turn when the run finishes (done/error/cancelled).
+  queue: string[];
 }
 
 export type ChatState = Record<number, Slice>;
@@ -116,6 +131,9 @@ export type ChatAction =
   | { type: "confirm"; key: number; payload: ConfirmationRequestPayload }
   | { type: "confirmResolved"; key: number; id: number }
   | { type: "agentFile"; key: number; payload: AgentFileEvent }
+  | { type: "compaction"; key: number; summary: string }
+  | { type: "enqueue"; key: number; text: string }
+  | { type: "clearQueue"; key: number }
   | { type: "pin"; key: number; itemKey: number; pinned: boolean }
   | { type: "regenerate"; key: number; itemKey: number };
 
@@ -127,6 +145,7 @@ const emptySlice: Slice = {
   run: null,
   confirmations: [],
   sendError: null,
+  queue: [],
 };
 
 function withSlice(state: ChatState, key: number, fn: (s: Slice) => Slice): ChatState {
@@ -158,11 +177,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             messageIds: [],
             pinned: false,
             steps: [],
+            compactions: [],
             note: null,
             error: null,
           },
         ],
-        run: { text: "", reasoning: "", steps: [], error: null, local: true },
+        run: { text: "", reasoning: "", steps: [], compactions: [], error: null, local: true },
       }));
     case "sendFailed":
       return withSlice(state, action.key, (s) => ({ ...s, run: null, sendError: action.message }));
@@ -171,7 +191,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // The first event of a run this view did not start (a fired schedule)
       // opens the run slice so the session streams live either way.
       return withSlice(state, action.key, (s) => {
-        const open: Run = { text: "", reasoning: "", steps: [], error: null, local: false };
+        const open: Run = { text: "", reasoning: "", steps: [], compactions: [], error: null, local: false };
         if (!s.run) {
           return {
             ...s,
@@ -195,7 +215,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         };
         return s.run
           ? { ...s, run: { ...s.run, steps: [...s.run.steps, step] } }
-          : { ...s, run: { text: "", reasoning: "", steps: [step], error: null, local: false } };
+          : {
+              ...s,
+              run: { text: "", reasoning: "", steps: [step], compactions: [], error: null, local: false },
+            };
       });
     case "stepFinish":
       // Tool calls run sequentially, so the oldest open step is the match.
@@ -221,6 +244,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           messageIds: [],
           pinned: false,
           steps: s.run.steps,
+          compactions: s.run.compactions,
           note: null,
           error: action.message,
         };
@@ -253,6 +277,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           messageIds: [],
           pinned: false,
           steps: s.run.steps,
+          compactions: s.run.compactions,
           note,
           error: s.run.error,
         };
@@ -301,6 +326,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
                   pinned: false,
                   synthetic: true,
                   steps: [],
+                  compactions: [],
                   note: null,
                   error: null,
                 },
@@ -308,6 +334,24 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             },
       );
     }
+    case "compaction":
+      // A new checkpoint summary written by this run's build_context: a
+      // collapsed status item inside the agent bubble, never a message.
+      return withSlice(state, action.key, (s) => {
+        const c: Compaction = { key: nextKey++, summary: action.summary };
+        return s.run
+          ? { ...s, run: { ...s.run, compactions: [...s.run.compactions, c] } }
+          : {
+              ...s,
+              run: { text: "", reasoning: "", steps: [], compactions: [c], error: null, local: false },
+            };
+      });
+    case "enqueue":
+      // Typed while a run is live: held in the per-chat queue, flushed as one
+      // combined user turn when the run finishes.
+      return withSlice(state, action.key, (s) => ({ ...s, queue: [...s.queue, action.text] }));
+    case "clearQueue":
+      return withSlice(state, action.key, (s) => ({ ...s, queue: [] }));
     case "pin":
       return withSlice(state, action.key, (s) => ({
         ...s,
@@ -332,7 +376,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         return {
           ...s,
           items: s.items.slice(0, userIdx + 1),
-          run: { text: "", reasoning: "", steps: [], error: null, local: true },
+          run: { text: "", reasoning: "", steps: [], compactions: [], error: null, local: true },
         };
       });
   }
@@ -404,6 +448,7 @@ export function historyToItems(dtos: MessageDto[]): ChatItem[] {
         messageIds: [m.id],
         pinned: m.pinned,
         steps: [],
+        compactions: [],
         note: null,
         error: null,
       });
@@ -418,6 +463,7 @@ export function historyToItems(dtos: MessageDto[]): ChatItem[] {
           messageIds: [],
           pinned: false,
           steps: [],
+          compactions: [],
           note: null,
           error: null,
         };
@@ -651,6 +697,26 @@ export function ReasoningBlock({ text }: { text: string }) {
       </div>
     </details>
   );
+}
+
+// Context-compaction status item: a collapsed «Лимит контекста — делаю
+// резюме» line; expanding it reveals the checkpoint summary. Collapsed by
+// default, it never dumps the summary inline.
+export function CompactionNote({ compaction }: { compaction: Compaction }) {
+  return (
+    <details className="compaction">
+      <summary>Лимит контекста — делаю резюме</summary>
+      <div className="compaction-body">
+        <MarkdownMessage text={compaction.summary} />
+      </div>
+    </details>
+  );
+}
+
+// Joins the queued messages into one user turn: a single message stays
+// verbatim, several are separated by a blank-line "---" divider.
+export function combineQueued(queued: string[]): string {
+  return queued.length === 1 ? queued[0] : queued.join("\n\n---\n\n");
 }
 
 export const AttachFileIcon = () => (
@@ -960,6 +1026,9 @@ export function ChatTranscript({
                   chatId={chatId}
                 />
                 <StepsList steps={item.steps} />
+                {item.compactions.map((c) => (
+                  <CompactionNote key={c.key} compaction={c} />
+                ))}
                 {item.note && <span className="note">{item.note}</span>}
                 {item.error && (
                   <div className="error">
@@ -977,9 +1046,13 @@ export function ChatTranscript({
               <ReasoningBlock text={slice.run.reasoning} />
               {slice.run.text && <MarkdownMessage text={slice.run.text} />}
               <StepsList steps={slice.run.steps} />
+              {slice.run.compactions.map((c) => (
+                <CompactionNote key={c.key} compaction={c} />
+              ))}
               {!slice.run.text &&
                 !slice.run.reasoning &&
-                slice.run.steps.length === 0 && (
+                slice.run.steps.length === 0 &&
+                slice.run.compactions.length === 0 && (
                   <span className="note">агент думает…</span>
                 )}
             </div>

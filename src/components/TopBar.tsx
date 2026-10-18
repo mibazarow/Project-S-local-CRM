@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type MouseEvent } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import logo from "../assets/logo.svg";
 import * as ipc from "../api/ipc";
 import type { ReindexStatus } from "../api/types";
@@ -113,10 +114,22 @@ export default function TopBar({ tab, onTab, onSettings, onSearch }: Props) {
   const title =
     running && reindex?.phase ? `Переиндексация поиска: ${reindex.phase}` : "Переиндексация поиска";
 
+  // Explicit window drag: WKWebView does not reliably honor
+  // data-tauri-drag-region / -webkit-app-region, so start the native drag
+  // ourselves on a plain left-click over the bar. Interactive controls and
+  // the tab strip keep their own behavior.
+  const onDragMouseDown = (e: MouseEvent) => {
+    if (e.button !== 0) return;
+    const el = e.target as HTMLElement;
+    if (el.closest("button, input, select, textarea, a, .tabs, .icon-btn")) return;
+    e.preventDefault();
+    getCurrentWindow().startDragging().catch(() => {});
+  };
+
   return (
-    <header className="topbar" data-tauri-drag-region>
-      <div className="topbar-left" data-tauri-drag-region>
-        <img className="app-logo" src={logo} alt="" data-tauri-drag-region />
+    <header className="topbar" data-tauri-drag-region onMouseDown={onDragMouseDown}>
+      <div className="topbar-left" data-tauri-drag-region onMouseDown={onDragMouseDown}>
+        <img className="app-logo" src={logo} alt="" data-tauri-drag-region onMouseDown={onDragMouseDown} />
       </div>
       <nav className="tabs">
         <button
@@ -144,7 +157,7 @@ export default function TopBar({ tab, onTab, onSettings, onSearch }: Props) {
           Блокнот
         </button>
       </nav>
-      <div className="topbar-right" data-tauri-drag-region>
+      <div className="topbar-right" data-tauri-drag-region onMouseDown={onDragMouseDown}>
         <button className="icon-btn" title="Поиск (⌘K)" onClick={onSearch}>
           <IconSearch />
         </button>
