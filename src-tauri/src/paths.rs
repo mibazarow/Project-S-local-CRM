@@ -31,6 +31,8 @@ pub const CONFIG_APP: &str = "app.json";
 pub const CONFIG_INDEXING: &str = "indexing.json";
 pub const CONFIG_MCP: &str = "mcp.json";
 pub const CONFIG_SSH: &str = "ssh.json";
+// Per-extension "open with" app choices, written by remember_open_with.
+pub const CONFIG_OPEN_WITH: &str = "openWith.json";
 
 pub const SKILLS_BUILTIN: &str = "builtin";
 pub const SKILLS_USER: &str = "user";

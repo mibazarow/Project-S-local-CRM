@@ -18,6 +18,7 @@ mod mcp;
 mod memory;
 mod notes;
 mod onboarding;
+mod open_with;
 mod ops;
 mod paths;
 mod processes;
@@ -513,6 +514,37 @@ fn fs_open_external(
     let wd = state.working_dir()?;
     with_db(&state, |conn| {
         fs_ops::open_external(&app, conn, &wd, project_id, &rel_path)
+    })
+}
+
+// "Open with" chooser: non-stock macOS apps for an extension, the remembered
+// per-extension choice, and opening a file with a chosen app via `open -a`.
+#[tauri::command]
+fn list_open_with_apps(ext: String) -> Vec<open_with::AppInfo> {
+    open_with::list_apps(&ext, &open_with::default_scan_dirs())
+}
+
+#[tauri::command]
+fn get_open_with(state: State<AppState>, ext: String) -> Result<Option<open_with::AppInfo>> {
+    open_with::get_remembered(&state.working_dir()?, &ext)
+}
+
+#[tauri::command]
+fn remember_open_with(state: State<AppState>, ext: String, app_path: String) -> Result<()> {
+    open_with::remember(&state.working_dir()?, &ext, &app_path)
+}
+
+#[tauri::command]
+fn open_with(
+    state: State<AppState>,
+    scope: String,
+    project_id: Option<i64>,
+    path: String,
+    app_path: Option<String>,
+) -> Result<open_with::OpenResult> {
+    let wd = state.working_dir()?;
+    with_db(&state, |conn| {
+        open_with::open_with(conn, &wd, &scope, project_id, &path, app_path.as_deref())
     })
 }
 
@@ -1417,6 +1449,10 @@ pub fn run() {
             fs_move,
             fs_import,
             fs_open_external,
+            list_open_with_apps,
+            get_open_with,
+            remember_open_with,
+            open_with,
             fs_read_binary_data_url,
             notes_ensure,
             notes_tree,

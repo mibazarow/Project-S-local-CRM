@@ -4,6 +4,7 @@ import DOMPurify from "dompurify";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { toMessage } from "./fileOps";
+import { useOpenWith } from "./useOpenWith";
 import { IconClose } from "./icons";
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
@@ -17,6 +18,7 @@ interface Props {
 
 export default function FilePreview({ projectId, entry, onClose, onDirtyChange }: Props) {
   const isTextual = entry.isMarkdown || entry.isText;
+  const ow = useOpenWith(projectId);
   const [mode, setMode] = useState<"view" | "edit">("view");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -84,14 +86,7 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
     }
   };
 
-  const openExternal = async () => {
-    try {
-      await ipc.fsOpenExternal(projectId, entry.relPath);
-      setError(null);
-    } catch (e) {
-      setError(toMessage(e));
-    }
-  };
+  const shownError = error ?? ow.error;
 
   return (
     <div className="file-preview">
@@ -107,9 +102,14 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
             </button>
           )}
           {!isTextual && !entry.isImage && (
-            <button className="ghost-btn small" onClick={() => void openExternal()}>
-              Открыть вовне
-            </button>
+            <>
+              <button className="ghost-btn small" onClick={() => void ow.openDocument(entry)}>
+                Открыть вовне
+              </button>
+              <button className="ghost-btn small" onClick={() => void ow.showChooser(entry)}>
+                Открыть с помощью…
+              </button>
+            </>
           )}
           <button className="icon-btn small" title="Закрыть" onClick={onClose}>
             <IconClose />
@@ -118,8 +118,8 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
       </div>
       {loading ? (
         <div className="preview-body">Загрузка…</div>
-      ) : error ? (
-        <div className="preview-body preview-error">{error}</div>
+      ) : shownError ? (
+        <div className="preview-body preview-error">{shownError}</div>
       ) : entry.isImage ? (
         <div className="preview-body preview-image">
           {dataUrl && <img src={dataUrl} alt={entry.name} />}
@@ -136,6 +136,7 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
       ) : (
         <pre className="preview-body">{text}</pre>
       )}
+      {ow.dialog}
     </div>
   );
 }

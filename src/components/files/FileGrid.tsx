@@ -2,6 +2,7 @@ import { useEffect, useState, type DragEvent } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { toMessage, useFileOps } from "./fileOps";
+import { isDocument, useOpenWith } from "./useOpenWith";
 import RenameInput from "./RenameInput";
 import { useOsFileDrag } from "./useOsFileDrag";
 import {
@@ -11,6 +12,7 @@ import {
   IconFilePlus,
   IconFolder,
   IconFolderPlus,
+  IconOpenWith,
   IconPencil,
   IconTrash,
 } from "./icons";
@@ -42,6 +44,7 @@ export default function FileGrid({
   const [dragRel, setDragRel] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const ops = useFileOps(projectId);
+  const ow = useOpenWith(projectId);
   const osHover = useOsFileDrag(
     () => currentDir,
     (dest, paths) => void ops.importFiles(dest, paths),
@@ -164,6 +167,7 @@ export default function FileGrid({
         </button>
       </div>
       {ops.error && <div className="tree-error">{ops.error}</div>}
+      {ow.error && <div className="tree-error">{ow.error}</div>}
       {error ? (
         <div className="empty-note">{error}</div>
       ) : entries.length === 0 && !creating ? (
@@ -223,6 +227,18 @@ export default function FileGrid({
               onDoubleClick={() => handleDoubleClick(entry)}
             >
               <span className="tile-actions" onDoubleClick={(e) => e.stopPropagation()}>
+                {isDocument(entry) && (
+                  <button
+                    className="mini-btn"
+                    title="Открыть с помощью…"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      void ow.showChooser(entry);
+                    }}
+                  >
+                    <IconOpenWith />
+                  </button>
+                )}
                 <button
                   className="mini-btn"
                   title="Переименовать"
@@ -285,6 +301,7 @@ export default function FileGrid({
           )}
         </div>
       )}
+      {ow.dialog}
     </>
   );
 }

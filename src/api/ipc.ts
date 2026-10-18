@@ -22,6 +22,8 @@ import type {
   ModelInfo,
   NotesChanged,
   OnboardingStatus,
+  OpenWithApp,
+  OpenWithResult,
   ConfirmationRequestPayload,
   ProjectDto,
   ProjectIndexStats,
@@ -133,6 +135,29 @@ export const fsImport = (projectId: number, destRel: string, sourcePaths: string
 
 export const fsOpenExternal = (projectId: number, relPath: string) =>
   invoke<void>("fs_open_external", { projectId, relPath });
+
+// "Open with" chooser: non-stock apps for an extension, the remembered
+// per-extension choice, and opening a file with a chosen app.
+export const listOpenWithApps = (ext: string) =>
+  invoke<OpenWithApp[]>("list_open_with_apps", { ext });
+
+export const getOpenWith = (ext: string) => invoke<OpenWithApp | null>("get_open_with", { ext });
+
+export const rememberOpenWith = (ext: string, appPath: string) =>
+  invoke<void>("remember_open_with", { ext, appPath });
+
+export const openWith = (
+  scope: "project" | "notes" | "harness",
+  path: string,
+  projectId?: number,
+  appPath?: string,
+) =>
+  invoke<OpenWithResult>("open_with", {
+    scope,
+    projectId: projectId ?? null,
+    path,
+    appPath: appPath ?? null,
+  });
 
 export const searchProject = (projectId: number, query: string, limit?: number) =>
   invoke<SearchHit[]>("search_project", { projectId, query, limit });

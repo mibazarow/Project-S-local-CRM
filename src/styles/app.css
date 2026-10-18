@@ -1294,6 +1294,44 @@ body.dnd-active .project-item, body.dnd-active .task-card { cursor: grabbing; }
 .notes-editor-body .preview-body { flex: 1; overflow: auto; }
 .notes-editor-body .preview-textarea { flex: 1; min-height: 0; resize: none; }
 
+/* ---------- «Открыть с помощью…» ---------- */
+
+.open-with-modal { width: 420px; }
+.open-with-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.open-with-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.open-with-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+.open-with-item:hover:not(:disabled) { background: var(--surface-2); }
+.open-with-item:disabled { opacity: .6; }
+.ow-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ow-badge {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--accent);
+  background: rgba(55, 106, 159, .12);
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+.ow-remember { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-muted); }
+.open-with-actions { display: flex; justify-content: flex-end; }
+.open-with-empty { font-size: 12.5px; color: var(--text-muted); }
+
 /* ---------- Командная палитра (⌘K) ---------- */
 
 .palette-backdrop {

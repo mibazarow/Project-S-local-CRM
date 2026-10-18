@@ -34,6 +34,18 @@ export interface FsEntry {
   isImage: boolean;
 }
 
+// "Open with" chooser: a non-stock macOS app offered for a file extension.
+export interface OpenWithApp {
+  name: string;
+  path: string;
+  recommended: boolean;
+}
+
+export interface OpenWithResult {
+  opened: boolean;
+  app?: string | null;
+}
+
 export interface TaskDto {
   id: number;
   projectId: number;

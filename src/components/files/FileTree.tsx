@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type DragEvent } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { toMessage, useFileOps } from "./fileOps";
+import { isDocument, useOpenWith } from "./useOpenWith";
 import FileRow from "./FileRow";
 import RenameInput from "./RenameInput";
 import { useOsFileDrag } from "./useOsFileDrag";
@@ -34,6 +35,7 @@ export default function FileTree({
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const openRef = useRef<Set<string>>(new Set());
   const ops = useFileOps(projectId);
+  const ow = useOpenWith(projectId);
   const osHover = useOsFileDrag(
     () => selectedDirRel,
     (dest, paths) => void ops.importFiles(dest, paths),
@@ -228,7 +230,10 @@ export default function FileTree({
           onDragEnd={endDrag}
           onDirDragOver={handleDirDragOver}
           onDirDrop={handleDirDrop}
-          onOpenExternal={(e) => void ops.openExternal(e.relPath)}
+          onOpenExternal={(e) =>
+            void (isDocument(e) ? ow.openDocument(e) : ops.openExternal(e.relPath))
+          }
+          onOpenWith={isDocument(entry) ? (e) => void ow.showChooser(e) : undefined}
         />
         {entry.kind === "dir" && open && (
           <ul className="tree-children nested">
@@ -288,7 +293,9 @@ export default function FileTree({
         </button>
       </div>
       {ops.error && <div className="tree-error">{ops.error}</div>}
+      {ow.error && <div className="tree-error">{ow.error}</div>}
       {body}
+      {ow.dialog}
     </>
   );
 }

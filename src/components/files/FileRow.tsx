@@ -1,7 +1,7 @@
 import type { DragEvent } from "react";
 import type { FsEntry } from "../../api/types";
 import RenameInput from "./RenameInput";
-import { EntryIcon, IconChevron, IconCopy, IconPencil, IconTrash } from "./icons";
+import { EntryIcon, IconChevron, IconCopy, IconOpenWith, IconPencil, IconTrash } from "./icons";
 
 interface Props {
   entry: FsEntry;
@@ -22,6 +22,7 @@ interface Props {
   onDirDragOver: (dirRel: string, e: DragEvent<HTMLDivElement>) => void;
   onDirDrop: (dirRel: string, e: DragEvent<HTMLDivElement>) => void;
   onOpenExternal?: (entry: FsEntry) => void;
+  onOpenWith?: (entry: FsEntry) => void;
 }
 
 export default function FileRow({
@@ -43,6 +44,7 @@ export default function FileRow({
   onDirDragOver,
   onDirDrop,
   onOpenExternal,
+  onOpenWith,
 }: Props) {
   const isDir = entry.kind === "dir";
   const classes = [
@@ -111,6 +113,18 @@ export default function FileRow({
         <span className={isDir ? "label folder-label" : "label"}>{entry.name}</span>
       )}
       <span className="row-actions">
+        {onOpenWith && (
+          <button
+            className="mini-btn"
+            title="Открыть с помощью…"
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenWith(entry);
+            }}
+          >
+            <IconOpenWith />
+          </button>
+        )}
         <button
           className="mini-btn"
           title="Переименовать"
