@@ -103,7 +103,7 @@ print(out.joined(separator: "\n"))
 // Toolchain discovery: an explicit $PROJECT_S_SWIFT override (also how tests
 // simulate a missing toolchain), then `which swift`, then `xcrun --find swift`
 // (the latter covers CLT-only installs where swift is not on PATH).
-fn find_swift() -> Option<PathBuf> {
+pub(crate) fn find_swift() -> Option<PathBuf> {
     if let Some(raw) = std::env::var_os("PROJECT_S_SWIFT") {
         let path = PathBuf::from(raw);
         return path.is_file().then_some(path);

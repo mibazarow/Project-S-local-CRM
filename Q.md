@@ -29,7 +29,6 @@
 - [?] Живая проверка на тестовом сервере — нужен доступ (не присылать креды в чат).
 
 ## Инструменты (остаток аудита)
-- [TODO] `pdf_merge` / `pdf_split` / `pdf_fill_form`.
 - [TODO] `undo_last` / `undo_list` + корзина для удалений.
 - [TODO] `compact_context` (агентский вызов сжатия).
 - [TODO] `image_transform` (resize/crop/rotate/format) — срез был прерван, довести.

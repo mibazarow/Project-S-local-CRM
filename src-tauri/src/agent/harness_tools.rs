@@ -86,6 +86,11 @@ pub fn harness_catalog() -> Catalog {
         // OCR of images and PDFs via the macOS Vision framework through an
         // embedded Swift helper; see ocr_tools.rs for the safety rules.
         Arc::new(super::ocr_tools::OcrTool),
+        // PDF merge/split/fill-form via Apple PDFKit through an embedded Swift
+        // helper; see pdf_tools.rs for the safety rules.
+        Arc::new(super::pdf_tools::PdfMergeTool),
+        Arc::new(super::pdf_tools::PdfSplitTool),
+        Arc::new(super::pdf_tools::PdfFillFormTool),
         // Image resize/crop/rotate/convert via the macOS sips CLI; in-place
         // calls confirm, new files in the territory skip; see image_tools.rs.
         Arc::new(super::image_tools::ImageTransformTool),
@@ -1981,7 +1986,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const DEFERRED_NAMES: [&str; 51] = [
+    const DEFERRED_NAMES: [&str; 54] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -1994,6 +1999,9 @@ mod tests {
         "create_document",
         "create_spreadsheet",
         "ocr",
+        "pdf_merge",
+        "pdf_split",
+        "pdf_fill_form",
         "image_transform",
         "screenshot",
         "create_skill",
