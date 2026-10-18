@@ -570,277 +570,354 @@ const MIGRATION_31_TASK_IS_PRIORITY_BACKFILL: &str =
     "UPDATE tasks SET is_priority = 1 WHERE priority IN ('high','urgent')";
 const MIGRATION_31_PROJECT_TASK_COLUMNS: &str = "ALTER TABLE projects ADD COLUMN task_columns TEXT NOT NULL DEFAULT '[\"Новые\",\"В работе\",\"Готово\"]'";
 
+fn migrate_v1(conn: &Connection) -> Result<()> {
+    conn.execute_batch(MIGRATION_1)?;
+    Ok(())
+}
+
+fn migrate_v2(conn: &Connection) -> Result<()> {
+    conn.execute_batch(MIGRATION_2)?;
+    Ok(())
+}
+
+fn migrate_v3(conn: &Connection) -> Result<()> {
+    conn.execute_batch(&migration_3())?;
+    Ok(())
+}
+
+fn migrate_v4(conn: &Connection) -> Result<()> {
+    conn.execute_batch(MIGRATION_4)?;
+    Ok(())
+}
+
+fn migrate_v5(conn: &Connection) -> Result<()> {
+    conn.execute_batch(MIGRATION_5)?;
+    Ok(())
+}
+
+fn migrate_v6(conn: &Connection) -> Result<()> {
+    conn.execute_batch(MIGRATION_6)?;
+    Ok(())
+}
+
+fn migrate_v7(conn: &Connection) -> Result<()> {
+    conn.execute_batch(MIGRATION_7)?;
+    Ok(())
+}
+
+fn migrate_v8(conn: &Connection) -> Result<()> {
+    conn.execute_batch(MIGRATION_8)?;
+    Ok(())
+}
+
+fn migrate_v9(conn: &Connection) -> Result<()> {
+    conn.execute_batch(MIGRATION_9)?;
+    Ok(())
+}
+
+fn migrate_v10(conn: &Connection) -> Result<()> {
+    conn.execute_batch(MIGRATION_10)?;
+    Ok(())
+}
+
+fn migrate_v11(conn: &Connection) -> Result<()> {
+    conn.execute_batch(&migration_11())?;
+    Ok(())
+}
+
+fn migrate_v12(conn: &Connection) -> Result<()> {
+    conn.execute_batch(MIGRATION_12)?;
+    Ok(())
+}
+
+fn migrate_v13(conn: &Connection) -> Result<()> {
+    conn.execute_batch(&migration_13())?;
+    Ok(())
+}
+
+fn migrate_v14(conn: &Connection) -> Result<()> {
+    // Guarded so a re-run after an interrupted v14 (or a test that rolls
+    // user_version back on an already-migrated db) does not re-ALTER.
+    let has_position: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('projects') WHERE name = 'position'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_position == 0 {
+        conn.execute_batch(MIGRATION_14)?;
+    }
+    Ok(())
+}
+
+fn migrate_v15(conn: &Connection) -> Result<()> {
+    conn.execute_batch(MIGRATION_15)?;
+    Ok(())
+}
+
+fn migrate_v16(conn: &Connection) -> Result<()> {
+    conn.execute_batch(MIGRATION_16)?;
+    Ok(())
+}
+
+fn migrate_v17(conn: &Connection) -> Result<()> {
+    // db::open enables foreign_keys before migrations run, and chats is
+    // the parent of messages/summaries: the rebuild's DROP TABLE would
+    // cascade-delete every transcript. Standard SQLite recipe: FK
+    // enforcement off for the rebuild, previous setting restored after.
+    let fk_on: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
+    conn.pragma_update(None, "foreign_keys", "OFF")?;
+    conn.execute_batch(MIGRATION_17)?;
+    conn.pragma_update(None, "foreign_keys", if fk_on { "ON" } else { "OFF" })?;
+    Ok(())
+}
+
+fn migrate_v18(conn: &Connection) -> Result<()> {
+    // Cached project brief (SPEC project context slice): a short Russian
+    // summary generated from the project's files/tasks and injected into
+    // the project system prompt; brief_updated_at drives staleness
+    // (auto-refresh on project open / file changes when older than ~24 h).
+    // Guarded per column (same recipe as v14) so a re-run after an
+    // interrupted v18 does not re-ALTER.
+    let has_brief: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('projects') WHERE name = 'brief'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_brief == 0 {
+        conn.execute("ALTER TABLE projects ADD COLUMN brief TEXT", [])?;
+    }
+    let has_brief_updated_at: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('projects') WHERE name = 'brief_updated_at'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_brief_updated_at == 0 {
+        conn.execute("ALTER TABLE projects ADD COLUMN brief_updated_at TEXT", [])?;
+    }
+    Ok(())
+}
+
+fn migrate_v19(conn: &Connection) -> Result<()> {
+    conn.execute_batch(&migration_19())?;
+    Ok(())
+}
+
+fn migrate_v20(conn: &Connection) -> Result<()> {
+    conn.execute_batch(&migration_20())?;
+    Ok(())
+}
+
+fn migrate_v21(conn: &Connection) -> Result<()> {
+    conn.execute_batch(MIGRATION_21)?;
+    Ok(())
+}
+
+fn migrate_v22(conn: &Connection) -> Result<()> {
+    let has_reasoning: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('messages') WHERE name = 'reasoning'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_reasoning == 0 {
+        conn.execute_batch(MIGRATION_22)?;
+    }
+    Ok(())
+}
+
+fn migrate_v23(conn: &Connection) -> Result<()> {
+    let has_title: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('schedules') WHERE name = 'title'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_title == 0 {
+        conn.execute_batch(MIGRATION_23)?;
+    }
+    let rows: Vec<(i64, Option<String>, String)> = {
+        let mut stmt = conn.prepare("SELECT id, prompt, spec FROM schedules WHERE title IS NULL")?;
+        let mapped = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        mapped.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for (id, prompt, spec) in rows {
+        let title = crate::scheduler::derive_title(prompt.as_deref(), &spec, 80);
+        conn.execute(
+            "UPDATE schedules SET title = ?1 WHERE id = ?2",
+            params![title, id],
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_v24(conn: &Connection) -> Result<()> {
+    // Guarded per table (v14 recipe) so a re-run after an interrupted
+    // v24 does not re-create; CREATE IF NOT EXISTS is idempotent anyway.
+    let has_trash: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'trash'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_trash == 0 {
+        conn.execute_batch(MIGRATION_24)?;
+    }
+    Ok(())
+}
+
+fn migrate_v25(conn: &Connection) -> Result<()> {
+    // Guarded per column (v14 recipe) so a re-run after an interrupted
+    // v25 does not re-ALTER.
+    for (column, ddl) in [
+        ("priority", MIGRATION_25_PRIORITY),
+        ("checklist", MIGRATION_25_CHECKLIST),
+        ("recurrence", MIGRATION_25_RECURRENCE),
+    ] {
+        let has: i64 = conn.query_row(
+            "SELECT count(*) FROM pragma_table_info('tasks') WHERE name = ?1",
+            params![column],
+            |r| r.get(0),
+        )?;
+        if has == 0 {
+            conn.execute(ddl, [])?;
+        }
+    }
+    Ok(())
+}
+
+fn migrate_v26(conn: &Connection) -> Result<()> {
+    let has_pinned: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('messages') WHERE name = 'pinned'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_pinned == 0 {
+        conn.execute(MIGRATION_26_PINNED, [])?;
+    }
+    Ok(())
+}
+
+fn migrate_v27(conn: &Connection) -> Result<()> {
+    let has_retry_count: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('schedules') WHERE name = 'retry_count'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_retry_count == 0 {
+        conn.execute(MIGRATION_27_RETRY_COUNT, [])?;
+    }
+    Ok(())
+}
+
+fn migrate_v28(conn: &Connection) -> Result<()> {
+    let has_undo_log: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'undo_log'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_undo_log == 0 {
+        conn.execute_batch(MIGRATION_28_UNDO_LOG)?;
+    }
+    Ok(())
+}
+
+fn migrate_v29(conn: &Connection) -> Result<()> {
+    // Guarded per table (v24/v28 recipe) so a re-run after an interrupted
+    // v29 does not re-create; CREATE IF NOT EXISTS is idempotent anyway.
+    let has_objectives: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'objectives'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_objectives == 0 {
+        conn.execute_batch(MIGRATION_29_OBJECTIVES)?;
+    }
+    Ok(())
+}
+
+fn migrate_v30(conn: &Connection) -> Result<()> {
+    // Guarded per table (v24/v28 recipe) so a re-run after an interrupted
+    // v30 does not re-create; CREATE IF NOT EXISTS is idempotent anyway.
+    let has_links: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'links'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_links == 0 {
+        conn.execute_batch(MIGRATION_30_LINKS)?;
+    }
+    Ok(())
+}
+
+fn migrate_v31(conn: &Connection) -> Result<()> {
+    // Guarded per column (v14 recipe) so a re-run after an interrupted
+    // v31 does not re-ALTER.
+    let has_is_priority: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'is_priority'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_is_priority == 0 {
+        conn.execute(MIGRATION_31_TASK_IS_PRIORITY, [])?;
+    }
+    conn.execute(MIGRATION_31_TASK_IS_PRIORITY_BACKFILL, [])?;
+    let has_task_columns: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('projects') WHERE name = 'task_columns'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_task_columns == 0 {
+        conn.execute(MIGRATION_31_PROJECT_TASK_COLUMNS, [])?;
+    }
+    Ok(())
+}
+
+// Ordered (user_version target, migration body) table: each body runs when
+// the stored user_version is below its target, then the runner bumps
+// user_version to the target, exactly like the previous hand-rolled
+// if-chain. The last target is SCHEMA_VERSION, so the table and the
+// constant cannot drift apart.
+type Migration = fn(&Connection) -> Result<()>;
+
+const MIGRATIONS: &[(u32, Migration)] = &[
+    (1, migrate_v1),
+    (2, migrate_v2),
+    (3, migrate_v3),
+    (4, migrate_v4),
+    (5, migrate_v5),
+    (6, migrate_v6),
+    (7, migrate_v7),
+    (8, migrate_v8),
+    (9, migrate_v9),
+    (10, migrate_v10),
+    (11, migrate_v11),
+    (12, migrate_v12),
+    (13, migrate_v13),
+    (14, migrate_v14),
+    (15, migrate_v15),
+    (16, migrate_v16),
+    (17, migrate_v17),
+    (18, migrate_v18),
+    (19, migrate_v19),
+    (20, migrate_v20),
+    (21, migrate_v21),
+    (22, migrate_v22),
+    (23, migrate_v23),
+    (24, migrate_v24),
+    (25, migrate_v25),
+    (26, migrate_v26),
+    (27, migrate_v27),
+    (28, migrate_v28),
+    (29, migrate_v29),
+    (30, migrate_v30),
+    (SCHEMA_VERSION as u32, migrate_v31),
+];
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    if version < 1 {
-        conn.execute_batch(MIGRATION_1)?;
-        conn.pragma_update(None, "user_version", 1)?;
-    }
-    if version < 2 {
-        conn.execute_batch(MIGRATION_2)?;
-        conn.pragma_update(None, "user_version", 2)?;
-    }
-    if version < 3 {
-        conn.execute_batch(&migration_3())?;
-        conn.pragma_update(None, "user_version", 3)?;
-    }
-    if version < 4 {
-        conn.execute_batch(MIGRATION_4)?;
-        conn.pragma_update(None, "user_version", 4)?;
-    }
-    if version < 5 {
-        conn.execute_batch(MIGRATION_5)?;
-        conn.pragma_update(None, "user_version", 5)?;
-    }
-    if version < 6 {
-        conn.execute_batch(MIGRATION_6)?;
-        conn.pragma_update(None, "user_version", 6)?;
-    }
-    if version < 7 {
-        conn.execute_batch(MIGRATION_7)?;
-        conn.pragma_update(None, "user_version", 7)?;
-    }
-    if version < 8 {
-        conn.execute_batch(MIGRATION_8)?;
-        conn.pragma_update(None, "user_version", 8)?;
-    }
-    if version < 9 {
-        conn.execute_batch(MIGRATION_9)?;
-        conn.pragma_update(None, "user_version", 9)?;
-    }
-    if version < 10 {
-        conn.execute_batch(MIGRATION_10)?;
-        conn.pragma_update(None, "user_version", 10)?;
-    }
-    if version < 11 {
-        conn.execute_batch(&migration_11())?;
-        conn.pragma_update(None, "user_version", 11)?;
-    }
-    if version < 12 {
-        conn.execute_batch(MIGRATION_12)?;
-        conn.pragma_update(None, "user_version", 12)?;
-    }
-    if version < 13 {
-        conn.execute_batch(&migration_13())?;
-        conn.pragma_update(None, "user_version", 13)?;
-    }
-    if version < 14 {
-        // Guarded so a re-run after an interrupted v14 (or a test that rolls
-        // user_version back on an already-migrated db) does not re-ALTER.
-        let has_position: i64 = conn.query_row(
-            "SELECT count(*) FROM pragma_table_info('projects') WHERE name = 'position'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_position == 0 {
-            conn.execute_batch(MIGRATION_14)?;
+    for (target, migrate) in MIGRATIONS {
+        if version < *target as i64 {
+            migrate(conn)?;
+            conn.pragma_update(None, "user_version", *target)?;
         }
-        conn.pragma_update(None, "user_version", 14)?;
-    }
-    if version < 15 {
-        conn.execute_batch(MIGRATION_15)?;
-        conn.pragma_update(None, "user_version", 15)?;
-    }
-    if version < 16 {
-        conn.execute_batch(MIGRATION_16)?;
-        conn.pragma_update(None, "user_version", 16)?;
-    }
-    if version < 17 {
-        // db::open enables foreign_keys before migrations run, and chats is
-        // the parent of messages/summaries: the rebuild's DROP TABLE would
-        // cascade-delete every transcript. Standard SQLite recipe: FK
-        // enforcement off for the rebuild, previous setting restored after.
-        let fk_on: bool = conn.query_row("PRAGMA foreign_keys", [], |r| r.get(0))?;
-        conn.pragma_update(None, "foreign_keys", "OFF")?;
-        conn.execute_batch(MIGRATION_17)?;
-        conn.pragma_update(None, "foreign_keys", if fk_on { "ON" } else { "OFF" })?;
-        conn.pragma_update(None, "user_version", 17)?;
-    }
-    if version < 18 {
-        // Cached project brief (SPEC project context slice): a short Russian
-        // summary generated from the project's files/tasks and injected into
-        // the project system prompt; brief_updated_at drives staleness
-        // (auto-refresh on project open / file changes when older than ~24 h).
-        // Guarded per column (same recipe as v14) so a re-run after an
-        // interrupted v18 does not re-ALTER.
-        let has_brief: i64 = conn.query_row(
-            "SELECT count(*) FROM pragma_table_info('projects') WHERE name = 'brief'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_brief == 0 {
-            conn.execute("ALTER TABLE projects ADD COLUMN brief TEXT", [])?;
-        }
-        let has_brief_updated_at: i64 = conn.query_row(
-            "SELECT count(*) FROM pragma_table_info('projects') WHERE name = 'brief_updated_at'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_brief_updated_at == 0 {
-            conn.execute("ALTER TABLE projects ADD COLUMN brief_updated_at TEXT", [])?;
-        }
-        conn.pragma_update(None, "user_version", 18)?;
-    }
-    if version < 19 {
-        conn.execute_batch(&migration_19())?;
-        conn.pragma_update(None, "user_version", 19)?;
-    }
-    if version < 20 {
-        conn.execute_batch(&migration_20())?;
-        conn.pragma_update(None, "user_version", 20)?;
-    }
-    if version < 21 {
-        conn.execute_batch(MIGRATION_21)?;
-        conn.pragma_update(None, "user_version", 21)?;
-    }
-    if version < 22 {
-        let has_reasoning: i64 = conn.query_row(
-            "SELECT count(*) FROM pragma_table_info('messages') WHERE name = 'reasoning'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_reasoning == 0 {
-            conn.execute_batch(MIGRATION_22)?;
-        }
-        conn.pragma_update(None, "user_version", 22)?;
-    }
-    if version < 23 {
-        let has_title: i64 = conn.query_row(
-            "SELECT count(*) FROM pragma_table_info('schedules') WHERE name = 'title'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_title == 0 {
-            conn.execute_batch(MIGRATION_23)?;
-        }
-        let rows: Vec<(i64, Option<String>, String)> = {
-            let mut stmt =
-                conn.prepare("SELECT id, prompt, spec FROM schedules WHERE title IS NULL")?;
-            let mapped = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-            mapped.collect::<rusqlite::Result<Vec<_>>>()?
-        };
-        for (id, prompt, spec) in rows {
-            let title = crate::scheduler::derive_title(prompt.as_deref(), &spec, 80);
-            conn.execute(
-                "UPDATE schedules SET title = ?1 WHERE id = ?2",
-                params![title, id],
-            )?;
-        }
-        conn.pragma_update(None, "user_version", 23)?;
-    }
-    if version < 24 {
-        // Guarded per table (v14 recipe) so a re-run after an interrupted
-        // v24 does not re-create; CREATE IF NOT EXISTS is idempotent anyway.
-        let has_trash: i64 = conn.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'trash'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_trash == 0 {
-            conn.execute_batch(MIGRATION_24)?;
-        }
-        conn.pragma_update(None, "user_version", 24)?;
-    }
-    if version < 25 {
-        // Guarded per column (v14 recipe) so a re-run after an interrupted
-        // v25 does not re-ALTER.
-        for (column, ddl) in [
-            ("priority", MIGRATION_25_PRIORITY),
-            ("checklist", MIGRATION_25_CHECKLIST),
-            ("recurrence", MIGRATION_25_RECURRENCE),
-        ] {
-            let has: i64 = conn.query_row(
-                "SELECT count(*) FROM pragma_table_info('tasks') WHERE name = ?1",
-                params![column],
-                |r| r.get(0),
-            )?;
-            if has == 0 {
-                conn.execute(ddl, [])?;
-            }
-        }
-        conn.pragma_update(None, "user_version", 25)?;
-    }
-    if version < 26 {
-        let has_pinned: i64 = conn.query_row(
-            "SELECT count(*) FROM pragma_table_info('messages') WHERE name = 'pinned'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_pinned == 0 {
-            conn.execute(MIGRATION_26_PINNED, [])?;
-        }
-        conn.pragma_update(None, "user_version", 26)?;
-    }
-    if version < 27 {
-        let has_retry_count: i64 = conn.query_row(
-            "SELECT count(*) FROM pragma_table_info('schedules') WHERE name = 'retry_count'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_retry_count == 0 {
-            conn.execute(MIGRATION_27_RETRY_COUNT, [])?;
-        }
-        conn.pragma_update(None, "user_version", 27)?;
-    }
-    if version < 28 {
-        let has_undo_log: i64 = conn.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'undo_log'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_undo_log == 0 {
-            conn.execute_batch(MIGRATION_28_UNDO_LOG)?;
-        }
-        conn.pragma_update(None, "user_version", 28)?;
-    }
-    if version < 29 {
-        // Guarded per table (v24/v28 recipe) so a re-run after an interrupted
-        // v29 does not re-create; CREATE IF NOT EXISTS is idempotent anyway.
-        let has_objectives: i64 = conn.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'objectives'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_objectives == 0 {
-            conn.execute_batch(MIGRATION_29_OBJECTIVES)?;
-        }
-        conn.pragma_update(None, "user_version", 29)?;
-    }
-    if version < 30 {
-        // Guarded per table (v24/v28 recipe) so a re-run after an interrupted
-        // v30 does not re-create; CREATE IF NOT EXISTS is idempotent anyway.
-        let has_links: i64 = conn.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'links'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_links == 0 {
-            conn.execute_batch(MIGRATION_30_LINKS)?;
-        }
-        conn.pragma_update(None, "user_version", 30)?;
-    }
-    if version < 31 {
-        // Guarded per column (v14 recipe) so a re-run after an interrupted
-        // v31 does not re-ALTER.
-        let has_is_priority: i64 = conn.query_row(
-            "SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'is_priority'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_is_priority == 0 {
-            conn.execute(MIGRATION_31_TASK_IS_PRIORITY, [])?;
-        }
-        conn.execute(MIGRATION_31_TASK_IS_PRIORITY_BACKFILL, [])?;
-        let has_task_columns: i64 = conn.query_row(
-            "SELECT count(*) FROM pragma_table_info('projects') WHERE name = 'task_columns'",
-            [],
-            |r| r.get(0),
-        )?;
-        if has_task_columns == 0 {
-            conn.execute(MIGRATION_31_PROJECT_TASK_COLUMNS, [])?;
-        }
-        conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
     Ok(())
 }
@@ -867,6 +944,62 @@ mod tests {
         assert_eq!(indexes, 8);
 
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_from_zero_yields_current_version_and_all_tables() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+
+        let tables: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN (
+                    'projects','tasks','indexed_files','files_fts','file_vectors','vec_items',
+                    'chats','messages','summaries','sessions','schedules','memory','memory_fts',
+                    'tasks_fts','message_attachments','todos','messages_fts','message_vectors',
+                    'vec_messages','processes','trash','versions','undo_log','objectives',
+                    'objective_steps','links','memory_vectors','vec_memory')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 28);
+    }
+
+    #[test]
+    fn fresh_and_stepwise_upgraded_schema_are_identical() {
+        crate::db::ensure_vec_extension();
+        let fresh = Connection::open_in_memory().unwrap();
+        run_migrations(&fresh).unwrap();
+
+        let upgraded = Connection::open_in_memory().unwrap();
+        for (target, migrate) in MIGRATIONS {
+            migrate(&upgraded).unwrap();
+            upgraded.pragma_update(None, "user_version", target).unwrap();
+        }
+
+        let dump = |conn: &Connection| -> Vec<(String, String, Option<String>)> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT type, name, sql FROM sqlite_master \
+                     WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+                )
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(dump(&fresh), dump(&upgraded));
+
+        let version: i64 = upgraded
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(version, SCHEMA_VERSION);
     }
 
