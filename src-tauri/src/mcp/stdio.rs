@@ -122,3 +122,67 @@ impl Drop for StdioTransport {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::onboarding::temp_test_dir;
+    use serde_json::json;
+
+    fn spawn_sh(script: &str, tmp: &Path) -> StdioTransport {
+        StdioTransport::spawn(
+            "sh",
+            &["-c".to_string(), script.to_string()],
+            &BTreeMap::new(),
+            tmp,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn stdio_round_trips_a_line_and_skips_blank_output_lines() {
+        let wd = temp_test_dir("stdio-roundtrip");
+        let tmp = wd.join("tmp");
+        // The child answers the single request line it reads, padded with two
+        // blank lines the reader thread must drop before decoding.
+        let mut transport =
+            spawn_sh(r#"read req; printf '\n\n%s\n' "$req""#, &tmp);
+        let msg = json!({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/list",
+            "params": { "nested": { "deep": [1, 2] } }
+        });
+        transport.send(&msg).unwrap();
+        assert_eq!(transport.recv(Duration::from_secs(10)).unwrap(), msg);
+        std::fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn stdio_recv_times_out_while_child_stays_silent() {
+        let wd = temp_test_dir("stdio-timeout");
+        let mut transport = spawn_sh("sleep 5", &wd.join("tmp"));
+        let err = transport.recv(Duration::from_millis(100)).unwrap_err();
+        assert!(err.to_string().contains("did not answer within"), "{err}");
+        std::fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn stdio_recv_reports_closed_pipe_after_child_exits() {
+        let wd = temp_test_dir("stdio-exit");
+        let mut transport = spawn_sh("exit 0", &wd.join("tmp"));
+        // The reader thread sees EOF once the child is gone: the channel
+        // disconnects and recv surfaces it as an error, never a hang.
+        let err = transport.recv(Duration::from_secs(5)).unwrap_err();
+        assert!(err.to_string().contains("closed its output pipe"), "{err}");
+        std::fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn stdio_send_after_close_reports_closed_pipe() {
+        let wd = temp_test_dir("stdio-closed");
+        let mut transport = spawn_sh("cat", &wd.join("tmp"));
+        transport.close();
+        let err = transport.send(&json!({ "jsonrpc": "2.0" })).unwrap_err();
+        assert!(err.to_string().contains("pipe is closed"), "{err}");
+        std::fs::remove_dir_all(&wd).unwrap();
+    }
+}

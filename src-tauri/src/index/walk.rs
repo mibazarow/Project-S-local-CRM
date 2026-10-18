@@ -56,3 +56,82 @@ pub fn walk(root: &Path, cfg: &IndexingConfig) -> Vec<WalkedFile> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::onboarding::temp_test_dir;
+    use std::os::unix::fs::symlink;
+
+    fn cfg(exclude: &[&str]) -> IndexingConfig {
+        IndexingConfig {
+            exclude_dirs: exclude.iter().map(|s| s.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn rels(root: &Path, exclude: &[&str]) -> Vec<String> {
+        let mut v: Vec<String> = walk(root, &cfg(exclude))
+            .into_iter()
+            .map(|f| f.rel)
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn walk_lists_nested_files_with_root_relative_paths() {
+        let root = temp_test_dir("walk-basic");
+        fs::create_dir_all(root.join("sub/deep")).unwrap();
+        fs::write(root.join("a.md"), "a").unwrap();
+        fs::write(root.join("sub/b.md"), "bb").unwrap();
+        fs::write(root.join("sub/deep/c.txt"), "ccc").unwrap();
+        assert_eq!(rels(&root, &[]), ["a.md", "sub/b.md", "sub/deep/c.txt"]);
+        let files = walk(&root, &cfg(&[]));
+        let c = files.iter().find(|f| f.rel == "sub/deep/c.txt").unwrap();
+        assert_eq!(c.size, 3);
+        assert!(c.mtime > 0);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn walk_skips_excluded_dirs_ds_store_and_the_app_db_file() {
+        let root = temp_test_dir("walk-excl");
+        fs::create_dir_all(root.join("vendor/inner")).unwrap();
+        fs::create_dir_all(root.join("keep")).unwrap();
+        fs::write(root.join("vendor/skip.md"), "no").unwrap();
+        fs::write(root.join("vendor/inner/deep.md"), "no").unwrap();
+        fs::write(root.join(".DS_Store"), "junk").unwrap();
+        fs::write(root.join("keep/.DS_Store"), "junk").unwrap();
+        fs::write(root.join(paths::DB_FILE), "db").unwrap();
+        fs::write(root.join("keep/ok.md"), "yes").unwrap();
+        // Hidden dotfiles other than .DS_Store are NOT excluded by default:
+        // pinning the current behavior.
+        fs::write(root.join(".hidden.txt"), "dot").unwrap();
+        assert_eq!(rels(&root, &["vendor"]), [".hidden.txt", "keep/ok.md"]);
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn walk_does_not_follow_or_list_symlinks() {
+        let root = temp_test_dir("walk-symlink");
+        let outside = temp_test_dir("walk-symlink-outside");
+        fs::write(outside.join("target.md"), "out").unwrap();
+        fs::create_dir_all(outside.join("dir")).unwrap();
+        fs::write(outside.join("dir/inside.md"), "in").unwrap();
+        fs::write(root.join("real.md"), "real").unwrap();
+        symlink(outside.join("target.md"), root.join("link.md")).unwrap();
+        symlink(&outside, root.join("link-dir")).unwrap();
+        // Only the real file surfaces: symlinked files and dirs are neither
+        // listed nor descended into.
+        assert_eq!(rels(&root, &[]), ["real.md"]);
+        fs::remove_dir_all(&root).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[test]
+    fn walk_of_missing_root_yields_nothing() {
+        let missing = temp_test_dir("walk-missing").join("nope");
+        assert!(walk(&missing, &cfg(&[])).is_empty());
+    }
+}

@@ -50,3 +50,41 @@ impl Confirmer for DenyAllConfirmer {
         ConfirmDecision::Deny
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // Table-driven: pins the fixed verdicts of the test/dev confirmers; the
+    // request shape must never change what they answer.
+    #[test]
+    fn confirmer_decision_matrix() {
+        let allowing = AutoConfirmer::allowing(true);
+        let denying = AutoConfirmer::allowing(false);
+        let cases: Vec<(&str, &dyn Confirmer, ConfirmDecision)> = vec![
+            ("AutoConfirmer::allowing(true)", &allowing, ConfirmDecision::Allow),
+            ("AutoConfirmer::allowing(false)", &denying, ConfirmDecision::Deny),
+            ("DenyAllConfirmer", &DenyAllConfirmer, ConfirmDecision::Deny),
+        ];
+        let requests = [
+            ConfirmRequest {
+                tool: "fs_write".into(),
+                args: json!({ "path": "a.txt" }),
+                project_id: Some(3),
+                danger_reason: Some("outside the territory".into()),
+            },
+            ConfirmRequest {
+                tool: "bash".into(),
+                args: json!({}),
+                project_id: None,
+                danger_reason: None,
+            },
+        ];
+        for (label, confirmer, want) in cases {
+            for req in &requests {
+                assert_eq!(confirmer.confirm(req), want, "{label} on {}", req.tool);
+            }
+        }
+    }
+}

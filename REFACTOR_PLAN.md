@@ -58,7 +58,7 @@
 Статусы: `pending` → `in_progress` → `done` (коммит) / `rejected` (с причиной).
 
 ### Фаза 0 — Guardrails
-- **S0.1 characterization-backend** — тесты на `permissions`, обёртки команд (in-memory DB), path-policy, scheduler tick, импорт/поиск. Prod-код не меняем. `pending`.
+- **S0.1 characterization-backend** — тесты на `permissions`, обёртки команд (in-memory DB), path-policy, scheduler tick, импорт/поиск. Prod-код не меняем. `done` — добавлено 19 characterization-тестов (729→748 passed): матрица конфирмеров (`agent/permissions.rs`), матрица разрешения политик Skip/Check/CheckConditional c danger_reason (`agent/loop.rs`), обход walk (исключения, `.DS_Store`/БД, симлинки, rel-пути) (`index/walk.rs`), слой инструментов undo_last/undo_list — конверт, политики, события эмиттера (`agent/undo_tools.rs`), транспорт stdio — round-trip/таймаут/закрытый канал (`mcp/stdio.rs`), чистые хелперы watcher (`watcher.rs`). Уже покрыто ранее — пропущено: timeout→deny/autopilot/allow-always (chat-мост), лимиты/размер/символы/удаление строк (index/mod), обход zip/суффиксы коллизий (importer), кириллический FTS и скоупинг (search). Debounce watcher не тестирован: встроен в поток с `tauri::AppHandle`, требует изменения prod-кода.
 - **S0.2 characterization-frontend** — golden-тесты чистых функций (`chatReducer`, `historyToItems`, `splitMarkdownBlocks`, `score`, `noteNameFromText`, `renderSnippet`). Требует dev-зависимость (`vitest`) — ждёт согласования. `pending`.
 
 ### Фаза 1 — Безопасность/производительность (бэкенд, замеры)
@@ -123,4 +123,4 @@
 - Полный `npm run app:build` — только на финальном этапе.
 
 ## Следующий шаг
-После подтверждения — **S0.1 characterization-backend** (тесты, без изменения prod-кода), затем S1.1.
+**S0.2 characterization-frontend** (golden-тесты чистых функций фронтенда; требует dev-зависимости `vitest` — ждёт решения по согласованию). Если `vitest` не согласован — следующий бэкенд-срез **S1.1 embed-cached-instance**.

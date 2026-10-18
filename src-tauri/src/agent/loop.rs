@@ -934,6 +934,90 @@ mod tests {
         assert!(events.iter().any(|e| matches!(e, AgentEvent::ConfirmationRequested { tool, .. } if tool == "echo")));
     }
 
+    // Table-driven policy resolution (SPEC 5.2): which policies consult the
+    // confirmer and what danger_reason the ConfirmationRequested event carries.
+    // Skip never confirms even when the tool reports danger; Check always does;
+    // CheckConditional confirms exactly when danger_reason is Some.
+    struct PolicyProbeTool {
+        policy: PermissionPolicy,
+        danger: Option<String>,
+    }
+
+    impl Tool for PolicyProbeTool {
+        fn name(&self) -> &str {
+            "probe"
+        }
+        fn description(&self) -> &str {
+            "reports a configurable danger reason (test-only tool)"
+        }
+        fn parameters(&self) -> Value {
+            json!({ "type": "object", "properties": {}, "additionalProperties": false })
+        }
+        fn policy(&self) -> PermissionPolicy {
+            self.policy
+        }
+        fn danger_reason(&self, _args: &Value, _ctx: &ToolCtx) -> Option<String> {
+            self.danger.clone()
+        }
+        fn execute(&self, _args: &Value, _ctx: &ToolCtx) -> Result<ToolResult> {
+            Ok(ToolResult::ok(json!({ "ran": true })))
+        }
+    }
+
+    #[test]
+    fn policy_resolution_matrix_decides_confirmation_and_danger_reason() {
+        struct Case {
+            label: &'static str,
+            policy: PermissionPolicy,
+            danger: Option<&'static str>,
+            expect_confirm: bool,
+            expect_reason: Option<&'static str>,
+        }
+        use PermissionPolicy::*;
+        let cases = [
+            Case { label: "skip-no-danger", policy: Skip, danger: None, expect_confirm: false, expect_reason: None },
+            Case { label: "skip-ignores-danger", policy: Skip, danger: Some("ignored"), expect_confirm: false, expect_reason: None },
+            Case { label: "check-no-reason", policy: Check, danger: None, expect_confirm: true, expect_reason: None },
+            Case { label: "check-with-reason", policy: Check, danger: Some("always mutates"), expect_confirm: true, expect_reason: Some("always mutates") },
+            Case { label: "conditional-no-danger", policy: CheckConditional, danger: None, expect_confirm: false, expect_reason: None },
+            Case { label: "conditional-with-danger", policy: CheckConditional, danger: Some("outside territory"), expect_confirm: true, expect_reason: Some("outside territory") },
+        ];
+        for case in cases {
+            let backend = ScriptedBackend::new(vec![
+                tools_outcome(vec![call("c1", "probe", json!({}))]),
+                tools_outcome(vec![finish_call("done")]),
+            ]);
+            let probe = PolicyProbeTool {
+                policy: case.policy,
+                danger: case.danger.map(str::to_string),
+            };
+            let mut catalog = catalog_with(None);
+            catalog.register(Arc::new(probe), true).unwrap();
+            let mut state = AgentState {
+                backend: &backend,
+                catalog: &mut catalog,
+            };
+            let mut events = Vec::new();
+            // DenyAllConfirmer: a consulted confirmation surfaces as
+            // denied_by_user, an uncalled one lets the probe run.
+            let result = run(&mut state, &config(8), &DenyAllConfirmer, |e| events.push(e)).unwrap();
+            assert_eq!(result.answer, "done", "{}", case.label);
+            let requested = events
+                .iter()
+                .find(|e| matches!(e, AgentEvent::ConfirmationRequested { tool, .. } if tool == "probe"));
+            assert_eq!(requested.is_some(), case.expect_confirm, "{}", case.label);
+            if let Some(AgentEvent::ConfirmationRequested { danger_reason, .. }) = requested {
+                assert_eq!(danger_reason.as_deref(), case.expect_reason, "{}", case.label);
+            }
+            let envelope = envelope_for(&events, "probe");
+            if case.expect_confirm {
+                assert_eq!(envelope["error"]["code"], "denied_by_user", "{}", case.label);
+            } else {
+                assert_eq!(envelope["ok"], json!(true), "{}", case.label);
+            }
+        }
+    }
+
     // Wire-level check: every assistant tool_calls turn is followed by a tool
     // message per tool_call_id before the next assistant turn (or the end).
     fn tool_groups_are_closed(messages: &[ChatMessage]) -> bool {

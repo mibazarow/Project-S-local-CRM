@@ -157,3 +157,88 @@ fn project_paths(conn: &Connection) -> Vec<PathBuf> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db;
+    use crate::onboarding::temp_test_dir;
+    use crate::projects;
+    use notify::EventKind;
+    use std::fs;
+
+    // The debounce/coalesce loop itself lives inside `start`'s thread and
+    // needs a live tauri::AppHandle plus real FS events, so it is not
+    // unit-testable without changing production code. What IS deterministic
+    // and pinned here: the pure per-event classification helpers that the
+    // debounced loop aggregates — those decide WHICH reindexes and config
+    // notifications a burst produces once collapsed.
+
+    fn event(paths: &[&str]) -> Event {
+        Event {
+            kind: EventKind::Any,
+            paths: paths.iter().map(PathBuf::from).collect(),
+            attrs: Default::default(),
+        }
+    }
+
+    #[test]
+    fn touched_matches_only_paths_under_root() {
+        let root = Path::new("/wd/Notes");
+        let ev = event(&["/wd/Notes/sub/a.md", "/wd/Projects/other/b.md"]);
+        assert!(touched(root, &ev));
+        let outside = event(&["/wd/Projects/other/b.md"]);
+        assert!(!touched(root, &outside));
+        // A sibling sharing the root's name prefix is not "under" it.
+        assert!(!touched(root, &event(&["/wd/NotesX/a.md"])));
+    }
+
+    #[test]
+    fn changed_kinds_maps_config_filenames_and_dedupes() {
+        let ev = event(&[
+            "/wd/Settings/config/llm.json",
+            "/wd/Settings/config/app.json",
+            "/wd/elsewhere/llm.json",
+            "/wd/random.txt",
+            "/wd/indexing.json",
+        ]);
+        let kinds = changed_kinds(&ev);
+        assert_eq!(kinds.len(), 3, "{kinds:?}");
+        assert!(kinds.contains(&ConfigKind::Llm));
+        assert!(kinds.contains(&ConfigKind::App));
+        assert!(kinds.contains(&ConfigKind::Indexing));
+        assert!(changed_kinds(&event(&["notes.md", "project-s.db"])).is_empty());
+    }
+
+    #[test]
+    fn dirty_projects_collapses_burst_per_project_and_ignores_outside() {
+        let wd = temp_test_dir("watch-dirty");
+        let state = AppState::new();
+        let conn = db::open(&paths::db_path(&wd)).unwrap();
+        let one = projects::create_project(&conn, &wd, "one").unwrap();
+        let two = projects::create_project(&conn, &wd, "two").unwrap();
+        *state.db.lock().unwrap() = Some(conn);
+
+        let root_one = paths::projects_dir(&wd).join("one");
+        let ev = event(&[
+            &root_one.join("a.md").display().to_string(),
+            &root_one.join("sub/deep/b.md").display().to_string(),
+            &paths::projects_dir(&wd).join("two/c.md").display().to_string(),
+        ]);
+        let ids = dirty_projects(&state, &ev);
+        assert_eq!(ids, HashSet::from([one.id, two.id]));
+
+        // Events outside every project folder dirty nothing.
+        assert!(dirty_projects(&state, &event(&["/somewhere/else.md"])).is_empty());
+        // No DB installed: nothing to match against.
+        assert!(dirty_projects(&AppState::new(), &ev).is_empty());
+
+        let listed = {
+            let guard = state.db.lock().unwrap();
+            project_paths(guard.as_ref().unwrap())
+        };
+        assert_eq!(listed.len(), 2);
+        assert!(listed.contains(&root_one));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+}
