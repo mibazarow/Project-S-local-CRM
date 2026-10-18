@@ -6,14 +6,13 @@
 > **Правило ведения:** выполненный срез **удаляем из этого файла полностью**. Никаких `done`, зачёркиваний и списков «закрыто». В файле — только актуальный остаток. Закрыл срез → удалил абзац.
 
 ## Текущее состояние
-- Последний зелёный HEAD: `250e0a7` — `npm test` **92 passed**, `npm run build` OK, oxlint — только pre-existing `crossActions.ts`.
+- Последний зелёный HEAD: `356a3d8` — `npm test` **92 passed**, `npm run build` OK, oxlint — только pre-existing `crossActions.ts`.
 - Бэкенд последний раз проверен на `f23b488`: `cargo test` **777 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings. S4.1–S4.2 бэкенд не трогали.
 - Baseline-скриншоты: `/tmp/project-s-baseline/` (7 экранов).
 - Полный `npm run app:build` — только в финале.
 
 ## Фаза 4 — фронтенд-структура и перф
 
-- **S4.3 harness-schedule-panel** — вынести панель расписаний из `HarnessView`.
 - **S4.4 appstore-split** — Data/Actions контексты; `refresh()` только для списка проектов; замер ререндеров.
 - **S4.5 memoize-chat** — `MessageRow`, стабильные колбэки, `BlockPreview`; DOM идентичен; замер стрима.
 - **S4.6 topbar-event-driven** — убрать поллинг статуса; таймер только для отсчёта.
@@ -40,4 +39,4 @@
 - `BAG_REPORT.md`/`Q.md` — рабочие файлы задач, не менять их в рамках рефакторинга.
 
 ## Следующий шаг
-**S4.3 harness-schedule-panel** — вынести панель расписаний из `HarnessView`.
+**S4.4 appstore-split** — Data/Actions контексты; `refresh()` только для списка проектов; замер ререндеров.
