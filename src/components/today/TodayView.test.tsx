@@ -109,6 +109,7 @@ function StateProbe() {
 
 beforeEach(() => {
   latestState = undefined;
+  localStorage.clear();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -177,5 +178,168 @@ describe("TodayView task navigation", () => {
     expect(onTab).toHaveBeenCalledWith("notes");
     expect(latestState?.pendingTaskId).toBeNull();
     expect(latestState?.pendingNotePath).toBe("note-one.md");
+  });
+});
+
+const DEFAULT_TITLES = [
+  "Просрочено",
+  "Скоро (7 дней)",
+  "Расписания",
+  "Цели",
+  "Свежие заметки",
+  "Последние чаты",
+];
+
+const cardTitles = () =>
+  Array.from(container.querySelectorAll(".today-card-title")).map((t) => t.textContent);
+
+const readPersistedOrder = () => {
+  const raw = localStorage.getItem("today-card-order");
+  return raw === null ? null : (JSON.parse(raw) as string[]);
+};
+
+describe("TodayView card reorder", () => {
+  let origRect: typeof HTMLElement.prototype.getBoundingClientRect;
+
+  beforeEach(() => {
+    origRect = HTMLElement.prototype.getBoundingClientRect;
+    // Stack the six cards vertically: card i occupies top i*100..i*100+100.
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      const cards = Array.from(container.querySelectorAll<HTMLElement>(".today-card"));
+      const i = cards.indexOf(this);
+      const top = i >= 0 ? i * 100 : 0;
+      return {
+        left: 0,
+        top,
+        right: 300,
+        bottom: top + 100,
+        width: 300,
+        height: 100,
+        x: 0,
+        y: top,
+        toJSON() {},
+      } as DOMRect;
+    };
+  });
+
+  afterEach(() => {
+    HTMLElement.prototype.getBoundingClientRect = origRect;
+  });
+
+  const fire = (target: EventTarget, type: string, x: number, y: number) =>
+    act(() => {
+      target.dispatchEvent(
+        new MouseEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          button: 0,
+          clientX: x,
+          clientY: y,
+        }),
+      );
+    });
+
+  it("renders the six cards in the default order and persists nothing", async () => {
+    await mount();
+    expect(cardTitles()).toEqual(DEFAULT_TITLES);
+    expect(readPersistedOrder()).toBeNull();
+  });
+
+  it("dragging a card header reorders the DOM and persists the order globally", async () => {
+    await mount();
+    const card = container.querySelector('.today-card[data-card-id="overdue"]')!;
+    const head = card.querySelector(".today-card-head")!;
+
+    fire(head, "pointerdown", 10, 10);
+    fire(window, "pointermove", 10, 560);
+
+    // Tilt/lift feedback: floating ghost rotated 4°, source card dimmed.
+    const ghost = document.querySelector<HTMLElement>(".drag-ghost");
+    expect(ghost).toBeTruthy();
+    expect(ghost!.style.transform).toContain("rotate(4deg)");
+    expect(card.classList.contains("dragging")).toBe(true);
+
+    fire(window, "pointerup", 10, 560);
+    await settle();
+
+    expect(document.querySelector(".drag-ghost")).toBeNull();
+    expect(cardTitles()).toEqual([
+      "Скоро (7 дней)",
+      "Расписания",
+      "Цели",
+      "Свежие заметки",
+      "Последние чаты",
+      "Просрочено",
+    ]);
+    expect(readPersistedOrder()).toEqual([
+      "soon",
+      "schedules",
+      "objectives",
+      "notes",
+      "chats",
+      "overdue",
+    ]);
+  });
+
+  it("a restored localStorage order is applied on mount", async () => {
+    localStorage.setItem("today-card-order", JSON.stringify(["chats", "notes", "overdue"]));
+    await mount();
+    // Saved ids first, then the missing ones in default order.
+    expect(cardTitles()).toEqual([
+      "Последние чаты",
+      "Свежие заметки",
+      "Просрочено",
+      "Скоро (7 дней)",
+      "Расписания",
+      "Цели",
+    ]);
+  });
+
+  it("unknown and duplicate ids in storage are ignored, missing ids appended", async () => {
+    localStorage.setItem(
+      "today-card-order",
+      JSON.stringify(["chats", "bogus-card", "overdue", "chats"]),
+    );
+    await mount();
+    expect(cardTitles()).toEqual([
+      "Последние чаты",
+      "Просрочено",
+      "Скоро (7 дней)",
+      "Расписания",
+      "Цели",
+      "Свежие заметки",
+    ]);
+  });
+
+  it("Escape cancels the drag: order unchanged, nothing persisted", async () => {
+    await mount();
+    const card = container.querySelector('.today-card[data-card-id="overdue"]')!;
+    const head = card.querySelector(".today-card-head")!;
+
+    fire(head, "pointerdown", 10, 10);
+    fire(window, "pointermove", 10, 560);
+    expect(document.querySelector(".drag-ghost")).toBeTruthy();
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+
+    expect(document.querySelector(".drag-ghost")).toBeNull();
+    expect(cardTitles()).toEqual(DEFAULT_TITLES);
+    expect(readPersistedOrder()).toBeNull();
+  });
+
+  it("a drag starting on a card action button never starts, and the button still works", async () => {
+    const onTab = await mount();
+    const btn = container.querySelector(".today-card-all")!;
+
+    fire(btn, "pointerdown", 10, 10);
+    fire(window, "pointermove", 10, 560);
+    expect(document.querySelector(".drag-ghost")).toBeNull();
+    fire(window, "pointerup", 10, 560);
+
+    await click(btn);
+    expect(onTab).toHaveBeenCalledWith("harness");
+    expect(cardTitles()).toEqual(DEFAULT_TITLES);
   });
 });

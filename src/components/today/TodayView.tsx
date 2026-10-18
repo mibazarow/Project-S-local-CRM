@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import * as ipc from "../../api/ipc";
 import { useAppActions } from "../../state/AppStore";
+import { usePointerDrag, type DropTarget } from "../../hooks/usePointerDrag";
 import type { FsEntry, ObjectiveDto, ProjectDto, ScheduleDto, SessionDto, TaskDto } from "../../api/types";
 import { toMessage } from "../chat/chatShared";
 import { dueMs, formatActivity, formatDue, formatInstant, formatModified } from "../../shared/format";
@@ -25,6 +26,24 @@ interface TodayData {
 }
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Stable ids of the six Today cards; the array is the default order.
+const CARD_IDS = ["overdue", "soon", "schedules", "objectives", "notes", "chats"] as const;
+// Global (not per-project) card order, kept in localStorage per SPEC 4.3.
+const ORDER_KEY = "today-card-order";
+
+function readCardOrder(): string[] {
+  try {
+    const raw: unknown = JSON.parse(localStorage.getItem(ORDER_KEY) ?? "[]");
+    const saved = Array.isArray(raw)
+      ? raw.filter((x): x is string => typeof x === "string" && (CARD_IDS as readonly string[]).includes(x))
+      : [];
+    const unique = [...new Set(saved)];
+    return [...unique, ...CARD_IDS.filter((id) => !unique.includes(id))];
+  } catch {
+    return [...CARD_IDS];
+  }
+}
 
 const OBJECTIVE_STATUS_LABEL: Record<string, string> = {
   active: "в работе",
@@ -109,19 +128,44 @@ const IconChat = () => (
   </svg>
 );
 
+const GripIcon = () => (
+  <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor">
+    <circle cx="9" cy="5.5" r="1.4" />
+    <circle cx="15" cy="5.5" r="1.4" />
+    <circle cx="9" cy="12" r="1.4" />
+    <circle cx="15" cy="12" r="1.4" />
+    <circle cx="9" cy="18.5" r="1.4" />
+    <circle cx="15" cy="18.5" r="1.4" />
+  </svg>
+);
+
 interface CardProps {
+  cardId: string;
   icon: ReactNode;
   title: string;
   count?: number;
   danger?: boolean;
   action?: { label: string; onClick: () => void };
+  dragging?: boolean;
+  onDragStart: (e: ReactPointerEvent<HTMLElement>, id: string) => void;
   children: ReactNode;
 }
 
-function Card({ icon, title, count, danger, action, children }: CardProps) {
+function Card({ cardId, icon, title, count, danger, action, dragging, onDragStart, children }: CardProps) {
   return (
-    <section className="today-card">
+    <section
+      className={`today-card${dragging ? " dragging" : ""}`}
+      data-card-id={cardId}
+      onPointerDown={(e) => {
+        // Reorder drags start on the header only; buttons/inputs inside the
+        // card body keep their own behavior.
+        if ((e.target as HTMLElement).closest(".today-card-head")) onDragStart(e, cardId);
+      }}
+    >
       <header className="today-card-head">
+        <span className="today-card-grip" aria-hidden="true">
+          <GripIcon />
+        </span>
         <span className={`today-card-icon${danger ? " is-danger" : ""}`}>{icon}</span>
         <h3 className="today-card-title">{title}</h3>
         {count != null && (
@@ -175,6 +219,45 @@ export default function TodayView({ onTab }: Props) {
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});
   const [newTitle, setNewTitle] = useState("");
   const [newSteps, setNewSteps] = useState("");
+
+  const gridRef = useRef<HTMLDivElement>(null);
+  const [order, setOrder] = useState<string[]>(readCardOrder);
+
+  // Card reorder drag: insertion index = nearest card, before/after by its
+  // vertical midline (works for both 1- and 2-column grid layouts).
+  const { draggingId, onPointerDown } = usePointerDrag<string>({
+    resolveTarget: (clientX, clientY, id): DropTarget<string> | null => {
+      const grid = gridRef.current;
+      if (!grid) return null;
+      const cards = Array.from(
+        grid.querySelectorAll<HTMLElement>(".today-card[data-card-id]"),
+      ).filter((el) => el.dataset.cardId !== id);
+      let index = 0;
+      let best = Infinity;
+      cards.forEach((el, i) => {
+        const r = el.getBoundingClientRect();
+        const d = Math.hypot(clientX - (r.left + r.width / 2), clientY - (r.top + r.height / 2));
+        if (d < best) {
+          best = d;
+          index = clientY > r.top + r.height / 2 ? i + 1 : i;
+        }
+      });
+      return { container: "grid", index, draggingId: id };
+    },
+    onDrop: (id, target) => {
+      setOrder((prev) => {
+        const others = prev.filter((x) => x !== id);
+        const next = [...others];
+        next.splice(Math.max(0, Math.min(target.index, others.length)), 0, id);
+        try {
+          localStorage.setItem(ORDER_KEY, JSON.stringify(next));
+        } catch {
+          // Storage unavailable: the order simply won't persist across restarts.
+        }
+        return next;
+      });
+    },
+  });
 
   // Sequence guard: overlapping reloads (events, focus, manual) must never let
   // a stale response overwrite a newer one.
@@ -346,6 +429,266 @@ export default function TodayView({ onTab }: Props) {
 
   const activeGoals = data ? data.objectives.filter((o) => o.status !== "done").length : 0;
 
+  // Keyed by card id: reordering moves DOM nodes without remounting contents
+  // (expanded objectives and the new-objective form survive a reorder).
+  const cardNodes: Record<string, ReactNode> | null = data && {
+    overdue: (
+      <Card
+        key="overdue"
+        cardId="overdue"
+        dragging={draggingId === "overdue"}
+        onDragStart={onPointerDown}
+        icon={<IconAlert />}
+        title="Просрочено"
+        count={data.overdue.length}
+        danger={data.overdue.length > 0}
+      >
+        {data.overdue.length === 0 && (
+          <div className="today-empty">Просроченных задач нет.</div>
+        )}
+        {data.overdue.map((twp) => (
+          <TaskRow key={`o-${twp.task.id}`} twp={twp} overdue onOpen={openTask} />
+        ))}
+      </Card>
+    ),
+    soon: (
+      <Card
+        key="soon"
+        cardId="soon"
+        dragging={draggingId === "soon"}
+        onDragStart={onPointerDown}
+        icon={<IconCalendar />}
+        title="Скоро (7 дней)"
+        count={data.soon.length}
+      >
+        {data.soon.length === 0 && (
+          <div className="today-empty">На ближайшую неделю задач нет.</div>
+        )}
+        {data.soon.map((twp) => (
+          <TaskRow key={`s-${twp.task.id}`} twp={twp} onOpen={openTask} />
+        ))}
+      </Card>
+    ),
+    schedules: (
+      <Card
+        key="schedules"
+        cardId="schedules"
+        dragging={draggingId === "schedules"}
+        onDragStart={onPointerDown}
+        icon={<IconClock />}
+        title="Расписания"
+        count={data.schedules.length}
+        action={{ label: "все", onClick: () => onTab("harness") }}
+      >
+        {data.schedules.length === 0 && (
+          <div className="today-empty">
+            Активных расписаний нет. Создайте их во вкладке «Харнес».
+          </div>
+        )}
+        {data.schedules.map((s) => (
+          <div
+            className="today-row"
+            key={`sc-${s.id}`}
+            role="button"
+            tabIndex={0}
+            title="Открыть чат расписания"
+            onClick={() => void openSchedule(s)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void openSchedule(s);
+            }}
+          >
+            <span className="today-row-title">{s.title ?? s.spec}</span>
+            <span className="today-row-meta">
+              <span className="today-row-date">
+                {s.nextRunAt ? `след.: ${formatInstant(s.nextRunAt)}` : "без запуска"}
+              </span>
+            </span>
+          </div>
+        ))}
+      </Card>
+    ),
+    objectives: (
+      <Card
+        key="objectives"
+        cardId="objectives"
+        dragging={draggingId === "objectives"}
+        onDragStart={onPointerDown}
+        icon={<IconTarget />}
+        title="Цели"
+        count={activeGoals}
+      >
+        <form
+          className="obj-add"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void addObjective();
+          }}
+        >
+          <input
+            className="rename-input"
+            value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)}
+            placeholder="Новая цель…"
+          />
+          <textarea
+            className="rename-input obj-steps-input"
+            value={newSteps}
+            onChange={(e) => setNewSteps(e.target.value)}
+            placeholder="Шаги, по одному в строке (необязательно)"
+            rows={2}
+          />
+          <button className="ghost-btn small" type="submit" disabled={!newTitle.trim()}>
+            Добавить
+          </button>
+        </form>
+        {data.objectives.length === 0 && (
+          <div className="today-empty">Целей пока нет.</div>
+        )}
+        {data.objectives.map((o) => {
+          const pct = o.totalSteps ? Math.round((o.doneSteps / o.totalSteps) * 100) : 0;
+          return (
+            <div className="obj-row" key={`g-${o.id}`}>
+              <div
+                className="obj-head"
+                role="button"
+                tabIndex={0}
+                title={o.description ?? undefined}
+                onClick={() => toggleObjective(o.id)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") toggleObjective(o.id);
+                }}
+              >
+                <span className="t">{o.title}</span>
+                <span className={`badge st-${o.status}`}>
+                  {OBJECTIVE_STATUS_LABEL[o.status] ?? o.status}
+                </span>
+                {o.totalSteps > 0 && (
+                  <span className="obj-count">
+                    {o.doneSteps}/{o.totalSteps}
+                  </span>
+                )}
+              </div>
+              {o.totalSteps > 0 && (
+                <div className="obj-bar">
+                  <i style={{ width: `${pct}%` }} />
+                </div>
+              )}
+              {expanded[o.id] && o.steps.length > 0 && (
+                <div className="obj-steps">
+                  {o.steps.map((s) => (
+                    <label className="obj-step" key={s.id}>
+                      <input
+                        type="checkbox"
+                        checked={s.done}
+                        onChange={(e) => void toggleStep(o.id, s.id, e.target.checked)}
+                      />
+                      <span className={s.done ? "strikethrough" : undefined}>
+                        {s.text}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+              <div className="obj-actions">
+                {o.status !== "done" && (
+                  <button
+                    className="mini-btn"
+                    type="button"
+                    onClick={() => void setObjectiveStatus(o.id, "done")}
+                  >
+                    Готово
+                  </button>
+                )}
+                {o.status === "active" && (
+                  <button
+                    className="mini-btn"
+                    type="button"
+                    onClick={() => void setObjectiveStatus(o.id, "paused")}
+                  >
+                    Пауза
+                  </button>
+                )}
+                {o.status === "paused" && (
+                  <button
+                    className="mini-btn"
+                    type="button"
+                    onClick={() => void setObjectiveStatus(o.id, "active")}
+                  >
+                    Продолжить
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </Card>
+    ),
+    notes: (
+      <Card
+        key="notes"
+        cardId="notes"
+        dragging={draggingId === "notes"}
+        onDragStart={onPointerDown}
+        icon={<IconNote />}
+        title="Свежие заметки"
+        action={{ label: "все", onClick: () => onTab("notes") }}
+      >
+        {data.notes.length === 0 && (
+          <div className="today-empty">Заметок пока нет.</div>
+        )}
+        {data.notes.map((n) => (
+          <div
+            className="today-row"
+            key={`n-${n.relPath}`}
+            role="button"
+            tabIndex={0}
+            onClick={() => openNote(n.relPath)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") openNote(n.relPath);
+            }}
+          >
+            <span className="today-row-title">{n.name}</span>
+            <span className="today-row-meta">
+              <span className="today-row-date">{formatModified(n.modified)}</span>
+            </span>
+          </div>
+        ))}
+      </Card>
+    ),
+    chats: (
+      <Card
+        key="chats"
+        cardId="chats"
+        dragging={draggingId === "chats"}
+        onDragStart={onPointerDown}
+        icon={<IconChat />}
+        title="Последние чаты"
+        action={{ label: "все", onClick: () => onTab("harness") }}
+      >
+        {data.sessions.length === 0 && (
+          <div className="today-empty">Сессий пока нет.</div>
+        )}
+        {data.sessions.map((s) => (
+          <div
+            className="today-row"
+            key={`c-${s.id}`}
+            role="button"
+            tabIndex={0}
+            onClick={() => openSession(s.id)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") openSession(s.id);
+            }}
+          >
+            <span className="today-row-title">{s.title ?? "Новая сессия"}</span>
+            <span className="today-row-meta">
+              <span className="today-row-date">{formatActivity(s.lastActiveAt)}</span>
+            </span>
+          </div>
+        ))}
+      </Card>
+    ),
+  };
+
   return (
     <main className="view active today-view">
       <div className="center">
@@ -390,224 +733,9 @@ export default function TodayView({ onTab }: Props) {
         <div className="center-body">
           {error && <div className="tree-error">{error}</div>}
           {!data && !error && <div className="empty-note">Загрузка…</div>}
-          {data && (
-            <div className="today-grid">
-              <Card
-                icon={<IconAlert />}
-                title="Просрочено"
-                count={data.overdue.length}
-                danger={data.overdue.length > 0}
-              >
-                {data.overdue.length === 0 && (
-                  <div className="today-empty">Просроченных задач нет.</div>
-                )}
-                {data.overdue.map((twp) => (
-                  <TaskRow key={`o-${twp.task.id}`} twp={twp} overdue onOpen={openTask} />
-                ))}
-              </Card>
-
-              <Card icon={<IconCalendar />} title="Скоро (7 дней)" count={data.soon.length}>
-                {data.soon.length === 0 && (
-                  <div className="today-empty">На ближайшую неделю задач нет.</div>
-                )}
-                {data.soon.map((twp) => (
-                  <TaskRow key={`s-${twp.task.id}`} twp={twp} onOpen={openTask} />
-                ))}
-              </Card>
-
-              <Card
-                icon={<IconClock />}
-                title="Расписания"
-                count={data.schedules.length}
-                action={{ label: "все", onClick: () => onTab("harness") }}
-              >
-                {data.schedules.length === 0 && (
-                  <div className="today-empty">
-                    Активных расписаний нет. Создайте их во вкладке «Харнес».
-                  </div>
-                )}
-                {data.schedules.map((s) => (
-                  <div
-                    className="today-row"
-                    key={`sc-${s.id}`}
-                    role="button"
-                    tabIndex={0}
-                    title="Открыть чат расписания"
-                    onClick={() => void openSchedule(s)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") void openSchedule(s);
-                    }}
-                  >
-                    <span className="today-row-title">{s.title ?? s.spec}</span>
-                    <span className="today-row-meta">
-                      <span className="today-row-date">
-                        {s.nextRunAt ? `след.: ${formatInstant(s.nextRunAt)}` : "без запуска"}
-                      </span>
-                    </span>
-                  </div>
-                ))}
-              </Card>
-
-              <Card icon={<IconTarget />} title="Цели" count={activeGoals}>
-                <form
-                  className="obj-add"
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void addObjective();
-                  }}
-                >
-                  <input
-                    className="rename-input"
-                    value={newTitle}
-                    onChange={(e) => setNewTitle(e.target.value)}
-                    placeholder="Новая цель…"
-                  />
-                  <textarea
-                    className="rename-input obj-steps-input"
-                    value={newSteps}
-                    onChange={(e) => setNewSteps(e.target.value)}
-                    placeholder="Шаги, по одному в строке (необязательно)"
-                    rows={2}
-                  />
-                  <button className="ghost-btn small" type="submit" disabled={!newTitle.trim()}>
-                    Добавить
-                  </button>
-                </form>
-                {data.objectives.length === 0 && (
-                  <div className="today-empty">Целей пока нет.</div>
-                )}
-                {data.objectives.map((o) => {
-                  const pct = o.totalSteps ? Math.round((o.doneSteps / o.totalSteps) * 100) : 0;
-                  return (
-                    <div className="obj-row" key={`g-${o.id}`}>
-                      <div
-                        className="obj-head"
-                        role="button"
-                        tabIndex={0}
-                        title={o.description ?? undefined}
-                        onClick={() => toggleObjective(o.id)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") toggleObjective(o.id);
-                        }}
-                      >
-                        <span className="t">{o.title}</span>
-                        <span className={`badge st-${o.status}`}>
-                          {OBJECTIVE_STATUS_LABEL[o.status] ?? o.status}
-                        </span>
-                        {o.totalSteps > 0 && (
-                          <span className="obj-count">
-                            {o.doneSteps}/{o.totalSteps}
-                          </span>
-                        )}
-                      </div>
-                      {o.totalSteps > 0 && (
-                        <div className="obj-bar">
-                          <i style={{ width: `${pct}%` }} />
-                        </div>
-                      )}
-                      {expanded[o.id] && o.steps.length > 0 && (
-                        <div className="obj-steps">
-                          {o.steps.map((s) => (
-                            <label className="obj-step" key={s.id}>
-                              <input
-                                type="checkbox"
-                                checked={s.done}
-                                onChange={(e) => void toggleStep(o.id, s.id, e.target.checked)}
-                              />
-                              <span className={s.done ? "strikethrough" : undefined}>
-                                {s.text}
-                              </span>
-                            </label>
-                          ))}
-                        </div>
-                      )}
-                      <div className="obj-actions">
-                        {o.status !== "done" && (
-                          <button
-                            className="mini-btn"
-                            type="button"
-                            onClick={() => void setObjectiveStatus(o.id, "done")}
-                          >
-                            Готово
-                          </button>
-                        )}
-                        {o.status === "active" && (
-                          <button
-                            className="mini-btn"
-                            type="button"
-                            onClick={() => void setObjectiveStatus(o.id, "paused")}
-                          >
-                            Пауза
-                          </button>
-                        )}
-                        {o.status === "paused" && (
-                          <button
-                            className="mini-btn"
-                            type="button"
-                            onClick={() => void setObjectiveStatus(o.id, "active")}
-                          >
-                            Продолжить
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </Card>
-
-              <Card
-                icon={<IconNote />}
-                title="Свежие заметки"
-                action={{ label: "все", onClick: () => onTab("notes") }}
-              >
-                {data.notes.length === 0 && (
-                  <div className="today-empty">Заметок пока нет.</div>
-                )}
-                {data.notes.map((n) => (
-                  <div
-                    className="today-row"
-                    key={`n-${n.relPath}`}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => openNote(n.relPath)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") openNote(n.relPath);
-                    }}
-                  >
-                    <span className="today-row-title">{n.name}</span>
-                    <span className="today-row-meta">
-                      <span className="today-row-date">{formatModified(n.modified)}</span>
-                    </span>
-                  </div>
-                ))}
-              </Card>
-
-              <Card
-                icon={<IconChat />}
-                title="Последние чаты"
-                action={{ label: "все", onClick: () => onTab("harness") }}
-              >
-                {data.sessions.length === 0 && (
-                  <div className="today-empty">Сессий пока нет.</div>
-                )}
-                {data.sessions.map((s) => (
-                  <div
-                    className="today-row"
-                    key={`c-${s.id}`}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => openSession(s.id)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") openSession(s.id);
-                    }}
-                  >
-                    <span className="today-row-title">{s.title ?? "Новая сессия"}</span>
-                    <span className="today-row-meta">
-                      <span className="today-row-date">{formatActivity(s.lastActiveAt)}</span>
-                    </span>
-                  </div>
-                ))}
-              </Card>
+          {cardNodes && (
+            <div className="today-grid" ref={gridRef}>
+              {order.map((id) => cardNodes[id])}
             </div>
           )}
         </div>

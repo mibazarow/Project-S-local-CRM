@@ -196,7 +196,7 @@ input, textarea { font-family: inherit; }
 /* ---------- Pointer drag & drop (projects + kanban) ---------- */
 
 body.dnd-active { cursor: grabbing; -webkit-user-select: none; user-select: none; }
-body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .notes-tree .tree-row { cursor: grabbing; }
+body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .notes-tree .tree-row, body.dnd-active .today-card-head { cursor: grabbing; }
 
 .drag-ghost {
   opacity: .95;
@@ -205,6 +205,7 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
   transition: none;
 }
 .drag-ghost.project-item:not(.active) { background: var(--surface); }
+.drag-ghost.today-card { background: var(--surface); }
 
 .drop-indicator { position: relative; height: 0; flex-shrink: 0; }
 .drop-indicator::before {
@@ -1812,13 +1813,16 @@ details.set-card code {
   transition: box-shadow .15s, border-color .15s;
 }
 .today-card:hover { border-color: var(--border-strong); box-shadow: 0 2px 8px rgba(0, 0, 0, .07); }
+.today-card.dragging { opacity: .45; }
 .today-card-head {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 11px 12px 9px;
   border-bottom: 1px solid var(--hairline);
+  cursor: grab;
 }
+.today-card-grip { display: flex; flex-shrink: 0; color: var(--border-strong); }
 .today-card-icon { display: flex; flex-shrink: 0; color: var(--text-muted); }
 .today-card-icon.is-danger { color: var(--danger); }
 .today-card-title { font-size: 13px; font-weight: 600; color: var(--text); }
