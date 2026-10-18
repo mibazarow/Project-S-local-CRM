@@ -12,7 +12,13 @@
 - Полный `npm run app:build` — только в финале.
 
 ## Фаза 5 — остаток
-- **S5.5 statics** — по одному process-static за срез (scheduler/reindex/browser/processes/backups/cache), только с тестами.
+- **S5.5a scheduler-static** — `THREAD_STARTED` (`scheduler/mod.rs:662`): инкапсулировать one-shot запуск, тест на повторный вызов.
+- **S5.5b reindex-static** — `GLOBAL` + `TIMER_STARTED` (`search_reindex.rs:208/214`): инкапсулировать менеджер и one-shot таймер.
+- **S5.5c browser-static** — `SESSION` (`agent/browser_tool.rs:34`): инкапсулировать общую сессию (launch/reuse/kill).
+- **S5.5d processes-static** — `CHILDREN` (`processes.rs:40`): инкапсулировать реестр процессов (shutdown/reconcile).
+- **S5.5e backups-static** — `ACTIVE_BACKUPS` (`ops.rs:260`): инкапсулировать дедуп конкурентных бэкапов.
+- **S5.5f open-with-cache** — `CACHE` (`open_with.rs:153`): инкапсулировать кэш списка приложений по типу.
+- `embed`-кэши (`EMBEDDER_CACHE`, ORT `ENV`) — осознанно процессные, не трогаем.
 
 ## Проверка среза
 `npm test`; `npm run build`; `npx oxlint src`; `cargo test`; `cargo check`; `cargo clippy --all-targets`; для перфа — замеры; для UI — скриншоты baseline; сверка `ipc.ts` и схемы БД; чистый `git status`.
@@ -24,4 +30,4 @@
 - `BAG_REPORT.md`/`Q.md` — рабочие файлы задач, не менять их в рамках рефакторинга.
 
 ## Следующий шаг
-**S5.5 statics** — по одному process-static за срез, только с тестами.
+**S5.5a scheduler-static** — инкапсулировать `THREAD_STARTED` и покрыть тестом one-shot запуска.
