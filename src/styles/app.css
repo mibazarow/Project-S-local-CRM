@@ -1450,6 +1450,55 @@ body.dnd-active .project-item, body.dnd-active .task-card { cursor: grabbing; }
   color: var(--text-muted);
 }
 
+/* ---------- «Сегодня» (дашборд) ---------- */
+
+.today-view { grid-template-columns: 1fr; }
+
+.today-head-counts { display: flex; gap: 6px; margin-left: auto; }
+
+.today-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  align-items: start;
+  max-width: 980px;
+}
+@media (max-width: 860px) { .today-grid { grid-template-columns: 1fr; } }
+
+.today-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+.today-card-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-muted);
+  padding: 10px 12px 4px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.today-count { background: #e4e4e9; border-radius: 10px; padding: 1px 8px; font-size: 11px; }
+.today-list { display: flex; flex-direction: column; padding: 2px 6px 8px; gap: 1px; }
+.today-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background .12s;
+}
+.today-item:hover { background: rgba(0, 0, 0, .045); }
+.today-item .t { font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.today-item .m { font-size: 11px; color: var(--text-muted); display: flex; gap: 8px; min-width: 0; }
+.today-item .m .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.today-item .m .red { color: var(--danger); font-weight: 600; }
+
 /* ---------- Скроллбары (overlay, как в macOS) ---------- */
 
 ::-webkit-scrollbar { width: 8px; }

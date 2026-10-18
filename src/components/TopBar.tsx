@@ -1,7 +1,7 @@
 import logo from "../assets/logo.svg";
 import { IconSearch } from "./files/icons";
 
-export type Tab = "projects" | "harness" | "notes";
+export type Tab = "today" | "projects" | "harness" | "notes";
 
 interface Props {
   tab: Tab;
@@ -18,6 +18,12 @@ export default function TopBar({ tab, onTab, onSettings, onSearch }: Props) {
         <span className="app-title">Project S</span>
       </div>
       <nav className="tabs">
+        <button
+          className={tab === "today" ? "tab active" : "tab"}
+          onClick={() => onTab("today")}
+        >
+          Сегодня
+        </button>
         <button
           className={tab === "projects" ? "tab active" : "tab"}
           onClick={() => onTab("projects")}
