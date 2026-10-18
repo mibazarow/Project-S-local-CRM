@@ -72,7 +72,7 @@ pub(crate) fn reindex_start(app: AppHandle, state: State<AppState>) -> Result<se
 
 #[tauri::command]
 pub(crate) fn reindex_status() -> search_reindex::ReindexStatus {
-    search_reindex::global().status()
+    search_reindex::status()
 }
 
 #[tauri::command]

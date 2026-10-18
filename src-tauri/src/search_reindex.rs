@@ -205,13 +205,49 @@ fn rebuild_tasks_fts(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-static GLOBAL: OnceLock<Arc<ReindexManager>> = OnceLock::new();
-
-pub fn global() -> Arc<ReindexManager> {
-    Arc::clone(GLOBAL.get_or_init(Default::default))
+pub(crate) struct ReindexRuntime {
+    manager: OnceLock<Arc<ReindexManager>>,
+    timer_started: AtomicBool,
 }
 
-static TIMER_STARTED: AtomicBool = AtomicBool::new(false);
+impl ReindexRuntime {
+    const fn new() -> Self {
+        ReindexRuntime {
+            manager: OnceLock::new(),
+            timer_started: AtomicBool::new(false),
+        }
+    }
+
+    fn manager(&self) -> Arc<ReindexManager> {
+        Arc::clone(self.manager.get_or_init(Default::default))
+    }
+
+    fn status(&self) -> ReindexStatus {
+        self.manager().status()
+    }
+
+    fn ensure_timer_started<F>(&self, spawn: F) -> bool
+    where
+        F: FnOnce(),
+    {
+        if self.timer_started.swap(true, Ordering::SeqCst) {
+            false
+        } else {
+            spawn();
+            true
+        }
+    }
+}
+
+static RUNTIME: ReindexRuntime = ReindexRuntime::new();
+
+pub fn global() -> Arc<ReindexManager> {
+    RUNTIME.manager()
+}
+
+pub fn status() -> ReindexStatus {
+    RUNTIME.status()
+}
 
 // Background auto-reindex, started once per process (setup + choose_working_dir
 // like scheduler::start): arms the first 5-minute countdown, then every 30 s
@@ -220,9 +256,10 @@ static TIMER_STARTED: AtomicBool = AtomicBool::new(false);
 pub fn start_timer(app: AppHandle) {
     let mgr = global();
     mgr.arm_initial();
-    if TIMER_STARTED.swap(true, Ordering::SeqCst) {
-        return;
-    }
+    RUNTIME.ensure_timer_started(move || spawn_timer_thread(app, mgr));
+}
+
+fn spawn_timer_thread(app: AppHandle, mgr: Arc<ReindexManager>) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(Duration::from_secs(TICK_SECONDS));
@@ -503,5 +540,96 @@ mod tests {
         assert!(st.last_run_at.is_some());
         assert!(st.next_run_at > now_ms() + 4 * 60 * 1000);
         fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn runtime_manager_is_created_once_and_shared() {
+        let rt = ReindexRuntime::new();
+        assert!(Arc::ptr_eq(&rt.manager(), &rt.manager()));
+        assert!(Arc::ptr_eq(&global(), &global()));
+    }
+
+    #[test]
+    fn runtime_status_reads_the_shared_manager() {
+        let rt = ReindexRuntime::new();
+        assert_eq!(rt.status().next_run_at, 0);
+        rt.manager().arm_initial();
+        let armed = rt.status().next_run_at;
+        assert!(armed > now_ms() + 4 * 60 * 1000 && armed <= now_ms() + 5 * 60 * 1000);
+    }
+
+    #[test]
+    fn ensure_timer_started_spawns_the_thread_exactly_once() {
+        use std::sync::atomic::AtomicUsize;
+        let rt = ReindexRuntime::new();
+        let spawns = Arc::new(AtomicUsize::new(0));
+
+        let first = {
+            let spawns = spawns.clone();
+            rt.ensure_timer_started(move || {
+                spawns.fetch_add(1, Ordering::SeqCst);
+            })
+        };
+        assert!(first, "first ensure must spawn the thread");
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+
+        let second = {
+            let spawns = spawns.clone();
+            rt.ensure_timer_started(move || {
+                spawns.fetch_add(1, Ordering::SeqCst);
+            })
+        };
+        assert!(!second, "second ensure must not spawn");
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn ensure_timer_started_spawns_once_under_concurrent_callers() {
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::Barrier;
+        let rt = Arc::new(ReindexRuntime::new());
+        let spawns = Arc::new(AtomicUsize::new(0));
+        let barrier = Arc::new(Barrier::new(8));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let rt = rt.clone();
+            let spawns = spawns.clone();
+            let barrier = barrier.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                rt.ensure_timer_started(move || {
+                    spawns.fetch_add(1, Ordering::SeqCst);
+                })
+            }));
+        }
+        let spawned: Vec<_> = handles
+            .into_iter()
+            .map(|h| h.join().unwrap())
+            .filter(|did_spawn| *did_spawn)
+            .collect();
+        assert_eq!(spawned.len(), 1, "exactly one caller must have spawned");
+        assert_eq!(spawns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn ensure_timer_started_does_not_retry_after_a_failed_spawn() {
+        use std::panic::AssertUnwindSafe;
+        use std::sync::atomic::AtomicUsize;
+        let rt = ReindexRuntime::new();
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_in = attempts.clone();
+        let panicked = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            rt.ensure_timer_started(move || {
+                attempts_in.fetch_add(1, Ordering::SeqCst);
+                panic!("spawn failed");
+            })
+        }))
+        .is_err();
+        assert!(panicked, "the injected spawn must fail");
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+        assert!(
+            !rt.ensure_timer_started(|| panic!("must not spawn again")),
+            "a failed spawn must not be retried"
+        );
     }
 }
