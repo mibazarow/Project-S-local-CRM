@@ -15,7 +15,7 @@ pub fn export_project(conn: &Connection, wd: &Path, project_id: i64) -> Result<(
 
     let mut expected = Vec::new();
     let mut stmt = conn.prepare(
-        "SELECT id, title, status, comment, due_date, remind_at, created_at, closed_at,
+        "SELECT id, title, status, comment, due_date, due_time, remind_at, created_at, closed_at,
                 is_priority, checklist, recurrence
          FROM tasks WHERE project_id = ?1",
     )?;
@@ -65,12 +65,13 @@ fn render(row: &rusqlite::Row<'_>, project: &str) -> Result<String> {
     let status: String = row.get(2)?;
     let comment: Option<String> = row.get(3)?;
     let due: Option<String> = row.get(4)?;
-    let remind: Option<String> = row.get(5)?;
-    let created: String = row.get(6)?;
-    let closed: Option<String> = row.get(7)?;
-    let is_priority: i64 = row.get(8)?;
-    let checklist_json: String = row.get(9)?;
-    let recurrence: String = row.get(10)?;
+    let due_time: String = row.get(5)?;
+    let remind: Option<String> = row.get(6)?;
+    let created: String = row.get(7)?;
+    let closed: Option<String> = row.get(8)?;
+    let is_priority: i64 = row.get(9)?;
+    let checklist_json: String = row.get(10)?;
+    let recurrence: String = row.get(11)?;
     let checklist: Vec<crate::tasks::ChecklistItem> =
         serde_json::from_str(&checklist_json).unwrap_or_default();
     let mut out = String::from("---\n");
@@ -83,6 +84,7 @@ fn render(row: &rusqlite::Row<'_>, project: &str) -> Result<String> {
     out.push_str(&format!("created: {}\n", yaml_quote(&created)));
     if let Some(d) = &due {
         out.push_str(&format!("due: \"{d}\"\n"));
+        out.push_str(&format!("due_time: \"{due_time}\"\n"));
     }
     if let Some(c) = &closed {
         out.push_str(&format!("closed: {}\n", yaml_quote(c)));
@@ -202,6 +204,7 @@ mod tests {
         let two = fs::read_to_string(dir.join("2.md")).unwrap();
         assert!(two.contains("is_priority: true\n"));
         assert!(two.contains("due: \"2099-01-02\"\n"));
+        assert!(two.contains("due_time: \"07:00\"\n"));
         assert!(two.contains("remind: \"2099-01-02T10:30\"\n"));
         assert!(two.contains("---\n\n# Правка шапки\n\nдетали\nвторой абзац\n"));
         fs::remove_dir_all(&wd).unwrap();
@@ -216,6 +219,7 @@ mod tests {
             "weekly report",
             None,
             Some("2099-01-02".into()),
+            None,
             Some(true),
             Some(vec![
                 crate::tasks::ChecklistItem { text: "collect data".into(), done: true },

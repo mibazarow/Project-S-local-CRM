@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { formatActivity, formatDue, formatInstant, formatModified } from "./format";
+import { dueMs, formatActivity, formatDue, formatInstant, formatModified } from "./format";
 
 // Fix "now" to 2026-10-18 12:00 local so the «сегодня» branch is deterministic.
 beforeEach(() => {
@@ -39,6 +39,22 @@ describe("formatDue", () => {
   });
   it("returns the raw value for unparseable input", () => {
     expect(formatDue("bad")).toBe("bad");
+  });
+});
+
+describe("dueMs", () => {
+  const at0700 = new Date(2026, 9, 18, 7, 0, 0).getTime();
+
+  it("overdue boundary honors the due time around 07:00", () => {
+    expect(dueMs("2026-10-18", "06:59")).toBeLessThan(at0700);
+    expect(dueMs("2026-10-18", "07:01")).toBeGreaterThan(at0700);
+    expect(dueMs("2026-10-18", "07:00")).toBe(at0700);
+  });
+  it("empty due time falls back to 07:00", () => {
+    expect(dueMs("2026-10-18", "")).toBe(at0700);
+  });
+  it("returns NaN for unparseable dates", () => {
+    expect(Number.isNaN(dueMs("bad", "07:00"))).toBe(true);
   });
 });
 

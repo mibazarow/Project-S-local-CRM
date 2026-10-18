@@ -108,6 +108,7 @@ pub(crate) fn create_schema(with_selector: bool) -> Value {
         json!({ "type": "string", "enum": STATUS_ENUM }),
     );
     props.insert("dueDate".to_owned(), json!({ "type": "string" }));
+    props.insert("dueTime".to_owned(), json!({ "type": "string" }));
     props.insert("isPriority".to_owned(), json!({ "type": "boolean" }));
     props.insert(
         "recurrence".to_owned(),
@@ -130,6 +131,8 @@ pub(crate) fn update_schema() -> Value {
     props.insert("title".to_owned(), json!({ "type": "string" }));
     props.insert("comment".to_owned(), json!({ "type": ["string", "null"] }));
     props.insert("dueDate".to_owned(), json!({ "type": ["string", "null"] }));
+    // due_time is NOT NULL: null/absent keeps the current value.
+    props.insert("dueTime".to_owned(), json!({ "type": "string" }));
     props.insert("remindAt".to_owned(), json!({ "type": ["string", "null"] }));
     props.insert("isPriority".to_owned(), json!({ "type": "boolean" }));
     props.insert(
@@ -182,9 +185,10 @@ pub(crate) fn task_create_body(
     let title = args["title"].as_str().unwrap_or_default();
     let status = args.get("status").and_then(Value::as_str).map(str::to_owned);
     let due_date = args.get("dueDate").and_then(Value::as_str).map(str::to_owned);
+    let due_time = args.get("dueTime").and_then(Value::as_str).map(str::to_owned);
     let is_priority = args.get("isPriority").and_then(Value::as_bool);
     let recurrence = args.get("recurrence").and_then(Value::as_str).map(str::to_owned);
-    let dto = tasks::task_create_with(conn, pid, title, status, due_date, is_priority, checklist, recurrence)?;
+    let dto = tasks::task_create_with(conn, pid, title, status, due_date, due_time, is_priority, checklist, recurrence)?;
     let _ = undo::push_task_create(conn, dto.id, pid);
     Ok(dto)
 }
@@ -358,6 +362,7 @@ mod tests {
                     "title": { "type": "string" },
                     "status": { "type": "string", "enum": ["new", "progress", "done"] },
                     "dueDate": { "type": "string" },
+                    "dueTime": { "type": "string" },
                     "isPriority": { "type": "boolean" },
                     "recurrence": { "type": "string", "enum": ["none", "daily", "weekly", "monthly"] },
                     "checklist": {
@@ -391,6 +396,7 @@ mod tests {
                     "title": { "type": "string" },
                     "comment": { "type": ["string", "null"] },
                     "dueDate": { "type": ["string", "null"] },
+                    "dueTime": { "type": "string" },
                     "remindAt": { "type": ["string", "null"] },
                     "isPriority": { "type": "boolean" },
                     "recurrence": { "type": "string", "enum": ["none", "daily", "weekly", "monthly"] },

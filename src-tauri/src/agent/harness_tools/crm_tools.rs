@@ -175,7 +175,7 @@ impl Tool for CrmTaskCreateTool {
         "crm_task_create"
     }
     fn description(&self) -> &str {
-        "Create a task in a project (project_id or project_name); optional status (new|progress|done, default new), dueDate (YYYY-MM-DD), isPriority (true|false, default false), recurrence (none|daily|weekly|monthly, default none), checklist ([{text, done?}], max 100 items)."
+        "Create a task in a project (project_id or project_name); optional status (new|progress|done, default new), dueDate (YYYY-MM-DD), dueTime (HH:MM deadline time, default 07:00), isPriority (true|false, default false), recurrence (none|daily|weekly|monthly, default none), checklist ([{text, done?}], max 100 items)."
     }
     fn parameters(&self) -> Value {
         create_schema(true)
@@ -209,7 +209,7 @@ impl Tool for CrmTaskUpdateTool {
         "crm_task_update"
     }
     fn description(&self) -> &str {
-        "Update fields of a task by id; absent fields stay unchanged, explicit null clears comment/dueDate/remindAt. Dates: YYYY-MM-DD, remindAt: YYYY-MM-DDTHH:MM. isPriority: true|false, recurrence: none|daily|weekly|monthly, checklist: [{text, done?}] max 100 (null/absent keeps the current value)."
+        "Update fields of a task by id; absent fields stay unchanged, explicit null clears comment/dueDate/remindAt. Dates: YYYY-MM-DD, dueTime: HH:MM (null/absent keeps the current value), remindAt: YYYY-MM-DDTHH:MM. isPriority: true|false, recurrence: none|daily|weekly|monthly, checklist: [{text, done?}] max 100 (null/absent keeps the current value)."
     }
     fn parameters(&self) -> Value {
         update_schema()

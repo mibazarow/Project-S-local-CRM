@@ -32,10 +32,11 @@ const isDefaultFilters = (f: Filters) => !f.query.trim() && !f.overdueOnly;
 interface NewTaskDraft {
   title: string;
   dueDate: string | null;
+  dueTime: string | null;
   isPriority: boolean;
 }
 
-// Inline create form in a column: title + due date + «Приоритетная».
+// Inline create form in a column: title + due date + due time + «Приоритетная».
 function AddTaskForm({
   onCommit,
   onCancel,
@@ -45,6 +46,7 @@ function AddTaskForm({
 }) {
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const [due, setDue] = useState("");
+  const [dueTime, setDueTime] = useState("");
   const [priority, setPriority] = useState(false);
   const done = useRef(false);
 
@@ -57,7 +59,7 @@ function AddTaskForm({
     done.current = true;
     const title = titleRef.current?.value.trim() ?? "";
     if (!title) onCancel();
-    else onCommit({ title, dueDate: due || null, isPriority: priority });
+    else onCommit({ title, dueDate: due || null, dueTime: due && dueTime ? dueTime : null, isPriority: priority });
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -83,6 +85,13 @@ function AddTaskForm({
         type="date"
         value={due}
         onChange={(e) => setDue(e.target.value)}
+      />
+      <input
+        className="rename-input"
+        type="time"
+        title="Время дедлайна (по умолчанию 07:00)"
+        value={dueTime}
+        onChange={(e) => setDueTime(e.target.value)}
       />
       <div className="task-add-row">
         <label className="tf-check">
@@ -122,7 +131,7 @@ export default function KanbanBoard({ project, tasksVersion, highlightTaskId }: 
 
   // «Обсудить»: a prebuilt question about the task for the project chat.
   const discussTask = (task: TaskDto) => {
-    const detail = task.comment?.trim() || (task.dueDate ? `срок ${task.dueDate}` : "");
+    const detail = task.comment?.trim() || (task.dueDate ? `срок ${task.dueDate} ${task.dueTime}` : "");
     actions.requestAskAgent(
       projectId,
       `Задача #${task.id} «${task.title}»${detail ? `: ${detail}` : ""}. Кратко: текущий статус и следующий шаг.`,
@@ -256,7 +265,7 @@ export default function KanbanBoard({ project, tasksVersion, highlightTaskId }: 
   const handleCreate = (status: string, draft: NewTaskDraft) => {
     setAddingStatus(null);
     ipc
-      .taskCreate(projectId, draft.title, status, draft.dueDate, draft.isPriority)
+      .taskCreate(projectId, draft.title, status, draft.dueDate, draft.dueTime, draft.isPriority)
       .then((dto) => {
         setError(null);
         upsert(dto);

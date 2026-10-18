@@ -286,6 +286,7 @@ pub fn create_task(
         None,
         None,
         None,
+        None,
         tpl.checklist.clone(),
         None,
     )

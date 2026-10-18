@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub const STATUSES: [&str; 3] = ["new", "progress", "done"];
 pub const RECURRENCES: [&str; 4] = ["none", "daily", "weekly", "monthly"];
 pub const MAX_CHECKLIST_ITEMS: usize = 100;
+pub const DEFAULT_DUE_TIME: &str = "07:00";
 
 // Kanban column order: new -> progress -> done.
 const ORDER_SQL: &str = "ORDER BY CASE status WHEN 'new' THEN 0 WHEN 'progress' THEN 1 ELSE 2 END, position, id";
@@ -26,6 +27,7 @@ pub struct TaskDto {
     pub status: String,
     pub comment: Option<String>,
     pub due_date: Option<String>,
+    pub due_time: String,
     pub remind_at: Option<String>,
     pub position: f64,
     pub created_at: String,
@@ -50,7 +52,8 @@ mod opt_opt_str {
 
 // Absent field leaves the value unchanged; explicit null clears it.
 // is_priority/checklist/recurrence are NOT NULL columns: an explicit null is
-// indistinguishable from absent and keeps the current value.
+// indistinguishable from absent and keeps the current value. due_time is
+// NOT NULL too: null/absent keeps it, a set value must be HH:MM.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TaskPatch {
@@ -59,6 +62,7 @@ pub struct TaskPatch {
     pub comment: Option<Option<String>>,
     #[serde(deserialize_with = "opt_opt_str::deserialize")]
     pub due_date: Option<Option<String>>,
+    pub due_time: Option<String>,
     #[serde(deserialize_with = "opt_opt_str::deserialize")]
     pub remind_at: Option<Option<String>>,
     pub is_priority: Option<bool>,
@@ -68,9 +72,9 @@ pub struct TaskPatch {
 
 pub fn tasks_list(conn: &Connection, project_id: i64) -> Result<Vec<TaskDto>> {
     ensure_project(conn, project_id)?;
-    let today = today(conn)?;
+    let now = now(conn)?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, title, status, comment, due_date, remind_at, position, created_at, closed_at,
+        "SELECT id, title, status, comment, due_date, due_time, remind_at, position, created_at, closed_at,
                 is_priority, checklist, recurrence
          FROM tasks WHERE project_id = ?1 {ORDER_SQL}"
     ))?;
@@ -79,23 +83,24 @@ pub fn tasks_list(conn: &Connection, project_id: i64) -> Result<Vec<TaskDto>> {
     while let Some(row) = rows.next()? {
         let status: String = row.get(2)?;
         let due_date: Option<String> = row.get(4)?;
-        let overdue =
-            due_date.as_deref().is_some_and(|d| d < today.as_str()) && status != "done";
+        let due_time: String = row.get(5)?;
+        let overdue = is_overdue(&status, due_date.as_deref(), &due_time, &now);
         out.push(TaskDto {
             id: row.get(0)?,
             project_id,
             title: row.get(1)?,
             overdue,
-            position: row.get(6)?,
-            created_at: row.get(7)?,
-            closed_at: row.get(8)?,
+            position: row.get(7)?,
+            created_at: row.get(8)?,
+            closed_at: row.get(9)?,
             comment: row.get(3)?,
             due_date,
-            remind_at: row.get(5)?,
+            due_time,
+            remind_at: row.get(6)?,
             status,
-            is_priority: row.get::<_, i64>(9)? != 0,
-            checklist: parse_checklist(&row.get::<_, String>(10)?)?,
-            recurrence: row.get(11)?,
+            is_priority: row.get::<_, i64>(10)? != 0,
+            checklist: parse_checklist(&row.get::<_, String>(11)?)?,
+            recurrence: row.get(12)?,
         });
     }
     Ok(out)
@@ -110,7 +115,7 @@ pub fn task_create(
     raw_title: &str,
     status: Option<String>,
 ) -> Result<TaskDto> {
-    task_create_with(conn, project_id, raw_title, status, None, None, None, None)
+    task_create_with(conn, project_id, raw_title, status, None, None, None, None, None)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -120,6 +125,7 @@ pub fn task_create_with(
     raw_title: &str,
     status: Option<String>,
     due_date: Option<String>,
+    due_time: Option<String>,
     is_priority: Option<bool>,
     checklist: Option<Vec<ChecklistItem>>,
     recurrence: Option<String>,
@@ -138,6 +144,13 @@ pub fn task_create_with(
         }
         None => None,
     };
+    let due_time = match due_time {
+        Some(t) => {
+            check_time(&t, "due_time")?;
+            t
+        }
+        None => DEFAULT_DUE_TIME.to_owned(),
+    };
     let is_priority = is_priority.unwrap_or(false);
     let recurrence = recurrence.unwrap_or_else(|| "none".into());
     check_recurrence(&recurrence)?;
@@ -151,12 +164,12 @@ pub fn task_create_with(
         |r| r.get(0),
     )?;
     conn.execute(
-        "INSERT INTO tasks (project_id, title, status, due_date, position, created_at, closed_at,
+        "INSERT INTO tasks (project_id, title, status, due_date, due_time, position, created_at, closed_at,
                             is_priority, checklist, recurrence)
-         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now','localtime'),
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now','localtime'),
                  CASE WHEN ?3 = 'done' THEN datetime('now','localtime') ELSE NULL END,
-                 ?6, ?7, ?8)",
-        params![project_id, title, status, due_date, position, is_priority, checklist_json, recurrence],
+                 ?7, ?8, ?9)",
+        params![project_id, title, status, due_date, due_time, position, is_priority, checklist_json, recurrence],
     )?;
     let id = conn.last_insert_rowid();
     fts_sync(conn, id)?;
@@ -164,10 +177,10 @@ pub fn task_create_with(
 }
 
 pub fn task_update(conn: &Connection, id: i64, patch: TaskPatch) -> Result<TaskDto> {
-    let (mut title, mut comment, mut due_date, mut remind_at, mut is_priority,
+    let (mut title, mut comment, mut due_date, mut due_time, mut remind_at, mut is_priority,
          mut checklist_json, mut recurrence) = conn
         .query_row(
-            "SELECT title, comment, due_date, remind_at, is_priority, checklist, recurrence
+            "SELECT title, comment, due_date, due_time, remind_at, is_priority, checklist, recurrence
              FROM tasks WHERE id = ?1",
             params![id],
             |r| Ok((
@@ -175,9 +188,10 @@ pub fn task_update(conn: &Connection, id: i64, patch: TaskPatch) -> Result<TaskD
                 r.get(1)?,
                 r.get(2)?,
                 r.get(3)?,
-                r.get::<_, i64>(4)? != 0,
-                r.get(5)?,
+                r.get(4)?,
+                r.get::<_, i64>(5)? != 0,
                 r.get(6)?,
+                r.get(7)?,
             )),
         )
         .map_err(|_| AppError::Invalid(format!("task {id} not found")))?;
@@ -201,6 +215,12 @@ pub fn task_update(conn: &Connection, id: i64, patch: TaskPatch) -> Result<TaskD
         }
         due_date = new_due;
     }
+    // due_time is NOT NULL: an explicit null is indistinguishable from
+    // absent and keeps the current value.
+    if let Some(new_time) = patch.due_time {
+        check_time(&new_time, "due_time")?;
+        due_time = new_time;
+    }
     if let Some(new_remind) = patch.remind_at {
         if let Some(r) = &new_remind {
             check_remind_at(r)?;
@@ -219,10 +239,10 @@ pub fn task_update(conn: &Connection, id: i64, patch: TaskPatch) -> Result<TaskD
     }
 
     conn.execute(
-        "UPDATE tasks SET title = ?1, comment = ?2, due_date = ?3, remind_at = ?4,
-                        is_priority = ?5, checklist = ?6, recurrence = ?7
-         WHERE id = ?8",
-        params![title, comment, due_date, remind_at, is_priority, checklist_json, recurrence, id],
+        "UPDATE tasks SET title = ?1, comment = ?2, due_date = ?3, due_time = ?4, remind_at = ?5,
+                        is_priority = ?6, checklist = ?7, recurrence = ?8
+         WHERE id = ?9",
+        params![title, comment, due_date, due_time, remind_at, is_priority, checklist_json, recurrence, id],
     )?;
     fts_sync(conn, id)?;
     dto(conn, id)
@@ -322,10 +342,10 @@ fn spawn_next_occurrence(
         item.done = false;
     }
     let checklist = serde_json::to_string(&items)?;
-    let (project_id, comment, is_priority): (i64, Option<String>, i64) = conn.query_row(
-        "SELECT project_id, comment, is_priority FROM tasks WHERE id = ?1",
+    let (project_id, comment, due_time, is_priority): (i64, Option<String>, String, i64) = conn.query_row(
+        "SELECT project_id, comment, due_time, is_priority FROM tasks WHERE id = ?1",
         params![src_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
     )?;
     let position: f64 = conn.query_row(
         "SELECT COALESCE(MAX(position), 0) + 1 FROM tasks WHERE project_id = ?1 AND status = 'new'",
@@ -333,10 +353,10 @@ fn spawn_next_occurrence(
         |r| r.get(0),
     )?;
     conn.execute(
-        "INSERT INTO tasks (project_id, title, status, comment, due_date, remind_at,
+        "INSERT INTO tasks (project_id, title, status, comment, due_date, due_time, remind_at,
                             position, created_at, closed_at, is_priority, checklist, recurrence)
-         VALUES (?1, ?2, 'new', ?3, ?4, NULL, ?5, datetime('now','localtime'), NULL, ?6, ?7, ?8)",
-        params![project_id, title, comment, next_due, position, is_priority, checklist, recurrence],
+         VALUES (?1, ?2, 'new', ?3, ?4, ?5, NULL, ?6, datetime('now','localtime'), NULL, ?7, ?8, ?9)",
+        params![project_id, title, comment, next_due, due_time, position, is_priority, checklist, recurrence],
     )?;
     let spawned_id = conn.last_insert_rowid();
     fts_sync(conn, spawned_id)?;
@@ -355,6 +375,8 @@ pub(crate) struct TaskSnapshot {
     pub(crate) status: String,
     pub(crate) comment: Option<String>,
     pub(crate) due_date: Option<String>,
+    #[serde(default = "default_due_time")]
+    pub(crate) due_time: String,
     pub(crate) remind_at: Option<String>,
     pub(crate) tags: String,
     pub(crate) position: f64,
@@ -382,9 +404,13 @@ fn default_recurrence() -> String {
     "none".to_owned()
 }
 
+fn default_due_time() -> String {
+    DEFAULT_DUE_TIME.to_owned()
+}
+
 pub(crate) fn task_snapshot(conn: &Connection, id: i64) -> Result<TaskSnapshot> {
     conn.query_row(
-        "SELECT id, project_id, title, status, comment, due_date, remind_at,
+        "SELECT id, project_id, title, status, comment, due_date, due_time, remind_at,
                 tags, position, created_at, closed_at, priority, checklist, recurrence, is_priority
          FROM tasks WHERE id = ?1",
         params![id],
@@ -396,15 +422,16 @@ pub(crate) fn task_snapshot(conn: &Connection, id: i64) -> Result<TaskSnapshot> 
                 status: r.get(3)?,
                 comment: r.get(4)?,
                 due_date: r.get(5)?,
-                remind_at: r.get(6)?,
-                tags: r.get(7)?,
-                position: r.get(8)?,
-                created_at: r.get(9)?,
-                closed_at: r.get(10)?,
-                priority: r.get(11)?,
-                checklist: r.get(12)?,
-                recurrence: r.get(13)?,
-                is_priority: r.get::<_, i64>(14)? != 0,
+                due_time: r.get(6)?,
+                remind_at: r.get(7)?,
+                tags: r.get(8)?,
+                position: r.get(9)?,
+                created_at: r.get(10)?,
+                closed_at: r.get(11)?,
+                priority: r.get(12)?,
+                checklist: r.get(13)?,
+                recurrence: r.get(14)?,
+                is_priority: r.get::<_, i64>(15)? != 0,
             })
         },
     )
@@ -441,9 +468,9 @@ pub(crate) fn task_delete_row(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
-const RESTORE_COLUMNS: &str = "project_id, title, status, comment, due_date, remind_at,
-                                tags, position, created_at, closed_at, priority, checklist,
-                                recurrence, is_priority";
+const RESTORE_COLUMNS: &str = "project_id, title, status, comment, due_date, due_time, remind_at,
+                                 tags, position, created_at, closed_at, priority, checklist,
+                                 recurrence, is_priority";
 
 fn restore_params(snapshot: &TaskSnapshot) -> Vec<&dyn rusqlite::ToSql> {
     vec![
@@ -452,6 +479,7 @@ fn restore_params(snapshot: &TaskSnapshot) -> Vec<&dyn rusqlite::ToSql> {
         &snapshot.status,
         &snapshot.comment,
         &snapshot.due_date,
+        &snapshot.due_time,
         &snapshot.remind_at,
         &snapshot.tags,
         &snapshot.position,
@@ -485,15 +513,17 @@ fn insert_task_row(conn: &Connection, snapshot: &TaskSnapshot, with_id: bool) ->
 pub(crate) fn task_restore_snapshot(conn: &Connection, snapshot: &TaskSnapshot) -> Result<()> {
     let updated = conn.execute(
         "UPDATE tasks SET project_id = ?1, title = ?2, status = ?3, comment = ?4,
-                due_date = ?5, remind_at = ?6, tags = ?7, position = ?8, created_at = ?9,
-                closed_at = ?10, priority = ?11, checklist = ?12, recurrence = ?13, is_priority = ?14
-         WHERE id = ?15",
+                due_date = ?5, due_time = ?6, remind_at = ?7, tags = ?8, position = ?9,
+                created_at = ?10, closed_at = ?11, priority = ?12, checklist = ?13,
+                recurrence = ?14, is_priority = ?15
+         WHERE id = ?16",
         params![
             snapshot.project_id,
             snapshot.title,
             snapshot.status,
             snapshot.comment,
             snapshot.due_date,
+            snapshot.due_time,
             snapshot.remind_at,
             snapshot.tags,
             snapshot.position,
@@ -560,9 +590,9 @@ fn fts_sync(conn: &Connection, id: i64) -> Result<()> {
 }
 
 fn dto(conn: &Connection, id: i64) -> Result<TaskDto> {
-    let today = today(conn)?;
+    let now = now(conn)?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT project_id, title, status, comment, due_date, remind_at, position, created_at, closed_at,
+        "SELECT project_id, title, status, comment, due_date, due_time, remind_at, position, created_at, closed_at,
                 is_priority, checklist, recurrence
          FROM tasks WHERE id = ?1 {ORDER_SQL}"
     ))?;
@@ -573,27 +603,44 @@ fn dto(conn: &Connection, id: i64) -> Result<TaskDto> {
     let project_id: i64 = row.get(0)?;
     let status: String = row.get(2)?;
     let due_date: Option<String> = row.get(4)?;
-    let overdue = due_date.as_deref().is_some_and(|d| d < today.as_str()) && status != "done";
+    let due_time: String = row.get(5)?;
+    let overdue = is_overdue(&status, due_date.as_deref(), &due_time, &now);
     Ok(TaskDto {
         id,
         project_id,
         title: row.get(1)?,
         overdue,
-        position: row.get(6)?,
-        created_at: row.get(7)?,
-        closed_at: row.get(8)?,
+        position: row.get(7)?,
+        created_at: row.get(8)?,
+        closed_at: row.get(9)?,
         comment: row.get(3)?,
         due_date,
-        remind_at: row.get(5)?,
+        due_time,
+        remind_at: row.get(6)?,
         status,
-        is_priority: row.get::<_, i64>(9)? != 0,
-        checklist: parse_checklist(&row.get::<_, String>(10)?)?,
-        recurrence: row.get(11)?,
+        is_priority: row.get::<_, i64>(10)? != 0,
+        checklist: parse_checklist(&row.get::<_, String>(11)?)?,
+        recurrence: row.get(12)?,
     })
 }
 
 fn today(conn: &Connection) -> Result<String> {
     Ok(conn.query_row("SELECT date('now','localtime')", [], |r| r.get(0))?)
+}
+
+fn now(conn: &Connection) -> Result<String> {
+    Ok(conn.query_row("SELECT datetime('now','localtime')", [], |r| r.get(0))?)
+}
+
+// Overdue by deadline date + time (SPEC 4.3): "YYYY-MM-DD HH:MM:00" and the
+// local "YYYY-MM-DD HH:MM:SS" wall clock compare correctly as strings, so a
+// task is overdue once its due date+time is strictly in the past.
+fn is_overdue(status: &str, due_date: Option<&str>, due_time: &str, now: &str) -> bool {
+    status != "done"
+        && due_date.is_some_and(|d| {
+            let due = format!("{d} {due_time}:00");
+            due.as_str() < now
+        })
 }
 
 fn parse_checklist(raw: &str) -> Result<Vec<ChecklistItem>> {
@@ -663,6 +710,24 @@ fn check_date(s: &str, label: &str) -> Result<()> {
     } else {
         Err(AppError::Invalid(format!(
             "{label} must be YYYY-MM-DD, got \"{s}\""
+        )))
+    }
+}
+
+// HH:MM wall-clock time, same shape the remind_at time part is checked with.
+fn check_time(s: &str, label: &str) -> Result<()> {
+    let parts: Vec<&str> = s.split(':').collect();
+    let valid = parts.len() == 2
+        && parts[0].len() == 2
+        && parts[1].len() == 2
+        && parts.iter().all(|p| p.bytes().all(|b| b.is_ascii_digit()))
+        && parts[0].parse::<u8>().is_ok_and(|h| h < 24)
+        && parts[1].parse::<u8>().is_ok_and(|m| m < 60);
+    if valid {
+        Ok(())
+    } else {
+        Err(AppError::Invalid(format!(
+            "{label} must be HH:MM, got \"{s}\""
         )))
     }
 }
@@ -771,6 +836,7 @@ mod tests {
             "отчёт",
             Some("progress".into()),
             Some("2099-01-02".into()),
+            None,
             Some(true),
             Some(vec![ChecklistItem { text: "send".into(), done: false }]),
             Some("weekly".into()),
@@ -797,6 +863,7 @@ mod tests {
         assert_eq!(meta["projectId"], pid);
         assert_eq!(meta["status"], "progress");
         assert_eq!(meta["dueDate"], "2099-01-02");
+        assert_eq!(meta["dueTime"], "07:00");
         assert_eq!(meta["isPriority"], true);
         assert_eq!(meta["recurrence"], "weekly");
         assert_eq!(meta["checklist"], "[{\"text\":\"send\",\"done\":false}]");
@@ -874,6 +941,7 @@ mod tests {
             "t",
             None,
             Some("2099-01-02".into()),
+            None,
             Some(true),
             None,
             None,
@@ -966,6 +1034,87 @@ mod tests {
         let future = task_update(&conn, future.id, TaskPatch { due_date: Some(Some(tomorrow)), ..Default::default() }).unwrap();
         assert!(!future.overdue);
         assert!(!tasks_list(&conn, pid).unwrap().iter().any(|x| x.id == future.id && x.overdue));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn overdue_boundary_compares_date_plus_time() {
+        // Pure boundary check around the 07:00 default: at 07:00:00 sharp the
+        // task is not yet overdue, one minute later it is.
+        let now = "2099-01-02 07:00:00";
+        assert!(is_overdue("new", Some("2099-01-02"), "06:59", now));
+        assert!(!is_overdue("new", Some("2099-01-02"), "07:00", now));
+        assert!(!is_overdue("new", Some("2099-01-02"), "07:01", now));
+        assert!(!is_overdue("done", Some("2099-01-02"), "06:59", now));
+        assert!(!is_overdue("new", None, "06:59", now));
+        assert!(is_overdue("progress", Some("2099-01-01"), "23:59", now));
+        assert!(!is_overdue("progress", Some("2099-01-03"), "00:00", now));
+
+        // Against the live DB clock: today at one minute ago is overdue, at
+        // one minute ahead is not, whatever time of day the test runs at.
+        let (wd, conn, pid) = setup("tasks-overdue-time");
+        let (past_date, past_time) = conn
+            .query_row(
+                "SELECT date('now','localtime','-1 minute'), strftime('%H:%M','now','localtime','-1 minute')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let (future_date, future_time) = conn
+            .query_row(
+                "SELECT date('now','localtime','+1 minute'), strftime('%H:%M','now','localtime','+1 minute')",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        let late = task_create_with(&conn, pid, "minute-ago", None, Some(past_date), Some(past_time), None, None, None).unwrap();
+        assert!(late.overdue, "due one minute ago must be overdue");
+        let ahead = task_create_with(&conn, pid, "minute-ahead", None, Some(future_date), Some(future_time), None, None, None).unwrap();
+        assert!(!ahead.overdue, "due one minute ahead must not be overdue");
+        let listed = tasks_list(&conn, pid).unwrap();
+        assert!(listed.iter().any(|t| t.id == late.id && t.overdue));
+        assert!(listed.iter().any(|t| t.id == ahead.id && !t.overdue));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn due_time_defaults_to_0700_and_persists() {
+        let (wd, conn, pid) = setup("tasks-due-time");
+        // Absent time on create -> 07:00, even with a due date.
+        let t = task_create_with(&conn, pid, "plain", None, Some("2099-01-02".into()), None, None, None, None).unwrap();
+        assert_eq!(t.due_time, "07:00");
+        assert_eq!(serde_json::to_value(&t).unwrap()["dueTime"], "07:00");
+        let explicit = task_create_with(&conn, pid, "timed", None, Some("2099-01-02".into()), Some("23:45".into()), None, None, None).unwrap();
+        assert_eq!(explicit.due_time, "23:45");
+
+        // Update sets it; absent or explicit null keeps it (NOT NULL column).
+        let patched: TaskPatch = serde_json::from_str(r#"{"dueTime": "10:30"}"#).unwrap();
+        let patched = task_update(&conn, t.id, patched).unwrap();
+        assert_eq!(patched.due_time, "10:30");
+        let kept: TaskPatch = serde_json::from_str(r#"{"dueTime": null, "title": "renamed"}"#).unwrap();
+        let kept = task_update(&conn, t.id, kept).unwrap();
+        assert_eq!(kept.due_time, "10:30");
+        let kept = task_update(&conn, t.id, TaskPatch::default()).unwrap();
+        assert_eq!(kept.due_time, "10:30");
+
+        // Malformed times are rejected and change nothing.
+        for bad in ["7:00", "07:60", "24:00", "0700", "07:0a", "07:00:00", ""] {
+            assert!(
+                matches!(
+                    task_update(&conn, t.id, TaskPatch { due_time: Some(bad.into()), ..Default::default() }),
+                    Err(AppError::Invalid(_))
+                ),
+                "accepted due_time {bad:?}"
+            );
+            assert!(
+                matches!(
+                    task_create_with(&conn, pid, "x", None, None, Some(bad.into()), None, None, None),
+                    Err(AppError::Invalid(_))
+                ),
+                "accepted due_time {bad:?} on create"
+            );
+        }
+        assert_eq!(dto(&conn, t.id).unwrap().due_time, "10:30");
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -1068,6 +1217,7 @@ mod tests {
             "report",
             None,
             Some("2099-01-02".into()),
+            None,
             Some(true),
             Some(vec![
                 ChecklistItem { text: " draft ".into(), done: true },
@@ -1121,7 +1271,7 @@ mod tests {
         for bad in ["yearly", "hourly", ""] {
             assert!(
                 matches!(
-                    task_create_with(&conn, pid, "t", None, None, None, None, Some(bad.into())),
+                    task_create_with(&conn, pid, "t", None, None, None, None, None, Some(bad.into())),
                     Err(AppError::Invalid(_))
                 ),
                 "accepted recurrence {bad:?}"
@@ -1136,7 +1286,7 @@ mod tests {
         }
         // A bad due date on create is rejected before any insert.
         assert!(matches!(
-            task_create_with(&conn, pid, "t", None, Some("2099-13-01".into()), None, None, None),
+            task_create_with(&conn, pid, "t", None, Some("2099-13-01".into()), None, None, None, None),
             Err(AppError::Invalid(_))
         ));
         let too_many = vec![ChecklistItem { text: "x".into(), done: false }; MAX_CHECKLIST_ITEMS + 1];
@@ -1173,6 +1323,7 @@ mod tests {
             "standup",
             Some("progress".into()),
             None,
+            Some("09:15".into()),
             Some(true),
             Some(vec![ChecklistItem { text: "prep".into(), done: true }]),
             Some("daily".into()),
@@ -1197,6 +1348,7 @@ mod tests {
         assert_eq!(next.status, "new");
         assert_eq!(next.title, "standup");
         assert_eq!(next.due_date.as_deref(), Some("2099-01-03"));
+        assert_eq!(next.due_time, "09:15", "the due time must be copied");
         assert!(next.is_priority, "the priority flag must be copied");
         assert_eq!(next.recurrence, "daily");
         assert_eq!(next.comment.as_deref(), Some("daily sync"));
@@ -1205,7 +1357,7 @@ mod tests {
         assert!(next.remind_at.is_none());
 
         // weekly advances 7 days; monthly clamps month ends like SQLite date().
-        let weekly = task_create_with(&conn, pid, "w", None, None, None, None, Some("weekly".into())).unwrap();
+        let weekly = task_create_with(&conn, pid, "w", None, None, None, None, None, Some("weekly".into())).unwrap();
         let weekly = task_update(&conn, weekly.id, TaskPatch { due_date: Some(Some("2099-01-30".into())), ..Default::default() }).unwrap();
         task_move(&conn, weekly.id, "done", 1.0).unwrap();
         let list = tasks_list(&conn, pid).unwrap();
@@ -1213,7 +1365,7 @@ mod tests {
             list.iter().find(|x| x.id != weekly.id && x.title == "w").unwrap().due_date.as_deref(),
             Some("2099-02-06")
         );
-        let monthly = task_create_with(&conn, pid, "m", None, None, None, None, Some("monthly".into())).unwrap();
+        let monthly = task_create_with(&conn, pid, "m", None, None, None, None, None, Some("monthly".into())).unwrap();
         let monthly = task_update(&conn, monthly.id, TaskPatch { due_date: Some(Some("2099-01-31".into())), ..Default::default() }).unwrap();
         task_move(&conn, monthly.id, "done", 1.0).unwrap();
         let list = tasks_list(&conn, pid).unwrap();
@@ -1223,7 +1375,7 @@ mod tests {
             "monthly must clamp to the end of the target month"
         );
         // A day that exists in the target month advances plainly.
-        let monthly2 = task_create_with(&conn, pid, "m2", None, None, None, None, Some("monthly".into())).unwrap();
+        let monthly2 = task_create_with(&conn, pid, "m2", None, None, None, None, None, Some("monthly".into())).unwrap();
         let monthly2 = task_update(&conn, monthly2.id, TaskPatch { due_date: Some(Some("2099-01-15".into())), ..Default::default() }).unwrap();
         task_move(&conn, monthly2.id, "done", 1.0).unwrap();
         let list = tasks_list(&conn, pid).unwrap();
@@ -1233,7 +1385,7 @@ mod tests {
         );
 
         // No due date: the next occurrence is dated from today.
-        let undated = task_create_with(&conn, pid, "u", None, None, None, None, Some("daily".into())).unwrap();
+        let undated = task_create_with(&conn, pid, "u", None, None, None, None, None, Some("daily".into())).unwrap();
         task_move(&conn, undated.id, "done", 1.0).unwrap();
         let list = tasks_list(&conn, pid).unwrap();
         let next_u = list.iter().find(|x| x.id != undated.id && x.title == "u").unwrap();
@@ -1252,7 +1404,7 @@ mod tests {
         task_move(&conn, t.id, "done", 1.0).unwrap();
         assert_eq!(tasks_list(&conn, pid).unwrap().len(), 1);
 
-        let r = task_create_with(&conn, pid, "weekly", None, None, None, None, Some("weekly".into())).unwrap();
+        let r = task_create_with(&conn, pid, "weekly", None, None, None, None, None, Some("weekly".into())).unwrap();
         task_move(&conn, r.id, "progress", 1.0).unwrap();
         assert_eq!(tasks_list(&conn, pid).unwrap().len(), 2, "progress move must not spawn");
         fs::remove_dir_all(&wd).unwrap();
@@ -1261,7 +1413,7 @@ mod tests {
     #[test]
     fn recurrence_no_duplicate_on_repeated_done_moves() {
         let (wd, conn, pid) = setup("tasks-recurrence-dedup");
-        let t = task_create_with(&conn, pid, "daily", None, None, None, None, Some("daily".into())).unwrap();
+        let t = task_create_with(&conn, pid, "daily", None, None, None, None, None, Some("daily".into())).unwrap();
         let t = task_update(&conn, t.id, TaskPatch { due_date: Some(Some("2099-01-02".into())), ..Default::default() }).unwrap();
         task_move(&conn, t.id, "done", 1.0).unwrap();
         assert_eq!(tasks_list(&conn, pid).unwrap().len(), 2);

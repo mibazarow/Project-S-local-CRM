@@ -170,6 +170,7 @@ export const taskCreate = (
   title: string,
   status?: string,
   dueDate?: string | null,
+  dueTime?: string | null,
   isPriority?: boolean,
 ) =>
   invoke<TaskDto>("task_create", {
@@ -177,6 +178,7 @@ export const taskCreate = (
     title,
     status: status ?? null,
     dueDate: dueDate ?? null,
+    dueTime: dueTime ?? null,
     isPriority: isPriority ?? null,
   });
 

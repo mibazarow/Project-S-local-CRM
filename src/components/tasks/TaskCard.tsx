@@ -154,16 +154,17 @@ function DueEditor({
   onCancel,
 }: {
   task: TaskDto;
-  onSave: (dueDate: string | null, remindAt: string | null) => void;
+  onSave: (dueDate: string | null, dueTime: string, remindAt: string | null) => void;
   onClear: () => void;
   onCancel: () => void;
 }) {
   const [date, setDate] = useState(task.dueDate ?? "");
+  const [dueTime, setDueTime] = useState(task.dueTime || "07:00");
   const [time, setTime] = useState(task.remindAt?.split("T")[1] ?? "");
 
   const save = () => {
     const due = date || null;
-    onSave(due, due && time ? `${due}T${time}` : null);
+    onSave(due, dueTime || "07:00", due && time ? `${due}T${time}` : null);
   };
 
   const onInputKeyDown = (e: KeyboardEvent) => {
@@ -189,6 +190,15 @@ function DueEditor({
       <input
         className="rename-input"
         type="time"
+        title="Время дедлайна"
+        value={dueTime}
+        onChange={(e) => setDueTime(e.target.value)}
+        onKeyDown={onInputKeyDown}
+      />
+      <input
+        className="rename-input"
+        type="time"
+        title="Время напоминания"
         value={time}
         onChange={(e) => setTime(e.target.value)}
         onKeyDown={onInputKeyDown}
@@ -337,10 +347,10 @@ export default function TaskCard({
     onPatch(next ? { comment: next } : { comment: null });
   };
 
-  const saveDue = (dueDate: string | null, remindAt: string | null) => {
+  const saveDue = (dueDate: string | null, dueTime: string, remindAt: string | null) => {
     setMode(null);
-    if (dueDate === task.dueDate && remindAt === task.remindAt) return;
-    onPatch({ dueDate, remindAt });
+    if (dueDate === task.dueDate && dueTime === task.dueTime && remindAt === task.remindAt) return;
+    onPatch({ dueDate, dueTime, remindAt });
   };
 
   const clearDue = () => {
@@ -370,7 +380,10 @@ export default function TaskCard({
       {(task.dueDate || task.recurrence !== "none") && (
         <div className="m">
           {task.dueDate && (
-            <span className={task.overdue ? "red" : undefined}>{formatDue(task.dueDate)}</span>
+            <>
+              <span className={task.overdue ? "red" : undefined}>{formatDue(task.dueDate)}</span>
+              <span className={task.overdue ? "red" : "due-time"}>{task.dueTime}</span>
+            </>
           )}
           {task.recurrence !== "none" && (
             <span className="rec" title="Повторяющаяся задача">

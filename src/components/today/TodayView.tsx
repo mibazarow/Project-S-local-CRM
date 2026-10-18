@@ -3,7 +3,7 @@ import * as ipc from "../../api/ipc";
 import { useAppActions } from "../../state/AppStore";
 import type { FsEntry, ObjectiveDto, ProjectDto, ScheduleDto, SessionDto, TaskDto } from "../../api/types";
 import { toMessage } from "../chat/chatShared";
-import { formatActivity, formatDue, formatInstant, formatModified } from "../../shared/format";
+import { dueMs, formatActivity, formatDue, formatInstant, formatModified } from "../../shared/format";
 import type { Tab } from "../TopBar";
 
 interface Props {
@@ -162,6 +162,7 @@ function TaskRow({
       <span className="today-row-meta">
         <span className="today-row-proj">{project.name}</span>
         <span className={`today-row-date${overdue ? " is-overdue" : ""}`}>{formatDue(task.dueDate!)}</span>
+        {task.dueTime && <span className="today-row-time">{task.dueTime}</span>}
       </span>
     </div>
   );
@@ -201,17 +202,20 @@ export default function TodayView({ onTab }: Props) {
 
       const overdue: TaskWithProject[] = [];
       const soon: TaskWithProject[] = [];
+      const nowMs = Date.now();
       projects.forEach((project, i) => {
         for (const task of tasksPer[i]) {
           if (task.status === "done" || !task.dueDate) continue;
-          const due = new Date(`${task.dueDate}T00:00:00`).getTime();
+          // Просрочка — по дате + времени дедлайна (SPEC 4.3).
+          const due = dueMs(task.dueDate, task.dueTime);
           if (Number.isNaN(due)) continue;
-          if (due < startOfDay.getTime()) overdue.push({ task, project });
+          if (due < nowMs) overdue.push({ task, project });
           else if (due <= weekEnd) soon.push({ task, project });
         }
       });
       const byDue = (a: TaskWithProject, b: TaskWithProject) =>
-        (a.task.dueDate ?? "").localeCompare(b.task.dueDate ?? "");
+        (a.task.dueDate ?? "").localeCompare(b.task.dueDate ?? "") ||
+        (a.task.dueTime ?? "").localeCompare(b.task.dueTime ?? "");
       overdue.sort(byDue);
       soon.sort(byDue);
 

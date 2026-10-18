@@ -447,7 +447,7 @@ struct TaskRow {
 }
 
 const TASK_COLS: &str = "tasks.id, tasks.title, tasks.status, tasks.comment, \
-     (tasks.due_date IS NOT NULL AND tasks.due_date < date('now','localtime') AND tasks.status <> 'done')";
+     (tasks.due_date IS NOT NULL AND tasks.due_date || ' ' || tasks.due_time || ':00' < datetime('now','localtime') AND tasks.status <> 'done')";
 
 fn task_row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRow> {
     Ok(TaskRow {
@@ -739,7 +739,7 @@ pub(crate) fn global_search_with(
     {
         let mut stmt = conn.prepare(
             "SELECT tasks.id, tasks.title, tasks.status, tasks.comment,
-                    tasks.due_date, tasks.project_id, p.name
+                    tasks.due_date, tasks.due_time, tasks.project_id, p.name
              FROM tasks_fts
              JOIN tasks ON tasks.id = tasks_fts.rowid
              JOIN projects p ON p.id = tasks.project_id
@@ -754,12 +754,13 @@ pub(crate) fn global_search_with(
                 r.get::<_, String>(2)?,
                 r.get::<_, Option<String>>(3)?,
                 r.get::<_, Option<String>>(4)?,
-                r.get::<_, i64>(5)?,
-                r.get::<_, String>(6)?,
+                r.get::<_, String>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, String>(7)?,
             ))
         })?;
         for (rank, row) in rows.enumerate() {
-            let (id, title, status, comment, due_date, project_id, project) = row?;
+            let (id, title, status, comment, due_date, due_time, project_id, project) = row?;
             let mut text = title.clone();
             if let Some(comment) = &comment {
                 text.push(' ');
@@ -767,7 +768,7 @@ pub(crate) fn global_search_with(
             }
             let mut subtitle = format!("{project} · {}", task_status_label(&status));
             if let Some(due) = due_date {
-                subtitle.push_str(&format!(" · до {due}"));
+                subtitle.push_str(&format!(" · до {due} {due_time}"));
             }
             hits.push(GlobalHit {
                 kind: "task".into(),

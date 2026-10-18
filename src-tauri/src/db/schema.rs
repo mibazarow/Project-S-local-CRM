@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::{params, Connection};
 
-pub const SCHEMA_VERSION: i64 = 31;
+pub const SCHEMA_VERSION: i64 = 32;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -570,6 +570,13 @@ const MIGRATION_31_TASK_IS_PRIORITY_BACKFILL: &str =
     "UPDATE tasks SET is_priority = 1 WHERE priority IN ('high','urgent')";
 const MIGRATION_31_PROJECT_TASK_COLUMNS: &str = "ALTER TABLE projects ADD COLUMN task_columns TEXT NOT NULL DEFAULT '[\"Новые\",\"В работе\",\"Готово\"]'";
 
+// Task deadline time (SPEC 4.3): HH:MM next to due_date; NOT NULL DEFAULT
+// backfills every existing row with 07:00, so tasks that already have a due
+// date keep showing 07:00. Format is validated in Rust (tasks.rs), like
+// due_date has no CHECK either. Guarded per column (v14 recipe).
+const MIGRATION_32_TASK_DUE_TIME: &str =
+    "ALTER TABLE tasks ADD COLUMN due_time TEXT NOT NULL DEFAULT '07:00'";
+
 fn migrate_v1(conn: &Connection) -> Result<()> {
     conn.execute_batch(MIGRATION_1)?;
     Ok(())
@@ -869,6 +876,20 @@ fn migrate_v31(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v32(conn: &Connection) -> Result<()> {
+    // Guarded per column (v14 recipe) so a re-run after an interrupted
+    // v32 does not re-ALTER; the NOT NULL DEFAULT backfills existing rows.
+    let has_due_time: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'due_time'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_due_time == 0 {
+        conn.execute(MIGRATION_32_TASK_DUE_TIME, [])?;
+    }
+    Ok(())
+}
+
 // Ordered (user_version target, migration body) table: each body runs when
 // the stored user_version is below its target, then the runner bumps
 // user_version to the target, exactly like the previous hand-rolled
@@ -907,7 +928,8 @@ const MIGRATIONS: &[(u32, Migration)] = &[
     (28, migrate_v28),
     (29, migrate_v29),
     (30, migrate_v30),
-    (SCHEMA_VERSION as u32, migrate_v31),
+    (31, migrate_v31),
+    (SCHEMA_VERSION as u32, migrate_v32),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
@@ -2334,5 +2356,68 @@ CREATE UNIQUE INDEX uniq_chats_one_project_chat ON chats(project_id) WHERE kind 
             .query_row("SELECT is_priority FROM tasks WHERE title = 'hi'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(hi, 1, "re-run must not demote backfilled flags");
+    }
+
+    #[test]
+    fn migration_v32_backfills_due_time_with_default_0700() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        // Simulate a pre-v32 database: drop the column, roll the version back,
+        // add rows with and without a due date.
+        conn.execute("ALTER TABLE tasks DROP COLUMN due_time", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO projects (name, path, created_at) VALUES ('p', '/tmp/p', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (project_id, title, created_at, due_date) VALUES (1, 'dated', '2026-01-01', '2099-01-02')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (project_id, title, created_at) VALUES (1, 'undated', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 31).unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        // Every existing row got 07:00, dated and undated alike; new inserts
+        // take the column default too.
+        let times: Vec<(String, String)> = {
+            let mut stmt = conn.prepare("SELECT title, due_time FROM tasks ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(
+            times,
+            vec![
+                ("dated".to_owned(), "07:00".to_owned()),
+                ("undated".to_owned(), "07:00".to_owned()),
+            ]
+        );
+        conn.execute(
+            "INSERT INTO tasks (project_id, title, created_at) VALUES (1, 'fresh', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let fresh: String = conn
+            .query_row("SELECT due_time FROM tasks WHERE title = 'fresh'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fresh, "07:00");
+
+        // Guarded ALTER: a v31 database whose column already exists is
+        // repaired without re-ALTER errors.
+        conn.pragma_update(None, "user_version", 31).unwrap();
+        run_migrations(&conn).unwrap();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
     }
 }

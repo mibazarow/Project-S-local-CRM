@@ -19,6 +19,11 @@ export function formatDue(dueDate: string): string {
   return d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
 }
 
+// Дедлайн как instant по дате + времени (SPEC 4.3): dueTime пустой — 07:00.
+export function dueMs(dueDate: string, dueTime: string): number {
+  return new Date(`${dueDate}T${dueTime || "07:00"}`).getTime();
+}
+
 export function formatModified(ts: number): string {
   const d = new Date(ts * 1000);
   if (Number.isNaN(d.getTime())) return "";

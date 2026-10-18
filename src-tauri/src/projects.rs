@@ -21,7 +21,7 @@ pub struct ProjectDto {
 }
 
 const TASK_COUNT_SQL: &str = "SELECT count(*) FROM tasks WHERE project_id = ?1";
-const OVERDUE_SQL: &str = "SELECT count(*) FROM tasks WHERE project_id = ?1 AND status != 'done' AND due_date IS NOT NULL AND due_date < date('now','localtime')";
+const OVERDUE_SQL: &str = "SELECT count(*) FROM tasks WHERE project_id = ?1 AND status != 'done' AND due_date IS NOT NULL AND due_date || ' ' || due_time || ':00' < datetime('now','localtime')";
 
 // Per-project kanban column names (v31): a JSON array of exactly 3 strings.
 pub const DEFAULT_TASK_COLUMNS: [&str; 3] = ["Новые", "В работе", "Готово"];

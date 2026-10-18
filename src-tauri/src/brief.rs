@@ -146,7 +146,7 @@ pub fn heuristic_brief(conn: &Connection, wd: &Path, project_id: i64) -> Result<
             .collect();
         let overdue: i64 = conn.query_row(
             "SELECT count(*) FROM tasks WHERE project_id = ?1 AND status != 'done' \
-             AND due_date IS NOT NULL AND due_date < date('now','localtime')",
+             AND due_date IS NOT NULL AND due_date || ' ' || due_time || ':00' < datetime('now','localtime')",
             params![project_id],
             |r| r.get(0),
         )?;

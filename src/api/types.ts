@@ -62,6 +62,7 @@ export interface TaskDto {
   status: string;
   comment: string | null;
   dueDate: string | null;
+  dueTime: string;
   remindAt: string | null;
   position: number;
   createdAt: string;
@@ -142,10 +143,12 @@ export interface GlobalHit {
 }
 
 // Distinguishes an explicit null (clear) from an absent field (keep).
+// dueTime is NOT NULL backend-side: null/absent keeps the current value.
 export interface TaskPatch {
   title?: string;
   comment?: string | null;
   dueDate?: string | null;
+  dueTime?: string;
   remindAt?: string | null;
   isPriority?: boolean;
   checklist?: ChecklistItem[];
