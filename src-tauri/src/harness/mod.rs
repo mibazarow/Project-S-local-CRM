@@ -547,6 +547,7 @@ mod tests {
             "remember",
             "recall",
             "set_user_gender",
+            "forget",
             "list_chats",
             "rename_chat",
             "new_chat",

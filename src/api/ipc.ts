@@ -26,8 +26,10 @@ import type {
   MessageAttachmentDto,
   MessageDto,
   ModelInfo,
-  NotesChanged,
-  OnboardingStatus,
+   NotesChanged,
+   ObjectiveDto,
+   ObjectivesChanged,
+   OnboardingStatus,
   OpenWithApp,
   OpenWithResult,
   ConfirmationRequestPayload,
@@ -169,9 +171,39 @@ export const taskMove = (id: number, status: string, position: number) =>
 
 export const taskDelete = (id: number) => invoke<void>("task_delete", { id });
 
+// Entity links (links slice): context actions record note ↔ file/chat and
+// task ↔ chat after creating the entity; the agent loop records tool-call
+// links itself. Deduped backend-side, so a repeated call is a no-op.
+export const linkCreate = (
+  fromKind: string,
+  fromId: string,
+  toKind: string,
+  toId: string,
+) => invoke<void>("link_create", { fromKind, fromId, toKind, toId });
+
 // Per-conversation plans (todowrite/todoread tools): read-only panel data.
 export const todosList = (scopeKind: "project" | "session", scopeId: number) =>
   invoke<TodoDto[]>("todos_list", { scopeKind, scopeId });
+
+// Long-lived goals with steps (objectives slice): the Today panel data.
+export const objectiveCreate = (title: string, steps?: string[], description?: string) =>
+  invoke<ObjectiveDto>("objective_create", {
+    title,
+    description: description ?? null,
+    steps: steps && steps.length ? steps : null,
+  });
+
+export const objectiveList = () => invoke<ObjectiveDto[]>("objective_list");
+
+export const objectiveUpdate = (
+  id: number,
+  patch: { title?: string; description?: string | null; status?: string },
+) => invoke<ObjectiveDto>("objective_update", { id, patch });
+
+export const objectiveStepDone = (objectiveId: number, stepId: number, done: boolean) =>
+  invoke<ObjectiveDto>("objective_step_done", { objectiveId, stepId, done });
+
+export const objectiveDelete = (id: number) => invoke<void>("objective_delete", { id });
 
 export const fsListDir = (projectId: number, relPath: string) =>
   invoke<FsEntry[]>("fs_list_dir", { projectId, relPath });
@@ -555,6 +587,10 @@ export const onMemoryChanged = (handler: (payload: MemoryChanged) => void) =>
 // Emitted by the todowrite tool after the plan of a scope changed.
 export const onTodosChanged = (handler: (payload: TodosChanged) => void) =>
   listen<TodosChanged>("todos-changed", (e) => handler(e.payload));
+
+// Emitted after any objective mutation (commands or agent tools).
+export const onObjectivesChanged = (handler: (payload: ObjectivesChanged) => void) =>
+  listen<ObjectivesChanged>("objectives-changed", (e) => handler(e.payload));
 
 // Emitted by the notes_* mutation commands after a note or folder changed.
 export const onNotesChanged = (handler: (payload: NotesChanged) => void) =>

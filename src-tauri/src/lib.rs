@@ -14,10 +14,12 @@ mod harness;
 mod index;
 mod importer;
 mod journal;
+mod links;
 mod llm;
 mod mcp;
 mod memory;
 mod notes;
+mod objectives;
 mod onboarding;
 mod open_with;
 mod ops;
@@ -83,6 +85,14 @@ struct TasksChanged {
 
 fn emit_tasks_changed(app: &AppHandle, project_id: i64) {
     let _ = app.emit("tasks-changed", TasksChanged { project_id });
+}
+
+// Objectives (Today panel goals with steps): every mutation reloads the list.
+fn emit_objectives_changed(app: &AppHandle, id: Option<i64>) {
+    let _ = app.emit(
+        "objectives-changed",
+        objectives::ObjectivesChanged { id },
+    );
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -337,6 +347,62 @@ fn todos_list(
     with_db(&state, |conn| todos::todos_list(conn, &scope_kind, scope_id))
 }
 
+// Long-lived goals with steps (objectives slice): the Today panel lists all
+// objectives; every mutation emits "objectives-changed" for open views.
+#[tauri::command]
+fn objective_create(
+    app: AppHandle,
+    state: State<AppState>,
+    title: String,
+    description: Option<String>,
+    steps: Option<Vec<String>>,
+) -> Result<objectives::ObjectiveDto> {
+    let dto = with_db(&state, |conn| {
+        objectives::objective_create(conn, &title, description, &steps.unwrap_or_default())
+    })?;
+    emit_objectives_changed(&app, Some(dto.id));
+    Ok(dto)
+}
+
+#[tauri::command]
+fn objective_list(state: State<AppState>) -> Result<Vec<objectives::ObjectiveDto>> {
+    with_db(&state, objectives::objective_list)
+}
+
+#[tauri::command]
+fn objective_update(
+    app: AppHandle,
+    state: State<AppState>,
+    id: i64,
+    patch: objectives::ObjectivePatch,
+) -> Result<objectives::ObjectiveDto> {
+    let dto = with_db(&state, |conn| objectives::objective_update(conn, id, patch))?;
+    emit_objectives_changed(&app, Some(dto.id));
+    Ok(dto)
+}
+
+#[tauri::command]
+fn objective_step_done(
+    app: AppHandle,
+    state: State<AppState>,
+    objective_id: i64,
+    step_id: i64,
+    done: bool,
+) -> Result<objectives::ObjectiveDto> {
+    let dto = with_db(&state, |conn| {
+        objectives::objective_step_done(conn, objective_id, step_id, done)
+    })?;
+    emit_objectives_changed(&app, Some(dto.id));
+    Ok(dto)
+}
+
+#[tauri::command]
+fn objective_delete(app: AppHandle, state: State<AppState>, id: i64) -> Result<()> {
+    with_db(&state, |conn| objectives::objective_delete(conn, id))?;
+    emit_objectives_changed(&app, Some(id));
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn task_create(
@@ -423,6 +489,23 @@ fn task_delete(app: AppHandle, state: State<AppState>, id: i64) -> Result<()> {
     emit_tasks_changed(&app, project_id);
     emit_trash_changed(&app, None);
     Ok(())
+}
+
+// Entity links (links slice): the frontend records context-action links
+// (note ↔ file/chat, task ↔ chat) after creating an entity from a file or a
+// message; the agent loop records tool-call links on its own. Deduped by the
+// UNIQUE constraint, so a repeated call is a no-op.
+#[tauri::command]
+fn link_create(
+    state: State<AppState>,
+    from_kind: String,
+    from_id: String,
+    to_kind: String,
+    to_id: String,
+) -> Result<()> {
+    with_db(&state, |conn| {
+        links::create(conn, &from_kind, &from_id, &to_kind, &to_id)
+    })
 }
 
 #[tauri::command]
@@ -2263,7 +2346,13 @@ pub fn run() {
             task_update,
             task_move,
             task_delete,
+            link_create,
             todos_list,
+            objective_create,
+            objective_list,
+            objective_update,
+            objective_step_done,
+            objective_delete,
             fs_list_dir,
             fs_read_text,
             fs_write_text,

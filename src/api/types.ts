@@ -84,6 +84,32 @@ export interface TodosChanged {
   scopeId: number;
 }
 
+// objectives::ObjectiveStepDto — one step of a goal.
+export interface ObjectiveStepDto {
+  id: number;
+  text: string;
+  done: boolean;
+  position: number;
+}
+
+// objectives::ObjectiveDto — a long-lived goal with its steps and progress.
+export interface ObjectiveDto {
+  id: number;
+  title: string;
+  description: string | null;
+  status: "active" | "paused" | "done" | "error";
+  createdAt: string;
+  updatedAt: string;
+  steps: ObjectiveStepDto[];
+  doneSteps: number;
+  totalSteps: number;
+}
+
+// Payload of the "objectives-changed" event emitted after any objective mutation.
+export interface ObjectivesChanged {
+  id: number | null;
+}
+
 export interface SearchHit {  relPath: string;
   name: string;
   kind: string;

@@ -4,10 +4,16 @@
 // fs_ops resolvers; absolute OS paths are never exposed to the model.
 use super::catalog::Catalog;
 use super::result::{ToolErrorCode, ToolResult};
+use super::task_glue::{
+    create_schema, datas_add_body, datas_title_arg, delete_schema, is_missing, list_schema,
+    move_schema, parse_checklist_arg, parse_task_patch, read_datas, task_create_body,
+    task_delete_body, task_move_body, task_owner, task_update_body, tasks_list_filtered,
+    update_schema,
+};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
 use crate::{extract, fs_ops, paths, search, tasks, undo};
-use rusqlite::{params, Connection};
+use rusqlite::Connection;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::Arc;
@@ -84,13 +90,21 @@ pub fn project_catalog() -> Catalog {
         Arc::new(crate::agent::net_tools::HttpRequestTool),
         Arc::new(crate::skills::SkillTool),
         Arc::new(crate::skills::CreateSkillTool),
+        Arc::new(crate::skills::SkillExecTool),
         // Global memory is shared with the harness agent (SPEC 6.3).
         Arc::new(crate::memory::RememberTool),
         Arc::new(crate::memory::RecallTool),
         Arc::new(crate::memory::SetUserGenderTool),
+        Arc::new(crate::memory::ForgetTool),
         // Per-conversation plan panel (SPEC: todowrite/todoread).
         Arc::new(crate::todos::TodoWriteTool),
         Arc::new(crate::todos::TodoReadTool),
+        // Long-lived goals with steps (objectives slice): global goals the
+        // user sees with progress in the Today panel.
+        Arc::new(crate::objectives::ObjectiveCreateTool),
+        Arc::new(crate::objectives::ObjectiveListTool),
+        Arc::new(crate::objectives::ObjectiveUpdateTool),
+        Arc::new(crate::objectives::ObjectiveStepDoneTool),
         // Agent-initiated chat attachment (SPEC 6.1): hand a project file to
         // the user as a new assistant turn.
         Arc::new(crate::agent::send_file::SendFileTool),
@@ -98,6 +112,9 @@ pub fn project_catalog() -> Catalog {
         // file/note/task mutation made by commands or agent tools.
         Arc::new(crate::agent::undo_tools::UndoLastTool),
         Arc::new(crate::agent::undo_tools::UndoListTool),
+        // Background entity links (links slice): read what a chat/file/task
+        // is connected to; links are recorded automatically by the loop.
+        Arc::new(crate::links::RelatedTool),
     ];
     for tool in tools {
         // Names are statically unique; a failure here is a programming bug.
@@ -176,10 +193,6 @@ fn fail(e: AppError) -> ToolResult {
     ToolResult::err(code, msg)
 }
 
-fn is_missing(e: &AppError) -> bool {
-    matches!(e, AppError::Invalid(_)) && e.to_string().contains("not found")
-}
-
 pub(crate) fn envelope<T: serde::Serialize>(r: Result<T>) -> ToolResult {
     match r {
         Ok(v) => ToolResult::ok(serde_json::to_value(v).unwrap_or(Value::Null)),
@@ -189,15 +202,6 @@ pub(crate) fn envelope<T: serde::Serialize>(r: Result<T>) -> ToolResult {
 
 // Task ids are global in SQLite; the project agent may only touch its own
 // project's tasks, and a foreign id reports as not_found (no existence leak).
-fn task_owner(conn: &Connection, id: i64) -> Result<i64> {
-    conn.query_row(
-        "SELECT project_id FROM tasks WHERE id = ?1",
-        params![id],
-        |r| r.get(0),
-    )
-    .map_err(|_| AppError::Invalid(format!("task {id} not found")))
-}
-
 fn require_own_task(conn: &Connection, id: i64, pid: i64) -> Result<()> {
     if task_owner(conn, id)? == pid {
         Ok(())
@@ -618,14 +622,7 @@ impl Tool for TaskListTool {
         "List this project's tasks in kanban order; optional status filter (new|progress|done)."
     }
     fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "status": { "type": "string", "enum": ["new", "progress", "done"] }
-            },
-            "required": [],
-            "additionalProperties": false
-        })
+        list_schema(false)
     }
     fn class(&self) -> ToolClass {
         ToolClass::ReadOnly
@@ -636,14 +633,7 @@ impl Tool for TaskListTool {
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let pid = require_project(ctx)?;
         let status = args.get("status").and_then(Value::as_str);
-        let r = with_conn(ctx, |conn| {
-            let all = tasks::tasks_list(conn, pid)?;
-            Ok::<Vec<tasks::TaskDto>, AppError>(
-                all.into_iter()
-                    .filter(|t| status.map_or(true, |s| t.status == s))
-                    .collect(),
-            )
-        });
+        let r = with_conn(ctx, |conn| tasks_list_filtered(conn, pid, status));
         Ok(match r {
             Ok(list) => ToolResult::ok(json!({ "tasks": list })).capped(self.max_result_len()),
             Err(e) => fail(e),
@@ -661,30 +651,7 @@ impl Tool for TaskCreateTool {
         "Create a task in this project; optional status (new|progress|done, default new), priority (low|normal|high|urgent, default normal), recurrence (none|daily|weekly|monthly, default none), checklist ([{text, done?}], max 100 items)."
     }
     fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "title": { "type": "string" },
-                "status": { "type": "string", "enum": ["new", "progress", "done"] },
-                "priority": { "type": "string", "enum": ["low", "normal", "high", "urgent"] },
-                "recurrence": { "type": "string", "enum": ["none", "daily", "weekly", "monthly"] },
-                "checklist": {
-                    "type": "array",
-                    "maxItems": 100,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "text": { "type": "string" },
-                            "done": { "type": "boolean" }
-                        },
-                        "required": ["text"],
-                        "additionalProperties": false
-                    }
-                }
-            },
-            "required": ["title"],
-            "additionalProperties": false
-        })
+        create_schema(false)
     }
     fn class(&self) -> ToolClass {
         ToolClass::Mutating
@@ -694,34 +661,15 @@ impl Tool for TaskCreateTool {
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let pid = require_project(ctx)?;
-        let title = args["title"].as_str().unwrap_or_default();
-        let status = args.get("status").and_then(Value::as_str).map(str::to_owned);
-        let priority = args.get("priority").and_then(Value::as_str).map(str::to_owned);
-        let recurrence = args.get("recurrence").and_then(Value::as_str).map(str::to_owned);
         let checklist = match parse_checklist_arg(args) {
             Ok(items) => items,
             Err(e) => return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, e)),
         };
-        let r = with_conn(ctx, |conn| {
-            tasks::task_create_with(conn, pid, title, status, priority, checklist, recurrence)
-        });
-        if let Ok(dto) = &r {
-            let _ = with_conn(ctx, |conn| undo::push_task_create(conn, dto.id, pid));
+        let r = with_conn(ctx, |conn| task_create_body(conn, pid, args, checklist));
+        if r.is_ok() {
             emit_tasks_changed(ctx, pid);
         }
         Ok(envelope(r))
-    }
-}
-
-// Optional "checklist" argument as Vec<ChecklistItem>; absent -> None.
-pub(crate) fn parse_checklist_arg(
-    args: &Value,
-) -> std::result::Result<Option<Vec<tasks::ChecklistItem>>, String> {
-    match args.get("checklist") {
-        None => Ok(None),
-        Some(value) => serde_json::from_value::<Vec<tasks::ChecklistItem>>(value.clone())
-            .map(Some)
-            .map_err(|e| format!("checklist must be an array of {{text, done?}}: {e}")),
     }
 }
 
@@ -735,34 +683,7 @@ impl Tool for TaskUpdateTool {
         "Update fields of one of this project's tasks; absent fields stay unchanged, explicit null clears comment/dueDate/remindAt. Dates: YYYY-MM-DD, remindAt: YYYY-MM-DDTHH:MM. priority: low|normal|high|urgent, recurrence: none|daily|weekly|monthly, checklist: [{text, done?}] max 100 (null/absent keeps the current value)."
     }
     fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "id": { "type": "number" },
-                "title": { "type": "string" },
-                "comment": { "type": ["string", "null"] },
-                "dueDate": { "type": ["string", "null"] },
-                "remindAt": { "type": ["string", "null"] },
-                "tags": { "type": "array", "items": { "type": "string" } },
-                "priority": { "type": "string", "enum": ["low", "normal", "high", "urgent"] },
-                "recurrence": { "type": "string", "enum": ["none", "daily", "weekly", "monthly"] },
-                "checklist": {
-                    "type": "array",
-                    "maxItems": 100,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "text": { "type": "string" },
-                            "done": { "type": "boolean" }
-                        },
-                        "required": ["text"],
-                        "additionalProperties": false
-                    }
-                }
-            },
-            "required": ["id"],
-            "additionalProperties": false
-        })
+        update_schema()
     }
     fn class(&self) -> ToolClass {
         ToolClass::Mutating
@@ -775,20 +696,15 @@ impl Tool for TaskUpdateTool {
         let id = args.get("id").and_then(Value::as_i64).unwrap_or(0);
         // TaskPatch ignores the extra "id" key; its opt fields keep absent
         // fields unchanged and treat explicit null as "clear".
-        let patch: tasks::TaskPatch = match serde_json::from_value(args.clone()) {
+        let patch: tasks::TaskPatch = match parse_task_patch(args) {
             Ok(p) => p,
-            Err(e) => {
-                return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, e.to_string()));
+            Err(msg) => {
+                return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, msg));
             }
         };
         let r = with_conn(ctx, |conn| {
             require_own_task(conn, id, pid)?;
-            let snapshot = tasks::task_snapshot(conn, id).ok();
-            let dto = tasks::task_update(conn, id, patch)?;
-            if let Some(snapshot) = snapshot {
-                let _ = undo::push_task_snapshot(conn, "task_update", &snapshot, None);
-            }
-            Ok(dto)
+            task_update_body(conn, id, patch)
         });
         if r.is_ok() {
             emit_tasks_changed(ctx, pid);
@@ -807,16 +723,7 @@ impl Tool for TaskMoveTool {
         "Move one of this project's tasks to a kanban column (new|progress|done); optional position, appended at the column end when absent. Moving a recurring task (recurrence daily/weekly/monthly) to done queues the next occurrence in the new column."
     }
     fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "id": { "type": "number" },
-                "status": { "type": "string", "enum": ["new", "progress", "done"] },
-                "position": { "type": "number" }
-            },
-            "required": ["id", "status"],
-            "additionalProperties": false
-        })
+        move_schema()
     }
     fn class(&self) -> ToolClass {
         ToolClass::Mutating
@@ -828,22 +735,10 @@ impl Tool for TaskMoveTool {
         let pid = require_project(ctx)?;
         let id = args.get("id").and_then(Value::as_i64).unwrap_or(0);
         let status = args["status"].as_str().unwrap_or_default();
+        let position = args.get("position").and_then(Value::as_f64);
         let r = with_conn(ctx, |conn| {
             require_own_task(conn, id, pid)?;
-            let snapshot = tasks::task_snapshot(conn, id).ok();
-            let position = match args.get("position").and_then(Value::as_f64) {
-                Some(p) => p,
-                None => conn.query_row(
-                    "SELECT COALESCE(MAX(position), 0) + 1 FROM tasks WHERE project_id = ?1 AND status = ?2",
-                    params![pid, status],
-                    |row| row.get(0),
-                )?,
-            };
-            let (dto, spawned) = tasks::task_move_capture(conn, id, status, position)?;
-            if let Some(snapshot) = snapshot {
-                let _ = undo::push_task_snapshot(conn, "task_move", &snapshot, spawned);
-            }
-            Ok(dto)
+            task_move_body(conn, id, status, position)
         });
         if r.is_ok() {
             emit_tasks_changed(ctx, pid);
@@ -862,12 +757,7 @@ impl Tool for TaskDeleteTool {
         "Delete one of this project's tasks. Dangerous: always confirmed."
     }
     fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": { "id": { "type": "number" } },
-            "required": ["id"],
-            "additionalProperties": false
-        })
+        delete_schema()
     }
     fn class(&self) -> ToolClass {
         ToolClass::Mutating
@@ -880,9 +770,7 @@ impl Tool for TaskDeleteTool {
         let id = args.get("id").and_then(Value::as_i64).unwrap_or(0);
         let r = with_conn(ctx, |conn| {
             require_own_task(conn, id, pid)?;
-            let (project_id, trash_id) = tasks::task_delete_with_trash(conn, id)?;
-            let _ = undo::push_task_delete(conn, trash_id, project_id);
-            Ok(trash_id)
+            task_delete_body(conn, id)
         });
         if r.is_ok() {
             emit_tasks_changed(ctx, pid);
@@ -892,59 +780,6 @@ impl Tool for TaskDeleteTool {
             Ok(_) => ToolResult::ok(json!({ "deleted": id })),
             Err(e) => fail(e),
         })
-    }
-}
-
-// Structured datas.md edit: a section is "## <title>" up to the next "## "
-// heading; an existing section is replaced in place, otherwise appended.
-pub(crate) fn upsert_section(md: &str, title: &str, body: &str) -> (bool, String) {
-    let heading = format!("## {title}");
-    let section = format!("{heading}\n\n{}\n\n", body.trim());
-    let mut out = String::new();
-    let mut updated = false;
-    let mut skipping = false;
-    for line in md.lines() {
-        if skipping {
-            if line.starts_with("## ") {
-                skipping = false;
-            } else {
-                continue;
-            }
-        }
-        if !updated && line.trim_end() == heading {
-            out.push_str(&section);
-            updated = true;
-            skipping = true;
-            continue;
-        }
-        out.push_str(line);
-        out.push('\n');
-    }
-    if !updated {
-        if !out.is_empty() && !out.ends_with("\n\n") {
-            out.push('\n');
-        }
-        out.push_str(&section);
-    }
-    (updated, out)
-}
-
-// datas.md may be missing on hand-created project folders; treat it as empty.
-pub(crate) fn read_datas(conn: &Connection, wd: &std::path::Path, pid: i64) -> Result<String> {
-    match fs_ops::read_text(conn, wd, pid, paths::DATAS_MD) {
-        Ok(text) => Ok(text),
-        Err(e) if is_missing(&e) => Ok(String::new()),
-        Err(e) => Err(e),
-    }
-}
-
-pub(crate) fn write_datas(conn: &Connection, wd: &std::path::Path, pid: i64, content: &str) -> Result<fs_ops::FsEntry> {
-    match fs_ops::write_text(conn, wd, pid, paths::DATAS_MD, content) {
-        Err(e) if is_missing(&e) => {
-            fs_ops::create_file(conn, wd, pid, "", paths::DATAS_MD)?;
-            fs_ops::write_text(conn, wd, pid, paths::DATAS_MD, content)
-        }
-        other => other,
     }
 }
 
@@ -977,16 +812,12 @@ impl Tool for DatasAddTool {
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let pid = require_project(ctx)?;
         let wd = require_wd(ctx)?;
-        let title = args["title"].as_str().unwrap_or_default().trim().to_owned();
-        if title.is_empty() || title.starts_with('#') || title.contains('\n') {
-            return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, "title must be a single plain line"));
-        }
+        let title = match datas_title_arg(args) {
+            Ok(title) => title,
+            Err(msg) => return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, msg)),
+        };
         let body = args["body"].as_str().unwrap_or_default();
-        let r = with_conn(ctx, |conn| {
-            let current = read_datas(conn, &wd, pid)?;
-            let (updated, new_md) = upsert_section(&current, &title, body);
-            write_datas(conn, &wd, pid, &new_md).map(|entry| (updated, entry))
-        });
+        let r = with_conn(ctx, |conn| datas_add_body(conn, &wd, pid, &title, body));
         Ok(match r {
             Ok((updated, entry)) => ToolResult::ok(json!({ "title": title, "updated": updated, "entry": entry })),
             Err(e) => fail(e),
@@ -1098,7 +929,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 53] = [
+    const TOOL_NAMES: [&str; 60] = [
         "finish_task",
         "search",
         "read_file",
@@ -1144,14 +975,21 @@ mod tests {
         "http_request",
         "skill",
         "create_skill",
+        "skill_exec",
         "remember",
         "recall",
         "set_user_gender",
+        "forget",
         "todowrite",
         "todoread",
+        "objective_create",
+        "objective_list",
+        "objective_update",
+        "objective_step_done",
         "send_file",
         "undo_last",
         "undo_list",
+        "related",
     ];
 
     #[test]
@@ -1627,7 +1465,7 @@ mod tests {
             assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
         }
-        for name in ["rename_path", "delete_path", "task_delete", "git_commit", "git_pull", "git_push", "apply_patch"] {
+        for name in ["rename_path", "delete_path", "task_delete", "forget", "git_commit", "git_pull", "git_push", "apply_patch", "skill_exec"] {
             assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
         }
         assert_eq!(tool("git_branch").class(), ToolClass::Mutating);

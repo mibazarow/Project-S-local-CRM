@@ -1695,6 +1695,28 @@ mark { background: rgba(55, 106, 159, .25); border-radius: 2px; }
 .today-item .m .proj { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .today-item .m .red { color: var(--danger); font-weight: 600; }
 
+/* ---------- Цели (Today) ---------- */
+
+.badge.st-paused { color: var(--text-muted); }
+
+.obj-add { display: flex; flex-direction: column; gap: 6px; padding: 4px 10px 8px; }
+.obj-add input, .obj-add textarea { width: 100%; box-sizing: border-box; }
+.obj-add .obj-steps-input { min-height: 40px; font-size: 11.5px; resize: vertical; }
+.obj-add button { align-self: flex-start; }
+
+.obj-row { display: flex; flex-direction: column; gap: 4px; padding: 7px 10px; border-radius: var(--radius-sm); }
+.obj-row:hover { background: rgba(0, 0, 0, .045); }
+.obj-head { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.obj-head .t { font-size: 12.5px; font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.obj-count { font-size: 10.5px; color: var(--text-muted); flex-shrink: 0; }
+.obj-bar { height: 3px; border-radius: 2px; background: #e4e4e9; overflow: hidden; }
+.obj-bar i { display: block; height: 100%; background: var(--ok); border-radius: 2px; }
+.obj-steps { display: flex; flex-direction: column; gap: 4px; padding: 2px 2px 0 4px; }
+.obj-step { display: flex; align-items: center; gap: 6px; font-size: 11.5px; cursor: pointer; }
+.obj-step input[type="checkbox"] { accent-color: var(--accent); flex-shrink: 0; }
+.obj-step .strikethrough { text-decoration: line-through; color: var(--text-muted); }
+.obj-actions { display: flex; gap: 4px; }
+
 /* ---------- Тосты (кросс-сущностные быстрые действия) ---------- */
 
 .toasts {

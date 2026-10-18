@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::{params, Connection};
 
-pub const SCHEMA_VERSION: i64 = 28;
+pub const SCHEMA_VERSION: i64 = 30;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -518,6 +518,46 @@ CREATE TABLE IF NOT EXISTS undo_log (
 );
 ";
 
+// Long-lived goals with steps (objectives slice): objectives are global, not
+// bound to a project; steps are an ordered checklist that cascades with the
+// objective. No indexes: both tables stay small (Today panel + agent tools).
+const MIGRATION_29_OBJECTIVES: &str = "
+CREATE TABLE IF NOT EXISTS objectives (
+    id INTEGER PRIMARY KEY,
+    title TEXT NOT NULL,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','paused','done','error')),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS objective_steps (
+    id INTEGER PRIMARY KEY,
+    objective_id INTEGER NOT NULL REFERENCES objectives(id) ON DELETE CASCADE,
+    text TEXT NOT NULL,
+    done INTEGER NOT NULL DEFAULT 0,
+    position INTEGER NOT NULL
+);
+";
+
+// Entity links (links slice): undirected relationships between entities,
+// recorded automatically after successful agent tool calls and context
+// actions. Kinds: project, file, task, note, chat, schedule, objective,
+// message. Ids are strings: files are "<projectId>:<relPath>", notes are the
+// vault-relative path, everything else is the numeric row id as text. The
+// UNIQUE constraint is the dedupe key (INSERT OR IGNORE); it also backs the
+// from-side lookups, so no extra index is needed at this table's size.
+const MIGRATION_30_LINKS: &str = "
+CREATE TABLE IF NOT EXISTS links (
+    id INTEGER PRIMARY KEY,
+    from_kind TEXT NOT NULL,
+    from_id TEXT NOT NULL,
+    to_kind TEXT NOT NULL,
+    to_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(from_kind, from_id, to_kind, to_id)
+);
+";
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -739,6 +779,32 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         )?;
         if has_undo_log == 0 {
             conn.execute_batch(MIGRATION_28_UNDO_LOG)?;
+        }
+        conn.pragma_update(None, "user_version", 28)?;
+    }
+    if version < 29 {
+        // Guarded per table (v24/v28 recipe) so a re-run after an interrupted
+        // v29 does not re-create; CREATE IF NOT EXISTS is idempotent anyway.
+        let has_objectives: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'objectives'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_objectives == 0 {
+            conn.execute_batch(MIGRATION_29_OBJECTIVES)?;
+        }
+        conn.pragma_update(None, "user_version", 29)?;
+    }
+    if version < 30 {
+        // Guarded per table (v24/v28 recipe) so a re-run after an interrupted
+        // v30 does not re-create; CREATE IF NOT EXISTS is idempotent anyway.
+        let has_links: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'links'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_links == 0 {
+            conn.execute_batch(MIGRATION_30_LINKS)?;
         }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
@@ -1953,6 +2019,78 @@ CREATE UNIQUE INDEX uniq_chats_one_project_chat ON chats(project_id) WHERE kind 
             )
             .unwrap();
         assert_eq!(has_retry_count, 1);
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_v29_creates_objectives_with_status_check_and_step_cascade() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+
+        conn.execute(
+            "INSERT INTO objectives (title, created_at, updated_at) VALUES ('g', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let objective_id = conn.last_insert_rowid();
+        // status defaults to 'active', description stays nullable.
+        let (status, description): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, description FROM objectives WHERE id = ?1",
+                params![objective_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((status.as_str(), description.as_deref()), ("active", None));
+
+        conn.execute(
+            "INSERT INTO objective_steps (objective_id, text, position) VALUES (?1, 'шаг 1', 1)",
+            params![objective_id],
+        )
+        .unwrap();
+        // done defaults to 0.
+        let done: i64 = conn
+            .query_row("SELECT done FROM objective_steps WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(done, 0);
+
+        for bad_status in ["bogus", "new", ""] {
+            let bad = conn.execute(
+                "UPDATE objectives SET status = ?1 WHERE id = ?2",
+                params![bad_status, objective_id],
+            );
+            assert!(bad.is_err(), "status {bad_status:?} accepted");
+        }
+        for status in ["active", "paused", "done", "error"] {
+            conn.execute(
+                "UPDATE objectives SET status = ?1 WHERE id = ?2",
+                params![status, objective_id],
+            )
+            .unwrap();
+        }
+
+        // A step without an objective is rejected; deleting the objective
+        // cascades to its steps.
+        let orphan = conn.execute(
+            "INSERT INTO objective_steps (objective_id, text, position) VALUES (99, 'x', 1)",
+            [],
+        );
+        assert!(orphan.is_err(), "step without an objective accepted");
+        conn.execute("DELETE FROM objectives WHERE id = ?1", params![objective_id])
+            .unwrap();
+        let steps: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM objective_steps WHERE objective_id = ?1",
+                params![objective_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(steps, 0, "steps survived the objective delete");
+
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
     }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import * as ipc from "../../api/ipc";
 import { useApp } from "../../state/AppStore";
-import type { FsEntry, ProjectDto, ScheduleDto, SessionDto, TaskDto } from "../../api/types";
+import type { FsEntry, ObjectiveDto, ProjectDto, ScheduleDto, SessionDto, TaskDto } from "../../api/types";
 import { toMessage } from "../chat/chatShared";
 import type { Tab } from "../TopBar";
 
@@ -18,11 +18,19 @@ interface TodayData {
   overdue: TaskWithProject[];
   soon: TaskWithProject[];
   schedules: ScheduleDto[];
+  objectives: ObjectiveDto[];
   notes: FsEntry[];
   sessions: SessionDto[];
 }
 
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+const OBJECTIVE_STATUS_LABEL: Record<string, string> = {
+  active: "в работе",
+  paused: "пауза",
+  done: "готово",
+  error: "ошибка",
+};
 
 // sessions.last_active_at arrives as SQLite localtime "YYYY-MM-DD HH:MM:SS".
 function formatActivity(value: string): string {
@@ -80,6 +88,9 @@ export default function TodayView({ onTab }: Props) {
   const { actions } = useApp();
   const [data, setData] = useState<TodayData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState<Record<number, boolean>>({});
+  const [newTitle, setNewTitle] = useState("");
+  const [newSteps, setNewSteps] = useState("");
 
   // Sequence guard: overlapping reloads (events, focus, manual) must never let
   // a stale response overwrite a newer one.
@@ -89,9 +100,10 @@ export default function TodayView({ onTab }: Props) {
   const reload = useCallback(async () => {
     const s = ++seq.current;
     try {
-      const [projects, schedulesAll, notesAll, sessionsAll] = await Promise.all([
+      const [projects, schedulesAll, objectivesAll, notesAll, sessionsAll] = await Promise.all([
         ipc.listProjects(),
         ipc.scheduleList(),
+        ipc.objectiveList(),
         ipc.notesTree(),
         ipc.harnessListSessions(),
       ]);
@@ -133,7 +145,7 @@ export default function TodayView({ onTab }: Props) {
         .sort((a, b) => b.lastActiveAt.localeCompare(a.lastActiveAt))
         .slice(0, 6);
 
-      setData({ overdue, soon, schedules, notes, sessions });
+      setData({ overdue, soon, schedules, objectives: objectivesAll, notes, sessions });
       setError(null);
     } catch (e) {
       if (s === seq.current) setError(toMessage(e));
@@ -158,6 +170,7 @@ export default function TodayView({ onTab }: Props) {
     sub(ipc.onProjectsChanged(scheduleReload));
     sub(ipc.onTasksChanged(scheduleReload));
     sub(ipc.onSchedulesChanged(scheduleReload));
+    sub(ipc.onObjectivesChanged(scheduleReload));
     sub(ipc.onNotesChanged(scheduleReload));
     const onFocus = () => scheduleReload();
     window.addEventListener("focus", onFocus);
@@ -201,6 +214,44 @@ export default function TodayView({ onTab }: Props) {
   const openSession = (id: number) => {
     actions.requestSession(id);
     onTab("harness");
+  };
+
+  // Objective mutations emit "objectives-changed", so the debounced reload
+  // refreshes the list; the handlers only report errors and clear the form.
+  const addObjective = async () => {
+    const title = newTitle.trim();
+    if (!title) return;
+    const steps = newSteps
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    try {
+      await ipc.objectiveCreate(title, steps.length ? steps : undefined);
+      setNewTitle("");
+      setNewSteps("");
+      setError(null);
+    } catch (e) {
+      setError(toMessage(e));
+    }
+  };
+
+  const toggleObjective = (id: number) =>
+    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
+
+  const toggleStep = async (objectiveId: number, stepId: number, done: boolean) => {
+    try {
+      await ipc.objectiveStepDone(objectiveId, stepId, done);
+    } catch (e) {
+      setError(toMessage(e));
+    }
+  };
+
+  const setObjectiveStatus = async (id: number, status: string) => {
+    try {
+      await ipc.objectiveUpdate(id, { status });
+    } catch (e) {
+      setError(toMessage(e));
+    }
   };
 
   return (
@@ -299,6 +350,116 @@ export default function TodayView({ onTab }: Props) {
                     </span>
                   </div>
                 ))}
+              </Card>
+
+              <Card
+                title="Цели"
+                count={data.objectives.filter((o) => o.status !== "done").length}
+              >
+                <form
+                  className="obj-add"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void addObjective();
+                  }}
+                >
+                  <input
+                    className="rename-input"
+                    value={newTitle}
+                    onChange={(e) => setNewTitle(e.target.value)}
+                    placeholder="Новая цель…"
+                  />
+                  <textarea
+                    className="rename-input obj-steps-input"
+                    value={newSteps}
+                    onChange={(e) => setNewSteps(e.target.value)}
+                    placeholder="Шаги, по одному в строке (необязательно)"
+                    rows={2}
+                  />
+                  <button className="mini-btn" type="submit" disabled={!newTitle.trim()}>
+                    Добавить
+                  </button>
+                </form>
+                {data.objectives.length === 0 && (
+                  <div className="empty-note">Целей пока нет.</div>
+                )}
+                {data.objectives.map((o) => {
+                  const pct = o.totalSteps ? Math.round((o.doneSteps / o.totalSteps) * 100) : 0;
+                  return (
+                    <div className="obj-row" key={`g-${o.id}`}>
+                      <div
+                        className="obj-head"
+                        role="button"
+                        tabIndex={0}
+                        title={o.description ?? undefined}
+                        onClick={() => toggleObjective(o.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") toggleObjective(o.id);
+                        }}
+                      >
+                        <span className="t">{o.title}</span>
+                        <span className={`badge st-${o.status}`}>
+                          {OBJECTIVE_STATUS_LABEL[o.status] ?? o.status}
+                        </span>
+                        {o.totalSteps > 0 && (
+                          <span className="obj-count">
+                            {o.doneSteps}/{o.totalSteps}
+                          </span>
+                        )}
+                      </div>
+                      {o.totalSteps > 0 && (
+                        <div className="obj-bar">
+                          <i style={{ width: `${pct}%` }} />
+                        </div>
+                      )}
+                      {expanded[o.id] && o.steps.length > 0 && (
+                        <div className="obj-steps">
+                          {o.steps.map((s) => (
+                            <label className="obj-step" key={s.id}>
+                              <input
+                                type="checkbox"
+                                checked={s.done}
+                                onChange={(e) => void toggleStep(o.id, s.id, e.target.checked)}
+                              />
+                              <span className={s.done ? "strikethrough" : undefined}>
+                                {s.text}
+                              </span>
+                            </label>
+                          ))}
+                        </div>
+                      )}
+                      <div className="obj-actions">
+                        {o.status !== "done" && (
+                          <button
+                            className="mini-btn"
+                            type="button"
+                            onClick={() => void setObjectiveStatus(o.id, "done")}
+                          >
+                            Готово
+                          </button>
+                        )}
+                        {o.status === "active" && (
+                          <button
+                            className="mini-btn"
+                            type="button"
+                            onClick={() => void setObjectiveStatus(o.id, "paused")}
+                          >
+                            Пауза
+                          </button>
+                        )}
+                        {o.status === "paused" && (
+                          <button
+                            className="mini-btn"
+                            type="button"
+                            onClick={() => void setObjectiveStatus(o.id, "active")}
+                          >
+                            Продолжить
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
               </Card>
 
               <Card title="Свежие заметки">

@@ -56,6 +56,11 @@ const MUTATING_SKIP_ALLOWLIST: &[&str] = &[
     "todowrite",
     "remember",
     "set_user_gender",
+    // Objective board edits (project + harness twin): reversible status and
+    // step toggles on the user's own goals, not destructive to files.
+    "objective_create",
+    "objective_update",
+    "objective_step_done",
     // Chat bookkeeping that only renames/creates the model's own chats.
     "rename_chat",
     "new_chat",

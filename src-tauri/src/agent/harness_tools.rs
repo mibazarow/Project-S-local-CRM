@@ -11,8 +11,13 @@
 // the system /tmp. The CDP browser tool lives in browser_tool.rs.
 use super::catalog::Catalog;
 use super::project_tools::{
-    emit_tasks_changed, emit_trash_changed, emit_versions_changed, envelope, parse_checklist_arg,
-    read_datas, require_wd, state_of, upsert_section, with_conn, write_datas,
+    emit_tasks_changed, emit_trash_changed, emit_versions_changed, envelope, require_wd,
+    state_of, with_conn,
+};
+use super::task_glue::{
+    create_schema, datas_add_body, datas_title_arg, delete_schema, list_schema, move_schema,
+    parse_checklist_arg, parse_task_patch, read_datas, task_create_body, task_delete_body,
+    task_move_body, task_owner, task_update_body, tasks_list_filtered, update_schema,
 };
 use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
@@ -53,9 +58,11 @@ pub fn harness_catalog() -> Catalog {
     let core: Vec<Arc<dyn Tool>> = vec![
         Arc::new(crate::agent::finish::FinishTaskTool),
         Arc::new(crate::skills::SkillTool),
+        Arc::new(crate::skills::SkillExecTool),
         Arc::new(crate::memory::RememberTool),
         Arc::new(crate::memory::RecallTool),
         Arc::new(crate::memory::SetUserGenderTool),
+        Arc::new(crate::memory::ForgetTool),
         Arc::new(ListChatsTool),
         Arc::new(RenameChatTool),
         Arc::new(NewChatTool),
@@ -64,6 +71,12 @@ pub fn harness_catalog() -> Catalog {
         // Per-conversation plan panel (SPEC: todowrite/todoread).
         Arc::new(crate::todos::TodoWriteTool),
         Arc::new(crate::todos::TodoReadTool),
+        // Long-lived goals with steps (objectives slice): global goals the
+        // user sees with progress in the Today panel.
+        Arc::new(crate::objectives::ObjectiveCreateTool),
+        Arc::new(crate::objectives::ObjectiveListTool),
+        Arc::new(crate::objectives::ObjectiveUpdateTool),
+        Arc::new(crate::objectives::ObjectiveStepDoneTool),
         // Agent-initiated chat attachment (SPEC 6.1): hand a file to the user
         // as a new assistant turn; active from the first round.
         Arc::new(super::send_file::SendFileTool),
@@ -151,6 +164,9 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(ScheduleDeleteTool),
         Arc::new(crate::agent::undo_tools::UndoLastTool),
         Arc::new(crate::agent::undo_tools::UndoListTool),
+        // Background entity links (links slice): lazy-discovered like the
+        // rest of the machine-wide set.
+        Arc::new(crate::links::RelatedTool),
     ];
     for tool in core {
         catalog.register(tool, true).expect("unique tool names");
@@ -274,11 +290,6 @@ fn resolve_project_id(conn: &Connection, args: &Value) -> Result<i64> {
             .ok_or_else(|| AppError::Invalid(format!("project \"{name}\" not found")));
     }
     Err(AppError::Invalid("project_id or project_name is required".into()))
-}
-
-fn task_owner(conn: &Connection, id: i64) -> Result<i64> {
-    conn.query_row("SELECT project_id FROM tasks WHERE id = ?1", params![id], |r| r.get(0))
-        .map_err(|_| AppError::Invalid(format!("task {id} not found")))
 }
 
 pub struct FsReadTool;
@@ -1391,16 +1402,7 @@ impl Tool for CrmTasksTool {
         "List a project's tasks (project_id or project_name); optional status filter (new|progress|done)."
     }
     fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "project_id": { "type": "number" },
-                "project_name": { "type": "string" },
-                "status": { "type": "string", "enum": ["new", "progress", "done"] }
-            },
-            "required": [],
-            "additionalProperties": false
-        })
+        list_schema(true)
     }
     fn class(&self) -> ToolClass {
         ToolClass::ReadOnly
@@ -1412,12 +1414,7 @@ impl Tool for CrmTasksTool {
         let status = args.get("status").and_then(Value::as_str).map(str::to_owned);
         let r = with_conn(ctx, |conn| {
             let pid = resolve_project_id(conn, args)?;
-            let all = tasks::tasks_list(conn, pid)?;
-            Ok::<Vec<tasks::TaskDto>, AppError>(
-                all.into_iter()
-                    .filter(|t| status.as_deref().map_or(true, |s| t.status == s))
-                    .collect(),
-            )
+            tasks_list_filtered(conn, pid, status.as_deref())
         });
         Ok(match r {
             Ok(list) => ToolResult::ok(json!({ "tasks": list })).capped(self.max_result_len()),
@@ -1436,32 +1433,7 @@ impl Tool for CrmTaskCreateTool {
         "Create a task in a project (project_id or project_name); optional status (new|progress|done, default new), priority (low|normal|high|urgent, default normal), recurrence (none|daily|weekly|monthly, default none), checklist ([{text, done?}], max 100 items)."
     }
     fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "project_id": { "type": "number" },
-                "project_name": { "type": "string" },
-                "title": { "type": "string" },
-                "status": { "type": "string", "enum": ["new", "progress", "done"] },
-                "priority": { "type": "string", "enum": ["low", "normal", "high", "urgent"] },
-                "recurrence": { "type": "string", "enum": ["none", "daily", "weekly", "monthly"] },
-                "checklist": {
-                    "type": "array",
-                    "maxItems": 100,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "text": { "type": "string" },
-                            "done": { "type": "boolean" }
-                        },
-                        "required": ["text"],
-                        "additionalProperties": false
-                    }
-                }
-            },
-            "required": ["title"],
-            "additionalProperties": false
-        })
+        create_schema(true)
     }
     fn class(&self) -> ToolClass {
         ToolClass::Mutating
@@ -1470,19 +1442,13 @@ impl Tool for CrmTaskCreateTool {
         PermissionPolicy::Skip
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let title = args["title"].as_str().unwrap_or_default().to_owned();
-        let status = args.get("status").and_then(Value::as_str).map(str::to_owned);
-        let priority = args.get("priority").and_then(Value::as_str).map(str::to_owned);
-        let recurrence = args.get("recurrence").and_then(Value::as_str).map(str::to_owned);
         let checklist = match parse_checklist_arg(args) {
             Ok(items) => items,
             Err(e) => return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, e)),
         };
         let r = with_conn(ctx, |conn| {
             let pid = resolve_project_id(conn, args)?;
-            let dto = tasks::task_create_with(conn, pid, &title, status, priority, checklist, recurrence)?;
-            let _ = undo::push_task_create(conn, dto.id, dto.project_id);
-            Ok(dto)
+            task_create_body(conn, pid, args, checklist)
         });
         if let Ok(dto) = &r {
             emit_tasks_changed(ctx, dto.project_id);
@@ -1501,34 +1467,7 @@ impl Tool for CrmTaskUpdateTool {
         "Update fields of a task by id; absent fields stay unchanged, explicit null clears comment/dueDate/remindAt. Dates: YYYY-MM-DD, remindAt: YYYY-MM-DDTHH:MM. priority: low|normal|high|urgent, recurrence: none|daily|weekly|monthly, checklist: [{text, done?}] max 100 (null/absent keeps the current value)."
     }
     fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "id": { "type": "number" },
-                "title": { "type": "string" },
-                "comment": { "type": ["string", "null"] },
-                "dueDate": { "type": ["string", "null"] },
-                "remindAt": { "type": ["string", "null"] },
-                "tags": { "type": "array", "items": { "type": "string" } },
-                "priority": { "type": "string", "enum": ["low", "normal", "high", "urgent"] },
-                "recurrence": { "type": "string", "enum": ["none", "daily", "weekly", "monthly"] },
-                "checklist": {
-                    "type": "array",
-                    "maxItems": 100,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "text": { "type": "string" },
-                            "done": { "type": "boolean" }
-                        },
-                        "required": ["text"],
-                        "additionalProperties": false
-                    }
-                }
-            },
-            "required": ["id"],
-            "additionalProperties": false
-        })
+        update_schema()
     }
     fn class(&self) -> ToolClass {
         ToolClass::Mutating
@@ -1538,18 +1477,13 @@ impl Tool for CrmTaskUpdateTool {
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let id = args.get("id").and_then(Value::as_i64).unwrap_or(0);
-        let patch: tasks::TaskPatch = match serde_json::from_value(args.clone()) {
+        let patch: tasks::TaskPatch = match parse_task_patch(args) {
             Ok(p) => p,
-            Err(e) => return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, e.to_string())),
+            Err(msg) => return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, msg)),
         };
         let r = with_conn(ctx, |conn| {
             task_owner(conn, id)?;
-            let snapshot = tasks::task_snapshot(conn, id).ok();
-            let dto = tasks::task_update(conn, id, patch)?;
-            if let Some(snapshot) = snapshot {
-                let _ = undo::push_task_snapshot(conn, "task_update", &snapshot, None);
-            }
-            Ok(dto)
+            task_update_body(conn, id, patch)
         });
         if let Ok(dto) = &r {
             emit_tasks_changed(ctx, dto.project_id);
@@ -1568,16 +1502,7 @@ impl Tool for CrmTaskMoveTool {
         "Move a task to a kanban column (new|progress|done); optional position, appended at the column end when absent. Moving a recurring task (recurrence daily/weekly/monthly) to done queues the next occurrence in the new column."
     }
     fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": {
-                "id": { "type": "number" },
-                "status": { "type": "string", "enum": ["new", "progress", "done"] },
-                "position": { "type": "number" }
-            },
-            "required": ["id", "status"],
-            "additionalProperties": false
-        })
+        move_schema()
     }
     fn class(&self) -> ToolClass {
         ToolClass::Mutating
@@ -1587,25 +1512,9 @@ impl Tool for CrmTaskMoveTool {
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let id = args.get("id").and_then(Value::as_i64).unwrap_or(0);
-        let status = args["status"].as_str().unwrap_or_default().to_owned();
+        let status = args["status"].as_str().unwrap_or_default();
         let position = args.get("position").and_then(Value::as_f64);
-        let r = with_conn(ctx, |conn| {
-            let pid = task_owner(conn, id)?;
-            let snapshot = tasks::task_snapshot(conn, id).ok();
-            let position = match position {
-                Some(p) => p,
-                None => conn.query_row(
-                    "SELECT COALESCE(MAX(position), 0) + 1 FROM tasks WHERE project_id = ?1 AND status = ?2",
-                    params![pid, status],
-                    |row| row.get(0),
-                )?,
-            };
-            let (dto, spawned) = tasks::task_move_capture(conn, id, &status, position)?;
-            if let Some(snapshot) = snapshot {
-                let _ = undo::push_task_snapshot(conn, "task_move", &snapshot, spawned);
-            }
-            Ok(dto)
-        });
+        let r = with_conn(ctx, |conn| task_move_body(conn, id, status, position));
         if let Ok(dto) = &r {
             emit_tasks_changed(ctx, dto.project_id);
         }
@@ -1623,12 +1532,7 @@ impl Tool for CrmTaskDeleteTool {
         "Delete a task by id. Dangerous: always confirmed."
     }
     fn parameters(&self) -> Value {
-        json!({
-            "type": "object",
-            "properties": { "id": { "type": "number" } },
-            "required": ["id"],
-            "additionalProperties": false
-        })
+        delete_schema()
     }
     fn class(&self) -> ToolClass {
         ToolClass::Mutating
@@ -1641,12 +1545,7 @@ impl Tool for CrmTaskDeleteTool {
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let id = args.get("id").and_then(Value::as_i64).unwrap_or(0);
-        let r = with_conn(ctx, |conn| {
-            task_owner(conn, id)?;
-            let (pid, trash_id) = tasks::task_delete_with_trash(conn, id)?;
-            let _ = undo::push_task_delete(conn, trash_id, pid);
-            Ok(pid)
-        });
+        let r = with_conn(ctx, |conn| task_delete_body(conn, id));
         if let Ok(pid) = &r {
             emit_tasks_changed(ctx, *pid);
             emit_trash_changed(ctx, None);
@@ -1727,16 +1626,12 @@ impl Tool for DatasAddTool {
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let wd = require_wd(ctx)?;
         let pid = with_conn(ctx, |conn| resolve_project_id(conn, args))?;
-        let title = args["title"].as_str().unwrap_or_default().trim().to_owned();
-        if title.is_empty() || title.starts_with('#') || title.contains('\n') {
-            return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, "title must be a single plain line"));
-        }
-        let body = args["body"].as_str().unwrap_or_default().to_owned();
-        let r = with_conn(ctx, |conn| {
-            let current = read_datas(conn, &wd, pid)?;
-            let (updated, new_md) = upsert_section(&current, &title, &body);
-            write_datas(conn, &wd, pid, &new_md).map(|entry| (updated, entry))
-        });
+        let title = match datas_title_arg(args) {
+            Ok(title) => title,
+            Err(msg) => return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, msg)),
+        };
+        let body = args["body"].as_str().unwrap_or_default();
+        let r = with_conn(ctx, |conn| datas_add_body(conn, &wd, pid, &title, body));
         Ok(match r {
             Ok((updated, entry)) => ToolResult::ok(json!({ "projectId": pid, "title": title, "updated": updated, "entry": entry })),
             Err(e) => envelope_r(e),
@@ -2340,7 +2235,7 @@ mod tests {
     fn catalog_registers_everything_without_duplicate_names() {
         let mut catalog = harness_catalog();
         let active: Vec<String> = catalog.to_specs().into_iter().map(|s| s.name).collect();
-        for expected in ["finish_task", "skill", "remember", "recall", "set_user_gender", "list_chats", "rename_chat", "new_chat", "delete_chat", "search_chats", LIST_TOOLS, ENABLE_TOOLS] {
+        for expected in ["finish_task", "skill", "skill_exec", "remember", "recall", "set_user_gender", "forget", "list_chats", "rename_chat", "new_chat", "delete_chat", "search_chats", LIST_TOOLS, ENABLE_TOOLS] {
             assert!(active.iter().any(|n| n == expected), "missing active {expected}");
         }
         let summary = catalog.list_summary();
@@ -2370,7 +2265,7 @@ mod tests {
         assert_eq!(tool("fs_rename").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("fs_mkdir").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("create_skill").policy(), PermissionPolicy::Skip);
-        for name in ["fs_delete", "bash", "crm_task_delete", "git_commit", "git_pull", "git_push", "apply_patch", "ssh_upload", "ssh_download", "ssh_generate_key", "ssh_install_key", "screenshot"] {
+        for name in ["fs_delete", "bash", "skill_exec", "crm_task_delete", "forget", "git_commit", "git_pull", "git_push", "apply_patch", "ssh_upload", "ssh_download", "ssh_generate_key", "ssh_install_key", "screenshot"] {
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
             assert!(tool(name).danger_reason(&json!({}), &ToolCtx::default()).is_some(), "{name} danger_reason");

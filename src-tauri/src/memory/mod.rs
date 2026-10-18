@@ -51,11 +51,13 @@ pub struct MemoryDto {
     pub updated_at: String,
 }
 
-// One ranked search hit: the ranked fields only (the UI and the agent tool
-// consume content/tags/project plus the fusion score).
+// One ranked search hit: the record id plus the ranked fields (the UI and
+// the agent tools consume id/content/tags/project plus the fusion score;
+// forget targets records by these ids).
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryHit {
+    pub id: i64,
     pub content: String,
     pub tags: Vec<String>,
     pub project_id: Option<i64>,
@@ -438,6 +440,7 @@ pub(crate) fn search_with(
                 score,
                 id,
                 MemoryHit {
+                    id,
                     content: cand.content,
                     tags: cand.tags,
                     project_id: cand.project_id,
@@ -776,6 +779,165 @@ impl Tool for SetUserGenderTool {
     }
 }
 
+// Best-effort UI refresh after an agent memory mutation: the same event and
+// payload shape the memory_* commands in lib.rs emit; a missing emitter is
+// not an error.
+fn emit_memory_changed(ctx: &ToolCtx, id: Option<i64>) {
+    if let Some(state) = ctx.state.as_deref() {
+        if let Some(emitter) = state.emitter.lock().unwrap().as_ref() {
+            emitter.emit_event("memory-changed", json!({ "id": id }));
+        }
+    }
+}
+
+// Candidate preview for the ambiguous-query error: one line, bounded width.
+fn short_content(content: &str) -> String {
+    let mut line: String = content
+        .chars()
+        .map(|c| if c == '\n' { ' ' } else { c })
+        .take(80)
+        .collect();
+    if content.chars().count() > 80 {
+        line.push('…');
+    }
+    line
+}
+
+// How many candidates an ambiguous forget query reports back to the model.
+const FORGET_QUERY_LIMIT: usize = 5;
+
+// forget: the user asks the agent to drop or correct a memory record.
+// Deletion is destructive, so unlike remember this Mutating tool is
+// Check-confirmed. Targeting: an explicit id wins; otherwise the query must
+// match exactly one record — several matches come back as an invalid_args
+// candidate list (id + short content) so the agent can ask the user or pick
+// an id, none comes back as not_found. With replacement the record is
+// updated (FTS re-mirrored, stale vector dropped and re-embedded) instead of
+// deleted.
+pub struct ForgetTool;
+
+impl Tool for ForgetTool {
+    fn name(&self) -> &str {
+        "forget"
+    }
+    fn description(&self) -> &str {
+        // Two lines on purpose: the prompt tool-list block carries only the
+        // first line, the full two-line text reaches the tool schema.
+        "Forget or correct a global memory record when the user asks to remove or fix something remembered.
+Target by id, or by query: a unique match is acted on, several matches return an invalid_args error listing candidate ids (ask the user or pick one), none returns not_found. Provide replacement to correct the content instead of deleting it. At least one of id or query is required."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "id": { "type": "number" },
+                "query": { "type": "string" },
+                "replacement": { "type": "string" }
+            },
+            "required": [],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Check
+    }
+    fn danger_reason(&self, args: &Value, _ctx: &ToolCtx) -> Option<String> {
+        let target = match args.get("id").and_then(Value::as_i64) {
+            Some(id) => format!("#{id}"),
+            None => match args.get("query").and_then(Value::as_str) {
+                Some(q) if !q.trim().is_empty() => format!("по запросу «{}»", q.trim()),
+                _ => String::new(),
+            },
+        };
+        Some(match args.get("replacement").and_then(Value::as_str) {
+            Some(r) if !r.trim().is_empty() => format!("замена текста записи памяти {target}"),
+            _ => format!("удаление записи памяти {target}"),
+        })
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let id = args.get("id").and_then(Value::as_i64);
+        let query = args
+            .get("query")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_owned();
+        if id.is_none() && query.is_empty() {
+            return Ok(ToolResult::err(
+                ToolErrorCode::InvalidArgs,
+                "provide at least one of id or query",
+            ));
+        }
+        let replacement = args
+            .get("replacement")
+            .and_then(Value::as_str)
+            .filter(|r| !r.trim().is_empty());
+        let guard = db_guard(ctx)?;
+        let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
+        let target = match id {
+            Some(id) => id,
+            None => {
+                let hits = match search(conn, &query, FORGET_QUERY_LIMIT) {
+                    Ok(hits) => hits,
+                    Err(e) => {
+                        return Ok(ToolResult::err(ToolErrorCode::ExecutionError, e.to_string()))
+                    }
+                };
+                match hits.len() {
+                    0 => {
+                        return Ok(ToolResult::err(
+                            ToolErrorCode::NotFound,
+                            format!("no memory record matches {query:?}"),
+                        ))
+                    }
+                    1 => hits[0].id,
+                    _ => {
+                        let candidates = hits
+                            .iter()
+                            .map(|h| format!("{}: {:?}", h.id, short_content(&h.content)))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        return Ok(ToolResult::err(
+                            ToolErrorCode::InvalidArgs,
+                            format!(
+                                "several memory records match {query:?}; retry with one of these ids: {candidates}"
+                            ),
+                        ));
+                    }
+                }
+            }
+        };
+        let attempt = match replacement {
+            Some(replacement) => update(conn, target, replacement, None)
+                .map(|dto| ("updated", dto.id, Some(dto.content))),
+            None => get(conn, target)?.map_or_else(
+                || Err(AppError::Invalid(format!("memory {target} not found"))),
+                |dto| {
+                    delete(conn, target).map(|()| ("deleted", target, Some(dto.content)))
+                },
+            ),
+        };
+        match attempt {
+            Ok((action, id, content)) => {
+                emit_memory_changed(ctx, if action == "updated" { Some(id) } else { None });
+                Ok(ToolResult::ok(json!({ "action": action, "id": id, "content": content })))
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                let code = if msg.contains("not found") {
+                    ToolErrorCode::NotFound
+                } else {
+                    ToolErrorCode::ExecutionError
+                };
+                Ok(ToolResult::err(code, msg))
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -784,9 +946,11 @@ mod tests {
     use crate::llm::{ChatEvent, ChatOutcome, ToolSpec};
     use crate::onboarding::temp_test_dir;
     use crate::projects;
+    use crate::state::UiEmitter;
     use serde_json::json;
     use std::fs;
     use std::path::PathBuf;
+    use std::sync::Mutex;
 
     fn setup(tag: &str) -> (PathBuf, Connection) {
         let wd = temp_test_dir(tag);
@@ -1192,6 +1356,169 @@ mod tests {
             drop(guard);
         }
         fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[derive(Default)]
+    struct RecordingEmitter {
+        events: Arc<Mutex<Vec<(String, Value)>>>,
+    }
+
+    impl UiEmitter for RecordingEmitter {
+        fn emit_event(&self, event: &str, payload: Value) {
+            self.events.lock().unwrap().push((event.to_owned(), payload));
+        }
+    }
+
+    type RecordedEvents = Arc<Mutex<Vec<(String, Value)>>>;
+
+    // AppState wired with a recording emitter and the test connection moved in.
+    fn tool_state(conn: Connection) -> (Arc<AppState>, RecordedEvents) {
+        let state = Arc::new(AppState::new());
+        let recorder = RecordingEmitter::default();
+        let events = Arc::clone(&recorder.events);
+        *state.emitter.lock().unwrap() = Some(Arc::new(recorder));
+        *state.db.lock().unwrap() = Some(conn);
+        (state, events)
+    }
+
+    fn forget_ctx(state: &Arc<AppState>) -> ToolCtx {
+        ToolCtx {
+            state: Some(Arc::clone(state)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn forget_by_id_deletes_record_and_cleans_fts_vectors() {
+        let (wd, conn) = setup("mem-forget-del");
+        let dto = add(&conn, "Клиент example.ru — аптечная сеть", None, Some(vec!["клиент".into()]), None).unwrap();
+        store_memory_vector(&conn, &FakeEmbedder, dto.id, &dto.content).unwrap();
+        let (state, events) = tool_state(conn);
+        let ctx = forget_ctx(&state);
+
+        let r = ForgetTool.execute(&json!({ "id": dto.id }), &ctx).unwrap();
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["action"], "deleted");
+        assert_eq!(data["id"], dto.id);
+        assert!(data["content"].as_str().unwrap().contains("аптечная"));
+
+        let guard = state.db.lock().unwrap();
+        let conn = guard.as_ref().unwrap();
+        assert!(list(conn).unwrap().is_empty());
+        assert!(fts_row(conn, dto.id).is_none(), "fts row must go with the record");
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM vec_memory WHERE rowid = ?1", params![dto.id], |r| r.get(0)).unwrap(),
+            0,
+            "vector row must go with the record"
+        );
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM memory_vectors WHERE memory_id = ?1", params![dto.id], |r| r.get(0)).unwrap(),
+            0
+        );
+        assert!(search(conn, "аптечная", 10).unwrap().is_empty());
+        drop(guard);
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "memory-changed");
+        assert!(events[0].1["id"].is_null(), "delete notifies with a null id like the UI command");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn forget_with_replacement_updates_content_and_reindexes() {
+        let (wd, conn) = setup("mem-forget-upd");
+        let dto = add(&conn, "Клиент example.ru — аптечная сеть", None, None, None).unwrap();
+        store_memory_vector(&conn, &FakeEmbedder, dto.id, &dto.content).unwrap();
+        let (state, events) = tool_state(conn);
+        let ctx = forget_ctx(&state);
+
+        let r = ForgetTool
+            .execute(&json!({ "id": dto.id, "replacement": "Клиент example.ru — сеть клиник" }), &ctx)
+            .unwrap();
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["action"], "updated");
+        assert_eq!(data["id"], dto.id);
+        assert_eq!(data["content"], "Клиент example.ru — сеть клиник");
+
+        let guard = state.db.lock().unwrap();
+        let conn = guard.as_ref().unwrap();
+        let fts = fts_row(conn, dto.id).expect("fts row after update");
+        assert_eq!(fts.1, "Клиент example.ru — сеть клиник", "fts mirror must follow the new content");
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT count(*) FROM vec_memory WHERE rowid = ?1", params![dto.id], |r| r.get(0)).unwrap(),
+            0,
+            "the stale vector must be dropped on update (re-embed is spawned on real DBs)"
+        );
+        assert!(search(conn, "клиник", 10).unwrap().iter().any(|h| h.id == dto.id));
+        drop(guard);
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].0, "memory-changed");
+        assert_eq!(events[0].1["id"], dto.id);
+
+        let r = ForgetTool.execute(&json!({ "id": 999 }), &ctx).unwrap();
+        assert_eq!(r.error.unwrap().code, "not_found");
+        assert_eq!(events.len(), 1, "a failed forget must not notify");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn forget_by_query_unique_ambiguous_and_no_match() {
+        let (wd, conn) = setup("mem-forget-query");
+        let clinic = add(&conn, "Клиент example.ru — аптечная сеть", None, None, None).unwrap();
+        let weather = add(&conn, "Погода в Москве", None, None, None).unwrap();
+        let warehouse = add(&conn, "аптечная база на складе", None, None, None).unwrap();
+        let (state, _events) = tool_state(conn);
+        let ctx = forget_ctx(&state);
+
+        let r = ForgetTool.execute(&json!({ "query": "погода" }), &ctx).unwrap();
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["action"], "deleted");
+        assert_eq!(data["id"], weather.id);
+
+        let r = ForgetTool.execute(&json!({ "query": "аптечная" }), &ctx).unwrap();
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "invalid_args");
+        assert!(err.message.contains(&format!("{}:", clinic.id)), "{:?}", err.message);
+        assert!(err.message.contains(&format!("{}:", warehouse.id)), "{:?}", err.message);
+
+        let r = ForgetTool.execute(&json!({ "query": "нет таких слов" }), &ctx).unwrap();
+        assert_eq!(r.error.unwrap().code, "not_found");
+
+        let r = ForgetTool.execute(&json!({}), &ctx).unwrap();
+        assert_eq!(r.error.unwrap().code, "invalid_args");
+        let r = ForgetTool.execute(&json!({ "query": "   " }), &ctx).unwrap();
+        assert_eq!(r.error.unwrap().code, "invalid_args");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn forget_registered_in_all_three_catalogs_as_confirmed_mutating() {
+        for catalog in [
+            crate::agent::project_tools::project_catalog(),
+            crate::harness::harness_catalog(),
+            crate::agent::notes_tools::notes_catalog(),
+        ] {
+            let Resolution::Found(tool) = catalog.resolve("forget") else {
+                panic!("forget missing from catalog");
+            };
+            assert_eq!(tool.class(), ToolClass::Mutating);
+            assert_eq!(tool.policy(), PermissionPolicy::Check);
+            assert!(tool.danger_reason(&json!({ "id": 1 }), &ToolCtx::default()).is_some());
+            assert!(tool
+                .danger_reason(&json!({ "query": "кофе", "replacement": "чай" }), &ToolCtx::default())
+                .is_some());
+            let schema = tool.parameters();
+            assert_eq!(schema["additionalProperties"], false);
+            for prop in ["id", "query", "replacement"] {
+                assert!(schema["properties"][prop].is_object(), "missing property {prop}");
+            }
+        }
     }
 
     #[test]

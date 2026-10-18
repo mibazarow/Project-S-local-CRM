@@ -825,7 +825,7 @@ pub fn start_project_run(
         return Err(AppError::Invalid("message text is empty".into()));
     }
     let wd = state.working_dir()?;
-    let (chat_id, project, brief, memory_records) = {
+    let (chat_id, project, brief, memory_records, related_line) = {
         let guard = state.db.lock().unwrap();
         let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
         let project = projects::get_project(conn, project_id)?;
@@ -840,7 +840,11 @@ pub fn start_project_run(
         // [Context] block of the fresh user turn, never the system prompt.
         let brief = crate::brief::get_brief(conn, project_id)?;
         let memory_records = memory::relevant_records(conn, Some(project_id), text)?;
-        (chat_id, project, brief, memory_records)
+        // One short "Related" line for the entities linked to this project
+        // (links slice); empty when nothing is linked, so volatile_block
+        // drops the section.
+        let related_line = crate::links::context_line(conn, "project", &project_id.to_string(), 8);
+        (chat_id, project, brief, memory_records, related_line)
     };
 
     // The catalog is built BEFORE the prompt so the generated tool block
@@ -858,7 +862,7 @@ pub fn start_project_run(
         Some(b) => format!("Project brief (updated {}):\n{}", b.updated_at, b.text),
         None => "Project brief:\nNo brief yet.".to_string(),
     };
-    let volatile_block = context::volatile_block(&[&brief_section, &memory_records]);
+    let volatile_block = context::volatile_block(&[&brief_section, &memory_records, &related_line]);
 
     spawn_run(
         app,

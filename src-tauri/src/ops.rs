@@ -36,8 +36,9 @@ pub struct BackupInfo {
 }
 
 // SPEC 3.6: one .zip holding a consistent SQLite snapshot (VACUUM INTO, so a
-// live WAL DB is copied without locking it) plus copies of Projects/ and the
-// Notes/ vault (Harness/tmp is deliberately excluded). Default destination is
+// live WAL DB is copied without locking it) plus copies of Projects/, the
+// Notes/ vault and Harness/ (Harness/tmp with its processes/downloads is
+// deliberately excluded). Default destination is
 // Settings/backups/project-s-YYYYMMDD-HHMMSS.zip. The archive is re-opened
 // and the DB inside integrity-checked before success is reported (SPEC 7
 // "backup archive is recoverable").
@@ -76,9 +77,14 @@ fn write_and_verify_zip(wd: &Path, snapshot: &Path, dest: &Path) -> Result<Backu
     let mut src = File::open(snapshot)?;
     copy(&mut src, &mut zip)?;
 
-    let mut stack = vec![paths::projects_dir(wd), paths::notes_dir(wd)];
+    let harness_tmp = paths::harness_tmp_dir(wd);
+    let mut stack = vec![
+        paths::projects_dir(wd),
+        paths::notes_dir(wd),
+        paths::harness_dir(wd),
+    ];
     while let Some(dir) = stack.pop() {
-        if !dir.is_dir() {
+        if !dir.is_dir() || dir == harness_tmp {
             continue;
         }
         for entry in fs::read_dir(&dir)? {
@@ -428,8 +434,8 @@ mod tests {
         assert!(names.contains(&"Projects/example-ru/sub/b.txt".to_string()));
         assert!(names.contains(&"Notes/foo.md".to_string()));
         assert!(names.contains(&"Notes/sub/bar.md".to_string()));
-        // tmp is NOT part of the backup (SPEC 3.6).
-        assert!(!names.iter().any(|n| n.starts_with("Harness")));
+        // Harness/tmp is NOT part of the backup (SPEC 3.6).
+        assert!(!names.iter().any(|n| n.starts_with("Harness/tmp")));
 
         // The DB entry opens as a real SQLite file.
         let mut entry = archive.by_name("project-s.db").unwrap();
@@ -444,6 +450,32 @@ mod tests {
         assert_eq!(ok, "ok");
         drop(c);
         let _ = fs::remove_file(check);
+        drop(conn);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn backup_includes_harness_files_and_excludes_tmp() {
+        let wd = scaffold("backup-harness");
+        let harness = paths::harness_dir(&wd);
+        fs::create_dir_all(harness.join("sub")).unwrap();
+        fs::write(harness.join("a.md"), "harness-file").unwrap();
+        fs::write(harness.join("sub/b.txt"), "nested-harness").unwrap();
+        let tmp = paths::harness_tmp_dir(&wd);
+        fs::create_dir_all(tmp.join("processes")).unwrap();
+        fs::create_dir_all(tmp.join("downloads")).unwrap();
+        fs::write(tmp.join("junk.bin"), "junk").unwrap();
+        fs::write(tmp.join("processes/1-x.log"), "proc-log").unwrap();
+        fs::write(tmp.join("downloads/d.bin"), "download").unwrap();
+
+        let conn = db::open(&paths::db_path(&wd)).unwrap();
+        let info = create_backup(&wd, &conn, None).unwrap();
+        let archive = zip::ZipArchive::new(File::open(&info.path).unwrap()).unwrap();
+        let names: Vec<String> = archive.file_names().map(str::to_string).collect();
+        assert!(names.contains(&"Harness/a.md".to_string()));
+        assert!(names.contains(&"Harness/sub/b.txt".to_string()));
+        // tmp and everything under it (processes/downloads) stay out (SPEC 3.6).
+        assert!(!names.iter().any(|n| n.starts_with("Harness/tmp")));
         drop(conn);
         fs::remove_dir_all(&wd).unwrap();
     }

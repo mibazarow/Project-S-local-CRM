@@ -194,11 +194,16 @@ export default function ProjectChat({ projectId, projectName }: Props) {
 
   // Message quick actions: the text becomes a Notes/ note (name from its first
   // line) or a task in this project (first line as title, full text as comment).
+  // Both record a background link to this chat (links slice), best-effort.
   const messageToNote = (item: ChatItem) => {
     const full = item.text.trim();
     if (!full) return;
+    const chatId = projectId != null ? chatIds[projectId] : undefined;
     void createNote(noteNameFromText(full), full)
-      .then((rel) => toast("ok", `Заметка «${rel}» создана`))
+      .then((rel) => {
+        if (chatId != null) void ipc.linkCreate("note", rel, "chat", String(chatId)).catch(() => {});
+        toast("ok", `Заметка «${rel}» создана`);
+      })
       .catch((e) => toast("err", toMessage(e)));
   };
 
@@ -206,11 +211,14 @@ export default function ProjectChat({ projectId, projectName }: Props) {
     if (projectId == null) return;
     const full = item.text.trim();
     if (!full) return;
+    const chatId = chatIds[projectId];
     const title = (full.split(/\r?\n/)[0] ?? "").trim().slice(0, 120) || full.slice(0, 120);
     void (async () => {
       try {
         const dto = await ipc.taskCreate(projectId, title);
         if (full !== title) await ipc.taskUpdate(dto.id, { comment: full });
+        if (chatId != null)
+          void ipc.linkCreate("task", String(dto.id), "chat", String(chatId)).catch(() => {});
         toast("ok", `Задача «${title}» создана`);
       } catch (e) {
         toast("err", toMessage(e));

@@ -27,6 +27,7 @@ pub fn notes_catalog() -> Catalog {
         Arc::new(crate::memory::RememberTool),
         Arc::new(crate::memory::RecallTool),
         Arc::new(crate::memory::SetUserGenderTool),
+        Arc::new(crate::memory::ForgetTool),
         Arc::new(NotesListTool),
         Arc::new(NotesReadTool),
         Arc::new(NotesWriteTool),
@@ -613,6 +614,7 @@ mod tests {
             "remember",
             "recall",
             "set_user_gender",
+            "forget",
             "notes_list",
             "notes_read",
             "notes_write",
@@ -655,6 +657,9 @@ mod tests {
         assert!(del
             .danger_reason(&json!({ "relPath": "a.md" }), &ToolCtx::default())
             .is_some());
+        let Resolution::Found(fgt) = catalog.resolve("forget") else { unreachable!() };
+        assert_eq!(fgt.class(), ToolClass::Mutating);
+        assert_eq!(fgt.policy(), Policy::Check);
     }
 
     #[test]

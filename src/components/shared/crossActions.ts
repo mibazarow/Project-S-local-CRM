@@ -45,11 +45,14 @@ export async function createNote(name: string, content: string): Promise<string>
 }
 
 // Text/markdown project file -> Notes/ note named after the file's basename.
+// The new note is linked to its source file in the background (links slice).
 export async function fileToNote(projectId: number, entry: FsEntry): Promise<string> {
   const content = await ipc.fsReadText(projectId, entry.relPath);
   const dot = entry.name.lastIndexOf(".");
   const stem = dot > 0 ? entry.name.slice(0, dot) : entry.name;
-  return createNote(`${stem}.md`, content);
+  const rel = await createNote(`${stem}.md`, content);
+  void ipc.linkCreate("file", `${projectId}:${entry.relPath}`, "note", rel).catch(() => {});
+  return rel;
 }
 
 // Hover quick actions for project files (tree rows, grid tiles, preview head):

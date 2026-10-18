@@ -397,6 +397,13 @@ fn run_inner(
                 ok,
                 envelope: envelope_json.clone(),
             });
+            // Background entity linking (links slice): a successful tool call
+            // ties the run's chat to the file/task/note/schedule it touched.
+            // Best-effort: the helper swallows every error and never changes
+            // the tool result or the loop.
+            if ok {
+                crate::links::auto_link_from_tool_ctx(&ctx, &tc.name, &tc.arguments, &envelope_json);
+            }
             let tool_msg = ChatMessage::tool_result(
                 &tc.id,
                 serde_json::to_string(&envelope_json)?,
@@ -1387,5 +1394,95 @@ mod tests {
             .to_string();
         assert!(message.contains("unknown tool: nope"));
         assert!(message.contains("Hint: call list_available_tools"), "{message}");
+    }
+
+    // --- background entity links (links slice) ---
+
+    struct FakeProjectFileTool {
+        fail: bool,
+    }
+
+    impl Tool for FakeProjectFileTool {
+        fn name(&self) -> &str {
+            "read_file"
+        }
+        fn description(&self) -> &str {
+            "fake project read_file for link tests (test-only tool)"
+        }
+        fn parameters(&self) -> Value {
+            json!({
+                "type": "object",
+                "properties": { "rel_path": { "type": "string" } },
+                "required": ["rel_path"],
+                "additionalProperties": false
+            })
+        }
+        fn policy(&self) -> PermissionPolicy {
+            PermissionPolicy::Skip
+        }
+        fn execute(&self, args: &Value, _ctx: &ToolCtx) -> Result<ToolResult> {
+            if self.fail {
+                return Ok(ToolResult::err(ToolErrorCode::NotFound, "file not found"));
+            }
+            Ok(ToolResult::ok(
+                json!({ "relPath": args["rel_path"], "content": "x" }),
+            ))
+        }
+    }
+
+    fn linked_targets(state: &Arc<crate::state::AppState>) -> Vec<(String, String)> {
+        let guard = state.db.lock().unwrap();
+        let conn = guard.as_ref().expect("test db installed");
+        let mut stmt = conn
+            .prepare("SELECT to_kind, to_id FROM links WHERE from_kind = 'chat' AND from_id = '7'")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        rows
+    }
+
+    fn link_run(tool_fails: bool) -> Arc<crate::state::AppState> {
+        crate::db::ensure_vec_extension();
+        let state = Arc::new(crate::state::AppState::new());
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::db::schema::run_migrations(&conn).unwrap();
+        *state.db.lock().unwrap() = Some(conn);
+        let backend = ScriptedBackend::new(vec![
+            tools_outcome(vec![call("c1", "read_file", json!({ "rel_path": "a.md" }))]),
+            tools_outcome(vec![finish_call("done")]),
+        ]);
+        let mut catalog = Catalog::new();
+        catalog.register(Arc::new(FinishTaskTool), true).unwrap();
+        catalog
+            .register(Arc::new(FakeProjectFileTool { fail: tool_fails }), true)
+            .unwrap();
+        let mut agent_state = AgentState {
+            backend: &backend,
+            catalog: &mut catalog,
+        };
+        let mut cfg = config(8);
+        cfg.chat_id = Some(7);
+        cfg.project_id = Some(3);
+        cfg.state = Some(Arc::clone(&state));
+        let result = run(&mut agent_state, &cfg, &DenyAllConfirmer, |_| {}).unwrap();
+        assert_eq!(result.answer, "done");
+        state
+    }
+
+    #[test]
+    fn successful_tool_call_links_chat_to_file_and_project() {
+        let state = link_run(false);
+        let pairs = linked_targets(&state);
+        assert!(pairs.contains(&("project".to_string(), "3".to_string())), "{pairs:?}");
+        assert!(pairs.contains(&("file".to_string(), "3:a.md".to_string())), "{pairs:?}");
+    }
+
+    #[test]
+    fn failed_tool_call_records_no_links() {
+        let state = link_run(true);
+        assert!(linked_targets(&state).is_empty());
     }
 }

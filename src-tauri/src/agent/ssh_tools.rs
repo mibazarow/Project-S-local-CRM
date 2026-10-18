@@ -17,9 +17,8 @@
 // errors.
 use super::git_tools::join_rel;
 use super::harness_tools::{canonicalish, resolve_path};
-use super::project_tools::{
-    envelope, read_datas, require_wd, upsert_section, with_conn, write_datas,
-};
+use super::project_tools::{envelope, require_wd, with_conn};
+use super::task_glue::{read_datas, upsert_section, write_datas};
 use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::config::{self, ConfigKind};
