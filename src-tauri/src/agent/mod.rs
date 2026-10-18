@@ -25,6 +25,7 @@ pub mod ssh_tools;
 pub mod task_glue;
 pub mod tool;
 pub mod undo_tools;
+pub mod vision_tool;
 
 #[path = "loop.rs"]
 pub mod r#loop;

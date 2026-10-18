@@ -38,6 +38,13 @@ pub fn notes_catalog() -> Catalog {
         Arc::new(NotesCopyTool),
         Arc::new(NotesDeleteTool),
         Arc::new(SearchNotesTool),
+        // Internet + Vision for the notes agent (SPEC Q-17): the same harness
+        // web tools (identical names/schemas, reused not forked) plus a vault-
+        // bound image analysis through the configured provider. No browser/CDP
+        // or shell tools here — the notes catalog stays notes-and-web only.
+        Arc::new(crate::agent::net_tools::WebfetchTool::new()),
+        Arc::new(crate::agent::net_tools::WebsearchTool::new()),
+        Arc::new(crate::agent::vision_tool::VisionTool),
         // Agent-initiated chat attachment (SPEC 6.1): hand a Notes file to
         // the user as a new assistant turn.
         Arc::new(crate::agent::send_file::SendFileTool),
@@ -626,6 +633,9 @@ mod tests {
             "notes_copy",
             "notes_delete",
             "search_notes",
+            "webfetch",
+            "websearch",
+            "vision",
             "send_file",
         ] {
             assert!(
@@ -633,7 +643,7 @@ mod tests {
                 "missing tool: {name}"
             );
         }
-        let read_only_skip = ["notes_list", "notes_read", "search_notes"];
+        let read_only_skip = ["notes_list", "notes_read", "search_notes", "webfetch", "websearch", "vision"];
         for name in read_only_skip {
             let t = catalog.resolve(name);
             let Resolution::Found(t) = t else { unreachable!() };
@@ -661,6 +671,71 @@ mod tests {
         let Resolution::Found(fgt) = catalog.resolve("forget") else { unreachable!() };
         assert_eq!(fgt.class(), ToolClass::Mutating);
         assert_eq!(fgt.policy(), Policy::Check);
+    }
+
+    // Q-17: the notes agent gains web search/fetch and provider vision, all
+    // core (active from the first round like the rest of the notes set), but
+    // never the browser/CDP, shell or general-purpose machine tools.
+    #[test]
+    fn notes_catalog_adds_web_and_vision_but_stays_notes_scoped() {
+        let catalog = notes_catalog();
+        let active: Vec<String> = catalog.to_specs().into_iter().map(|s| s.name).collect();
+        for name in ["webfetch", "websearch", "vision"] {
+            assert!(
+                matches!(catalog.resolve(name), Resolution::Found(_)),
+                "missing {name}"
+            );
+            assert!(active.iter().any(|n| n == name), "{name} must be core/active");
+        }
+        for name in [
+            "browser",
+            "bash",
+            "http_request",
+            "process_start",
+            "process_logs",
+            "ssh_exec",
+            "screenshot",
+            "ocr",
+            "fs_read",
+            "fs_write",
+            "fs_grep",
+            "edit_file",
+            "git_status",
+        ] {
+            assert!(
+                matches!(catalog.resolve(name), Resolution::Unknown),
+                "notes catalog must not carry {name}"
+            );
+        }
+    }
+
+    // The vision addition is notes-only: the harness and project catalogs keep
+    // their own machine-wide set (browser/bash/web tools still resolve there)
+    // and never gained the notes-only `vision` tool or the notes tools.
+    #[test]
+    fn harness_and_project_catalogs_are_unchanged_by_the_notes_additions() {
+        let harness = crate::agent::harness_tools::harness_catalog();
+        for name in ["browser", "bash", "http_request", "webfetch", "websearch"] {
+            assert!(
+                matches!(harness.resolve(name), Resolution::Found(_)),
+                "harness lost {name}"
+            );
+        }
+        assert!(matches!(harness.resolve("vision"), Resolution::Unknown));
+        assert!(matches!(harness.resolve("notes_read"), Resolution::Unknown));
+
+        let project = crate::agent::project_tools::project_catalog();
+        for name in ["webfetch", "websearch", "http_request"] {
+            assert!(
+                matches!(project.resolve(name), Resolution::Found(_)),
+                "project lost {name}"
+            );
+        }
+        assert!(
+            matches!(project.resolve("vision"), Resolution::Unknown),
+            "project catalog must not gain the notes-only vision tool"
+        );
+        assert!(matches!(project.resolve("notes_read"), Resolution::Unknown));
     }
 
     #[test]
