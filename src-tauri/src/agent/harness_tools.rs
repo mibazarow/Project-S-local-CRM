@@ -11,8 +11,8 @@
 // the system /tmp. The CDP browser tool lives in browser_tool.rs.
 use super::catalog::Catalog;
 use super::project_tools::{
-    emit_tasks_changed, emit_trash_changed, envelope, read_datas, require_wd, state_of,
-    upsert_section, with_conn, write_datas,
+    emit_tasks_changed, emit_trash_changed, envelope, parse_checklist_arg, read_datas,
+    require_wd, state_of, upsert_section, with_conn, write_datas,
 };
 use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
@@ -1333,7 +1333,7 @@ impl Tool for CrmTaskCreateTool {
         "crm_task_create"
     }
     fn description(&self) -> &str {
-        "Create a task in a project (project_id or project_name); optional status (new|progress|done, default new)."
+        "Create a task in a project (project_id or project_name); optional status (new|progress|done, default new), priority (low|normal|high|urgent, default normal), recurrence (none|daily|weekly|monthly, default none), checklist ([{text, done?}], max 100 items)."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -1342,7 +1342,22 @@ impl Tool for CrmTaskCreateTool {
                 "project_id": { "type": "number" },
                 "project_name": { "type": "string" },
                 "title": { "type": "string" },
-                "status": { "type": "string", "enum": ["new", "progress", "done"] }
+                "status": { "type": "string", "enum": ["new", "progress", "done"] },
+                "priority": { "type": "string", "enum": ["low", "normal", "high", "urgent"] },
+                "recurrence": { "type": "string", "enum": ["none", "daily", "weekly", "monthly"] },
+                "checklist": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": { "type": "string" },
+                            "done": { "type": "boolean" }
+                        },
+                        "required": ["text"],
+                        "additionalProperties": false
+                    }
+                }
             },
             "required": ["title"],
             "additionalProperties": false
@@ -1357,9 +1372,15 @@ impl Tool for CrmTaskCreateTool {
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let title = args["title"].as_str().unwrap_or_default().to_owned();
         let status = args.get("status").and_then(Value::as_str).map(str::to_owned);
+        let priority = args.get("priority").and_then(Value::as_str).map(str::to_owned);
+        let recurrence = args.get("recurrence").and_then(Value::as_str).map(str::to_owned);
+        let checklist = match parse_checklist_arg(args) {
+            Ok(items) => items,
+            Err(e) => return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, e)),
+        };
         let r = with_conn(ctx, |conn| {
             let pid = resolve_project_id(conn, args)?;
-            tasks::task_create(conn, pid, &title, status)
+            tasks::task_create_with(conn, pid, &title, status, priority, checklist, recurrence)
         });
         if let Ok(dto) = &r {
             emit_tasks_changed(ctx, dto.project_id);
@@ -1375,7 +1396,7 @@ impl Tool for CrmTaskUpdateTool {
         "crm_task_update"
     }
     fn description(&self) -> &str {
-        "Update fields of a task by id; absent fields stay unchanged, explicit null clears comment/dueDate/remindAt. Dates: YYYY-MM-DD, remindAt: YYYY-MM-DDTHH:MM."
+        "Update fields of a task by id; absent fields stay unchanged, explicit null clears comment/dueDate/remindAt. Dates: YYYY-MM-DD, remindAt: YYYY-MM-DDTHH:MM. priority: low|normal|high|urgent, recurrence: none|daily|weekly|monthly, checklist: [{text, done?}] max 100 (null/absent keeps the current value)."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -1386,7 +1407,22 @@ impl Tool for CrmTaskUpdateTool {
                 "comment": { "type": ["string", "null"] },
                 "dueDate": { "type": ["string", "null"] },
                 "remindAt": { "type": ["string", "null"] },
-                "tags": { "type": "array", "items": { "type": "string" } }
+                "tags": { "type": "array", "items": { "type": "string" } },
+                "priority": { "type": "string", "enum": ["low", "normal", "high", "urgent"] },
+                "recurrence": { "type": "string", "enum": ["none", "daily", "weekly", "monthly"] },
+                "checklist": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": { "type": "string" },
+                            "done": { "type": "boolean" }
+                        },
+                        "required": ["text"],
+                        "additionalProperties": false
+                    }
+                }
             },
             "required": ["id"],
             "additionalProperties": false
@@ -1422,7 +1458,7 @@ impl Tool for CrmTaskMoveTool {
         "crm_task_move"
     }
     fn description(&self) -> &str {
-        "Move a task to a kanban column (new|progress|done); optional position, appended at the column end when absent."
+        "Move a task to a kanban column (new|progress|done); optional position, appended at the column end when absent. Moving a recurring task (recurrence daily/weekly/monthly) to done queues the next occurrence in the new column."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -3094,6 +3130,56 @@ mod tests {
 
         let r = exec("crm_tasks", json!({ "project_name": "nope" }), &env.ctx);
         assert_eq!(r.error.unwrap().code, "not_found");
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn crm_task_tools_accept_and_validate_priority_checklist_recurrence() {
+        let env = setup("ht-crm-upgrade");
+        with_conn(&env.ctx, |conn| {
+            projects::create_project(conn, &env.wd, "alpha")?;
+            Ok::<(), AppError>(())
+        })
+        .unwrap();
+
+        let r = exec(
+            "crm_task_create",
+            json!({
+                "project_name": "alpha",
+                "title": "report",
+                "priority": "high",
+                "recurrence": "daily",
+                "checklist": [{ "text": "draft", "done": true }]
+            }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        let id = data["id"].as_i64().unwrap();
+        assert_eq!(data["priority"], "high");
+        assert_eq!(data["recurrence"], "daily");
+        assert_eq!(data["checklist"], json!([{ "text": "draft", "done": true }]));
+
+        let r = exec("crm_task_update", json!({ "id": id, "dueDate": "2099-01-02", "priority": "low" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["priority"], "low");
+
+        let r = exec("crm_task_create", json!({ "project_name": "alpha", "title": "x", "priority": "critical" }), &env.ctx);
+        assert!(!r.ok);
+        assert!(r.error.unwrap().message.contains("priority"));
+        let r = exec("crm_task_update", json!({ "id": id, "recurrence": "yearly" }), &env.ctx);
+        assert!(!r.ok);
+        assert!(r.error.unwrap().message.contains("recurrence"));
+
+        // done move queues the next occurrence; crm_tasks sees both.
+        let r = exec("crm_task_move", json!({ "id": id, "status": "done" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let r = exec("crm_tasks", json!({ "project_name": "alpha" }), &env.ctx);
+        let tasks = r.data.unwrap()["tasks"].as_array().unwrap().clone();
+        assert_eq!(tasks.len(), 2);
+        let next = tasks.iter().find(|t| t["status"] == "new").unwrap();
+        assert_eq!(next["dueDate"], "2099-01-03");
+        assert_eq!(next["checklist"], json!([{ "text": "draft", "done": false }]));
         fs::remove_dir_all(&env.wd).unwrap();
     }
 }

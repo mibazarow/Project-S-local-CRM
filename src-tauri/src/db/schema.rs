@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::{params, Connection};
 
-pub const SCHEMA_VERSION: i64 = 24;
+pub const SCHEMA_VERSION: i64 = 25;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -484,6 +484,16 @@ CREATE TABLE IF NOT EXISTS versions (
 );
 ";
 
+// Task upgrades (SPEC task slice): priority, checklist (JSON array of
+// {text, done}) and recurrence. ALTER ADD COLUMN accepts CHECK constraints,
+// so priority/recurrence are guarded in the schema too; tasks.rs validates in
+// Rust for readable errors. NOT NULL DEFAULT backfills every existing row.
+const MIGRATION_25_PRIORITY: &str =
+    "ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low','normal','high','urgent'))";
+const MIGRATION_25_CHECKLIST: &str = "ALTER TABLE tasks ADD COLUMN checklist TEXT NOT NULL DEFAULT '[]'";
+const MIGRATION_25_RECURRENCE: &str =
+    "ALTER TABLE tasks ADD COLUMN recurrence TEXT NOT NULL DEFAULT 'none' CHECK(recurrence IN ('none','daily','weekly','monthly'))";
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -653,6 +663,25 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         )?;
         if has_trash == 0 {
             conn.execute_batch(MIGRATION_24)?;
+        }
+        conn.pragma_update(None, "user_version", 24)?;
+    }
+    if version < 25 {
+        // Guarded per column (v14 recipe) so a re-run after an interrupted
+        // v25 does not re-ALTER.
+        for (column, ddl) in [
+            ("priority", MIGRATION_25_PRIORITY),
+            ("checklist", MIGRATION_25_CHECKLIST),
+            ("recurrence", MIGRATION_25_RECURRENCE),
+        ] {
+            let has: i64 = conn.query_row(
+                "SELECT count(*) FROM pragma_table_info('tasks') WHERE name = ?1",
+                params![column],
+                |r| r.get(0),
+            )?;
+            if has == 0 {
+                conn.execute(ddl, [])?;
+            }
         }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
@@ -1718,6 +1747,62 @@ CREATE UNIQUE INDEX uniq_chats_one_project_chat ON chats(project_id) WHERE kind 
             [],
         )
         .unwrap();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_v25_adds_task_priority_checklist_recurrence_with_defaults_and_checks() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO projects (name, path, created_at) VALUES ('p', '/tmp/p', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (project_id, title, created_at) VALUES (1, 't', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let (priority, checklist, recurrence): (String, String, String) = conn
+            .query_row(
+                "SELECT priority, checklist, recurrence FROM tasks WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((priority.as_str(), checklist.as_str(), recurrence.as_str()), ("normal", "[]", "none"));
+
+        for bad in ["bogus", "critical", ""] {
+            let err = conn.execute(
+                "UPDATE tasks SET priority = ?1 WHERE id = 1",
+                params![bad],
+            );
+            assert!(err.is_err(), "priority {bad:?} accepted");
+        }
+        for bad in ["yearly", ""] {
+            let err = conn.execute("UPDATE tasks SET recurrence = ?1 WHERE id = 1", params![bad]);
+            assert!(err.is_err(), "recurrence {bad:?} accepted");
+        }
+        conn.execute("UPDATE tasks SET priority = 'urgent', recurrence = 'monthly' WHERE id = 1", [])
+            .unwrap();
+
+        // Guarded ALTER: a v24 database missing the columns is repaired.
+        conn.execute("ALTER TABLE tasks DROP COLUMN checklist", []).unwrap();
+        conn.pragma_update(None, "user_version", 24).unwrap();
+        run_migrations(&conn).unwrap();
+        let has_checklist: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'checklist'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_checklist, 1);
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
     }

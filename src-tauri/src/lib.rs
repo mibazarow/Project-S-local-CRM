@@ -334,6 +334,7 @@ fn todos_list(
     with_db(&state, |conn| todos::todos_list(conn, &scope_kind, scope_id))
 }
 
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 fn task_create(
     app: AppHandle,
@@ -341,10 +342,21 @@ fn task_create(
     project_id: i64,
     title: String,
     status: Option<String>,
+    priority: Option<String>,
+    checklist: Option<Vec<tasks::ChecklistItem>>,
+    recurrence: Option<String>,
 ) -> Result<TaskDto> {
     let wd = state.working_dir()?;
     let dto = with_db(&state, |conn| {
-        let dto = tasks::task_create(conn, project_id, &title, status)?;
+        let dto = tasks::task_create_with(
+            conn,
+            project_id,
+            &title,
+            status,
+            priority,
+            checklist,
+            recurrence,
+        )?;
         export::export_project(conn, &wd, project_id)?;
         Ok(dto)
     })?;

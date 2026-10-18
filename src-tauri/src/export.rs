@@ -15,7 +15,8 @@ pub fn export_project(conn: &Connection, wd: &Path, project_id: i64) -> Result<(
 
     let mut expected = Vec::new();
     let mut stmt = conn.prepare(
-        "SELECT id, title, status, comment, due_date, remind_at, tags, created_at, closed_at
+        "SELECT id, title, status, comment, due_date, remind_at, tags, created_at, closed_at,
+                priority, checklist, recurrence
          FROM tasks WHERE project_id = ?1",
     )?;
     let mut rows = stmt.query(params![project_id])?;
@@ -68,11 +69,18 @@ fn render(row: &rusqlite::Row<'_>, project: &str) -> Result<String> {
     let tags_json: String = row.get(6)?;
     let created: String = row.get(7)?;
     let closed: Option<String> = row.get(8)?;
+    let priority: String = row.get(9)?;
+    let checklist_json: String = row.get(10)?;
+    let recurrence: String = row.get(11)?;
     let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+    let checklist: Vec<crate::tasks::ChecklistItem> =
+        serde_json::from_str(&checklist_json).unwrap_or_default();
     let mut out = String::from("---\n");
     out.push_str(&format!("id: {id}\n"));
     out.push_str(&format!("title: {}\n", yaml_quote(&title)));
     out.push_str(&format!("status: {status}\n"));
+    out.push_str(&format!("priority: {priority}\n"));
+    out.push_str(&format!("recurrence: {recurrence}\n"));
     out.push_str(&format!("project: {}\n", yaml_quote(project)));
     out.push_str(&format!("created: {}\n", yaml_quote(&created)));
     if let Some(d) = &due {
@@ -94,6 +102,13 @@ fn render(row: &rusqlite::Row<'_>, project: &str) -> Result<String> {
     out.push_str(&format!("# {title}\n"));
     if let Some(c) = comment {
         out.push_str(&format!("\n{c}\n"));
+    }
+    if !checklist.is_empty() {
+        out.push_str("\n## Checklist\n\n");
+        for item in &checklist {
+            let mark = if item.done { 'x' } else { ' ' };
+            out.push_str(&format!("- [{mark}] {}\n", item.text.replace('\n', " ")));
+        }
     }
     Ok(out)
 }
@@ -187,13 +202,40 @@ mod tests {
 
         assert_eq!(list_md(&dir), vec!["1-fix-header.md", "2.md"]);
         let one = fs::read_to_string(dir.join("1-fix-header.md")).unwrap();
-        assert!(one.starts_with("---\nid: 1\ntitle: \"Fix Header!\"\nstatus: new\nproject: \"p1\"\n"));
+        assert!(one.starts_with(
+            "---\nid: 1\ntitle: \"Fix Header!\"\nstatus: new\npriority: normal\nrecurrence: none\nproject: \"p1\"\n"
+        ));
         assert!(one.contains("tags: []\n---\n\n# Fix Header!\n"));
         let two = fs::read_to_string(dir.join("2.md")).unwrap();
         assert!(two.contains("due: \"2099-01-02\"\n"));
         assert!(two.contains("remind: \"2099-01-02T10:30\"\n"));
         assert!(two.contains("tags: [\"ui\", \"срочно\"]\n"));
         assert!(two.contains("---\n\n# Правка шапки\n\nдетали\nвторой абзац\n"));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn export_includes_priority_checklist_and_recurrence() {
+        let (wd, conn, pid, dir) = setup("export-upgrade-fields");
+        crate::tasks::task_create_with(
+            &conn,
+            pid,
+            "weekly report",
+            None,
+            Some("urgent".into()),
+            Some(vec![
+                crate::tasks::ChecklistItem { text: "collect data".into(), done: true },
+                crate::tasks::ChecklistItem { text: "send to ИП Иванов".into(), done: false },
+            ]),
+            Some("weekly".into()),
+        )
+        .unwrap();
+        export_project(&conn, &wd, pid).unwrap();
+
+        let body = fs::read_to_string(dir.join("1-weekly-report.md")).unwrap();
+        assert!(body.contains("priority: urgent\n"));
+        assert!(body.contains("recurrence: weekly\n"));
+        assert!(body.contains("\n## Checklist\n\n- [x] collect data\n- [ ] send to ИП Иванов\n"));
         fs::remove_dir_all(&wd).unwrap();
     }
 

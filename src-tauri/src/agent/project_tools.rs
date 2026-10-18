@@ -588,14 +588,29 @@ impl Tool for TaskCreateTool {
         "task_create"
     }
     fn description(&self) -> &str {
-        "Create a task in this project; optional status (new|progress|done, default new)."
+        "Create a task in this project; optional status (new|progress|done, default new), priority (low|normal|high|urgent, default normal), recurrence (none|daily|weekly|monthly, default none), checklist ([{text, done?}], max 100 items)."
     }
     fn parameters(&self) -> Value {
         json!({
             "type": "object",
             "properties": {
                 "title": { "type": "string" },
-                "status": { "type": "string", "enum": ["new", "progress", "done"] }
+                "status": { "type": "string", "enum": ["new", "progress", "done"] },
+                "priority": { "type": "string", "enum": ["low", "normal", "high", "urgent"] },
+                "recurrence": { "type": "string", "enum": ["none", "daily", "weekly", "monthly"] },
+                "checklist": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": { "type": "string" },
+                            "done": { "type": "boolean" }
+                        },
+                        "required": ["text"],
+                        "additionalProperties": false
+                    }
+                }
             },
             "required": ["title"],
             "additionalProperties": false
@@ -611,11 +626,31 @@ impl Tool for TaskCreateTool {
         let pid = require_project(ctx)?;
         let title = args["title"].as_str().unwrap_or_default();
         let status = args.get("status").and_then(Value::as_str).map(str::to_owned);
-        let r = with_conn(ctx, |conn| tasks::task_create(conn, pid, title, status));
+        let priority = args.get("priority").and_then(Value::as_str).map(str::to_owned);
+        let recurrence = args.get("recurrence").and_then(Value::as_str).map(str::to_owned);
+        let checklist = match parse_checklist_arg(args) {
+            Ok(items) => items,
+            Err(e) => return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, e)),
+        };
+        let r = with_conn(ctx, |conn| {
+            tasks::task_create_with(conn, pid, title, status, priority, checklist, recurrence)
+        });
         if r.is_ok() {
             emit_tasks_changed(ctx, pid);
         }
         Ok(envelope(r))
+    }
+}
+
+// Optional "checklist" argument as Vec<ChecklistItem>; absent -> None.
+pub(crate) fn parse_checklist_arg(
+    args: &Value,
+) -> std::result::Result<Option<Vec<tasks::ChecklistItem>>, String> {
+    match args.get("checklist") {
+        None => Ok(None),
+        Some(value) => serde_json::from_value::<Vec<tasks::ChecklistItem>>(value.clone())
+            .map(Some)
+            .map_err(|e| format!("checklist must be an array of {{text, done?}}: {e}")),
     }
 }
 
@@ -626,7 +661,7 @@ impl Tool for TaskUpdateTool {
         "task_update"
     }
     fn description(&self) -> &str {
-        "Update fields of one of this project's tasks; absent fields stay unchanged, explicit null clears comment/dueDate/remindAt. Dates: YYYY-MM-DD, remindAt: YYYY-MM-DDTHH:MM."
+        "Update fields of one of this project's tasks; absent fields stay unchanged, explicit null clears comment/dueDate/remindAt. Dates: YYYY-MM-DD, remindAt: YYYY-MM-DDTHH:MM. priority: low|normal|high|urgent, recurrence: none|daily|weekly|monthly, checklist: [{text, done?}] max 100 (null/absent keeps the current value)."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -637,7 +672,22 @@ impl Tool for TaskUpdateTool {
                 "comment": { "type": ["string", "null"] },
                 "dueDate": { "type": ["string", "null"] },
                 "remindAt": { "type": ["string", "null"] },
-                "tags": { "type": "array", "items": { "type": "string" } }
+                "tags": { "type": "array", "items": { "type": "string" } },
+                "priority": { "type": "string", "enum": ["low", "normal", "high", "urgent"] },
+                "recurrence": { "type": "string", "enum": ["none", "daily", "weekly", "monthly"] },
+                "checklist": {
+                    "type": "array",
+                    "maxItems": 100,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": { "type": "string" },
+                            "done": { "type": "boolean" }
+                        },
+                        "required": ["text"],
+                        "additionalProperties": false
+                    }
+                }
             },
             "required": ["id"],
             "additionalProperties": false
@@ -678,7 +728,7 @@ impl Tool for TaskMoveTool {
         "task_move"
     }
     fn description(&self) -> &str {
-        "Move one of this project's tasks to a kanban column (new|progress|done); optional position, appended at the column end when absent."
+        "Move one of this project's tasks to a kanban column (new|progress|done); optional position, appended at the column end when absent. Moving a recurring task (recurrence daily/weekly/monthly) to done queues the next occurrence in the new column."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -1319,6 +1369,70 @@ mod tests {
         assert!(r.ok, "{:?}", r.error);
         let r = exec("task_list", json!({}), &env.ctx);
         assert!(r.data.unwrap()["tasks"].as_array().unwrap().is_empty());
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn task_tools_accept_and_validate_priority_checklist_recurrence() {
+        let env = setup("pt-tasks-upgrade");
+        let r = exec(
+            "task_create",
+            json!({
+                "title": "report",
+                "priority": "urgent",
+                "recurrence": "weekly",
+                "checklist": [{ "text": "draft", "done": true }, { "text": "send" }]
+            }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        let id = data["id"].as_i64().unwrap();
+        assert_eq!(data["priority"], "urgent");
+        assert_eq!(data["recurrence"], "weekly");
+        assert_eq!(
+            data["checklist"],
+            json!([{ "text": "draft", "done": true }, { "text": "send", "done": false }])
+        );
+
+        let r = exec(
+            "task_update",
+            json!({ "id": id, "priority": "low", "recurrence": "none", "checklist": [{ "text": "only", "done": true }] }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(
+            (data["priority"].as_str(), data["recurrence"].as_str()),
+            (Some("low"), Some("none"))
+        );
+        assert_eq!(data["checklist"], json!([{ "text": "only", "done": true }]));
+
+        // Domain validation surfaces as a tool error, not a panic.
+        let r = exec("task_create", json!({ "title": "x", "priority": "critical" }), &env.ctx);
+        assert!(!r.ok);
+        assert!(r.error.unwrap().message.contains("priority"));
+        let r = exec("task_create", json!({ "title": "x", "recurrence": "yearly" }), &env.ctx);
+        assert!(!r.ok);
+        assert!(r.error.unwrap().message.contains("recurrence"));
+        let r = exec("task_update", json!({ "id": id, "checklist": [{ "nope": 1 }] }), &env.ctx);
+        assert!(!r.ok);
+        assert_eq!(r.error.unwrap().code, "invalid_args");
+
+        // done move of a recurring task queues the next occurrence in 'new'.
+        let r = exec(
+            "task_update",
+            json!({ "id": id, "recurrence": "daily", "dueDate": "2099-01-02" }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        let r = exec("task_move", json!({ "id": id, "status": "done" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let r = exec("task_list", json!({ "status": "new" }), &env.ctx);
+        let tasks = r.data.unwrap()["tasks"].as_array().unwrap().clone();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["title"], "report");
+        assert_eq!(tasks[0]["dueDate"], "2099-01-03");
         fs::remove_dir_all(&env.wd).unwrap();
     }
 
