@@ -377,6 +377,7 @@ export default function TaskCard({
           {task.title}
         </div>
       )}
+      {task.overdue && <div className="overdue-label">Просрочено</div>}
       {(task.dueDate || task.recurrence !== "none") && (
         <div className="m">
           {task.dueDate && (

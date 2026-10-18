@@ -126,3 +126,43 @@ describe("TaskCard due time", () => {
     });
   });
 });
+
+describe("TaskCard overdue label", () => {
+  it("renders a red «Просрочено» caption directly under the title when overdue", async () => {
+    await mount(makeTask({ overdue: true }));
+    const label = container.querySelector(".task-card .overdue-label");
+    expect(label).not.toBeNull();
+    expect(label!.textContent).toBe("Просрочено");
+    // Placed immediately after the title element, before the due meta row.
+    const title = container.querySelector(".task-card .t")!;
+    expect(label!.previousElementSibling).toBe(title);
+    expect(label!.nextElementSibling).toBe(container.querySelector(".task-card .m"));
+  });
+
+  it("does not render the caption when not overdue", async () => {
+    await mount(makeTask({ overdue: false }));
+    expect(container.querySelector(".task-card .overdue-label")).toBeNull();
+  });
+
+  it("the label follows the overdue flag across the 07:00 boundary (06:59 vs 07:01)", async () => {
+    // The date+time arithmetic lives in dueMs (format.test.ts); the card just
+    // reflects the backend `overdue` flag, so the boundary is covered by it.
+    await mount(makeTask({ dueDate: "2026-10-18", dueTime: "06:59", overdue: true }));
+    expect(container.querySelector(".task-card .overdue-label")?.textContent).toBe("Просрочено");
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mount(makeTask({ dueDate: "2026-10-18", dueTime: "07:01", overdue: false }));
+    expect(container.querySelector(".task-card .overdue-label")).toBeNull();
+  });
+
+  it("keeps the card DOM/classes stable with and without the label", async () => {
+    await mount(makeTask({ overdue: true }));
+    const card = container.querySelector(".task-card")!;
+    expect(card.className).toContain("task-card");
+    expect(card.className).toContain("overdue");
+    expect(card.querySelector(".t")).not.toBeNull();
+    expect(card.querySelector(".m")).not.toBeNull();
+  });
+});

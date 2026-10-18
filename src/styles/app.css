@@ -393,6 +393,7 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 .task-card .m.red { color: var(--danger); font-weight: 600; }
 .task-card.done .t { text-decoration: line-through; color: var(--text-muted); }
 .task-card .t { font-size: 12.5px; font-weight: 500; margin-bottom: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-card .overdue-label { color: var(--danger); font-size: 11px; font-weight: 600; margin: -2px 0 6px; }
 .task-title-edit { display: flex; flex-direction: column; gap: 4px; }
 .task-title-edit textarea { width: 100%; box-sizing: border-box; min-height: 46px; font-size: 12.5px; resize: vertical; }
 .task-title-edit-actions { display: flex; justify-content: flex-end; gap: 2px; }
