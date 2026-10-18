@@ -11,7 +11,10 @@
   --accent: #376a9f;
   --accent-hover: #2e5a88;
   --accent-soft: #e9eff6;
+  --toolbar: #182533;
   --danger: #ff3b30;
+  --danger-soft: #fff5f5;
+  --danger-tint: #ffd7d4;
   --warn: #ff9500;
   --ok: #34c759;
   --radius: 8px;

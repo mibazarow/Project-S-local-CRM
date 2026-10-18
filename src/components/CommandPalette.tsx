@@ -74,14 +74,18 @@ export default function CommandPalette({ onTab, onClose }: Props) {
     };
   }, []);
 
+  // Clear results synchronously when the raw (trimmed) query drops below 2
+  // chars, so hits disappear on the keystroke instead of after the debounce.
+  const trimmedQuery = query.trim();
+  useEffect(() => {
+    if (trimmedQuery.length < 2) setHits(null);
+  }, [trimmedQuery]);
+
   // Global cross-entity search: debounced, only for queries of 2+ chars; the
   // backend merges projects/files/tasks/notes/chats into one ranked list.
-  const debouncedQuery = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS);
+  const debouncedQuery = useDebouncedValue(trimmedQuery, SEARCH_DEBOUNCE_MS);
   useEffect(() => {
-    if (debouncedQuery.length < 2) {
-      setHits(null);
-      return;
-    }
+    if (debouncedQuery.length < 2) return;
     let cancelled = false;
     void ipc
       .globalSearch(debouncedQuery)

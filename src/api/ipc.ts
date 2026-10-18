@@ -9,7 +9,6 @@ import type {
   BackupStatus,
   ChatBranchResult,
   ChatHit,
-  ChatSearchHit,
   ConfigChanged,
   ConfigKind,
   ConnectionTest,
@@ -22,8 +21,6 @@ import type {
   ImportResult,
   ImportSummary,
   McpServerStatus,
-  MemoryChanged,
-  MemoryDto,
   MessageAttachmentDto,
   MessageDto,
   ModelInfo,
@@ -223,8 +220,6 @@ export const objectiveUpdate = (
 export const objectiveStepDone = (objectiveId: number, stepId: number, done: boolean) =>
   invoke<ObjectiveDto>("objective_step_done", { objectiveId, stepId, done });
 
-export const objectiveDelete = (id: number) => invoke<void>("objective_delete", { id });
-
 export const fsListDir = (projectId: number, relPath: string) =>
   invoke<FsEntry[]>("fs_list_dir", { projectId, relPath });
 
@@ -337,8 +332,7 @@ export const searchNotes = (query: string, limit?: number) =>
 
 // Reusable templates (Settings/config/templates.json, seeded on first use):
 // the pickers list name + short description; create commands instantiate one
-// template as a project / task / note. templateDocument only returns the
-// markdown to fill in and create via the agent's create_document tool.
+// template as a project / note.
 export const templatesList = () => invoke<TemplatesSummary>("templates_list");
 
 export const templateCreateProject = (templateName: string, projectName?: string) =>
@@ -347,14 +341,8 @@ export const templateCreateProject = (templateName: string, projectName?: string
     projectName: projectName ?? null,
   });
 
-export const templateCreateTask = (projectId: number, templateName: string) =>
-  invoke<TaskDto>("template_create_task", { projectId, templateName });
-
 export const templateCreateNote = (templateName: string, noteName?: string) =>
   invoke<FsEntry>("template_create_note", { templateName, noteName: noteName ?? null });
-
-export const templateDocument = (templateName: string) =>
-  invoke<{ name: string; markdown: string }>("template_document", { templateName });
 
 // Notes chat: one continuous chat per working dir; events route by
 // "notes: true" on agent-event / agent-confirmation.
@@ -474,9 +462,6 @@ export const chatBranch = (chatId: number, messageId: number) =>
 export const chatExport = (chatId: number) =>
   invoke<{ markdown: string }>("chat_export", { chatId });
 
-export const chatSearch = (chatId: number, query: string, limit?: number) =>
-  invoke<ChatSearchHit[]>("chat_search", { chatId, query, limit: limit ?? null });
-
 export const sendSessionMessage = (
   sessionId: number,
   text: string,
@@ -525,29 +510,6 @@ export const scheduleDelete = (id: number) => invoke<void>("schedule_delete", { 
 // own, or a fresh one titled after the schedule created by the backend).
 export const scheduleOpen = (id: number) =>
   invoke<{ sessionId: number }>("schedule_open", { id });
-
-// Global memory (SPEC 6.3): CRUD for the settings UI; mutations emit
-// "memory-changed" so open lists refresh.
-export const memoryList = () => invoke<MemoryDto[]>("memory_list");
-
-export const memoryAdd = (content: string, projectId?: number, tags?: string[]) =>
-  invoke<MemoryDto>("memory_add", {
-    content,
-    projectId: projectId ?? null,
-    tags: tags && tags.length ? tags : null,
-  });
-
-export const memoryUpdate = (id: number, content: string, tags?: string[]) =>
-  invoke<MemoryDto>("memory_update", {
-    id,
-    content,
-    tags: tags ? tags : null,
-  });
-
-export const memoryDelete = (id: number) => invoke<void>("memory_delete", { id });
-
-export const memorySearch = (query: string, limit?: number) =>
-  invoke<MemoryDto[]>("memory_search", { query, limit: limit ?? null });
 
 // Skills management (SPEC 6.2): list/enable/import/install for the settings UI.
 export const skillsList = () => invoke<SkillInfo[]>("skills_list");
@@ -633,9 +595,6 @@ export const onSkillsChanged = (handler: () => void) =>
 
 export const onProjectsChanged = (handler: () => void) =>
   listen<unknown>("projects-changed", () => handler());
-
-export const onMemoryChanged = (handler: (payload: MemoryChanged) => void) =>
-  listen<MemoryChanged>("memory-changed", (e) => handler(e.payload));
 
 // Emitted by the todowrite tool after the plan of a scope changed.
 export const onTodosChanged = (handler: (payload: TodosChanged) => void) =>

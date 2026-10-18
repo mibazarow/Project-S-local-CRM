@@ -22,7 +22,7 @@ interface Options<IdT> {
 
 const DRAG_THRESHOLD_PX = 5;
 // Shared ghost tilt for every pointer drag (projects, kanban, notes).
-export const GHOST_ROTATE_DEG = 4;
+const GHOST_ROTATE_DEG = 4;
 
 export function usePointerDrag<IdT>({ resolveTarget, onDrop }: Options<IdT>) {
   const [draggingId, setDraggingId] = useState<IdT | null>(null);
