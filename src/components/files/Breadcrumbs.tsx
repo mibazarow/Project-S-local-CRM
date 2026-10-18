@@ -1,20 +1,30 @@
 import { Fragment } from "react";
-import type { FsEntry } from "../../api/types";
 
 interface Props {
   projectName: string;
-  selected: FsEntry | null;
+  path: string;
+  // When present, crumbs become clickable and navigate to that folder prefix
+  // (grid view). When absent, crumbs are display-only (list view, unchanged).
+  onNavigate?: (dirRel: string) => void;
 }
 
-export default function Breadcrumbs({ projectName, selected }: Props) {
-  const segments = selected ? selected.relPath.split("/") : [];
+export default function Breadcrumbs({ projectName, path, onNavigate }: Props) {
+  const segments = path ? path.split("/") : [];
+  const crumb = (label: string, dirRel: string) =>
+    onNavigate ? (
+      <button className="crumb crumb-link" onClick={() => onNavigate(dirRel)}>
+        {label}
+      </button>
+    ) : (
+      <span className="crumb">{label}</span>
+    );
   return (
     <div className="crumbs">
-      <span className="crumb">{projectName}</span>
+      {crumb(projectName, "")}
       {segments.map((segment, i) => (
         <Fragment key={i}>
           <span className="crumb-sep">›</span>
-          <span className="crumb">{segment}</span>
+          {crumb(segment, segments.slice(0, i + 1).join("/"))}
         </Fragment>
       ))}
     </div>

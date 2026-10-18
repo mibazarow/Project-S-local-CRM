@@ -313,9 +313,11 @@ body.dnd-active .project-item, body.dnd-active .task-card { cursor: grabbing; }
 .vt + .vt { border-left: 1px solid var(--border); }
 .vt.active { background: var(--accent); color: #fff; }
 
-/* хлебные крошки (только отображение) */
+/* хлебные крошки: отображение + переход вверх по клику (вид сетки) */
 .crumbs { display: flex; align-items: center; gap: 4px; padding: 10px 16px; border-bottom: 1px solid var(--border); font-size: 12.5px; background: var(--surface); }
 .crumb { color: var(--accent); font-size: 12.5px; padding: 2px 5px; border-radius: 4px; }
+.crumb-link { border: none; background: none; cursor: pointer; font: inherit; }
+.crumb-link:hover { background: var(--accent-soft); }
 .crumb-sep { color: var(--text-muted); }
 
 /* плитка */

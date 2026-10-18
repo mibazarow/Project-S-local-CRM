@@ -17,6 +17,8 @@ export default function FilesPanel({ project }: Props) {
   const { state } = useApp();
   const [tab, setTab] = useState<"files" | "tasks">("files");
   const [view, setView] = useState<"list" | "grid">("list");
+  // Grid navigation: the folder currently shown by the grid ("" = project root).
+  const [currentDir, setCurrentDir] = useState("");
   const [selected, setSelected] = useState<FsEntry | null>(null);
   const [query, setQuery] = useState("");
   const [activeQuery, setActiveQuery] = useState("");
@@ -36,6 +38,11 @@ export default function FilesPanel({ project }: Props) {
     const timer = setTimeout(() => setHighlightTaskId(null), 2000);
     return () => clearTimeout(timer);
   }, [highlightTaskId]);
+
+  // Grid navigation is per-project: an entered folder must not leak across projects.
+  useEffect(() => {
+    setCurrentDir("");
+  }, [project.id]);
 
   const confirmDiscard = () =>
     !dirtyRef.current ||
@@ -130,7 +137,11 @@ export default function FilesPanel({ project }: Props) {
         />
       ) : (
         <>
-          <Breadcrumbs projectName={project.name} selected={selected} />
+          <Breadcrumbs
+            projectName={project.name}
+            path={view === "grid" ? currentDir : (selected?.relPath ?? "")}
+            onNavigate={view === "grid" ? setCurrentDir : undefined}
+          />
 
           <div className="center-body">
             {activeQuery ? (
@@ -152,8 +163,10 @@ export default function FilesPanel({ project }: Props) {
               <FileGrid
                 projectId={project.id}
                 treeVersion={state.treeVersion}
+                currentDir={currentDir}
                 selectedRelPath={selected?.relPath ?? null}
                 onSelect={handleSelect}
+                onNavigateDir={setCurrentDir}
               />
             )}
             {selected && selected.kind === "file" && (

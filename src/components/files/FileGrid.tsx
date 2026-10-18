@@ -18,11 +18,20 @@ import {
 interface Props {
   projectId: number;
   treeVersion: number;
+  currentDir: string;
   selectedRelPath: string | null;
   onSelect: (entry: FsEntry) => void;
+  onNavigateDir: (dirRel: string) => void;
 }
 
-export default function FileGrid({ projectId, treeVersion, selectedRelPath, onSelect }: Props) {
+export default function FileGrid({
+  projectId,
+  treeVersion,
+  currentDir,
+  selectedRelPath,
+  onSelect,
+  onNavigateDir,
+}: Props) {
   const [entries, setEntries] = useState<FsEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -34,23 +43,20 @@ export default function FileGrid({ projectId, treeVersion, selectedRelPath, onSe
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const ops = useFileOps(projectId);
   const osHover = useOsFileDrag(
-    () => {
-      const sel = entries.find((en) => en.relPath === selectedRelPath);
-      return sel && sel.kind === "dir" ? sel.relPath : "";
-    },
+    () => currentDir,
     (dest, paths) => void ops.importFiles(dest, paths),
   );
 
   useEffect(() => {
     setRenamingPath(null);
     setCreating(null);
-  }, [projectId]);
+  }, [projectId, currentDir]);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     void ipc
-      .fsListDir(projectId, "")
+      .fsListDir(projectId, currentDir)
       .then((list) => {
         if (!cancelled) {
           setEntries(list);
@@ -66,7 +72,7 @@ export default function FileGrid({ projectId, treeVersion, selectedRelPath, onSe
     return () => {
       cancelled = true;
     };
-  }, [projectId, treeVersion]);
+  }, [projectId, treeVersion, currentDir]);
 
   const commitRename = async (entry: FsEntry, newName: string) => {
     setRenamingPath(null);
@@ -88,6 +94,15 @@ export default function FileGrid({ projectId, treeVersion, selectedRelPath, onSe
     setCreating(null);
     if (kind === "dir") await ops.createFolder(parentRel, name);
     else await ops.createFile(parentRel, name);
+  };
+
+  // Double-click: a folder opens (navigate into it), a file opens its preview
+  // (same as single-click selection). Suppressed while a tile is being renamed;
+  // the action buttons stop the double-click from bubbling here.
+  const handleDoubleClick = (entry: FsEntry) => {
+    if (renamingPath === entry.relPath) return;
+    if (entry.kind === "dir") onNavigateDir(entry.relPath);
+    else onSelect(entry);
   };
 
   // Backend also rejects these moves; the UI guard only prevents the attempt.
@@ -118,14 +133,14 @@ export default function FileGrid({ projectId, treeVersion, selectedRelPath, onSe
 
   const handleRootDragOver = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
-    setDropTarget("");
+    setDropTarget(currentDir);
   };
 
   const handleRootDrop = (e: DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     const rel = e.dataTransfer.getData("text/plain");
     endDrag();
-    if (rel) void ops.move(rel, "");
+    if (rel) void ops.move(rel, currentDir);
   };
 
   if (loading && entries.length === 0) return <div className="empty-note">Загрузка…</div>;
@@ -133,11 +148,17 @@ export default function FileGrid({ projectId, treeVersion, selectedRelPath, onSe
   return (
     <>
       <div className="tree-toolbar">
-        <button className="ghost-btn" onClick={() => setCreating({ parentRel: "", kind: "dir" })}>
+        <button
+          className="ghost-btn"
+          onClick={() => setCreating({ parentRel: currentDir, kind: "dir" })}
+        >
           <IconFolderPlus />
           Новая папка
         </button>
-        <button className="ghost-btn" onClick={() => setCreating({ parentRel: "", kind: "file" })}>
+        <button
+          className="ghost-btn"
+          onClick={() => setCreating({ parentRel: currentDir, kind: "file" })}
+        >
           <IconFilePlus />
           Новый файл
         </button>
@@ -147,17 +168,19 @@ export default function FileGrid({ projectId, treeVersion, selectedRelPath, onSe
         <div className="empty-note">{error}</div>
       ) : entries.length === 0 && !creating ? (
         <div
-          className={osHover === "" ? "empty-note drop-over" : "empty-note"}
-          data-drop-dir=""
+          className={osHover === currentDir ? "empty-note drop-over" : "empty-note"}
+          data-drop-dir={currentDir}
         >
           Проект пуст
         </div>
       ) : (
         <div
           className={
-            dropTarget === "" || osHover === "" ? "file-grid drop-over" : "file-grid"
+            dropTarget === currentDir || osHover === currentDir
+              ? "file-grid drop-over"
+              : "file-grid"
           }
-          data-drop-dir=""
+          data-drop-dir={currentDir}
           onDragOver={handleRootDragOver}
           onDrop={handleRootDrop}
           onDragLeave={(e) => {
@@ -197,8 +220,9 @@ export default function FileGrid({ projectId, treeVersion, selectedRelPath, onSe
                   : undefined
               }
               onClick={() => onSelect(entry)}
+              onDoubleClick={() => handleDoubleClick(entry)}
             >
-              <span className="tile-actions">
+              <span className="tile-actions" onDoubleClick={(e) => e.stopPropagation()}>
                 <button
                   className="mini-btn"
                   title="Переименовать"
