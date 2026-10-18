@@ -127,6 +127,47 @@ describe("TaskCard due time", () => {
   });
 });
 
+describe("TaskCard priority toggle", () => {
+  const openDetails = async () => {
+    const btn = Array.from(container.querySelectorAll("button.mini-btn")).find(
+      (b) => (b as HTMLButtonElement).title === "Приоритет, повтор, чек-лист",
+    )!;
+    await click(btn);
+    return container.querySelector(".task-details .td-priority input[type='checkbox']") as HTMLInputElement;
+  };
+
+  it("marks the card with the priority class only when the flag is set", async () => {
+    await mount(makeTask({ isPriority: true }));
+    expect(container.querySelector(".task-card")!.className).toContain("priority");
+    await act(async () => {
+      root.unmount();
+    });
+    root = createRoot(container);
+    await mount(makeTask({ isPriority: false }));
+    expect(container.querySelector(".task-card")!.className).not.toContain("priority");
+  });
+
+  it("the details editor shows the checkbox reflecting the current flag", async () => {
+    await mount(makeTask({ isPriority: true }));
+    const checkbox = await openDetails();
+    expect(checkbox.checked).toBe(true);
+  });
+
+  it("checking the box in the details editor patches isPriority: true", async () => {
+    const onPatch = await mount(makeTask({ isPriority: false }));
+    const checkbox = await openDetails();
+    await click(checkbox);
+    expect(onPatch).toHaveBeenCalledWith({ isPriority: true });
+  });
+
+  it("unchecking the box in the details editor patches isPriority: false", async () => {
+    const onPatch = await mount(makeTask({ isPriority: true }));
+    const checkbox = await openDetails();
+    await click(checkbox);
+    expect(onPatch).toHaveBeenCalledWith({ isPriority: false });
+  });
+});
+
 describe("TaskCard overdue label", () => {
   it("renders a red «Просрочено» caption directly under the title when overdue", async () => {
     await mount(makeTask({ overdue: true }));

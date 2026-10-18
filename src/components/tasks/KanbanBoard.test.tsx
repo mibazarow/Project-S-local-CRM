@@ -1,12 +1,19 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ProjectDto, TaskDto } from "../../api/types";
+import type { ProjectDto, TaskDto, TaskPatch } from "../../api/types";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
 const tasksList = vi.hoisted(() => vi.fn(async (): Promise<TaskDto[]> => [task]));
 const taskCreate = vi.hoisted(() => vi.fn(async (): Promise<TaskDto> => task));
+const taskUpdate = vi.hoisted(
+  () =>
+    vi.fn(async (_id: number, patch: TaskPatch): Promise<TaskDto> => ({
+      ...task,
+      isPriority: patch.isPriority ?? task.isPriority,
+    })),
+);
 
 vi.mock("../../api/ipc", () => ({
   listProjects: vi.fn(async () => [project]),
@@ -19,7 +26,7 @@ vi.mock("../../api/ipc", () => ({
   tasksList,
   taskCreate,
   taskMove: vi.fn(async () => task),
-  taskUpdate: vi.fn(async () => task),
+  taskUpdate,
   taskDelete: vi.fn(async () => undefined),
   setTaskColumns: vi.fn(async () => undefined),
 }));
@@ -150,5 +157,59 @@ describe("KanbanBoard add task form", () => {
       null,
       false,
     );
+  });
+});
+
+describe("KanbanBoard priority toggle", () => {
+  it("sets priority via the card details editor and keeps it after save and reload", async () => {
+    task.isPriority = false;
+    await act(async () => {
+      root.render(
+        <AppProvider>
+          <KanbanBoard project={project} tasksVersion={0} highlightTaskId={null} />
+        </AppProvider>,
+      );
+    });
+    await settle();
+    let card = container.querySelector(".task-card")!;
+    expect(card.className).not.toContain("priority");
+
+    await click(container.querySelector('button[title="Приоритет, повтор, чек-лист"]')!);
+    const checkbox = container.querySelector<HTMLInputElement>(
+      ".task-details .td-priority input[type='checkbox']",
+    )!;
+    expect(checkbox.checked).toBe(false);
+    await click(checkbox);
+    await settle();
+
+    expect(taskUpdate).toHaveBeenCalledWith(1, { isPriority: true });
+    // The upserted DTO re-renders the card with priority styling.
+    card = container.querySelector(".task-card")!;
+    expect(card.className).toContain("priority");
+
+    // Reload (tasks-changed bump): the persisted flag survives the refetch.
+    task.isPriority = true;
+    await act(async () => {
+      root.render(
+        <AppProvider>
+          <KanbanBoard project={project} tasksVersion={1} highlightTaskId={null} />
+        </AppProvider>,
+      );
+    });
+    await settle();
+    expect(container.querySelector(".task-card")!.className).toContain("priority");
+
+    // Clear it back through the same editor.
+    await click(container.querySelector('button[title="Приоритет, повтор, чек-лист"]')!);
+    const off = container.querySelector<HTMLInputElement>(
+      ".task-details .td-priority input[type='checkbox']",
+    )!;
+    expect(off.checked).toBe(true);
+    await click(off);
+    await settle();
+    expect(taskUpdate).toHaveBeenLastCalledWith(1, { isPriority: false });
+    expect(container.querySelector(".task-card")!.className).not.toContain("priority");
+
+    task.isPriority = false;
   });
 });
