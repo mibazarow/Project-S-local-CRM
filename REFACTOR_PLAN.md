@@ -6,14 +6,10 @@
 > **Правило ведения:** выполненный срез **удаляем из этого файла полностью**. Никаких `done`, зачёркиваний и списков «закрыто». В файле — только актуальный остаток. Закрыл срез → удалил абзац.
 
 ## Текущее состояние
-- Последний зелёный HEAD: `4141b28` — `npm test` **164 passed**, `npm run build` OK, oxlint — только pre-existing `crossActions.ts`.
+- Последний зелёный HEAD: `ab60b04` — `npm test` **164 passed**, `npm run build` OK, oxlint — только pre-existing `crossActions.ts`.
 - Бэкенд последний раз проверен на `f23b488`: `cargo test` **777 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings. S4.1–S4.2 бэкенд не трогали.
 - Baseline-скриншоты: `/tmp/project-s-baseline/` (7 экранов).
 - Полный `npm run app:build` — только в финале.
-
-## Фаза 4 — фронтенд-структура и перф
-
-- **S4.10 types-strict** — включить `strict`, типизировать конфиги; runtime не меняется.
 
 ## Фаза 5 — остаток
 - **S5.1 dead-code-triage** — доказать и удалить/ограничить `allow(dead_code)`.
@@ -33,4 +29,4 @@
 - `BAG_REPORT.md`/`Q.md` — рабочие файлы задач, не менять их в рамках рефакторинга.
 
 ## Следующий шаг
-**S4.10 types-strict** — включить `strict`, типизировать конфиги; runtime не меняется.
+**S5.1 dead-code-triage** — доказать и удалить/ограничить `allow(dead_code)`.
