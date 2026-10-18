@@ -59,7 +59,7 @@
 
 ### Фаза 0 — Guardrails
 - **S0.1 characterization-backend** — тесты на `permissions`, обёртки команд (in-memory DB), path-policy, scheduler tick, импорт/поиск. Prod-код не меняем. `done` (коммит `01cdf5b`) — добавлено 19 characterization-тестов (729→748 passed): матрица конфирмеров (`agent/permissions.rs`), матрица разрешения политик Skip/Check/CheckConditional c danger_reason (`agent/loop.rs`), обход walk (исключения, `.DS_Store`/БД, симлинки, rel-пути) (`index/walk.rs`), слой инструментов undo_last/undo_list — конверт, политики, события эмиттера (`agent/undo_tools.rs`), транспорт stdio — round-trip/таймаут/закрытый канал (`mcp/stdio.rs`), чистые хелперы watcher (`watcher.rs`). Уже покрыто ранее — пропущено: timeout→deny/autopilot/allow-always (chat-мост), лимиты/размер/символы/удаление строк (index/mod), обход zip/суффиксы коллизий (importer), кириллический FTS и скоупинг (search). Debounce watcher не тестирован: встроен в поток с `tauri::AppHandle`, требует изменения prod-кода.
-- **S0.2 characterization-frontend** — golden-тесты чистых функций (`chatReducer`, `historyToItems`, `splitMarkdownBlocks`, `score`, `noteNameFromText`, `renderSnippet`). Требует dev-зависимость (`vitest`) — ждёт согласования. `pending`.
+- **S0.2 characterization-frontend** — golden-тесты чистых функций (`chatReducer`, `historyToItems`, `splitMarkdownBlocks`, `score`, `noteNameFromText`, `renderSnippet`). `done` (коммит `484eab7`) — добавлены `vitest`+`jsdom` (dev), `vitest.config.ts` (jsdom, `src/**/*.test.{ts,tsx}`), скрипт `npm test`; 65 characterization-тестов (5 файлов): редьюсер чата (delta/reasoningDelta/stepStart/stepFinish/done с reason→note/runError/queue+combineQueued/compaction, локальный vs удаленный run, монотонные ключи), `historyToItems` (роли, склейка assistant-групп, tool-steps и статусы по toolCallId, вложения с messageId/index, pinned, пустые группы), `splitMarkdownBlocks`/`joinMarkdownBlocks` (пустые строки, фенсы и правила закрытия, таблицы/списки, round-trip), `score` палитры (prefix/substring/fuzzy, капы 30/25, null; функция помечена `export` — только ключевое слово, логика не менялась), `noteNameFromText` (санитайз, 80 символов, `.md`), `renderSnippet` (FTS-маркеры → `<mark>`). Также покрыты чистые хелперы `toMessage`/`summarizeArgs`/`countMatches`. IPC замокан через `vi.mock("@tauri-apps/api/*")`. Пропущено: `src/shared/...` — такого каталога нет (чистых хелперов вне перечисленного не найдено; `src/hooks/usePointerDrag` — хук, не чистая функция). Проверки: `npm test` 65/65; `npm run build` OK (JS 529.51 kB — как baseline, тесты не бандлятся); `npx oxlint src` — 1 warning как в baseline, 0 errors.
 
 ### Фаза 1 — Безопасность/производительность (бэкенд, замеры)
 - **S1.1 embed-cached-instance** — кэш `OrtEmbedder` на процесс; тесты векторов идентичны; бенч поиска до/после.
@@ -118,9 +118,9 @@
 - Риск регрессий в god-файлах: сначала characterization-тесты, затем структурные срезы.
 - Контракты/схема/UI заморожены; любое изменение — стоп и согласование.
 - `BAG_REPORT.md` отслеживается git и может содержать реальные SSH-реквизиты (репозиторий приватный). Историю не переписываем; новые коммиты файл не трогают. Решить: оставить / убрать из индекса без rewrite.
-- Фронтенд-тесты требуют `vitest` (dev-зависимость) — ждёт решения.
+- Фронтенд-тесты: `vitest`+`jsdom` согласованы и добавлены в dev-зависимости (S0.2).
 - Эталонные скриншоты — на демо-данных, вне репозитория.
 - Полный `npm run app:build` — только на финальном этапе.
 
 ## Следующий шаг
-**S0.2 characterization-frontend** (golden-тесты чистых функций фронтенда; требует dev-зависимости `vitest` — ждёт решения по согласованию). Если `vitest` не согласован — следующий бэкенд-срез **S1.1 embed-cached-instance**.
+**S1.1 embed-cached-instance** — кэш `OrtEmbedder` на процесс; тесты векторов идентичны; бенч поиска до/после.
