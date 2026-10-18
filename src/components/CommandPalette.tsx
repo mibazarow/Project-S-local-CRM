@@ -1,18 +1,30 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import * as ipc from "../api/ipc";
-import type { FsEntry, SessionDto } from "../api/types";
+import type { FsEntry, GlobalHit, SessionDto } from "../api/types";
 import { useApp } from "../state/AppStore";
 import type { Tab } from "./TopBar";
+import { renderSnippet } from "./files/SearchResults";
 import { IconSearch } from "./files/icons";
 
 interface PaletteItem {
   key: string;
   label: string;
   hint?: string;
+  kind?: string;
+  snippet?: string;
   run: () => void;
 }
 
 const GROUP_CAP = 8;
+const SEARCH_DEBOUNCE_MS = 200;
+
+const KIND_LABELS: Record<GlobalHit["kind"], string> = {
+  project: "Проект",
+  file: "Файл",
+  task: "Задача",
+  note: "Заметка",
+  chat: "Чат",
+};
 
 // Case-insensitive scoring: prefix beats substring, substring beats a fuzzy
 // subsequence; null means no match.
@@ -42,6 +54,7 @@ export default function CommandPalette({ onTab, onClose }: Props) {
   const [query, setQuery] = useState("");
   const [notes, setNotes] = useState<FsEntry[] | null>(null);
   const [sessions, setSessions] = useState<SessionDto[] | null>(null);
+  const [hits, setHits] = useState<GlobalHit[] | null>(null);
   const [active, setActive] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -60,27 +73,102 @@ export default function CommandPalette({ onTab, onClose }: Props) {
     };
   }, []);
 
+  // Global cross-entity search: debounced, only for queries of 2+ chars; the
+  // backend merges projects/files/tasks/notes/chats into one ranked list.
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (trimmed.length < 2) {
+      setHits(null);
+      return;
+    }
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      void ipc
+        .globalSearch(trimmed)
+        .then((h) => !cancelled && setHits(h))
+        .catch(() => !cancelled && setHits([]));
+    }, SEARCH_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [query]);
+
   const q = query.trim().toLowerCase();
 
   const groups = useMemo(() => {
+    // Backend-ranked hits: navigation opens the target entity, setting the
+    // matching store intent for the view that mounts with the tab switch.
+    const searchItems: PaletteItem[] = (hits ?? []).map((h) => ({
+      key: `gs-${h.kind}-${h.id}`,
+      label: h.title,
+      hint: h.subtitle,
+      kind: KIND_LABELS[h.kind] ?? h.kind,
+      snippet: h.snippet || undefined,
+      run: () => {
+        switch (h.kind) {
+          case "project":
+            void actions.openProject(h.id);
+            onTab("projects");
+            break;
+          case "file":
+            if (h.projectId != null && h.relPath) {
+              void actions.openProject(h.projectId);
+              actions.requestFile(h.relPath);
+              onTab("projects");
+            }
+            break;
+          case "task":
+            if (h.projectId != null && h.taskId != null) {
+              void actions.openProject(h.projectId);
+              actions.requestTask(h.taskId);
+              onTab("projects");
+            }
+            break;
+          case "note":
+            if (h.relPath) {
+              actions.requestNote(h.relPath);
+              onTab("notes");
+            }
+            break;
+          case "chat":
+            if (h.sessionId != null) {
+              actions.requestSession(h.sessionId);
+              onTab("harness");
+            }
+            break;
+        }
+        onClose();
+      },
+    }));
+    // Static groups drop entries the search group already lists, so the same
+    // target never appears twice.
+    const searchTargets = new Set<string>();
+    for (const h of hits ?? []) {
+      if (h.kind === "project") searchTargets.add(`project-${h.id}`);
+      else if (h.kind === "note" && h.relPath) searchTargets.add(`note-${h.relPath}`);
+      else if (h.kind === "chat" && h.sessionId != null) searchTargets.add(`session-${h.sessionId}`);
+    }
     const nav: PaletteItem[] = [
       { key: "nav-projects", label: "Проекты", run: () => { onTab("projects"); onClose(); } },
       { key: "nav-harness", label: "Харнес", run: () => { onTab("harness"); onClose(); } },
       { key: "nav-notes", label: "Блокнот", run: () => { onTab("notes"); onClose(); } },
       { key: "nav-settings", label: "Настройки", run: () => { actions.requestSettings(); onClose(); } },
     ];
-    const projectItems: PaletteItem[] = state.projects.map((p) => ({
-      key: `project-${p.id}`,
-      label: p.name,
-      hint: `файлов: ${p.fileCount}`,
-      run: () => {
-        void actions.openProject(p.id);
-        onTab("projects");
-        onClose();
-      },
-    }));
+    const projectItems: PaletteItem[] = state.projects
+      .filter((p) => !searchTargets.has(`project-${p.id}`))
+      .map((p) => ({
+        key: `project-${p.id}`,
+        label: p.name,
+        hint: `файлов: ${p.fileCount}`,
+        run: () => {
+          void actions.openProject(p.id);
+          onTab("projects");
+          onClose();
+        },
+      }));
     const noteItems: PaletteItem[] = (notes ?? [])
-      .filter((e) => e.kind === "file")
+      .filter((e) => e.kind === "file" && !searchTargets.has(`note-${e.relPath}`))
       .map((e) => ({
         key: `note-${e.relPath}`,
         label: e.name.replace(/\.(md|markdown)$/i, ""),
@@ -91,15 +179,17 @@ export default function CommandPalette({ onTab, onClose }: Props) {
           onClose();
         },
       }));
-    const sessionItems: PaletteItem[] = (sessions ?? []).map((s) => ({
-      key: `session-${s.id}`,
-      label: s.title ?? "Новая сессия",
-      run: () => {
-        actions.requestSession(s.id);
-        onTab("harness");
-        onClose();
-      },
-    }));
+    const sessionItems: PaletteItem[] = (sessions ?? [])
+      .filter((s) => !searchTargets.has(`session-${s.id}`))
+      .map((s) => ({
+        key: `session-${s.id}`,
+        label: s.title ?? "Новая сессия",
+        run: () => {
+          actions.requestSession(s.id);
+          onTab("harness");
+          onClose();
+        },
+      }));
     const actionItems: PaletteItem[] = [
       {
         key: "act-new-project",
@@ -146,16 +236,18 @@ export default function CommandPalette({ onTab, onClose }: Props) {
         },
       },
     ];
-    const defs: Array<[string, PaletteItem[]]> = [
-      ["Перейти", nav],
-      ["Проекты", projectItems],
-      ["Заметки", noteItems],
-      ["Чаты харнеса", sessionItems],
-      ["Действия", actionItems],
+    // The Поиск group is already ranked by the backend: no local rescoring.
+    const defs: Array<[string, PaletteItem[], boolean]> = [
+      ["Поиск", searchItems, true],
+      ["Перейти", nav, false],
+      ["Проекты", projectItems, false],
+      ["Заметки", noteItems, false],
+      ["Чаты харнеса", sessionItems, false],
+      ["Действия", actionItems, false],
     ];
     return defs
-      .map(([title, items]) => {
-        if (!q) return { title, items: items.slice(0, GROUP_CAP) };
+      .map(([title, items, preRanked]) => {
+        if (!q || preRanked) return { title, items: items.slice(0, GROUP_CAP) };
         return {
           title,
           items: items
@@ -167,7 +259,7 @@ export default function CommandPalette({ onTab, onClose }: Props) {
         };
       })
       .filter((g) => g.items.length > 0);
-  }, [q, state.projects, notes, sessions, actions, onTab, onClose]);
+  }, [q, hits, state.projects, notes, sessions, actions, onTab, onClose]);
 
   const flat = useMemo(() => groups.flatMap((g) => g.items), [groups]);
 
@@ -217,7 +309,7 @@ export default function CommandPalette({ onTab, onClose }: Props) {
           <input
             autoFocus
             type="text"
-            placeholder="Проекты, заметки, чаты, действия…"
+            placeholder="Проекты, файлы, задачи, заметки, чаты, действия…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onKeyDown}
@@ -240,8 +332,12 @@ export default function CommandPalette({ onTab, onClose }: Props) {
                     onClick={() => it.run()}
                     onMouseEnter={() => setActive(myIdx)}
                   >
+                    {it.kind && <span className="palette-item-kind">{it.kind}</span>}
                     <span className="palette-item-name">{it.label}</span>
                     {it.hint && <span className="palette-item-hint">{it.hint}</span>}
+                    {it.snippet && (
+                      <span className="palette-item-snippet">{renderSnippet(it.snippet)}</span>
+                    )}
                   </div>
                 );
               })}

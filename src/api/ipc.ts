@@ -12,6 +12,7 @@ import type {
   EmbedStatus,
   FsChanged,
   FsEntry,
+  GlobalHit,
   IndexChanged,
   ImportResult,
   McpServerStatus,
@@ -306,6 +307,11 @@ export const cancelSessionRun = (sessionId: number) =>
 // returns the number of newly indexed rows.
 export const searchChats = (query: string, limit?: number) =>
   invoke<ChatHit[]>("search_chats", { query, limit: limit ?? null });
+
+// Global cross-entity search (⌘K palette): projects, files, tasks, notes and
+// harness chats in one merged, ranked list.
+export const globalSearch = (query: string, limit?: number) =>
+  invoke<GlobalHit[]>("global_search", { query, limit: limit ?? null });
 
 export const indexChatMessages = () => invoke<number>("index_chat_messages");
 

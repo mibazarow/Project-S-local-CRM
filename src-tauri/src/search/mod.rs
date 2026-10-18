@@ -558,6 +558,284 @@ fn fallback_snippet(content: &str, terms_lower: &[String]) -> String {
     out
 }
 
+// Global cross-entity search for the ⌘K palette: one FTS leg per entity
+// (files across all projects, tasks including closed, the notes vault,
+// harness chat messages via search_chats) plus plain substring legs for
+// project and session titles (SQLite LIKE is ASCII-only, so Cyrillic
+// case-folding happens in Rust; those tables stay small at local scale).
+// Legs merge by RRF-style rank scores with a deterministic tiebreak.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalHit {
+    // "project" | "file" | "task" | "note" | "chat"
+    pub kind: String,
+    // Entity id: project/task/session id; files_fts rowid for file/note hits.
+    pub id: i64,
+    pub title: String,
+    pub subtitle: String,
+    pub snippet: String,
+    pub score: f64,
+    pub project_id: Option<i64>,
+    pub session_id: Option<i64>,
+    pub task_id: Option<i64>,
+    pub rel_path: Option<String>,
+}
+
+pub fn global_search(state: &AppState, query: &str, limit: usize) -> Result<Vec<GlobalHit>> {
+    if query.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    let wd = state.working_dir()?;
+    let conn = db::open(&paths::db_path(&wd))?;
+    let embedder = embed::select_embedder(&wd);
+    global_search_with(&conn, embedder.as_ref(), query, limit)
+}
+
+pub(crate) fn global_search_with(
+    conn: &Connection,
+    embedder: &dyn embed::Embedder,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<GlobalHit>> {
+    let terms = tokenize(query);
+    if terms.is_empty() || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let match_query = fts_match_query(&terms);
+    let lowered: Vec<String> = terms.iter().map(|t| t.to_lowercase()).collect();
+    let needle = query.trim().to_lowercase();
+    let mut hits: Vec<GlobalHit> = Vec::new();
+
+    {
+        let mut stmt = conn.prepare("SELECT id, name FROM projects ORDER BY position, id")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+        let mut rank = 0usize;
+        for row in rows {
+            let (id, name) = row?;
+            if !name.to_lowercase().contains(&needle) {
+                continue;
+            }
+            hits.push(GlobalHit {
+                kind: "project".into(),
+                id,
+                title: name,
+                subtitle: "Проект".into(),
+                snippet: String::new(),
+                score: 1.0 / (RRF_K + rank as f64 + 1.0),
+                project_id: Some(id),
+                session_id: None,
+                task_id: None,
+                rel_path: None,
+            });
+            rank += 1;
+            if rank >= limit {
+                break;
+            }
+        }
+    }
+
+    // Files across all projects; the notes scope surfaces as "note" hits below.
+    {
+        let mut stmt = conn.prepare(
+            "SELECT files_fts.rowid, CAST(files_fts.project_id AS INTEGER), files_fts.rel_path,
+                    files_fts.name, snippet(files_fts, 3, '<<', '>>', '…', 12), p.name
+             FROM files_fts
+             JOIN projects p ON p.id = CAST(files_fts.project_id AS INTEGER)
+             WHERE files_fts MATCH ?1 AND CAST(files_fts.project_id AS INTEGER) <> ?2
+             ORDER BY rank
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            params![match_query, crate::index::NOTES_SCOPE_ID, limit as i64],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                    r.get::<_, String>(5)?,
+                ))
+            },
+        )?;
+        for (rank, row) in rows.enumerate() {
+            let (rowid, project_id, rel_path, name, snippet, project) = row?;
+            hits.push(GlobalHit {
+                kind: "file".into(),
+                id: rowid,
+                title: name,
+                subtitle: project,
+                snippet,
+                score: 1.0 / (RRF_K + rank as f64 + 1.0),
+                project_id: Some(project_id),
+                session_id: None,
+                task_id: None,
+                rel_path: Some(rel_path),
+            });
+        }
+    }
+
+    // Tasks across all projects, closed included (join tasks, no status filter).
+    {
+        let mut stmt = conn.prepare(
+            "SELECT tasks.id, tasks.title, tasks.status, tasks.comment, tasks.tags,
+                    tasks.due_date, tasks.project_id, p.name
+             FROM tasks_fts
+             JOIN tasks ON tasks.id = tasks_fts.rowid
+             JOIN projects p ON p.id = tasks.project_id
+             WHERE tasks_fts MATCH ?1
+             ORDER BY rank
+             LIMIT ?2",
+        )?;
+        let rows = stmt.query_map(params![match_query, limit as i64], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, i64>(6)?,
+                r.get::<_, String>(7)?,
+            ))
+        })?;
+        for (rank, row) in rows.enumerate() {
+            let (id, title, status, comment, tags, due_date, project_id, project) = row?;
+            let mut text = title.clone();
+            if let Some(comment) = &comment {
+                text.push(' ');
+                text.push_str(comment);
+            }
+            text.push(' ');
+            text.push_str(&tags);
+            let mut subtitle = format!("{project} · {}", task_status_label(&status));
+            if let Some(due) = due_date {
+                subtitle.push_str(&format!(" · до {due}"));
+            }
+            hits.push(GlobalHit {
+                kind: "task".into(),
+                id,
+                title,
+                subtitle,
+                snippet: fallback_snippet(&text, &lowered),
+                score: 1.0 / (RRF_K + rank as f64 + 1.0),
+                project_id: Some(project_id),
+                session_id: None,
+                task_id: Some(id),
+                rel_path: None,
+            });
+        }
+    }
+
+    // Notes vault: the same scope search_notes uses (project_id = NOTES_SCOPE_ID).
+    {
+        let mut stmt = conn.prepare(
+            "SELECT rowid, rel_path, name, snippet(files_fts, 3, '<<', '>>', '…', 12)
+             FROM files_fts
+             WHERE files_fts MATCH ?1 AND project_id = ?2
+             ORDER BY rank
+             LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(
+            params![match_query, crate::index::NOTES_SCOPE_ID.to_string(), limit as i64],
+            |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            },
+        )?;
+        for (rank, row) in rows.enumerate() {
+            let (rowid, rel_path, name, snippet) = row?;
+            hits.push(GlobalHit {
+                kind: "note".into(),
+                id: rowid,
+                title: name,
+                subtitle: "Блокнот".into(),
+                snippet,
+                score: 1.0 / (RRF_K + rank as f64 + 1.0),
+                project_id: None,
+                session_id: None,
+                task_id: None,
+                rel_path: Some(rel_path),
+            });
+        }
+    }
+
+    // Chats: session title substring plus message hits via search_chats,
+    // deduped per session (scores add, the message snippet wins).
+    {
+        let mut by_session: HashMap<i64, (f64, Option<String>, String)> = HashMap::new();
+        {
+            let mut stmt = conn.prepare(
+                "SELECT id, title FROM sessions WHERE title IS NOT NULL ORDER BY last_active_at DESC",
+            )?;
+            let rows =
+                stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))?;
+            let mut rank = 0usize;
+            for row in rows {
+                let (id, title) = row?;
+                if !title.to_lowercase().contains(&needle) {
+                    continue;
+                }
+                let entry = by_session
+                    .entry(id)
+                    .or_insert((0.0, None, String::new()));
+                entry.0 += 1.0 / (RRF_K + rank as f64 + 1.0);
+                if entry.1.is_none() {
+                    entry.1 = Some(title);
+                }
+                rank += 1;
+            }
+        }
+        for hit in search_chats_with(conn, embedder, query, limit)? {
+            let entry = by_session
+                .entry(hit.session_id)
+                .or_insert((0.0, None, String::new()));
+            entry.0 += hit.score;
+            if hit.title.is_some() {
+                entry.1 = hit.title;
+            }
+            entry.2 = hit.snippet;
+        }
+        for (session_id, (score, title, snippet)) in by_session {
+            hits.push(GlobalHit {
+                kind: "chat".into(),
+                id: session_id,
+                title: title.unwrap_or_else(|| "Новая сессия".into()),
+                subtitle: "Харнес".into(),
+                snippet,
+                score,
+                project_id: None,
+                session_id: Some(session_id),
+                task_id: None,
+                rel_path: None,
+            });
+        }
+    }
+
+    hits.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| a.kind.cmp(&b.kind))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    hits.truncate(limit);
+    Ok(hits)
+}
+
+fn task_status_label(status: &str) -> &'static str {
+    match status {
+        "new" => "Новые",
+        "progress" => "В работе",
+        "done" => "Готово",
+        _ => "Задача",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1063,6 +1341,103 @@ mod tests {
         conn.execute_batch("PRAGMA foreign_keys=OFF;").unwrap();
         conn.execute("DELETE FROM sessions WHERE id = ?1", params![sid]).unwrap();
         assert!(search_chats_with(&conn, &embed::NoopEmbedder, "редизайн", 10)
+            .unwrap()
+            .is_empty());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    use crate::notes;
+
+    #[test]
+    fn global_search_finds_all_kinds_tags_hits_and_includes_closed_tasks() {
+        let (wd, conn, id, state) = setup("global-kinds");
+        fs::write(root(&wd).join("redizayn.md"), "редизайн каталога товаров").unwrap();
+        index::index_project(&state, id).unwrap();
+        let t = tasks::task_create(&conn, id, "редизайн главной", None).unwrap();
+        tasks::task_move(&conn, t.id, "done", 1.0).unwrap();
+        notes::ensure(&wd).unwrap();
+        fs::write(paths::notes_dir(&wd).join("red.md"), "редизайн заметки").unwrap();
+        index::index_notes(&wd).unwrap();
+        let (sid, chat_id) = harness_session(&conn, "витрина");
+        say(&conn, chat_id, Role::User, "редизайн чата");
+
+        let hits = global_search_with(&conn, &embed::NoopEmbedder, "редизайн", 30).unwrap();
+        let kinds: Vec<&str> = hits.iter().map(|h| h.kind.as_str()).collect();
+        for kind in ["file", "task", "note", "chat"] {
+            assert!(kinds.contains(&kind), "missing {kind} in {hits:?}");
+        }
+        let file = hits.iter().find(|h| h.kind == "file").unwrap();
+        assert_eq!(file.project_id, Some(id));
+        assert_eq!(file.rel_path.as_deref(), Some("redizayn.md"));
+        assert!(file.snippet.contains("<<редизайн>>"), "{:?}", file.snippet);
+        let task = hits.iter().find(|h| h.kind == "task").unwrap();
+        assert_eq!(task.task_id, Some(t.id));
+        assert_eq!(task.project_id, Some(id));
+        assert!(task.subtitle.contains("Готово"), "{:?}", task.subtitle);
+        let note = hits.iter().find(|h| h.kind == "note").unwrap();
+        assert_eq!(note.rel_path.as_deref(), Some("red.md"));
+        assert_eq!(note.project_id, None);
+        let chat = hits.iter().find(|h| h.kind == "chat").unwrap();
+        assert_eq!(chat.session_id, Some(sid));
+        // Deterministic merge: the same order on a second run.
+        let again = global_search_with(&conn, &embed::NoopEmbedder, "редизайн", 30).unwrap();
+        let keys = |hs: &[GlobalHit]| -> Vec<(String, i64)> {
+            hs.iter().map(|h| (h.kind.clone(), h.id)).collect()
+        };
+        assert_eq!(keys(&hits), keys(&again));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn global_search_matches_cyrillic_project_name_case_insensitively() {
+        let (wd, conn, _id, _state) = setup("global-project");
+        let p = projects::create_project(&conn, &wd, "Ромашка").unwrap();
+        let hits = global_search_with(&conn, &embed::NoopEmbedder, "ромашка", 30).unwrap();
+        let project = hits.iter().find(|h| h.kind == "project").expect("project hit");
+        assert_eq!(project.id, p.id);
+        assert_eq!(project.project_id, Some(p.id));
+        assert_eq!(project.title, "Ромашка");
+        assert!(global_search_with(&conn, &embed::NoopEmbedder, "лютики", 30)
+            .unwrap()
+            .is_empty());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn global_search_dedupes_chat_title_and_message_hits_per_session() {
+        let (wd, conn, _id, _state) = setup("global-chat-dedupe");
+        let (sid, chat_id) = harness_session(&conn, "редизайн витрины");
+        say(&conn, chat_id, Role::User, "нужен редизайн главной");
+        let hits = global_search_with(&conn, &embed::NoopEmbedder, "редизайн", 30).unwrap();
+        let chats: Vec<&GlobalHit> = hits.iter().filter(|h| h.kind == "chat").collect();
+        assert_eq!(chats.len(), 1, "title and message hits must merge: {hits:?}");
+        assert_eq!(chats[0].session_id, Some(sid));
+        assert_eq!(chats[0].title, "редизайн витрины");
+        assert!(chats[0].snippet.contains("<<редизайн>>"), "{:?}", chats[0].snippet);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn global_search_sanitizes_input_and_respects_limit() {
+        let (wd, conn, id, state) = setup("global-limit");
+        for name in ["a.md", "b.md", "c.md"] {
+            fs::write(root(&wd).join(name), "слово в тексте").unwrap();
+        }
+        index::index_project(&state, id).unwrap();
+
+        for evil in ["\"", "*", "NEAR/3", "a OR b", "\"unbalanced"] {
+            assert!(
+                global_search_with(&conn, &embed::NoopEmbedder, evil, 10).is_ok(),
+                "errored on {evil:?}"
+            );
+        }
+        assert_eq!(
+            global_search_with(&conn, &embed::NoopEmbedder, "слово", 2)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert!(global_search_with(&conn, &embed::NoopEmbedder, "   ", 10)
             .unwrap()
             .is_empty());
         fs::remove_dir_all(&wd).unwrap();

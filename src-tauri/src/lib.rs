@@ -943,6 +943,17 @@ fn search_chats(
     search::search_chats(&state, &query, limit)
 }
 
+// Global search over all entities for the ⌘K palette.
+#[tauri::command]
+fn global_search(
+    state: State<AppState>,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<search::GlobalHit>> {
+    let limit = limit.unwrap_or(30).clamp(1, 100);
+    search::global_search(&state, &query, limit)
+}
+
 #[tauri::command]
 fn index_chat_messages(state: State<AppState>) -> Result<usize> {
     chat::index_chat_messages(&state)
@@ -1526,6 +1537,7 @@ pub fn run() {
             semantic_search,
             search_project,
             search_chats,
+            global_search,
             index_chat_messages,
             list_models,
             test_connection,

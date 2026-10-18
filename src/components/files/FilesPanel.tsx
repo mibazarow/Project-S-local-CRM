@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import * as ipc from "../../api/ipc";
 import type { FsEntry, ProjectDto } from "../../api/types";
 import { useApp } from "../../state/AppStore";
 import Breadcrumbs from "./Breadcrumbs";
@@ -14,7 +15,7 @@ interface Props {
 }
 
 export default function FilesPanel({ project }: Props) {
-  const { state } = useApp();
+  const { state, actions } = useApp();
   const [tab, setTab] = useState<"files" | "tasks">("files");
   const [view, setView] = useState<"list" | "grid">("list");
   // Grid navigation: the folder currently shown by the grid ("" = project root).
@@ -43,6 +44,41 @@ export default function FilesPanel({ project }: Props) {
   useEffect(() => {
     setCurrentDir("");
   }, [project.id]);
+
+  // Command-palette intent: open a file by project-relative path (resolved to
+  // a real FsEntry through the folder listing, like the search results do).
+  // Runs on mount too, so the intent survives a project switch made together
+  // with the palette click.
+  useEffect(() => {
+    const path = state.pendingFilePath;
+    if (!path) return;
+    actions.clearPendingFile();
+    if (!confirmDiscard()) return;
+    void (async () => {
+      const slash = path.lastIndexOf("/");
+      const dir = slash === -1 ? "" : path.slice(0, slash);
+      try {
+        const entries = await ipc.fsListDir(project.id, dir);
+        const entry = entries.find((e) => e.relPath === path);
+        if (entry) {
+          setTab("files");
+          setSelected(entry);
+        }
+      } catch {
+        // The file vanished between palette load and open: stay put.
+      }
+    })();
+  }, [state.pendingFilePath, actions, project.id]);
+
+  // Command-palette intent: switch to «Задачи» and highlight the task card.
+  useEffect(() => {
+    const id = state.pendingTaskId;
+    if (id == null) return;
+    actions.clearPendingTask();
+    if (!confirmDiscard()) return;
+    setTab("tasks");
+    setHighlightTaskId(id);
+  }, [state.pendingTaskId, actions]);
 
   const confirmDiscard = () =>
     !dirtyRef.current ||

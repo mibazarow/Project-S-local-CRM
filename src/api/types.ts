@@ -87,6 +87,23 @@ export interface SearchHit {  relPath: string;
   overdue?: boolean | null;
 }
 
+// search::GlobalHit — one hit of the cross-entity ⌘K palette search.
+// kind selects the navigation target; the id fields tag it (project/task/
+// session id, files_fts rowid for file/note hits). Snippets carry FTS5
+// markers ("<<match>>").
+export interface GlobalHit {
+  kind: "project" | "file" | "task" | "note" | "chat";
+  id: number;
+  title: string;
+  subtitle: string;
+  snippet: string;
+  score: number;
+  projectId?: number | null;
+  sessionId?: number | null;
+  taskId?: number | null;
+  relPath?: string | null;
+}
+
 // Distinguishes an explicit null (clear) from an absent field (keep).
 export interface TaskPatch {
   title?: string;

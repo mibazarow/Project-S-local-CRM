@@ -27,6 +27,10 @@ interface AppState {
   // and cleared by the target view even when it mounts after the request.
   pendingNotePath: string | null;
   pendingSessionId: number | null;
+  // File/task targets inside the active project, consumed by FilesPanel
+  // (select/preview the file; switch to «Задачи» and highlight the task).
+  pendingFilePath: string | null;
+  pendingTaskId: number | null;
   settingsRequested: boolean;
   newProjectRequested: boolean;
   newNoteRequested: boolean;
@@ -44,6 +48,8 @@ type Action =
   | { type: "schedulesChanged" }
   | { type: "pendingNote"; path: string | null }
   | { type: "pendingSession"; id: number | null }
+  | { type: "pendingFile"; path: string | null }
+  | { type: "pendingTask"; id: number | null }
   | { type: "settingsRequested"; value: boolean }
   | { type: "newProjectRequested"; value: boolean }
   | { type: "newNoteRequested"; value: boolean };
@@ -59,6 +65,8 @@ const initialState: AppState = {
   schedulesVersion: 0,
   pendingNotePath: null,
   pendingSessionId: null,
+  pendingFilePath: null,
+  pendingTaskId: null,
   settingsRequested: false,
   newProjectRequested: false,
   newNoteRequested: false,
@@ -94,6 +102,10 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, pendingNotePath: action.path };
     case "pendingSession":
       return { ...state, pendingSessionId: action.id };
+    case "pendingFile":
+      return { ...state, pendingFilePath: action.path };
+    case "pendingTask":
+      return { ...state, pendingTaskId: action.id };
     case "settingsRequested":
       return { ...state, settingsRequested: action.value };
     case "newProjectRequested":
@@ -150,11 +162,15 @@ interface AppActions {
   // Command-palette navigation intents; each target view clears its own.
   requestNote: (relPath: string) => void;
   requestSession: (id: number) => void;
+  requestFile: (relPath: string) => void;
+  requestTask: (id: number) => void;
   requestSettings: () => void;
   requestNewProject: () => void;
   requestNewNote: () => void;
   clearPendingNote: () => void;
   clearPendingSession: () => void;
+  clearPendingFile: () => void;
+  clearPendingTask: () => void;
   clearSettingsRequested: () => void;
   clearNewProject: () => void;
   clearNewNote: () => void;
@@ -262,11 +278,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const requestNote = useCallback((relPath: string) => dispatch({ type: "pendingNote", path: relPath }), []);
   const notifyTasksChanged = useCallback(() => dispatch({ type: "tasksChangedForced" }), []);
   const requestSession = useCallback((id: number) => dispatch({ type: "pendingSession", id }), []);
+  const requestFile = useCallback((relPath: string) => dispatch({ type: "pendingFile", path: relPath }), []);
+  const requestTask = useCallback((id: number) => dispatch({ type: "pendingTask", id }), []);
   const requestSettings = useCallback(() => dispatch({ type: "settingsRequested", value: true }), []);
   const requestNewProject = useCallback(() => dispatch({ type: "newProjectRequested", value: true }), []);
   const requestNewNote = useCallback(() => dispatch({ type: "newNoteRequested", value: true }), []);
   const clearPendingNote = useCallback(() => dispatch({ type: "pendingNote", path: null }), []);
   const clearPendingSession = useCallback(() => dispatch({ type: "pendingSession", id: null }), []);
+  const clearPendingFile = useCallback(() => dispatch({ type: "pendingFile", path: null }), []);
+  const clearPendingTask = useCallback(() => dispatch({ type: "pendingTask", id: null }), []);
   const clearSettingsRequested = useCallback(() => dispatch({ type: "settingsRequested", value: false }), []);
   const clearNewProject = useCallback(() => dispatch({ type: "newProjectRequested", value: false }), []);
   const clearNewNote = useCallback(() => dispatch({ type: "newNoteRequested", value: false }), []);
@@ -343,11 +363,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       notifyTasksChanged,
       requestNote,
       requestSession,
+      requestFile,
+      requestTask,
       requestSettings,
       requestNewProject,
       requestNewNote,
       clearPendingNote,
       clearPendingSession,
+      clearPendingFile,
+      clearPendingTask,
       clearSettingsRequested,
       clearNewProject,
       clearNewNote,
@@ -362,11 +386,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       notifyTasksChanged,
       requestNote,
       requestSession,
+      requestFile,
+      requestTask,
       requestSettings,
       requestNewProject,
       requestNewNote,
       clearPendingNote,
       clearPendingSession,
+      clearPendingFile,
+      clearPendingTask,
       clearSettingsRequested,
       clearNewProject,
       clearNewNote,
