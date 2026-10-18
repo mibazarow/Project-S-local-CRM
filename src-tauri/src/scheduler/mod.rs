@@ -28,6 +28,16 @@ use tauri::{AppHandle, Emitter, Manager};
 
 pub const TICK_SECONDS: u64 = 30;
 
+// Storm guard: a schedule whose last run started less than this long ago is
+// never fired again, even when next_run_at says due (a bad spec or a manual
+// next_run_at edit could otherwise fire every 30 s tick). Also the delay
+// before the single retry of a failed run.
+pub const MIN_RUN_INTERVAL_SECONDS: i64 = 60;
+
+// A failed run is retried exactly once (retry_count < MAX_RETRIES); the
+// second failure flips the schedule to error.
+pub const MAX_RETRIES: i64 = 1;
+
 pub const KINDS: [&str; 3] = ["run_at", "cron", "notify"];
 
 const COLS: &str = "id, session_id, kind, spec, prompt, status, related_task_id, created_at, last_run_at, next_run_at, timezone, error, title";
@@ -474,7 +484,7 @@ pub fn update(conn: &Connection, id: i64, patch: &UpdateIn<'_>, now: DateTime<Ut
 
 fn mark_done(conn: &Connection, id: i64, now: DateTime<Utc>) -> Result<()> {
     conn.execute(
-        "UPDATE schedules SET status = 'done', last_run_at = ?1, next_run_at = NULL, error = NULL WHERE id = ?2",
+        "UPDATE schedules SET status = 'done', last_run_at = ?1, next_run_at = NULL, error = NULL, retry_count = 0 WHERE id = ?2",
         params![fmt_utc(now), id],
     )?;
     Ok(())
@@ -489,10 +499,20 @@ fn mark_error(conn: &Connection, id: i64, message: &str) -> Result<()> {
 }
 
 fn due_ids(conn: &Connection, now: DateTime<Utc>) -> Result<Vec<i64>> {
+    // Rate limit: a schedule whose last run started strictly less than
+    // MIN_RUN_INTERVAL_SECONDS ago is skipped even when next_run_at is due
+    // (RFC3339 UTC strings compare in chronological order; at exactly the
+    // 60 s boundary the run is allowed, which is what the retry delay needs).
     let mut stmt = conn.prepare(
-        "SELECT id FROM schedules WHERE status = 'active' AND next_run_at IS NOT NULL AND next_run_at <= ?1 ORDER BY next_run_at, id",
+        "SELECT id FROM schedules
+         WHERE status = 'active' AND next_run_at IS NOT NULL AND next_run_at <= ?1
+           AND (last_run_at IS NULL OR last_run_at <= ?2)
+         ORDER BY next_run_at, id",
     )?;
-    let rows = stmt.query_map(params![fmt_utc(now)], |r| r.get(0))?;
+    let rows = stmt.query_map(
+        params![fmt_utc(now), fmt_utc(now - chrono::Duration::seconds(MIN_RUN_INTERVAL_SECONDS))],
+        |r| r.get(0),
+    )?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
@@ -562,13 +582,37 @@ fn fire_due(
                 .ok_or_else(|| AppError::Invalid("schedule prompt is empty".into()))?;
             runner.run(conn, session_id, &prompt)?;
             conn.execute(
-                "UPDATE schedules SET last_run_at = ?1, next_run_at = ?2, error = NULL WHERE id = ?3",
+                "UPDATE schedules SET last_run_at = ?1, next_run_at = ?2, error = NULL, retry_count = 0 WHERE id = ?3",
                 params![fmt_utc(now), fmt_utc(next), id],
             )?;
             Ok(())
         }
         other => Err(AppError::Invalid(format!("unknown schedule kind: {other}"))),
     }
+}
+
+// First failure of a run: keep the schedule active, arm a single retry at
+// now + MIN_RUN_INTERVAL_SECONDS and bump retry_count. Returns false when the
+// retry budget is spent (retry_count >= MAX_RETRIES) and the caller must flip
+// the schedule to error instead.
+fn schedule_retry(conn: &Connection, id: i64, now: DateTime<Utc>) -> Result<bool> {
+    let retry_count: i64 = conn.query_row(
+        "SELECT retry_count FROM schedules WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    if retry_count >= MAX_RETRIES {
+        return Ok(false);
+    }
+    conn.execute(
+        "UPDATE schedules SET status = 'active', next_run_at = ?1, error = NULL, retry_count = ?2 WHERE id = ?3",
+        params![
+            fmt_utc(now + chrono::Duration::seconds(MIN_RUN_INTERVAL_SECONDS)),
+            retry_count + 1,
+            id,
+        ],
+    )?;
+    Ok(true)
 }
 
 fn execute_due(
@@ -578,17 +622,24 @@ fn execute_due(
     notifier: &dyn Notifier,
     runner: &dyn SessionRunner,
 ) -> Result<bool> {
-    // A failed firing flips the schedule to error with the message (SPEC 5.3
-    // lifecycle) instead of retrying every tick; the pass continues.
+    // A failed run gets exactly one retry after MIN_RUN_INTERVAL_SECONDS
+    // (SPEC 5.3 lifecycle); the second failure flips the schedule to error
+    // with the message, so the pass never retries every tick.
     match fire_due(conn, id, now, notifier, runner) {
         Ok(()) => {}
-        Err(e) => mark_error(conn, id, &e.to_string())?,
+        Err(e) => {
+            if !schedule_retry(conn, id, now)? {
+                mark_error(conn, id, &e.to_string())?;
+            }
+        }
     }
     Ok(true)
 }
 
-// One scheduler pass: fire every active schedule whose next_run_at is due.
-// `now` is injected so tests never wait. A failing schedule flips to
+// One scheduler pass: fire every active schedule whose next_run_at is due,
+// skipping any whose last run started within MIN_RUN_INTERVAL_SECONDS (storm
+// guard). `now` is injected so tests never wait. A failing run is retried
+// once after MIN_RUN_INTERVAL_SECONDS; the second failure flips it to
 // status='error' with the message; the pass continues with the others.
 // Returns whether anything fired (the caller emits "schedules-changed" and
 // "sessions-changed": a fire touches the session's last_active_at and can
@@ -993,7 +1044,7 @@ mod tests {
     }
 
     #[test]
-    fn failing_runs_set_status_error_with_the_message() {
+    fn failing_runs_retry_once_and_the_second_failure_sets_status_error() {
         let conn = setup();
         let session = create_session_row(&conn);
         let now = utc("2026-10-16T08:00:00Z");
@@ -1026,9 +1077,28 @@ mod tests {
         )
         .unwrap();
 
+        // First failure: the retry budget arms one retry at now + 60 s.
         let fired = tick(
             &conn,
             utc("2026-10-16T11:00:00Z"),
+            &RecordingNotifier::failing(),
+            &RecordingRunner::failing(),
+        )
+        .unwrap();
+        assert!(fired);
+        for id in [run_at.id, notify.id] {
+            let s = schedule_dto(&conn, id).unwrap();
+            assert_eq!((s.status.as_str(), s.next_run_at.as_deref()), ("active", Some("2026-10-16T11:01:00Z")));
+            let retry_count: i64 = conn
+                .query_row("SELECT retry_count FROM schedules WHERE id = ?1", params![id], |r| r.get(0))
+                .unwrap();
+            assert_eq!(retry_count, 1);
+        }
+
+        // Second failure at the retry instant: status=error with the message.
+        let fired = tick(
+            &conn,
+            utc("2026-10-16T11:01:00Z"),
             &RecordingNotifier::failing(),
             &RecordingRunner::failing(),
         )
@@ -1040,6 +1110,150 @@ mod tests {
         let s = schedule_dto(&conn, notify.id).unwrap();
         assert_eq!(s.status, "error");
         assert!(s.error.as_deref().unwrap().contains("boom"));
+    }
+
+    #[test]
+    fn rate_limit_skips_a_schedule_that_fired_within_the_last_minute() {
+        let conn = setup();
+        let session = create_session_row(&conn);
+        let cron = create(
+            &conn,
+            &CreateIn {
+                kind: "cron",
+                spec: "0 10 * * *",
+                prompt: Some("daily"),
+                timezone: Some("Europe/Moscow"),
+                session_id: Some(session),
+                related_task_id: None, title: None,
+            },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+
+        let runner = RecordingRunner::new();
+        let fired = tick(
+            &conn,
+            utc("2026-10-17T09:00:00Z"),
+            &RecordingNotifier::new(),
+            &runner,
+        )
+        .unwrap();
+        assert!(fired);
+        assert_eq!(runner.runs.lock().unwrap().len(), 1);
+
+        // next_run_at says due, but the last run was 30 s ago: the tick must
+        // not re-fire (a bad spec or manual edit cannot start a run storm).
+        conn.execute(
+            "UPDATE schedules SET next_run_at = '2026-10-17T09:00:00Z' WHERE id = ?1",
+            params![cron.id],
+        )
+        .unwrap();
+        let fired = tick(
+            &conn,
+            utc("2026-10-17T09:00:30Z"),
+            &RecordingNotifier::new(),
+            &runner,
+        )
+        .unwrap();
+        assert!(!fired, "rate-limited schedule fired inside the 60 s window");
+        assert_eq!(runner.runs.lock().unwrap().len(), 1);
+
+        // Past the window the same due schedule fires again (at exactly the
+        // 60 s boundary the run is allowed).
+        conn.execute(
+            "UPDATE schedules SET next_run_at = '2026-10-17T09:01:00Z' WHERE id = ?1",
+            params![cron.id],
+        )
+        .unwrap();
+        let fired = tick(
+            &conn,
+            utc("2026-10-17T09:01:00Z"),
+            &RecordingNotifier::new(),
+            &runner,
+        )
+        .unwrap();
+        assert!(fired);
+        assert_eq!(runner.runs.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_successful_run_resets_the_retry_counter() {
+        let conn = setup();
+        let session = create_session_row(&conn);
+        let cron = create(
+            &conn,
+            &CreateIn {
+                kind: "cron",
+                spec: "0 10 * * *",
+                prompt: Some("daily"),
+                timezone: Some("Europe/Moscow"),
+                session_id: Some(session),
+                related_task_id: None, title: None,
+            },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE schedules SET retry_count = 1, next_run_at = '2026-10-17T09:00:00Z' WHERE id = ?1",
+            params![cron.id],
+        )
+        .unwrap();
+
+        let fired = tick(
+            &conn,
+            utc("2026-10-17T09:00:00Z"),
+            &RecordingNotifier::new(),
+            &RecordingRunner::new(),
+        )
+        .unwrap();
+        assert!(fired);
+        let retry_count: i64 = conn
+            .query_row("SELECT retry_count FROM schedules WHERE id = ?1", params![cron.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(retry_count, 0);
+        let s = schedule_dto(&conn, cron.id).unwrap();
+        assert_eq!((s.status.as_str(), s.next_run_at.as_deref()), ("active", Some("2026-10-18T07:00:00Z")));
+    }
+
+    #[test]
+    fn a_successful_one_shot_run_resets_the_retry_counter() {
+        let conn = setup();
+        let session = create_session_row(&conn);
+        let run_at = create(
+            &conn,
+            &CreateIn {
+                kind: "run_at",
+                spec: "2026-10-16T10:00:00",
+                prompt: Some("go"),
+                timezone: Some("Europe/Moscow"),
+                session_id: Some(session),
+                related_task_id: None, title: None,
+            },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE schedules SET retry_count = 1 WHERE id = ?1",
+            params![run_at.id],
+        )
+        .unwrap();
+
+        let fired = tick(
+            &conn,
+            utc("2026-10-16T11:00:00Z"),
+            &RecordingNotifier::new(),
+            &RecordingRunner::new(),
+        )
+        .unwrap();
+        assert!(fired);
+        let (status, retry_count): (String, i64) = conn
+            .query_row(
+                "SELECT status, retry_count FROM schedules WHERE id = ?1",
+                params![run_at.id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((status.as_str(), retry_count), ("done", 0));
     }
 
     #[test]

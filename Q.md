@@ -42,7 +42,6 @@
 ## android-harness (остаток)
 - [TODO] Undo + run inspector.
 - [TODO] Objectives (долгоживущие цели).
-- [TODO] Rate limiter/retry для расписаний.
 
 ## Прочее
 - [?] **Бэкап:** включать ли `Harness/` в архив (сейчас БД + `Projects/` + `Notes/`)?

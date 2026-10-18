@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::{params, Connection};
 
-pub const SCHEMA_VERSION: i64 = 26;
+pub const SCHEMA_VERSION: i64 = 27;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -499,6 +499,13 @@ const MIGRATION_25_RECURRENCE: &str =
 // re-run after an interrupted v26 does not re-ALTER.
 const MIGRATION_26_PINNED: &str = "ALTER TABLE messages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0";
 
+// Scheduler storm guard (SPEC 5.3): how many times a failed run was retried;
+// the engine retries once (retry_count < 1) and then flips to error. Guarded
+// per column (v14/v22 recipe) so a re-run after an interrupted v27 does not
+// re-ALTER.
+const MIGRATION_27_RETRY_COUNT: &str =
+    "ALTER TABLE schedules ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0";
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -698,6 +705,17 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         )?;
         if has_pinned == 0 {
             conn.execute(MIGRATION_26_PINNED, [])?;
+        }
+        conn.pragma_update(None, "user_version", 26)?;
+    }
+    if version < 27 {
+        let has_retry_count: i64 = conn.query_row(
+            "SELECT count(*) FROM pragma_table_info('schedules') WHERE name = 'retry_count'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_retry_count == 0 {
+            conn.execute(MIGRATION_27_RETRY_COUNT, [])?;
         }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
@@ -1868,6 +1886,50 @@ CREATE UNIQUE INDEX uniq_chats_one_project_chat ON chats(project_id) WHERE kind 
             )
             .unwrap();
         assert_eq!(has_pinned, 1);
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_v27_adds_schedule_retry_count_default_zero() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+
+        let has_retry_count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('schedules') WHERE name = 'retry_count'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_retry_count, 1);
+
+        conn.execute(
+            "INSERT INTO schedules (kind, spec, status, created_at) VALUES ('cron', '0 10 * * *', 'active', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        // NOT NULL DEFAULT backfills every existing row with 0.
+        let retry_count: i64 = conn
+            .query_row("SELECT retry_count FROM schedules WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(retry_count, 0);
+
+        // Guarded ALTER: a v26 database missing the column is repaired.
+        conn.execute("ALTER TABLE schedules DROP COLUMN retry_count", [])
+            .unwrap();
+        conn.pragma_update(None, "user_version", 26).unwrap();
+        run_migrations(&conn).unwrap();
+        let has_retry_count: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('schedules') WHERE name = 'retry_count'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_retry_count, 1);
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
     }
