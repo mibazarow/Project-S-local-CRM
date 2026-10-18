@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import type { TaskDto, TaskPatch } from "../../api/types";
 import RenameInput from "../files/RenameInput";
 import { IconCalendar, IconCheck, IconComment, IconPencil, IconTrash } from "../files/icons";
@@ -9,8 +9,7 @@ interface Props {
   task: TaskDto;
   dragging: boolean;
   highlight?: boolean;
-  onDragStart: (e: DragEvent<HTMLDivElement>) => void;
-  onDragEnd: () => void;
+  onPointerDown: (e: PointerEvent<HTMLDivElement>) => void;
   onPatch: (patch: TaskPatch) => void;
   onDelete: () => void;
 }
@@ -125,8 +124,7 @@ export default function TaskCard({
   task,
   dragging,
   highlight,
-  onDragStart,
-  onDragEnd,
+  onPointerDown,
   onPatch,
   onDelete,
 }: Props) {
@@ -174,9 +172,7 @@ export default function TaskCard({
       ref={cardRef}
       className={classes.join(" ")}
       data-id={task.id}
-      draggable={mode === null}
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
+      onPointerDown={mode === null ? onPointerDown : undefined}
     >
       {mode === "title" ? (
         <RenameInput

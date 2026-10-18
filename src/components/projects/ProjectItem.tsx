@@ -1,26 +1,22 @@
-import { useState } from "react";
+import { useState, type PointerEvent } from "react";
 import type { ProjectDto } from "../../api/types";
 
 interface Props {
   project: ProjectDto;
   active: boolean;
   dragging: boolean;
-  dropCls: string;
   onOpen: (id: number) => void;
   onRename: (id: number, newName: string) => void;
-  onDragStart: (e: React.DragEvent<HTMLDivElement>) => void;
-  onDragEnd: () => void;
+  onPointerDown: (e: PointerEvent<HTMLDivElement>) => void;
 }
 
 export default function ProjectItem({
   project,
   active,
   dragging,
-  dropCls,
   onOpen,
   onRename,
-  onDragStart,
-  onDragEnd,
+  onPointerDown,
 }: Props) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(project.name);
@@ -39,7 +35,6 @@ export default function ProjectItem({
   const classes = ["project-item"];
   if (active) classes.push("active");
   if (dragging) classes.push("dragging");
-  if (dropCls) classes.push(dropCls);
 
   return (
     <div
@@ -47,9 +42,7 @@ export default function ProjectItem({
       role="button"
       tabIndex={0}
       data-id={project.id}
-      draggable={!renaming}
-      onDragStart={onDragStart}
-      onDragEnd={onDragEnd}
+      onPointerDown={renaming ? undefined : onPointerDown}
       onClick={() => !renaming && onOpen(project.id)}
     >
       {renaming ? (
