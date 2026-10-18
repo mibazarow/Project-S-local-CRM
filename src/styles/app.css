@@ -1294,6 +1294,48 @@ body.dnd-active .project-item, body.dnd-active .task-card { cursor: grabbing; }
 .notes-editor-body .preview-body { flex: 1; overflow: auto; }
 .notes-editor-body .preview-textarea { flex: 1; min-height: 0; resize: none; }
 
+/* Блочный live-редактор заметок */
+.notes-md-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 6px 18px;
+  border-bottom: 1px solid var(--hairline);
+}
+.notes-md-toolbar .ghost-btn { padding: 3px 8px; font-size: 11.5px; min-width: 28px; }
+.notes-md-toolbar .tb-bold { font-weight: 700; }
+.notes-md-toolbar .tb-italic { font-style: italic; }
+.notes-md-toolbar .tb-under { text-decoration: underline; }
+.notes-md-toolbar .tb-strike { text-decoration: line-through; }
+
+.notes-save-state { font-size: 11.5px; color: var(--text-muted); align-self: center; }
+.notes-save-state.dirty { color: var(--warn); }
+
+.notes-blocks { overflow-y: auto; padding: 10px 14px 30px; gap: 2px; }
+.md-block { flex: none; border: 1px solid transparent; border-radius: 7px; cursor: text; }
+.md-block:hover { border-color: var(--border); background: var(--surface-2); }
+.md-block .preview-body { padding: 6px 10px; }
+.md-block-add { min-height: 30px; }
+.md-block-add:hover { border-color: var(--border-strong); background: none; }
+.md-block-textarea {
+  flex: none;
+  display: block;
+  width: 100%;
+  min-height: 64px;
+  resize: none;
+  overflow: hidden;
+  border: 1px solid var(--accent);
+  border-radius: 7px;
+  background: var(--surface);
+  padding: 6px 10px;
+  color: var(--text);
+  outline: none;
+  font-family: var(--font);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
 /* ---------- «Открыть с помощью…» ---------- */
 
 .open-with-modal { width: 420px; }

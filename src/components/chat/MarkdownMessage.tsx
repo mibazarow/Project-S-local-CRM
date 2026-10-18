@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
-import { marked } from "marked";
-import DOMPurify from "dompurify";
+import { renderMarkdown } from "../shared/markdown";
 
 const COPIED_MS = 1500;
 
@@ -76,7 +75,7 @@ function decorateCodeBlocks(html: string): string {
 // marked, so partial markdown never breaks the bubble.
 export function MarkdownMessage({ text }: { text: string }) {
   const html = useMemo(
-    () => decorateCodeBlocks(DOMPurify.sanitize(marked.parse(text, { async: false, breaks: true }))),
+    () => decorateCodeBlocks(renderMarkdown(text, { breaks: true })),
     [text],
   );
   const [copied, setCopied] = useState(false);
