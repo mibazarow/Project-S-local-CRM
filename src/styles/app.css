@@ -1202,8 +1202,14 @@ body.dnd-active .project-item, body.dnd-active .task-card { cursor: grabbing; }
   padding: 2px 8px;
   overflow-wrap: anywhere;
 }
-.mcp-guide { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
-.mcp-guide summary {
+/* Корзина и история версий (SPEC trash/versions slice) */
+.skill-item .item-actions, .skill-item .version-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.ghost-btn.danger { color: var(--danger); }
+.ghost-btn.danger:hover { background: rgba(255, 59, 48, .08); border-color: rgba(255, 59, 48, .4); }
+.version-modal { width: 460px; }
+.version-list { max-height: 320px; overflow-y: auto; }
+.version-path { font-family: ui-monospace, 'SF Mono', Menlo, monospace; overflow-wrap: anywhere; }
+.mcp-guide { border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }.mcp-guide summary {
   cursor: pointer;
   font-size: 12.5px;
   font-weight: 500;

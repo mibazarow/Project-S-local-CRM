@@ -12,6 +12,7 @@ import {
   renderMarkdown,
   splitMarkdownBlocks,
 } from "../shared/markdown";
+import VersionHistory from "../shared/VersionHistory";
 import { toMessage } from "../chat/chatShared";
 
 interface Props {
@@ -59,6 +60,8 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
   const [savedFlash, setSavedFlash] = useState(false);
   const [active, setActive] = useState<number | null>(null);
   const [draft, setDraft] = useState("");
+  const [historyAbs, setHistoryAbs] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
   const blockTaRef = useRef<HTMLTextAreaElement | null>(null);
   const sourceTaRef = useRef<HTMLTextAreaElement | null>(null);
   const pendingCaret = useRef<number | null>(null);
@@ -92,7 +95,7 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [entry?.relPath]);
+  }, [entry?.relPath, reloadTick]);
 
   useEffect(() => {
     onDirtyChange(entry != null && text !== saved);
@@ -116,6 +119,26 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
     }, AUTOSAVE_MS);
     return () => clearTimeout(timer);
   }, [entry?.relPath, text, saved]);
+
+  // Version snapshots are keyed by the absolute vault path; notesEnsure returns
+  // the Notes/ root, joined with the vault-relative path of the open note.
+  const openHistory = async () => {
+    if (!entry) return;
+    try {
+      const dir = await ipc.notesEnsure();
+      setHistoryAbs(`${dir}/${entry.relPath}`);
+    } catch (e) {
+      setError(toMessage(e));
+    }
+  };
+
+  // notes_write snapshots the pre-restore content itself, so the current text
+  // is kept as a new version; reload the note from disk afterwards.
+  const restoreVersion = async (content: string) => {
+    if (!entry) return;
+    await ipc.notesWrite(entry.relPath, content);
+    setReloadTick((t) => t + 1);
+  };
 
   const blocks = useMemo(
     () => (entry?.isMarkdown ? splitMarkdownBlocks(text) : []),
@@ -281,6 +304,11 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
                 {mode === "edit" ? "Готово" : "Редактировать"}
               </button>
             )}
+            {(entry.isMarkdown || entry.isText) && (
+              <button className="ghost-btn small" onClick={() => void openHistory()}>
+                История версий
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -363,6 +391,14 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
             />
           )}
         </div>
+      )}
+      {historyAbs !== null && entry && (
+        <VersionHistory
+          scope="notes"
+          absPath={historyAbs}
+          onRestore={restoreVersion}
+          onClose={() => setHistoryAbs(null)}
+        />
       )}
     </section>
   );

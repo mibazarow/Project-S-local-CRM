@@ -138,6 +138,10 @@ export interface AppConfig {
   tmpRetentionDays: number;
   logRetentionDays: number;
   autostart: boolean;
+  // Automatic backup interval in days (SPEC 3.6); 0 disables auto-backup.
+  backupIntervalDays: number;
+  // How many newest backups auto-backup retention keeps (SPEC 3.6).
+  backupKeep: number;
 }
 
 // ops::BackupInfo — result of create_backup.
@@ -145,6 +149,64 @@ export interface BackupInfo {
   path: string;
   entries: number;
   bytes: number;
+}
+
+// ops::BackupStatus — snapshot of the auto-backup state (backup_status).
+// lastBackupAt is RFC3339 UTC; due means a backup is overdue right now.
+export interface BackupStatus {
+  lastBackupAt: string | null;
+  intervalDays: number;
+  keep: number;
+  count: number;
+  due: boolean;
+}
+
+// reliability::TrashDto — one row of trash_list. kind is "file" | "dir" |
+// "task"; scope is "project" | "notes" | "harness". storedPath is empty for
+// task snapshots (the whole item lives in `meta`).
+export interface TrashDto {
+  id: number;
+  scope: string;
+  kind: string;
+  originalPath: string;
+  storedPath: string;
+  name: string;
+  deletedAt: string;
+  meta: string | null;
+  // Filled only when a restored task is returned, so callers can refresh the
+  // owning project's board.
+  projectId?: number | null;
+}
+
+// reliability::VersionDto — one snapshot row of version_list (keyed by the
+// absolute path of the file).
+export interface VersionDto {
+  id: number;
+  scope: string;
+  path: string;
+  bytes: number;
+  createdAt: string;
+}
+
+// reliability::VersionRestoreDto — result of version_restore; the caller
+// writes `content` back through the scope's own write command.
+export interface VersionRestoreDto {
+  id: number;
+  scope: string;
+  path: string;
+  content: string;
+}
+
+// lib.rs TrashChanged — payload of the "trash-changed" event.
+export interface TrashChanged {
+  id: number | null;
+}
+
+// lib.rs VersionsChanged — payload of the "versions-changed" event, keyed by
+// the same (scope, absolute path) pair as version_list.
+export interface VersionsChanged {
+  scope: string;
+  path: string;
 }
 
 // ops::TmpStats — result of clear_tmp.

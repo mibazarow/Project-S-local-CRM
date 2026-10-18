@@ -10,6 +10,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import * as ipc from "../api/ipc";
 import type {
   AppConfig,
+  BackupStatus,
   ConnectionTest,
   EmbedStatus,
   ImportResult,
@@ -17,6 +18,7 @@ import type {
   LlmConfig,
   McpServerStatus,
   SkillInfo,
+  TrashDto,
   VisionStatus,
 } from "../api/types";
 
@@ -70,6 +72,17 @@ function fmtMb(bytes: number): string {
   return (bytes / MB).toFixed(1);
 }
 
+// RFC3339 UTC (backup_status.lastBackupAt) → local, human-readable.
+function fmtRfc(s: string): string {
+  const d = new Date(s);
+  return Number.isNaN(d.getTime()) ? s : d.toLocaleString("ru-RU");
+}
+
+// SQLite "YYYY-MM-DD HH:MM:SS" (localtime, trash deleted_at) → drop seconds.
+function fmtLocal(s: string): string {
+  return s.length >= 16 ? s.slice(0, 16) : s;
+}
+
 function visionLabel(v: VisionStatus | null): string {
   if (!v || v.supported == null) return "Не проверено";
   return v.supported ? "Поддерживается" : "Не поддерживается";
@@ -82,6 +95,8 @@ interface AppForm {
   sessionTtlDays: string;
   tmpRetentionDays: string;
   logRetentionDays: string;
+  backupIntervalDays: string;
+  backupKeep: string;
 }
 
 function toAppForm(cfg: Partial<AppConfig>): AppForm {
@@ -90,6 +105,8 @@ function toAppForm(cfg: Partial<AppConfig>): AppForm {
     sessionTtlDays: String(cfg.sessionTtlDays ?? 30),
     tmpRetentionDays: String(cfg.tmpRetentionDays ?? 7),
     logRetentionDays: String(cfg.logRetentionDays ?? 14),
+    backupIntervalDays: String(cfg.backupIntervalDays ?? 1),
+    backupKeep: String(cfg.backupKeep ?? 7),
   };
 }
 
@@ -318,6 +335,10 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [tmpNote, setTmpNote] = useState<string | null>(null);
   const [backupBusy, setBackupBusy] = useState(false);
   const [backupNote, setBackupNote] = useState<string | null>(null);
+  const [backupStatus, setBackupStatus] = useState<BackupStatus | null>(null);
+  const [trash, setTrash] = useState<TrashDto[] | null>(null);
+  const [trashError, setTrashError] = useState<string | null>(null);
+  const [trashBusyId, setTrashBusyId] = useState<number | null>(null);
 
   const [skills, setSkills] = useState<SkillInfo[] | null>(null);
   const [skillsError, setSkillsError] = useState<string | null>(null);
@@ -511,6 +532,10 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     if (tmpDays !== null) patch.tmpRetentionDays = Math.max(0, Math.round(tmpDays));
     const logDays = parseNum(f.logRetentionDays);
     if (logDays !== null) patch.logRetentionDays = Math.max(0, Math.round(logDays));
+    const bInterval = parseNum(f.backupIntervalDays);
+    if (bInterval !== null) patch.backupIntervalDays = Math.max(0, Math.round(bInterval));
+    const bKeep = parseNum(f.backupKeep);
+    if (bKeep !== null) patch.backupKeep = Math.max(0, Math.round(bKeep));
     void ipc.writeConfig("app", patch).catch((e) => setError(errMsg(e)));
   }, []);
 
@@ -616,6 +641,23 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
       .catch((e) => setMcpError(errMsg(e)));
   }, []);
 
+  const loadBackupStatus = useCallback(() => {
+    void ipc
+      .backupStatus()
+      .then(setBackupStatus)
+      .catch(() => setBackupStatus(null));
+  }, []);
+
+  const loadTrash = useCallback(() => {
+    void ipc
+      .trashList()
+      .then((rows) => {
+        setTrash(rows);
+        setTrashError(null);
+      })
+      .catch((e) => setTrashError(errMsg(e)));
+  }, []);
+
   useEffect(() => {
     void ipc.getWorkingDir().then(setWorkingDir).catch(() => setWorkingDir(null));
     void ipc.configDirPath().then(setConfigDir).catch(() => setConfigDir(""));
@@ -628,6 +670,8 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     void ipc.getAutostart().then(setAutostart).catch(() => setAutostart(null));
     loadSkills();
     loadMcp();
+    loadBackupStatus();
+    loadTrash();
 
     let cancelled = false;
     const unlisteners: (() => void)[] = [];
@@ -639,9 +683,13 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
         else if (which === "llm") {
           reloadLlmConfig();
           loadVision();
-        } else if (which === "app") reloadAppConfig();
+        } else if (which === "app") {
+          reloadAppConfig();
+          loadBackupStatus();
+        }
       }),
     );
+    track(ipc.onTrashChanged(() => loadTrash()));
     track(
       ipc.onIndexChanged(({ stats }) =>
         setReindexNote(
@@ -670,6 +718,8 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     flushAppSave,
     loadSkills,
     loadMcp,
+    loadBackupStatus,
+    loadTrash,
   ]);
 
   const reindex = () => {
@@ -708,13 +758,35 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     setBackupNote(null);
     void ipc
       .createBackup()
-      .then((b) =>
+      .then((b) => {
         setBackupNote(
           `Готово: ${b.path} · файлов ${b.entries} · ${fmtMb(b.bytes)} МБ`,
-        ),
-      )
+        );
+        loadBackupStatus();
+      })
       .catch((e) => setError(errMsg(e)))
       .finally(() => setBackupBusy(false));
+  };
+
+  // Trash restore/purge emit trash-changed, which reloads the list; the busy id
+  // only guards the button while the call is in flight.
+  const restoreTrash = (id: number) => {
+    setTrashBusyId(id);
+    setTrashError(null);
+    void ipc
+      .trashRestore(id)
+      .catch((e) => setTrashError(errMsg(e)))
+      .finally(() => setTrashBusyId(null));
+  };
+
+  const purgeTrash = (id: number, name: string) => {
+    if (!window.confirm(`Удалить «${name}» навсегда? Это действие необратимо.`)) return;
+    setTrashBusyId(id);
+    setTrashError(null);
+    void ipc
+      .trashPurge(id)
+      .catch((e) => setTrashError(errMsg(e)))
+      .finally(() => setTrashBusyId(null));
   };
 
   const toggleAutostart = (enabled: boolean) => {
@@ -1685,6 +1757,46 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                   Записи журнала старше этого срока удаляются при запуске. 0 — не удалять.
                 </div>
               </div>
+              <div className="schedule-group-title">Резервные копии</div>
+              <div className="set-row">
+                <label>Интервал автокопий, дней</label>
+                <input
+                  className="narrow"
+                  type="text"
+                  inputMode="numeric"
+                  value={appForm?.backupIntervalDays ?? ""}
+                  onChange={(e) => updateAppForm({ backupIntervalDays: e.target.value })}
+                  onFocus={focusAppField("backupIntervalDays")}
+                  onBlur={blurAppField}
+                />
+                <div className="set-hint">Каждые N дней при запуске создаётся копия. 0 — выключено.</div>
+              </div>
+              <div className="set-row">
+                <label>Хранить копий</label>
+                <input
+                  className="narrow"
+                  type="text"
+                  inputMode="numeric"
+                  value={appForm?.backupKeep ?? ""}
+                  onChange={(e) => updateAppForm({ backupKeep: e.target.value })}
+                  onFocus={focusAppField("backupKeep")}
+                  onBlur={blurAppField}
+                />
+                <div className="set-hint">Сколько последних копий остаётся на диске. 0 — одна.</div>
+              </div>
+              <div className="set-hint">
+                {backupStatus === null
+                  ? "Статус резервных копий недоступен."
+                  : `Последняя: ${
+                      backupStatus.lastBackupAt ? fmtRfc(backupStatus.lastBackupAt) : "ещё не делалась"
+                    } · на диске: ${backupStatus.count} · ${
+                      backupStatus.intervalDays === 0
+                        ? "автовыключено"
+                        : backupStatus.due
+                          ? "пора сделать сейчас"
+                          : `авто: каждые ${backupStatus.intervalDays} дн.`
+                    }`}
+              </div>
               <div className="llm-actions">
                 <button className="ghost-btn" disabled={tmpBusy} onClick={clearTmp}>
                   {tmpBusy ? "Очистка…" : "Очистить Harness/tmp"}
@@ -1712,6 +1824,46 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                 macOS LaunchAgent, чтобы расписания работали без открытого окна. По умолчанию
                 выключено.
               </div>
+              <div className="schedule-group-title">Корзина</div>
+              <div className="set-hint">
+                Удалённые файлы, папки и задачи попадают в корзину и хранятся 30 дней.
+              </div>
+              {trash === null ? (
+                <div className="set-hint">Загрузка…</div>
+              ) : trash.length === 0 ? (
+                <div className="set-hint">Корзина пуста.</div>
+              ) : (
+                <div className="skill-list">
+                  {trash.map((t) => (
+                    <div key={t.id} className="skill-item">
+                      <div className="info">
+                        <div className="t">{t.name || "(без имени)"}</div>
+                        <div className="c">{t.originalPath}</div>
+                        <div className="c">удалено {fmtLocal(t.deletedAt)}</div>
+                      </div>
+                      <span className="badge">{t.kind}</span>
+                      <span className="badge st-disabled">{t.scope}</span>
+                      <span className="item-actions">
+                        <button
+                          className="ghost-btn small"
+                          disabled={trashBusyId !== null}
+                          onClick={() => restoreTrash(t.id)}
+                        >
+                          {trashBusyId === t.id ? "…" : "Восстановить"}
+                        </button>
+                        <button
+                          className="ghost-btn small danger"
+                          disabled={trashBusyId !== null}
+                          onClick={() => purgeTrash(t.id, t.name)}
+                        >
+                          Удалить навсегда
+                        </button>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {trashError && <div className="set-error">{trashError}</div>}
               {error && <div className="set-error">{error}</div>}
             </>
           )}

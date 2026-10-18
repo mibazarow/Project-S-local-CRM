@@ -5,6 +5,7 @@ import type {
   AgentFileEvent,
   AttachmentDto,
   BackupInfo,
+  BackupStatus,
   ChatHit,
   ConfigChanged,
   ConfigKind,
@@ -37,7 +38,12 @@ import type {
   TasksChanged,
   TodoDto,
   TodosChanged,
+  TrashChanged,
+  TrashDto,
   TmpStats,
+  VersionDto,
+  VersionRestoreDto,
+  VersionsChanged,
   VisionStatus,
   WorkingDirInfo,
 } from "./types";
@@ -71,6 +77,22 @@ export const backupsDir = () => invoke<string>("backups_dir");
 export const getAutostart = () => invoke<boolean>("get_autostart");
 
 export const setAutostart = (enabled: boolean) => invoke<boolean>("set_autostart", { enabled });
+
+export const backupStatus = () => invoke<BackupStatus>("backup_status");
+
+// Trash and version history (SPEC trash/versions slice). version_list/restore
+// are keyed by (scope, absolute path); restore returns the stored content and
+// the caller writes it back through the scope's own write command.
+export const trashList = () => invoke<TrashDto[]>("trash_list");
+
+export const trashRestore = (id: number) => invoke<TrashDto>("trash_restore", { id });
+
+export const trashPurge = (id: number) => invoke<void>("trash_purge", { id });
+
+export const versionList = (scope: string, path: string) =>
+  invoke<VersionDto[]>("version_list", { scope, path });
+
+export const versionRestore = (id: number) => invoke<VersionRestoreDto>("version_restore", { id });
 
 export const listProjects = () => invoke<ProjectDto[]>("list_projects");
 
@@ -442,3 +464,12 @@ export const onTodosChanged = (handler: (payload: TodosChanged) => void) =>
 // Emitted by the notes_* mutation commands after a note or folder changed.
 export const onNotesChanged = (handler: (payload: NotesChanged) => void) =>
   listen<NotesChanged>("notes-changed", (e) => handler(e.payload));
+
+// Emitted after any trash mutation (delete/restore/purge); refresh trash lists.
+export const onTrashChanged = (handler: (payload: TrashChanged) => void) =>
+  listen<TrashChanged>("trash-changed", (e) => handler(e.payload));
+
+// Emitted after a version snapshot is taken for (scope, absolute path); the
+// version-history panel reloads when its own key matches.
+export const onVersionsChanged = (handler: (payload: VersionsChanged) => void) =>
+  listen<VersionsChanged>("versions-changed", (e) => handler(e.payload));

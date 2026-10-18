@@ -6,6 +6,7 @@ import type { FsEntry } from "../../api/types";
 import { toMessage } from "./fileOps";
 import { useOpenWith } from "./useOpenWith";
 import { IconClose } from "./icons";
+import VersionHistory from "../shared/VersionHistory";
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 
@@ -25,6 +26,8 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
   const [text, setText] = useState("");
   const [saved, setSaved] = useState("");
   const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [historyAbs, setHistoryAbs] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -61,7 +64,7 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
     return () => {
       cancelled = true;
     };
-  }, [projectId, entry.relPath, entry.isImage, entry.isMarkdown, entry.isText, entry.size]);
+  }, [projectId, entry.relPath, entry.isImage, entry.isMarkdown, entry.isText, entry.size, reloadTick]);
 
   useEffect(() => {
     onDirtyChange(isTextual && mode === "edit" && text !== saved);
@@ -86,6 +89,22 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
     }
   };
 
+  // Version snapshots are keyed by the absolute path, so resolve the project
+  // root and join the project-relative path before opening the panel.
+  const openHistory = async () => {
+    try {
+      const root = await ipc.projectPath(projectId);
+      setHistoryAbs(`${root}/${entry.relPath}`);
+    } catch (e) {
+      setError(toMessage(e));
+    }
+  };
+
+  const restoreVersion = async (content: string) => {
+    await ipc.fsWriteText(projectId, entry.relPath, content);
+    setReloadTick((t) => t + 1);
+  };
+
   const shownError = error ?? ow.error;
 
   return (
@@ -99,6 +118,11 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
               onClick={() => (mode === "view" ? setMode("edit") : void save())}
             >
               {mode === "view" ? "Редактировать" : "Готово"}
+            </button>
+          )}
+          {isTextual && (
+            <button className="ghost-btn small" onClick={() => void openHistory()}>
+              История версий
             </button>
           )}
           {!isTextual && !entry.isImage && (
@@ -137,6 +161,14 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
         <pre className="preview-body">{text}</pre>
       )}
       {ow.dialog}
+      {historyAbs !== null && (
+        <VersionHistory
+          scope="project"
+          absPath={historyAbs}
+          onRestore={restoreVersion}
+          onClose={() => setHistoryAbs(null)}
+        />
+      )}
     </div>
   );
 }
