@@ -1,9 +1,37 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
-import type { TaskDto, TaskPatch } from "../../api/types";
+import type { ChecklistItem, TaskDto, TaskPatch } from "../../api/types";
 import RenameInput from "../files/RenameInput";
-import { IconCalendar, IconCheck, IconComment, IconPencil, IconTrash } from "../files/icons";
+import {
+  IconCalendar,
+  IconCheck,
+  IconClose,
+  IconComment,
+  IconList,
+  IconPencil,
+  IconPlus,
+  IconRepeat,
+  IconTrash,
+} from "../files/icons";
 
-type Mode = "title" | "comment" | "due" | null;
+type Mode = "title" | "comment" | "due" | "details" | null;
+
+const PRIORITIES = [
+  { value: "low", label: "низкий" },
+  { value: "normal", label: "обычный" },
+  { value: "high", label: "высокий" },
+  { value: "urgent", label: "срочный" },
+];
+
+const RECURRENCES = [
+  { value: "none", label: "нет" },
+  { value: "daily", label: "ежедневно" },
+  { value: "weekly", label: "еженедельно" },
+  { value: "monthly", label: "ежемесячно" },
+];
+
+const RECURRENCE_LABEL: Record<string, string> = Object.fromEntries(
+  RECURRENCES.map((r) => [r.value, r.label]),
+);
 
 interface Props {
   task: TaskDto;
@@ -120,6 +148,127 @@ function DueEditor({
   );
 }
 
+function TaskDetails({
+  task,
+  onPatch,
+  onCancel,
+}: {
+  task: TaskDto;
+  onPatch: (patch: TaskPatch) => void;
+  onCancel: () => void;
+}) {
+  const [newItem, setNewItem] = useState("");
+  const [tagsDraft, setTagsDraft] = useState(task.tags.join(", "));
+
+  const setChecklist = (items: ChecklistItem[]) => onPatch({ checklist: items });
+
+  const addItem = () => {
+    const text = newItem.trim();
+    if (!text) return;
+    setNewItem("");
+    setChecklist([...task.checklist, { text, done: false }]);
+  };
+
+  const commitTags = () => {
+    const tags = tagsDraft.split(",").map((t) => t.trim()).filter(Boolean);
+    if (tags.join("\u0000") !== task.tags.join("\u0000")) onPatch({ tags });
+  };
+
+  const onKey = (e: KeyboardEvent) => {
+    if (e.key === "Escape") onCancel();
+  };
+
+  return (
+    <div
+      className="task-details"
+      onMouseDown={(e) => e.stopPropagation()}
+      onKeyDown={onKey}
+    >
+      <div className="td-row">
+        <label>
+          Приоритет
+          <select
+            value={task.priority}
+            onChange={(e) => onPatch({ priority: e.target.value })}
+          >
+            {PRIORITIES.map((p) => (
+              <option key={p.value} value={p.value}>
+                {p.label}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Повтор
+          <select
+            value={task.recurrence}
+            onChange={(e) => onPatch({ recurrence: e.target.value })}
+          >
+            {RECURRENCES.map((r) => (
+              <option key={r.value} value={r.value}>
+                {r.label}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="td-checklist">
+        {task.checklist.map((item, i) => (
+          <div key={i} className="td-check-row">
+            <input
+              type="checkbox"
+              checked={item.done}
+              onChange={() =>
+                setChecklist(
+                  task.checklist.map((x, j) => (j === i ? { ...x, done: !x.done } : x)),
+                )
+              }
+            />
+            <span className={item.done ? "strikethrough" : undefined}>{item.text}</span>
+            <button
+              className="mini-btn danger"
+              title="Удалить пункт"
+              onClick={() => setChecklist(task.checklist.filter((_, j) => j !== i))}
+            >
+              <IconClose />
+            </button>
+          </div>
+        ))}
+        <div className="td-check-add">
+          <input
+            className="rename-input"
+            placeholder="Новый пункт…"
+            value={newItem}
+            onChange={(e) => setNewItem(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                addItem();
+              }
+            }}
+          />
+          <button className="mini-btn" title="Добавить пункт" onClick={addItem}>
+            <IconPlus />
+          </button>
+        </div>
+      </div>
+      <input
+        className="rename-input td-tags"
+        placeholder="Теги через запятую…"
+        value={tagsDraft}
+        onChange={(e) => setTagsDraft(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commitTags();
+          }
+        }}
+        onBlur={commitTags}
+      />
+    </div>
+  );
+}
+
 export default function TaskCard({
   task,
   dragging,
@@ -135,7 +284,7 @@ export default function TaskCard({
     if (highlight) cardRef.current?.scrollIntoView({ block: "center" });
   }, [highlight]);
 
-  const classes = ["task-card"];
+  const classes = ["task-card", `prio-${task.priority}`];
   if (task.status === "done") classes.push("done");
   if (task.overdue) classes.push("overdue");
   if (dragging) classes.push("dragging");
@@ -185,8 +334,18 @@ export default function TaskCard({
           {task.title}
         </div>
       )}
-      {task.dueDate && (
-        <div className={task.overdue ? "m red" : "m"}>{formatDue(task.dueDate)}</div>
+      {(task.dueDate || task.recurrence !== "none") && (
+        <div className="m">
+          {task.dueDate && (
+            <span className={task.overdue ? "red" : undefined}>{formatDue(task.dueDate)}</span>
+          )}
+          {task.recurrence !== "none" && (
+            <span className="rec" title="Повторяющаяся задача">
+              <IconRepeat />
+              {RECURRENCE_LABEL[task.recurrence] ?? task.recurrence}
+            </span>
+          )}
+        </div>
       )}
       {mode === "due" && (
         <DueEditor
@@ -203,6 +362,23 @@ export default function TaskCard({
           onCommit={commitComment}
           onCancel={() => setMode(null)}
         />
+      )}
+      {task.checklist.length > 0 &&
+        (() => {
+          const doneCount = task.checklist.filter((i) => i.done).length;
+          return (
+            <div className="check-progress" title="Чек-лист">
+              <span className="check-count">
+                {doneCount}/{task.checklist.length}
+              </span>
+              <span className="check-bar">
+                <i style={{ width: `${(doneCount / task.checklist.length) * 100}%` }} />
+              </span>
+            </div>
+          );
+        })()}
+      {mode === "details" && (
+        <TaskDetails task={task} onPatch={onPatch} onCancel={() => setMode(null)} />
       )}
       {task.tags.length > 0 && (
         <div className="tags">
@@ -243,6 +419,16 @@ export default function TaskCard({
           }}
         >
           <IconCalendar />
+        </button>
+        <button
+          className="mini-btn"
+          title="Приоритет, повтор, чек-лист, теги"
+          onClick={(e) => {
+            e.stopPropagation();
+            setMode("details");
+          }}
+        >
+          <IconList />
         </button>
         <button
           className="mini-btn danger"

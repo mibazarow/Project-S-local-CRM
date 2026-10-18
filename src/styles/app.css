@@ -381,6 +381,48 @@ body.dnd-active .project-item, body.dnd-active .task-card { cursor: grabbing; }
 .task-due-row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
 .task-due-row .rename-input { font-size: 11px; padding: 2px 4px; }
 
+/* ---------- Приоритет, чек-лист, повтор на карточке ---------- */
+
+.task-card::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: transparent; }
+.task-card.prio-low::before { background: #a9a9b0; }
+.task-card.prio-normal::before { background: var(--accent); }
+.task-card.prio-high::before { background: var(--warn); }
+.task-card.prio-urgent::before { background: var(--danger); }
+.task-card .m span.red { color: #ff3b30; font-weight: 600; }
+.task-card .m .rec { display: inline-flex; align-items: center; gap: 4px; }
+.task-card .check-progress { display: flex; align-items: center; gap: 6px; margin-top: 7px; }
+.task-card .check-count { font-size: 10.5px; color: var(--text-muted); flex-shrink: 0; }
+.task-card .check-bar { flex: 1; height: 3px; border-radius: 2px; background: #e4e4e9; overflow: hidden; }
+.task-card .check-bar i { display: block; height: 100%; background: var(--ok); border-radius: 2px; }
+
+/* ---------- Редактор деталей задачи ---------- */
+
+.task-details { display: flex; flex-direction: column; gap: 8px; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--hairline); }
+.task-details .td-row { display: flex; gap: 12px; }
+.task-details label { display: flex; flex-direction: column; gap: 3px; font-size: 10.5px; color: var(--text-muted); }
+.task-details select { border: 1px solid var(--border-strong); border-radius: 6px; padding: 3px 6px; font-size: 11.5px; background: #fff; color: var(--text); }
+.task-details select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(55, 106, 159, .18); }
+.task-details .rename-input { font-size: 11px; padding: 2px 6px; }
+.td-checklist { display: flex; flex-direction: column; gap: 4px; }
+.td-check-row { display: flex; align-items: center; gap: 6px; font-size: 11.5px; }
+.td-check-row input[type="checkbox"] { accent-color: var(--accent); flex-shrink: 0; }
+.td-check-row .strikethrough { text-decoration: line-through; color: var(--text-muted); }
+.td-check-row button { margin-left: auto; }
+.td-check-add { display: flex; gap: 4px; align-items: center; }
+.td-check-add .rename-input { flex: 1; min-width: 0; }
+
+/* ---------- Фильтры и сохранённые виды канбана ---------- */
+
+.task-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
+.tf-search { display: flex; align-items: center; gap: 6px; background: #fff; border: 1px solid var(--border-strong); border-radius: 7px; padding: 0 8px; height: 28px; color: var(--text-muted); }
+.tf-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(55, 106, 159, .18); }
+.tf-search input { border: none; outline: none; background: transparent; font-size: 12px; width: 170px; color: var(--text); }
+.tf-select { border: 1px solid var(--border-strong); border-radius: 7px; padding: 4px 8px; font-size: 12px; background: #fff; color: var(--text); max-width: 180px; }
+.tf-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(55, 106, 159, .18); }
+.tf-check { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; user-select: none; }
+.tf-check input { accent-color: var(--accent); }
+.tf-views { display: flex; align-items: center; gap: 4px; margin-left: auto; }
+
 /* ---------- Предпросмотр файла ---------- */
 
 .file-preview {

@@ -3,7 +3,7 @@ import * as ipc from "../../api/ipc";
 import type { TaskDto, TaskPatch } from "../../api/types";
 import { toMessage } from "../files/fileOps";
 import RenameInput from "../files/RenameInput";
-import { IconPlus } from "../files/icons";
+import { IconClose, IconPlus, IconSearch, IconTrash } from "../files/icons";
 import TaskCard from "./TaskCard";
 import { usePointerDrag } from "../../hooks/usePointerDrag";
 
@@ -12,6 +12,66 @@ const COLUMNS = [
   { status: "progress", label: "В работе" },
   { status: "done", label: "Готово" },
 ] as const;
+
+const PRIORITY_OPTIONS = [
+  { value: "low", label: "низкий" },
+  { value: "normal", label: "обычный" },
+  { value: "high", label: "высокий" },
+  { value: "urgent", label: "срочный" },
+];
+
+interface Filters {
+  query: string;
+  priority: string;
+  tag: string;
+  overdueOnly: boolean;
+  hideDone: boolean;
+}
+
+const EMPTY_FILTERS: Filters = {
+  query: "",
+  priority: "",
+  tag: "",
+  overdueOnly: false,
+  hideDone: false,
+};
+
+const isDefaultFilters = (f: Filters) =>
+  !f.query.trim() && !f.priority && !f.tag && !f.overdueOnly && !f.hideDone;
+
+// Saved views: named filter sets per project in localStorage.
+interface SavedView {
+  name: string;
+  filters: Filters;
+}
+
+const viewsKey = (projectId: number) => `project-s:taskViews:${projectId}`;
+
+function readViews(projectId: number): SavedView[] {
+  try {
+    const raw = localStorage.getItem(viewsKey(projectId));
+    const parsed: unknown = raw === null ? [] : JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (v): v is SavedView =>
+        typeof v === "object" &&
+        v !== null &&
+        typeof (v as SavedView).name === "string" &&
+        typeof (v as SavedView).filters === "object" &&
+        (v as SavedView).filters !== null,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeViews(projectId: number, views: SavedView[]): void {
+  try {
+    localStorage.setItem(viewsKey(projectId), JSON.stringify(views));
+  } catch {
+    // Storage unavailable: views simply won't persist across restarts.
+  }
+}
 
 interface Props {
   projectId: number;
@@ -23,13 +83,46 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
   const [tasks, setTasks] = useState<TaskDto[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [addingStatus, setAddingStatus] = useState<string | null>(null);
+  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
+  const [views, setViews] = useState<SavedView[]>([]);
+  const [activeView, setActiveView] = useState("");
   const boardRef = useRef<HTMLDivElement>(null);
+
+  // Per-project filter/view state: reset and reload on project switch.
+  useEffect(() => {
+    setFilters(EMPTY_FILTERS);
+    setActiveView("");
+    setViews(readViews(projectId));
+  }, [projectId]);
+
+  const patchFilters = (patch: Partial<Filters>) => {
+    setFilters((prev) => ({ ...prev, ...patch }));
+    setActiveView("");
+  };
+
+  const allTags = useMemo(() => {
+    const set = new Set<string>((tasks ?? []).flatMap((t) => t.tags));
+    if (filters.tag) set.add(filters.tag);
+    return Array.from(set).sort((a, b) => a.localeCompare(b, "ru"));
+  }, [tasks, filters.tag]);
+
+  const visible = useMemo(() => {
+    const q = filters.query.trim().toLowerCase();
+    return (tasks ?? []).filter((t) => {
+      if (q && !t.title.toLowerCase().includes(q)) return false;
+      if (filters.priority && t.priority !== filters.priority) return false;
+      if (filters.tag && !t.tags.includes(filters.tag)) return false;
+      if (filters.overdueOnly && !t.overdue) return false;
+      if (filters.hideDone && t.status === "done") return false;
+      return true;
+    });
+  }, [tasks, filters]);
 
   const byStatus = useMemo(() => {
     const map: Record<string, TaskDto[]> = { new: [], progress: [], done: [] };
-    for (const t of tasks ?? []) map[t.status]?.push(t);
+    for (const t of visible) map[t.status]?.push(t);
     return map;
-  }, [tasks]);
+  }, [visible]);
 
   const { draggingId, dropTarget, onPointerDown } = usePointerDrag({
     // Target column = the one whose bounds contain the pointer; insertion
@@ -152,6 +245,35 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
       .catch((e) => setError(toMessage(e)));
   };
 
+  const handleViewSelect = (name: string) => {
+    if (name === "") {
+      setFilters(EMPTY_FILTERS);
+      setActiveView("");
+      return;
+    }
+    const view = views.find((v) => v.name === name);
+    if (!view) return;
+    setFilters({ ...EMPTY_FILTERS, ...view.filters });
+    setActiveView(name);
+  };
+
+  const handleSaveView = () => {
+    const name = window.prompt("Название вида фильтров:");
+    if (!name?.trim()) return;
+    const trimmed = name.trim();
+    const next = [...views.filter((v) => v.name !== trimmed), { name: trimmed, filters }];
+    setViews(next);
+    writeViews(projectId, next);
+    setActiveView(trimmed);
+  };
+
+  const handleDeleteView = () => {
+    const next = views.filter((v) => v.name !== activeView);
+    setViews(next);
+    writeViews(projectId, next);
+    setActiveView("");
+  };
+
   const renderCard = (t: TaskDto, dragging: boolean) => (
     <TaskCard
       key={t.id}
@@ -167,6 +289,95 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
   return (
     <div className="center-body">
       {error && <div className="tree-error">{error}</div>}
+      <div className="task-filters">
+        <div className="tf-search">
+          <IconSearch />
+          <input
+            type="text"
+            placeholder="Поиск по названию…"
+            value={filters.query}
+            onChange={(e) => patchFilters({ query: e.target.value })}
+          />
+          {filters.query && (
+            <button
+              className="mini-btn"
+              title="Очистить поиск"
+              onClick={() => patchFilters({ query: "" })}
+            >
+              <IconClose />
+            </button>
+          )}
+        </div>
+        <select
+          className="tf-select"
+          value={filters.priority}
+          onChange={(e) => patchFilters({ priority: e.target.value })}
+        >
+          <option value="">Приоритет: все</option>
+          {PRIORITY_OPTIONS.map((p) => (
+            <option key={p.value} value={p.value}>
+              {p.label}
+            </option>
+          ))}
+        </select>
+        <select
+          className="tf-select"
+          value={filters.tag}
+          onChange={(e) => patchFilters({ tag: e.target.value })}
+        >
+          <option value="">Теги: все</option>
+          {allTags.map((tag) => (
+            <option key={tag} value={tag}>
+              {tag}
+            </option>
+          ))}
+        </select>
+        <label className="tf-check">
+          <input
+            type="checkbox"
+            checked={filters.overdueOnly}
+            onChange={(e) => patchFilters({ overdueOnly: e.target.checked })}
+          />
+          только просроченные
+        </label>
+        <label className="tf-check">
+          <input
+            type="checkbox"
+            checked={filters.hideDone}
+            onChange={(e) => patchFilters({ hideDone: e.target.checked })}
+          />
+          скрыть готовые
+        </label>
+        <div className="tf-views">
+          <select
+            className="tf-select"
+            value={activeView || (isDefaultFilters(filters) ? "" : "custom")}
+            onChange={(e) => handleViewSelect(e.target.value)}
+          >
+            <option value="">Вид: по умолчанию</option>
+            {views.map((v) => (
+              <option key={v.name} value={v.name}>
+                {v.name}
+              </option>
+            ))}
+            <option value="custom" disabled>
+              свой набор
+            </option>
+          </select>
+          <button
+            className="mini-btn"
+            title="Сохранить текущие фильтры как вид"
+            onClick={handleSaveView}
+          >
+            <IconPlus />
+          </button>
+          {activeView && (
+            <button className="mini-btn danger" title="Удалить вид" onClick={handleDeleteView}>
+              <IconTrash />
+            </button>
+          )}
+        </div>
+      </div>
       {tasks && (
         <div className="task-board" ref={boardRef}>
           {COLUMNS.map((col) => {
@@ -216,7 +427,9 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
                   )}
                   {nodes}
                   {tasks && cards.length === 0 && addingStatus !== col.status && (
-                    <div className="empty-note">Пусто</div>
+                    <div className="empty-note">
+                      {isDefaultFilters(filters) ? "Пусто" : "Нет подходящих"}
+                    </div>
                   )}
                 </div>
               </div>

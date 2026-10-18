@@ -46,6 +46,12 @@ export interface OpenWithResult {
   app?: string | null;
 }
 
+// tasks::ChecklistItem — one checklist row of a task.
+export interface ChecklistItem {
+  text: string;
+  done: boolean;
+}
+
 export interface TaskDto {
   id: number;
   projectId: number;
@@ -59,6 +65,9 @@ export interface TaskDto {
   createdAt: string;
   closedAt: string | null;
   overdue: boolean;
+  priority: string;
+  checklist: ChecklistItem[];
+  recurrence: string;
 }
 
 // todos::TodoDto — one plan item of a scope (project chat or harness session).
@@ -111,6 +120,9 @@ export interface TaskPatch {
   dueDate?: string | null;
   remindAt?: string | null;
   tags?: string[];
+  priority?: string;
+  checklist?: ChecklistItem[];
+  recurrence?: string;
 }
 
 export type ConfigKind = "llm" | "app" | "indexing" | "mcp";
