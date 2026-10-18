@@ -3,6 +3,7 @@
 // and retention pruning is skipped. mask_secrets stays in use by the
 // git/ssh/bash tools.
 use crate::error::Result;
+use crate::sync_util::lock_recover;
 use chrono::{Local, NaiveDate};
 use serde_json::{json, Value};
 use std::fs::{self, OpenOptions};
@@ -90,7 +91,7 @@ impl Journal {
         }
         let line = format!("{record}\n");
 
-        let mut guard = self.inner.current.lock().unwrap();
+        let mut guard = lock_recover(&self.inner.current);
         let needs_open = match guard.as_ref() {
             Some((date, _)) => *date != today,
             None => true,
@@ -143,7 +144,7 @@ impl Journal {
         if removed > 0 {
             // Drop the cached writer so a pruned file is never resurrected
             // by a stale buffer.
-            *self.inner.current.lock().unwrap() = None;
+            *lock_recover(&self.inner.current) = None;
         }
         Ok(removed)
     }

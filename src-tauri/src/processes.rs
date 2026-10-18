@@ -14,6 +14,7 @@
 // to launchd and keep running; startup reconcile only updates their
 // status, it never kills them.
 use crate::error::{AppError, Result};
+use crate::sync_util::lock_recover;
 use crate::paths;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
@@ -39,7 +40,7 @@ const STOP_POLL: Duration = Duration::from_millis(100);
 static CHILDREN: Mutex<Option<HashMap<u32, Child>>> = Mutex::new(None);
 
 fn with_children<T>(f: impl FnOnce(&mut HashMap<u32, Child>) -> T) -> T {
-    let mut guard = CHILDREN.lock().unwrap();
+    let mut guard = lock_recover(&CHILDREN);
     f(guard.get_or_insert_with(HashMap::new))
 }
 

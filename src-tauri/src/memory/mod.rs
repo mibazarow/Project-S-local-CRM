@@ -11,6 +11,7 @@
 // extract_facts distills durable user/project facts into this store
 // (source = "fact").
 use crate::agent::r#loop::ChatBackend;
+use crate::sync_util::lock_recover;
 use crate::agent::result::{ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::db;
@@ -632,7 +633,7 @@ fn parse_facts(raw: &str) -> Vec<String> {
 // the project tools).
 fn db_guard(ctx: &ToolCtx) -> Result<std::sync::MutexGuard<'_, Option<Connection>>> {
     let state = ctx.state.as_deref().ok_or(AppError::NotConfigured)?;
-    Ok(state.db.lock().unwrap())
+    Ok(lock_recover(&state.db))
 }
 
 // remember (SPEC 5.2/6.3): writing user preferences into global memory is
@@ -784,7 +785,7 @@ impl Tool for SetUserGenderTool {
 // not an error.
 fn emit_memory_changed(ctx: &ToolCtx, id: Option<i64>) {
     if let Some(state) = ctx.state.as_deref() {
-        if let Some(emitter) = state.emitter.lock().unwrap().as_ref() {
+        if let Some(emitter) = lock_recover(&state.emitter).as_ref() {
             emitter.emit_event("memory-changed", json!({ "id": id }));
         }
     }

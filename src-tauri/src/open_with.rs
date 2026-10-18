@@ -10,6 +10,7 @@
 // with `open -a <app> <file>` (falling back to the system default
 // `open <file>` when nothing applies).
 use crate::agent::ocr_tools::{find_swift, read_capped};
+use crate::sync_util::lock_recover;
 use crate::error::{AppError, Result};
 use crate::fs_ops;
 use crate::paths;
@@ -295,13 +296,13 @@ pub fn list_apps(ext: &str) -> Vec<AppInfo> {
     let Some(ext) = normalize_ext(ext) else {
         return Vec::new();
     };
-    if let Some(cached) = handler_cache().lock().unwrap().get(&ext) {
+    if let Some(cached) = lock_recover(handler_cache()).get(&ext) {
         return cached.clone();
     }
     match launch_services_handlers(&ext) {
         Ok(handlers) => {
             let ranked = rank_handlers(&ext, handlers);
-            handler_cache().lock().unwrap().insert(ext, ranked.clone());
+            lock_recover(handler_cache()).insert(ext, ranked.clone());
             ranked
         }
         Err(e) => {

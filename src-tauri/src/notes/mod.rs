@@ -1,4 +1,5 @@
 use crate::error::{AppError, Result};
+use crate::sync_util::lock_recover;
 use crate::fs_ops::{self, FsEntry};
 use crate::paths;
 use crate::state::AppState;
@@ -408,7 +409,7 @@ pub fn run_notes_chat(
     // canonical root: the tools' containment compares canonical paths.
     let notes_root = vault_root(&wd)?;
     let (chat_id, memory_records) = {
-        let guard = state.db.lock().unwrap();
+        let guard = lock_recover(&state.db);
         let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
         let chat_id = ensure_notes_chat(conn)?;
         // The user turn is persisted first: build_context then sees the full

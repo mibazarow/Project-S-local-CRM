@@ -8,6 +8,7 @@
 pub mod context;
 
 use crate::agent::catalog::Catalog;
+use crate::sync_util::lock_recover;
 use crate::agent::r#loop as agent_loop;
 use crate::agent::permissions::{ConfirmDecision, ConfirmRequest, Confirmer};
 use crate::agent::project_tools::project_catalog;
@@ -834,7 +835,7 @@ pub fn start_project_run(
     }
     let wd = state.working_dir()?;
     let (chat_id, project, brief, memory_records, related_line) = {
-        let guard = state.db.lock().unwrap();
+        let guard = lock_recover(&state.db);
         let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
         let project = projects::get_project(conn, project_id)?;
         let chat_id = ensure_project_chat(conn, project_id)?;
@@ -861,7 +862,7 @@ pub fn start_project_run(
     let mut catalog = project_catalog();
     // MCP tools are bridged from the app-level registry: the run's catalog
     // borrows the live server clients (SPEC 6.2).
-    register_mcp_tools(&mut catalog, state.mcp.lock().unwrap().tools());
+    register_mcp_tools(&mut catalog, lock_recover(&state.mcp).tools());
     let skills = crate::skills::short_list(&wd);
     // Stable system prompt only: identical bytes for every turn of the
     // project, whatever the brief or the memory query says.
@@ -991,10 +992,10 @@ fn run_agent_inner(
     // The run thread owns its DB connection: a long agent turn must not
     // hold the UI connection's mutex; WAL + busy_timeout keeps both safe.
     let thread_state = Arc::new(AppState::new());
-    *thread_state.working_dir.lock().unwrap() = Some(wd.to_path_buf());
-    *thread_state.db.lock().unwrap() = Some(db::open(&paths::db_path(wd))?);
+    *lock_recover(&thread_state.working_dir) = Some(wd.to_path_buf());
+    *lock_recover(&thread_state.db) = Some(db::open(&paths::db_path(wd))?);
     // Tools that notify the UI (rename_chat, todowrite) emit through this handle.
-    *thread_state.emitter.lock().unwrap() = Some(Arc::new(app.clone()));
+    *lock_recover(&thread_state.emitter) = Some(Arc::new(app.clone()));
 
     let llm_cfg: LlmConfig = serde_json::from_value(config::read_config(wd, ConfigKind::Llm)?)?;
     // Temperature is fixed per agent (project/harness/schedule 0.2, notes 0.4)
@@ -1017,7 +1018,7 @@ fn run_agent_inner(
     // the same for any query, so the cacheable prefix survives. The records
     // relevant to the fresh user turn already ride the volatile block.
     {
-        let guard = thread_state.db.lock().unwrap();
+        let guard = lock_recover(&thread_state.db);
         let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
         system_prompt.push_str(&format!("\n\n{}", memory::identity_block(conn)?));
     }
@@ -1025,7 +1026,7 @@ fn run_agent_inner(
     // Build the model-facing transcript with checkpoint compaction (SPEC 4.6,
     // 6.4); on summarization failure build_context falls back to full history.
     let ctx = {
-        let guard = thread_state.db.lock().unwrap();
+        let guard = lock_recover(&thread_state.db);
         let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
         context::build_context(
             conn,
@@ -1089,7 +1090,7 @@ fn run_agent_inner(
     // Run/tool journal (SPEC 3.3, 6 "все вызовы пишутся в журнал запусков"):
     // every tool call of every run kind is appended to Settings/logs as a
     // masked JSONL line through the app-level journal handle.
-    let journal = app.state::<AppState>().journal.lock().unwrap().clone();
+    let journal = lock_recover(&app.state::<AppState>().journal).clone();
     let run_info = crate::journal::RunInfo {
         kind,
         chat_id,
@@ -1132,7 +1133,7 @@ fn run_agent_inner(
     };
     let persist_state = Arc::clone(&thread_state);
     let mut on_message = move |msg: &ChatMessage| {
-        let guard = persist_state.db.lock().unwrap();
+        let guard = lock_recover(&persist_state.db);
         if let Some(conn) = guard.as_ref() {
             let _ = append_chat_message(conn, chat_id, msg);
         }
@@ -1141,7 +1142,7 @@ fn run_agent_inner(
     let result = agent_loop::run_with(&mut agent_state, &config, &confirmer, &mut emit, &mut on_message);
     registry.clear_cancel(run);
     let result = result?;
-    let guard = thread_state.db.lock().unwrap();
+    let guard = lock_recover(&thread_state.db);
     if let Some(conn) = guard.as_ref() {
         // The chat may be gone by the end of the run: the agent deleted its
         // own session (delete_chat) or the user removed it mid-run. The

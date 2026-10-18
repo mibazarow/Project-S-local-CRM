@@ -11,6 +11,7 @@
 // same order the model saw it, and an "agent-file" event lets an open chat
 // render the attachment without a history reload.
 use super::result::{ToolErrorCode, ToolResult};
+use crate::sync_util::lock_recover;
 use super::tool::{PermissionPolicy, Tool, ToolCtx};
 use crate::attachments::{self, AttachmentRef};
 use crate::chat;
@@ -82,7 +83,7 @@ impl Tool for SendFileTool {
 
         // Resolve the file inside the run's scope and the savedPath to persist.
         let (abs, saved_path) = {
-            let guard = state.db.lock().unwrap();
+            let guard = lock_recover(&state.db);
             let conn = match guard.as_ref() {
                 Some(c) => c,
                 None => {
@@ -117,7 +118,7 @@ impl Tool for SendFileTool {
 
         // Append the assistant turn, then link the saved file to it.
         let message_id = {
-            let guard = state.db.lock().unwrap();
+            let guard = lock_recover(&state.db);
             let conn = match guard.as_ref() {
                 Some(c) => c,
                 None => {
@@ -152,7 +153,7 @@ impl Tool for SendFileTool {
         };
 
         // Tell an open chat UI about the new agent file so it renders at once.
-        if let Some(emitter) = state.emitter.lock().unwrap().as_ref() {
+        if let Some(emitter) = lock_recover(&state.emitter).as_ref() {
             emitter.emit_event(
                 "agent-file",
                 json!({

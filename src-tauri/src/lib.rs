@@ -32,6 +32,7 @@ mod search;
 mod search_reindex;
 mod skills;
 mod state;
+pub mod sync_util;
 mod tasks;
 mod templates;
 mod todos;
@@ -46,6 +47,7 @@ use tasks::TaskDto;
 use rusqlite::Connection;
 use serde_json::Value;
 use state::{AgentRegistry, AppState, RunKey};
+use sync_util::lock_recover;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -57,7 +59,7 @@ fn app_config_dir(app: &AppHandle) -> Result<PathBuf> {
 }
 
 fn with_db<T>(state: &AppState, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-    let guard = state.db.lock().unwrap();
+    let guard = lock_recover(&state.db);
     f(guard.as_ref().ok_or(AppError::NotConfigured)?)
 }
 
@@ -198,8 +200,8 @@ fn choose_working_dir(
     }
     let wd = PathBuf::from(path);
     let (info, conn) = onboarding::init_working_dir(&app_config_dir(&app)?, &wd)?;
-    *state.db.lock().unwrap() = Some(conn);
-    *state.working_dir.lock().unwrap() = Some(wd.clone());
+    *lock_recover(&state.db) = Some(conn);
+    *lock_recover(&state.working_dir) = Some(wd.clone());
     open_journal(&state, &wd)?;
     let _ = with_db(&state, processes::reconcile);
     let _ = with_db(&state, |conn| {
@@ -208,7 +210,7 @@ fn choose_working_dir(
     });
     watcher::start(&app, &state, &wd);
     let _ = index::index_notes(&wd);
-    *state.mcp.lock().unwrap() = mcp::McpRegistry::start(&wd);
+    *lock_recover(&state.mcp) = mcp::McpRegistry::start(&wd);
     scheduler::start(app.clone());
     search_reindex::start_timer(app.clone());
     spawn_auto_backup(&wd);
@@ -217,10 +219,7 @@ fn choose_working_dir(
 
 #[tauri::command]
 fn get_working_dir(state: State<AppState>) -> Option<String> {
-    state
-        .working_dir
-        .lock()
-        .unwrap()
+    lock_recover(&state.working_dir)
         .as_ref()
         .map(|p| p.display().to_string())
 }
@@ -1927,7 +1926,7 @@ fn index_memory(state: State<AppState>) -> Result<usize> {
 // later slice).
 #[tauri::command]
 fn mcp_status(state: State<AppState>) -> Vec<mcp::McpServerStatus> {
-    state.mcp.lock().unwrap().status()
+    lock_recover(&state.mcp).status()
 }
 
 // Re-reads mcp.json and restarts the servers; a server that fails to start
@@ -1935,7 +1934,7 @@ fn mcp_status(state: State<AppState>) -> Vec<mcp::McpServerStatus> {
 #[tauri::command]
 fn mcp_reload(state: State<AppState>) -> Result<Vec<mcp::McpServerStatus>> {
     let wd = state.working_dir()?;
-    let mut registry = state.mcp.lock().unwrap();
+    let mut registry = lock_recover(&state.mcp);
     registry.shutdown();
     *registry = mcp::McpRegistry::start(&wd);
     Ok(registry.status())
@@ -2219,7 +2218,7 @@ fn open_journal(state: &AppState, wd: &std::path::Path) -> Result<()> {
     let _ = ops::cleanup_old_tmp(wd, cfg.tmp_retention_days);
     let journal = journal::Journal::open(&paths::logs_dir(wd))?;
     let _ = journal.prune_old(cfg.log_retention_days);
-    *state.journal.lock().unwrap() = Some(journal);
+    *lock_recover(&state.journal) = Some(journal);
     Ok(())
 }
 
@@ -2340,10 +2339,10 @@ pub fn run() {
             let state = app.state::<AppState>();
             // Background emitters (the rename_chat, todowrite tools) reach
             // the windows through the app state handle.
-            *state.emitter.lock().unwrap() = Some(Arc::new(app.handle().clone()));
+            *lock_recover(&state.emitter) = Some(Arc::new(app.handle().clone()));
             if let Some(wd) = onboarding::load_working_dir(&app_cfg) {
-                *state.db.lock().unwrap() = Some(db::open(&paths::db_path(&wd))?);
-                *state.working_dir.lock().unwrap() = Some(wd.clone());
+                *lock_recover(&state.db) = Some(db::open(&paths::db_path(&wd))?);
+                *lock_recover(&state.working_dir) = Some(wd.clone());
                 // One-time indexing-limits migration for installs created
                 // before the 10 MB / 1M chars defaults. Best-effort.
                 let _ = config::migrate_indexing_defaults(&wd);
@@ -2354,7 +2353,7 @@ pub fn run() {
                 let _ = skills::sync_builtin(&wd);
                 // SPEC 5.1: drop harness sessions idle past the TTL on start.
                 let ttl = session_ttl_days(&wd);
-                let guard = state.db.lock().unwrap();
+                let guard = lock_recover(&state.db);
                 if let Some(conn) = guard.as_ref() {
                     let _ = harness::purge_inactive_sessions(conn, ttl);
                     // Background process rows from a previous run: the
@@ -2374,7 +2373,7 @@ pub fn run() {
                 open_journal(&state, &wd)?;
                 watcher::start(app.handle(), &state, &wd);
                 let _ = index::index_notes(&wd);
-                *state.mcp.lock().unwrap() = mcp::McpRegistry::start(&wd);
+                *lock_recover(&state.mcp) = mcp::McpRegistry::start(&wd);
                 scheduler::start(app.handle().clone());
                 search_reindex::start_timer(app.handle().clone());
                 spawn_auto_backup(&wd);
@@ -2539,8 +2538,40 @@ pub fn run() {
     app.run(|app_handle, event| {
         if let tauri::RunEvent::Exit = event {
             if let Some(state) = app_handle.try_state::<AppState>() {
-                state.mcp.lock().unwrap().shutdown();
+                lock_recover(&state.mcp).shutdown();
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // S1.4: a panic while a thread holds the DB mutex must not cascade into
+    // every later command: with_db recovers the poisoned lock and still runs
+    // the closure against the live connection (WAL + busy_timeout keep the
+    // recovered SQLite connection safe to reuse).
+    #[test]
+    fn with_db_recovers_after_the_db_mutex_is_poisoned() {
+        let wd = onboarding::temp_test_dir("poison-with-db");
+        let state = AppState::new();
+        *lock_recover(&state.db) = Some(db::open(&paths::db_path(&wd)).unwrap());
+        let db = &state.db;
+        std::thread::scope(|s| {
+            let panicker = s.spawn(|| {
+                let _guard = db.lock().unwrap();
+                panic!("boom while holding the DB lock");
+            });
+            assert!(panicker.join().is_err());
+        });
+        assert!(state.db.is_poisoned());
+        let tasks = with_db(&state, |conn| {
+            let n: i64 = conn.query_row("SELECT count(*) FROM tasks", [], |r| r.get(0))?;
+            Ok(n)
+        })
+        .unwrap();
+        assert_eq!(tasks, 0);
+        std::fs::remove_dir_all(&wd).ok();
+    }
 }

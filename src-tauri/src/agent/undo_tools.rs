@@ -1,6 +1,7 @@
 // Undo tools (SPEC undo slice): expose the bounded undo stack to the agent.
 // undo_last pops and reverses the newest mutation; undo_list previews the stack.
 use super::project_tools::{envelope, require_wd, state_of, with_conn};
+use crate::sync_util::lock_recover;
 use super::result::ToolResult;
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::Result;
@@ -83,7 +84,7 @@ fn emit_undo_events(ctx: &ToolCtx, out: &undo::UndoOutcome) {
     let Ok(state) = state_of(ctx) else {
         return;
     };
-    let binding = state.emitter.lock().unwrap();
+    let binding = lock_recover(&state.emitter);
     let Some(emitter) = binding.as_ref() else {
         return;
     };

@@ -1,5 +1,6 @@
 use crate::agent::permissions::ConfirmDecision;
 use crate::error::{AppError, Result};
+use crate::sync_util::lock_recover;
 use notify::RecommendedWatcher;
 use rusqlite::Connection;
 use std::collections::{HashMap, HashSet};
@@ -45,9 +46,7 @@ impl AppState {
     }
 
     pub fn working_dir(&self) -> crate::error::Result<PathBuf> {
-        self.working_dir
-            .lock()
-            .unwrap()
+        lock_recover(&self.working_dir)
             .clone()
             .ok_or(crate::error::AppError::NotConfigured)
     }
@@ -108,55 +107,48 @@ impl AgentRegistry {
     pub fn register(&self, tool: &str) -> (u64, Receiver<ConfirmDecision>) {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::channel();
-        self.pending
-            .lock()
-            .unwrap()
+        lock_recover(&self.pending)
             .insert(id, (tool.to_string(), tx));
         (id, rx)
     }
 
     pub fn resolve(&self, id: u64, decision: ConfirmDecision) -> Result<()> {
-        let (tool, tx) = self
-            .pending
-            .lock()
-            .unwrap()
+        let (tool, tx) = lock_recover(&self.pending)
             .remove(&id)
             .ok_or_else(|| AppError::Invalid(format!("unknown confirmation id: {id}")))?;
         if decision == ConfirmDecision::AllowAlways {
-            self.allow_always.lock().unwrap().insert(tool);
+            lock_recover(&self.allow_always).insert(tool);
         }
         tx.send(decision)
             .map_err(|_| AppError::Invalid(format!("confirmation {id} is no longer waiting")))
     }
 
     pub fn is_allowed(&self, tool: &str) -> bool {
-        self.allow_always.lock().unwrap().contains(tool)
+        lock_recover(&self.allow_always).contains(tool)
     }
 
     // Drops a pending entry after its receiver timed out.
     pub fn forget(&self, id: u64) {
-        self.pending.lock().unwrap().remove(&id);
+        lock_recover(&self.pending).remove(&id);
     }
 
     #[cfg(test)]
     pub fn pending_count(&self) -> usize {
-        self.pending.lock().unwrap().len()
+        lock_recover(&self.pending).len()
     }
 
     pub fn set_cancel(&self, run: RunKey, flag: &Arc<AtomicBool>) {
-        self.cancels
-            .lock()
-            .unwrap()
+        lock_recover(&self.cancels)
             .insert(run, Arc::clone(flag));
     }
 
     pub fn clear_cancel(&self, run: RunKey) {
-        self.cancels.lock().unwrap().remove(&run);
+        lock_recover(&self.cancels).remove(&run);
     }
 
     // Returns false when no run is active for the key.
     pub fn request_cancel(&self, run: RunKey) -> bool {
-        match self.cancels.lock().unwrap().get(&run) {
+        match lock_recover(&self.cancels).get(&run) {
             Some(flag) => {
                 flag.store(true, Ordering::Relaxed);
                 true

@@ -10,6 +10,7 @@
 // bash always see TMPDIR/TEMP/TMP pointed at Harness/tmp/ (SPEC 5.2), never
 // the system /tmp. The CDP browser tool lives in browser_tool.rs.
 use super::catalog::Catalog;
+use crate::sync_util::lock_recover;
 use super::project_tools::{
     emit_tasks_changed, emit_trash_changed, emit_versions_changed, envelope, require_wd,
     state_of, with_conn,
@@ -1731,7 +1732,7 @@ impl Tool for DatasAddTool {
 // emitter, mirroring the schedule_* commands in lib.rs.
 fn emit_schedules_changed(ctx: &ToolCtx) {
     if let Ok(state) = state_of(ctx) {
-        if let Some(emitter) = state.emitter.lock().unwrap().as_ref() {
+        if let Some(emitter) = lock_recover(&state.emitter).as_ref() {
             emitter.emit_event("schedules-changed", json!({}));
         }
     }
@@ -2011,7 +2012,7 @@ impl Tool for RenameChatTool {
 // reload; a missing emitter is not an error.
 pub(crate) fn emit_sessions_changed(ctx: &ToolCtx) {
     if let Ok(state) = state_of(ctx) {
-        if let Some(emitter) = state.emitter.lock().unwrap().as_ref() {
+        if let Some(emitter) = lock_recover(&state.emitter).as_ref() {
             emitter.emit_event("sessions-changed", json!({}));
         }
     }

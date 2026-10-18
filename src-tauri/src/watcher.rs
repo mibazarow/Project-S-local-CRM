@@ -1,4 +1,5 @@
 use crate::config::ConfigKind;
+use crate::sync_util::lock_recover;
 use crate::index;
 use crate::paths;
 use crate::state::AppState;
@@ -58,7 +59,7 @@ pub fn start(app: &tauri::AppHandle, state: &AppState, wd: &Path) {
     }
     // Replacing the watcher drops the old one, disconnecting its channel
     // and ending the old debounce thread.
-    *state.watcher.lock().unwrap() = Some(watcher);
+    *lock_recover(&state.watcher) = Some(watcher);
 
     let app = app.clone();
     thread::spawn(move || {
@@ -124,7 +125,7 @@ fn changed_kinds(event: &Event) -> HashSet<ConfigKind> {
 // Projects whose folder contains one of the event paths; events for one
 // project collapse into a single reindex.
 fn dirty_projects(state: &AppState, event: &Event) -> HashSet<i64> {
-    let guard = state.db.lock().unwrap();
+    let guard = lock_recover(&state.db);
     let Some(conn) = guard.as_ref() else {
         return HashSet::new();
     };

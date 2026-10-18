@@ -7,6 +7,7 @@
 // a fresh session when it fires. The run path mirrors the project chat run
 // and shares the agent loop and confirmation bridge.
 use crate::agent::catalog::Catalog;
+use crate::sync_util::lock_recover;
 use crate::agent::prompts::harness_system_prompt;
 use crate::attachments::{self, AttachmentRef};
 use crate::chat::{self, RunBridge};
@@ -291,7 +292,7 @@ pub fn run_session(
     kind: &'static str,
     attachments_in: &[AttachmentRef],
 ) -> Result<i64> {
-    let guard = state.db.lock().unwrap();
+    let guard = lock_recover(&state.db);
     let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
     run_session_on(app, state, registry, conn, session_id, text, kind, attachments_in)
 }
@@ -337,7 +338,7 @@ pub fn run_session_on(
     // Catalog first, prompt second: the generated tool block must cover the
     // whole harness catalog including the MCP bridges (schemas stay lazy).
     let mut catalog = harness_catalog();
-    chat::register_mcp_tools(&mut catalog, state.mcp.lock().unwrap().tools());
+    chat::register_mcp_tools(&mut catalog, lock_recover(&state.mcp).tools());
     let skills = crate::skills::short_list(&wd);
     let system_prompt = harness_system_prompt(&skills, &catalog.summary_prompt_block());
     let volatile_block = crate::chat::context::volatile_block(&[&memory_records]);

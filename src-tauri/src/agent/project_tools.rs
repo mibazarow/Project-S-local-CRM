@@ -3,6 +3,7 @@
 // Every path argument is resolved strictly inside the project root by the
 // fs_ops resolvers; absolute OS paths are never exposed to the model.
 use super::catalog::Catalog;
+use crate::sync_util::lock_recover;
 use super::result::{ToolErrorCode, ToolResult};
 use super::task_glue::{
     create_schema, datas_add_body, datas_title_arg, delete_schema, is_missing, list_schema,
@@ -138,7 +139,7 @@ pub(crate) fn state_of(ctx: &ToolCtx) -> Result<&crate::state::AppState> {
 
 // Borrows the shared UI connection for one domain call.
 pub(crate) fn with_conn<T>(ctx: &ToolCtx, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-    let guard = state_of(ctx)?.db.lock().unwrap();
+    let guard = lock_recover(&state_of(ctx)?.db);
     f(guard.as_ref().ok_or(AppError::NotConfigured)?)
 }
 
@@ -148,7 +149,7 @@ pub(crate) fn with_conn<T>(ctx: &ToolCtx, f: impl FnOnce(&Connection) -> Result<
 // emitter is not an error.
 pub(crate) fn emit_tasks_changed(ctx: &ToolCtx, project_id: i64) {
     if let Ok(state) = state_of(ctx) {
-        if let Some(emitter) = state.emitter.lock().unwrap().as_ref() {
+        if let Some(emitter) = lock_recover(&state.emitter).as_ref() {
             emitter.emit_event("tasks-changed", json!({ "projectId": project_id }));
         }
     }
@@ -157,7 +158,7 @@ pub(crate) fn emit_tasks_changed(ctx: &ToolCtx, project_id: i64) {
 // Trash panel refresh after a reversible delete from any agent tool.
 pub(crate) fn emit_trash_changed(ctx: &ToolCtx, id: Option<i64>) {
     if let Ok(state) = state_of(ctx) {
-        if let Some(emitter) = state.emitter.lock().unwrap().as_ref() {
+        if let Some(emitter) = lock_recover(&state.emitter).as_ref() {
             emitter.emit_event("trash-changed", json!({ "id": id }));
         }
     }
@@ -166,7 +167,7 @@ pub(crate) fn emit_trash_changed(ctx: &ToolCtx, id: Option<i64>) {
 // Version history panel refresh after a snapshot was saved.
 pub(crate) fn emit_versions_changed(ctx: &ToolCtx, scope: &str, path: &str) {
     if let Ok(state) = state_of(ctx) {
-        if let Some(emitter) = state.emitter.lock().unwrap().as_ref() {
+        if let Some(emitter) = lock_recover(&state.emitter).as_ref() {
             emitter.emit_event(
                 "versions-changed",
                 json!({ "scope": scope, "path": path }),

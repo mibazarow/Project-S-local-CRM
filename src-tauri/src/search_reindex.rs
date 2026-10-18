@@ -7,6 +7,7 @@
 // (Mutex-protected) so the button can poll it; progress arrives as
 // "reindex-progress" events and the finish as "reindex-done".
 use crate::chat;
+use crate::sync_util::lock_recover;
 use crate::db;
 use crate::embed;
 use crate::error::Result;
@@ -58,13 +59,13 @@ fn now_ms() -> i64 {
 
 impl ReindexManager {
     pub fn status(&self) -> ReindexStatus {
-        self.status.lock().unwrap().clone()
+        lock_recover(&self.status).clone()
     }
 
     // First countdown after start: now + 5 min, so the app never reindexes
     // immediately on launch.
     pub fn arm_initial(&self) {
-        let mut st = self.status.lock().unwrap();
+        let mut st = lock_recover(&self.status);
         if st.next_run_at == 0 {
             st.next_run_at = now_ms() + REINDEX_INTERVAL_MS;
         }
@@ -111,7 +112,7 @@ impl ReindexManager {
     ) -> Result<()> {
         let result = self.reindex_units(wd, emitter, embedder);
         let (done, total) = {
-            let mut st = self.status.lock().unwrap();
+            let mut st = lock_recover(&self.status);
             st.running = false;
             st.last_run_at = Some(now_ms());
             st.next_run_at = now_ms() + REINDEX_INTERVAL_MS;
@@ -136,7 +137,7 @@ impl ReindexManager {
             rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
         let total = (projects.len() + 4) as i64;
-        self.status.lock().unwrap().total = total;
+        lock_recover(&self.status).total = total;
         let mut done = 0i64;
 
         for (id, name) in &projects {
@@ -165,7 +166,7 @@ impl ReindexManager {
 
     fn progress(&self, done: i64, total: i64, phase: &str, emitter: &dyn UiEmitter) {
         {
-            let mut st = self.status.lock().unwrap();
+            let mut st = lock_recover(&self.status);
             st.done = done;
             st.total = total;
             st.phase = phase.to_string();
@@ -178,7 +179,7 @@ impl ReindexManager {
 
     // Takes the single-run slot; false when a pass is already running.
     fn begin(&self) -> bool {
-        let mut st = self.status.lock().unwrap();
+        let mut st = lock_recover(&self.status);
         if st.running {
             return false;
         }
@@ -225,7 +226,7 @@ pub fn start_timer(app: AppHandle) {
     std::thread::spawn(move || {
         loop {
             std::thread::sleep(Duration::from_secs(TICK_SECONDS));
-            let wd = app.state::<AppState>().working_dir.lock().unwrap().clone();
+            let wd = lock_recover(&app.state::<AppState>().working_dir).clone();
             if let Some(wd) = wd {
                 mgr.start_if_due(wd, Arc::new(app.clone()));
             }

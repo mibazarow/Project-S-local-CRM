@@ -3,6 +3,7 @@
 // a status. Mutations emit "objectives-changed" so the Today panel reloads,
 // whether the change came from a command or an agent tool.
 use crate::agent::project_tools::{envelope, state_of, with_conn};
+use crate::sync_util::lock_recover;
 use crate::agent::result::{ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
@@ -291,7 +292,7 @@ pub fn objective_delete(conn: &Connection, id: i64) -> Result<()> {
 // todowrite's "todos-changed"); a missing emitter is not an error.
 fn emit_changed(ctx: &ToolCtx, id: Option<i64>) {
     if let Ok(state) = state_of(ctx) {
-        if let Some(emitter) = state.emitter.lock().unwrap().as_ref() {
+        if let Some(emitter) = lock_recover(&state.emitter).as_ref() {
             let payload = serde_json::to_value(ObjectivesChanged { id })
                 .unwrap_or(Value::Null);
             emitter.emit_event("objectives-changed", payload);

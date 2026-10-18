@@ -4,6 +4,7 @@
 // (same project/session id separation as RunKey). todowrite replaces the whole
 // list; the UI panel reloads on the "todos-changed" event.
 use crate::agent::project_tools::{envelope, state_of, with_conn};
+use crate::sync_util::lock_recover;
 use crate::agent::result::{ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
@@ -132,7 +133,7 @@ pub fn todos_replace(
 // rename_chat's "sessions-changed"); a missing emitter is not an error.
 fn emit_changed(ctx: &ToolCtx, scope_kind: &str, scope_id: i64) {
     if let Ok(state) = state_of(ctx) {
-        if let Some(emitter) = state.emitter.lock().unwrap().as_ref() {
+        if let Some(emitter) = lock_recover(&state.emitter).as_ref() {
             let payload = serde_json::to_value(TodosChanged {
                 scope_kind: scope_kind.to_owned(),
                 scope_id,

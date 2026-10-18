@@ -15,6 +15,7 @@
 // it via the immediate first tick, so the autostart slice only has to launch
 // the app, not replay schedules.
 use crate::error::{AppError, Result};
+use crate::sync_util::lock_recover;
 use crate::harness;
 use crate::state::{AgentRegistry, AppState};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeZone, Utc};
@@ -671,10 +672,10 @@ pub fn start(app: AppHandle) {
     std::thread::spawn(move || {
         loop {
             let state = app.state::<AppState>();
-            if state.working_dir.lock().unwrap().is_some() {
+            if lock_recover(&state.working_dir).is_some() {
                 let notifier = TauriNotifier::new(&app);
                 let runner = TauriSessionRunner::new(&app);
-                let guard = state.db.lock().unwrap();
+                let guard = lock_recover(&state.db);
                 if let Some(conn) = guard.as_ref() {
                     let now = Utc::now();
                     match tick(conn, now, &notifier, &runner) {
