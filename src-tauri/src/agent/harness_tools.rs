@@ -267,6 +267,37 @@ fn io_fail(path: &Path, e: &std::io::Error) -> ToolResult {
     }
 }
 
+// Lenient re-anchoring for paths that must already exist: an exact hit
+// passes through untouched; a miss is re-resolved component by component
+// against the real folder entries (NFC/NFD, case, dash and space variants),
+// returning the ACTUAL on-disk path. Ambiguous matches and misses surface
+// as AppError (see lenient_fail).
+pub(crate) fn lenient_existing(path: &Path) -> Result<PathBuf> {
+    if fs::symlink_metadata(path).is_ok() {
+        return Ok(path.to_path_buf());
+    }
+    fs_ops::lenient_absolute(path)
+}
+
+// Maps a lenient-resolution failure to the envelope: ambiguous candidates
+// are invalid_args (the caller must pick one), plain misses keep not_found.
+pub(crate) fn lenient_fail(e: &AppError) -> ToolResult {
+    let msg = e.to_string();
+    let code = if msg.contains("ambiguous") {
+        ToolErrorCode::InvalidArgs
+    } else {
+        ToolErrorCode::NotFound
+    };
+    ToolResult::err(code, msg)
+}
+
+// Resolves the parent folders of a create/write target leniently, keeping
+// the final component as requested; a genuinely missing parent chain is
+// returned unchanged so the caller creates it.
+fn lenient_target_parent(path: &Path) -> Result<PathBuf> {
+    fs_ops::lenient_parent(path)
+}
+
 // Harness CRM tools address projects by id or exact name. Cross-project
 // search iterates all projects: the UI keeps search per-project (SPEC 4.4),
 // but the harness agent explicitly gets CRM-wide tools (SPEC 5.2 #4).
@@ -318,6 +349,10 @@ impl Tool for FsReadTool {
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let wd = require_wd(ctx)?;
         let path = resolve_path(args["path"].as_str().unwrap_or_default(), &wd);
+        let path = match lenient_existing(&path) {
+            Ok(p) => p,
+            Err(e) => return Ok(lenient_fail(&e)),
+        };
         let meta = match fs::metadata(&path) {
             Ok(m) => m,
             Err(e) => return Ok(io_fail(&path, &e)),
@@ -392,7 +427,10 @@ impl Tool for FsListTool {
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let wd = require_wd(ctx)?;
         let path = match args.get("path").and_then(Value::as_str) {
-            Some(p) if !p.is_empty() => resolve_path(p, &wd),
+            Some(p) if !p.is_empty() => match lenient_existing(&resolve_path(p, &wd)) {
+                Ok(p) => p,
+                Err(e) => return Ok(lenient_fail(&e)),
+            },
             _ => paths::harness_dir(&wd),
         };
         let rd = match fs::read_dir(&path) {
@@ -454,6 +492,13 @@ impl Tool for FsWriteTool {
         let wd = require_wd(ctx)?;
         let content = args["content"].as_str().unwrap_or_default();
         let path = resolve_path(args["path"].as_str().unwrap_or_default(), &wd);
+        // An existing file (also via a lenient variant match) is overwritten;
+        // a new one keeps the requested name under leniently resolved parents.
+        let path = match lenient_existing(&path) {
+            Ok(p) => p,
+            Err(e) if e.to_string().contains("ambiguous") => return Ok(lenient_fail(&e)),
+            Err(_) => lenient_target_parent(&path)?,
+        };
         if let Ok(meta) = fs::metadata(&path) {
             if meta.is_dir() {
                 return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, format!("{} is a directory", path.display())));
@@ -544,6 +589,10 @@ impl Tool for FsDeleteTool {
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let wd = require_wd(ctx)?;
         let path = resolve_path(args["path"].as_str().unwrap_or_default(), &wd);
+        let path = match lenient_existing(&path) {
+            Ok(p) => p,
+            Err(e) => return Ok(lenient_fail(&e)),
+        };
         if is_obviously_destructive(&path, &wd) {
             return Ok(ToolResult::err(
                 ToolErrorCode::PermissionDenied,
@@ -699,6 +748,18 @@ fn fs_transfer(args: &Value, ctx: &ToolCtx, move_it: bool, max_len: usize) -> Re
     let overwrite = args.get("overwrite").and_then(Value::as_bool).unwrap_or(false);
     let from = resolve_path(from_raw, &wd);
     let to = resolve_path(to_raw, &wd);
+    let from = match lenient_existing(&from) {
+        Ok(p) => p,
+        Err(e) => return Ok(lenient_fail(&e)),
+    };
+    // An existing destination (also via a lenient variant match) keeps its
+    // real name for the collision rules; a genuinely new one keeps the
+    // requested name. An ambiguous destination is refused, never guessed.
+    let to = match lenient_existing(&to) {
+        Ok(p) => p,
+        Err(e) if e.to_string().contains("ambiguous") => return Ok(lenient_fail(&e)),
+        Err(_) => to,
+    };
     for path in [&from, &to] {
         if let Some(link) = symlink_guard(path, &wd) {
             return Ok(ToolResult::err(
@@ -966,6 +1027,10 @@ impl Tool for FsRenameTool {
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let wd = require_wd(ctx)?;
         let path = resolve_path(args["path"].as_str().unwrap_or_default(), &wd);
+        let path = match lenient_existing(&path) {
+            Ok(p) => p,
+            Err(e) => return Ok(lenient_fail(&e)),
+        };
         let new_name = match fs_ops::check_name(args["newName"].as_str().unwrap_or_default()) {
             Ok(name) => name,
             Err(e) => return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, e.to_string())),
@@ -1043,19 +1108,32 @@ impl Tool for FsMkdirTool {
             return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, "path is empty"));
         }
         let path = resolve_path(raw, &wd);
+        // A variant of an existing folder name reports the real one instead
+        // of creating a near-duplicate folder next to it.
+        let path = match lenient_existing(&path) {
+            Ok(existing) => {
+                let kind = if fs::symlink_metadata(&existing)
+                    .map(|m| m.is_dir())
+                    .unwrap_or(false)
+                {
+                    "folder"
+                } else {
+                    "file"
+                };
+                return Ok(ToolResult::err(
+                    ToolErrorCode::InvalidArgs,
+                    format!("{} already exists as a {kind}", existing.display()),
+                ));
+            }
+            Err(e) if e.to_string().contains("ambiguous") => return Ok(lenient_fail(&e)),
+            Err(_) => lenient_target_parent(&path)?,
+        };
         let Some(parent) = path.parent() else {
             return Ok(ToolResult::err(
                 ToolErrorCode::InvalidArgs,
                 format!("{} has no parent folder", path.display()),
             ));
         };
-        if let Ok(meta) = fs::symlink_metadata(&path) {
-            let kind = if meta.is_dir() { "folder" } else { "file" };
-            return Ok(ToolResult::err(
-                ToolErrorCode::InvalidArgs,
-                format!("{} already exists as a {kind}", path.display()),
-            ));
-        }
         match fs::create_dir(&path) {
             Ok(()) => Ok(ToolResult::ok(json!({
                 "path": path.display().to_string(),
@@ -1128,7 +1206,10 @@ impl Tool for FsGrepTool {
             .unwrap_or(50.0)
             .clamp(1.0, 200.0) as usize;
         let root = match args.get("path").and_then(Value::as_str) {
-            Some(p) if !p.is_empty() => resolve_path(p, &wd),
+            Some(p) if !p.is_empty() => match lenient_existing(&resolve_path(p, &wd)) {
+                Ok(p) => p,
+                Err(e) => return Ok(lenient_fail(&e)),
+            },
             _ => paths::harness_dir(&wd),
         };
         if let Err(e) = fs::metadata(&root) {
@@ -2931,6 +3012,36 @@ mod tests {
         );
         let sheet = r#"<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row></sheetData></worksheet>"#;
         zip_bytes(&[("xl/sharedStrings.xml", &shared), ("xl/worksheets/sheet1.xml", sheet)])
+    }
+
+    #[test]
+    fn fs_read_resolves_lenient_name_variants_and_refuses_ambiguity() {
+        let env = setup("ht-lenient");
+        let real = "Harness/Договор № 017-2026\u{a0}— копия.txt";
+        fs::write(env.wd.join(real), "lenient body").unwrap();
+        let r = exec(
+            "fs_read",
+            json!({ "path": "Harness/Договор № 017-2026 - копия.txt" }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["content"], "lenient body");
+
+        // a second file differing only in the dash makes the variant ambiguous
+        fs::write(
+            env.wd.join("Harness/Договор № 017-2026\u{a0}\u{2013} копия.txt"),
+            "en",
+        )
+        .unwrap();
+        let r = exec(
+            "fs_read",
+            json!({ "path": "Harness/Договор № 017-2026 - копия.txt" }),
+            &env.ctx,
+        );
+        assert!(!r.ok);
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "invalid_args");
+        assert!(err.message.contains("ambiguous"), "{}", err.message);
     }
 
     #[test]

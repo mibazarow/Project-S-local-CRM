@@ -53,10 +53,11 @@ fn existing_for_mutation_at(root: &Path, rel: &str) -> Result<PathBuf> {
             "cannot modify the Notes folder itself".into(),
         ));
     }
-    let target = existing_at(root, rel)?;
-    let joined = fs_ops::join_rel(root, rel)?;
+    let joined = fs_ops::resolve_rel(root, rel, "Notes")?;
     fs_ops::reject_symlink(&joined, rel)?;
-    Ok(target)
+    joined
+        .canonicalize()
+        .map_err(|_| AppError::Invalid(format!("\"{rel}\" not found")))
 }
 
 // One folder level, sorted dirs-first case-insensitive (same order as the
@@ -150,6 +151,10 @@ pub(crate) fn create_at(root: &Path, rel: &str, content: Option<&str>) -> Result
         }
     }
     let joined = fs_ops::join_rel(root, rel)?;
+    // Existing parent folders are matched leniently (dash/space/case/NFD
+    // variants), so a variant note name lands in the real folder instead of
+    // spawning a near-duplicate one; the note's own name stays as requested.
+    let joined = fs_ops::lenient_parent(&joined)?;
     fs_ops::reject_symlink_chain(root, &joined, rel)?;
     if fs::symlink_metadata(&joined).is_ok() {
         return Err(AppError::Invalid(format!("\"{rel}\" already exists")));
@@ -465,6 +470,21 @@ mod tests {
 
     fn notes(wd: &Path) -> PathBuf {
         paths::notes_dir(wd)
+    }
+
+    #[test]
+    fn lenient_reads_and_creates_resolve_special_name_variants() {
+        let wd = setup("notes-lenient");
+        let real = "Договор № 017-2026\u{a0}— копия.md";
+        fs::write(notes(&wd).join(real), "note body").unwrap();
+        assert_eq!(read(&wd, "Договор № 017-2026 - копия.md").unwrap(), "note body");
+        // a variant of an existing folder name lands the new note in the real
+        // folder instead of spawning a near-duplicate one
+        fs::create_dir_all(notes(&wd).join("Точка\u{a0}— входа")).unwrap();
+        let e = create(&wd, "Точка - входа/заметка.md", Some("x")).unwrap();
+        assert!(notes(&wd).join("Точка\u{a0}— входа/заметка.md").is_file());
+        assert!(e.rel_path.starts_with("Точка\u{a0}— входа/"), "{}", e.rel_path);
+        fs::remove_dir_all(&wd).unwrap();
     }
 
     fn fts_rel_paths(wd: &Path, query: &str) -> Vec<String> {

@@ -731,6 +731,14 @@ fn resolve_target(args: &Value, ctx: &ToolCtx, wd: &Path) -> Result<(String, Pat
                 .file_name()
                 .ok_or_else(|| AppError::Invalid(format!("invalid path \"{raw}\"")))?;
             fs_ops::check_name(&name.to_string_lossy())?;
+            // An existing target (also via a lenient dash/space/case/NFD
+            // variant) keeps its real path; a new one keeps the requested
+            // name under leniently resolved parent folders.
+            let joined = match super::harness_tools::lenient_existing(&joined) {
+                Ok(p) => p,
+                Err(e) if e.to_string().contains("ambiguous") => return Err(e),
+                Err(_) => fs_ops::lenient_parent(&joined)?,
+            };
             if !canonicalish(&joined).starts_with(&root) {
                 return Err(AppError::Invalid(format!(
                     "\"{raw}\" escapes the project folder"
@@ -744,6 +752,11 @@ fn resolve_target(args: &Value, ctx: &ToolCtx, wd: &Path) -> Result<(String, Pat
                 .file_name()
                 .ok_or_else(|| AppError::Invalid(format!("invalid path \"{raw}\"")))?;
             fs_ops::check_name(&name.to_string_lossy())?;
+            let path = match super::harness_tools::lenient_existing(&path) {
+                Ok(p) => p,
+                Err(e) if e.to_string().contains("ambiguous") => return Err(e),
+                Err(_) => fs_ops::lenient_parent(&path)?,
+            };
             Ok((path.display().to_string(), path))
         }
     }

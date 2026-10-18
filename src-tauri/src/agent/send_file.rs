@@ -225,6 +225,8 @@ fn fail(e: AppError) -> ToolResult {
         || msg.contains("symlink")
     {
         ToolErrorCode::PermissionDenied
+    } else if msg.contains("ambiguous") {
+        ToolErrorCode::InvalidArgs
     } else {
         ToolErrorCode::ExecutionError
     };

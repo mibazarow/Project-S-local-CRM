@@ -209,6 +209,7 @@ fn resolve_input(raw: &str, ctx: &ToolCtx, wd: &Path) -> Result<(String, PathBuf
             .map(|path| (raw.to_owned(), path)),
         None => {
             let path = resolve_path(raw, wd);
+            let path = super::harness_tools::lenient_existing(&path)?;
             match fs::metadata(&path) {
                 Ok(m) if m.is_file() => Ok((path.display().to_string(), path)),
                 Ok(_) => Err(AppError::Invalid(format!("{} is a directory", path.display()))),
@@ -236,6 +237,7 @@ fn resolve_output(raw: &str, ctx: &ToolCtx, wd: &Path) -> Result<(String, PathBu
                 .file_name()
                 .ok_or_else(|| AppError::Invalid(format!("invalid path \"{raw}\"")))?;
             fs_ops::check_name(&name.to_string_lossy())?;
+            let joined = fs_ops::lenient_parent(&joined)?;
             if !canonicalish(&joined).starts_with(&root) {
                 return Err(AppError::Invalid(format!(
                     "\"{raw}\" escapes the project folder"
@@ -249,6 +251,7 @@ fn resolve_output(raw: &str, ctx: &ToolCtx, wd: &Path) -> Result<(String, PathBu
                 .file_name()
                 .ok_or_else(|| AppError::Invalid(format!("invalid path \"{raw}\"")))?;
             fs_ops::check_name(&name.to_string_lossy())?;
+            let path = fs_ops::lenient_parent(&path)?;
             Ok((path.display().to_string(), path))
         }
     }

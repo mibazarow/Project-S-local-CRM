@@ -173,6 +173,10 @@ impl Tool for OcrTool {
             },
             None => {
                 let path = resolve_path(raw, &wd);
+                let path = match super::harness_tools::lenient_existing(&path) {
+                    Ok(p) => p,
+                    Err(e) => return Ok(super::harness_tools::lenient_fail(&e)),
+                };
                 match fs::metadata(&path) {
                     Ok(m) if m.is_file() => (path.display().to_string(), path),
                     Ok(_) => {

@@ -11,6 +11,7 @@ use super::project_tools::{emit_versions_changed, envelope, require_wd, with_con
 use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
+use crate::fs_ops;
 use crate::paths;
 use crate::projects;
 use serde_json::{json, Value};
@@ -58,7 +59,7 @@ fn resolve_target(args: &Value, ctx: &ToolCtx, wd: &Path) -> Result<(String, Pat
     match ctx.project_id {
         Some(pid) => {
             let root = with_conn(ctx, |conn| projects::project_root(conn, wd, pid))?;
-            let joined = join_rel(&root, raw)?;
+            let joined = fs_ops::resolve_rel(&root, raw, "project")?;
             let canon = joined
                 .canonicalize()
                 .map_err(|_| AppError::Invalid(format!("\"{raw}\" not found")))?;
@@ -71,6 +72,7 @@ fn resolve_target(args: &Value, ctx: &ToolCtx, wd: &Path) -> Result<(String, Pat
         }
         None => {
             let path = super::harness_tools::resolve_path(raw, wd);
+            let path = super::harness_tools::lenient_existing(&path)?;
             Ok((path.display().to_string(), path))
         }
     }
@@ -301,7 +303,7 @@ fn resolve_base(args: &Value, ctx: &ToolCtx, wd: &Path) -> Result<(PathBuf, Path
             if raw.is_empty() {
                 return Ok((root.clone(), root));
             }
-            let joined = join_rel(&root, raw)?;
+            let joined = fs_ops::resolve_rel(&root, raw, "project")?;
             let canon = joined
                 .canonicalize()
                 .map_err(|_| AppError::Invalid(format!("\"{raw}\" not found")))?;
@@ -318,6 +320,7 @@ fn resolve_base(args: &Value, ctx: &ToolCtx, wd: &Path) -> Result<(PathBuf, Path
             } else {
                 super::harness_tools::resolve_path(raw, wd)
             };
+            let dir = super::harness_tools::lenient_existing(&dir)?;
             let canon = dir
                 .canonicalize()
                 .map_err(|_| AppError::Invalid(format!("\"{}\" not found", dir.display())))?;

@@ -4192,6 +4192,7 @@ dependencies = [
  "tauri-plugin-opener",
  "tokenizers",
  "tungstenite",
+ "unicode-normalization",
  "ureq 2.12.1",
  "zip 8.6.0",
 ]

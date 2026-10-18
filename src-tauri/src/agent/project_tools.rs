@@ -187,6 +187,8 @@ fn fail(e: AppError) -> ToolResult {
         || msg.contains("symlink")
     {
         ToolErrorCode::PermissionDenied
+    } else if msg.contains("ambiguous") {
+        ToolErrorCode::InvalidArgs
     } else {
         ToolErrorCode::ExecutionError
     };
@@ -1091,6 +1093,44 @@ mod tests {
         );
         let sheet = r#"<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c></row></sheetData></worksheet>"#;
         zip_bytes(&[("xl/sharedStrings.xml", &shared), ("xl/worksheets/sheet1.xml", sheet)])
+    }
+
+    #[test]
+    fn read_file_resolves_special_document_name_variants_and_reports_ambiguity() {
+        let env = setup("pt-lenient-docs");
+        let dir = root(&env.wd).join("02_Договоры");
+        fs::create_dir_all(&dir).unwrap();
+        // on-disk name carries NBSP + em dash; the agent types hyphen + spaces
+        let real = "Договор № 017-2026\u{a0}— копия.docx";
+        fs::write(dir.join(real), docx_bytes("Договор text")).unwrap();
+        let r = exec(
+            "read_file",
+            json!({ "rel_path": "02_Договоры/Договор № 017-2026 - копия.docx" }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["content"], "Договор text");
+        assert_eq!(data["extracted"], true);
+        assert_eq!(data["format"], "docx");
+
+        // a second file differing only in the dash makes the variant ambiguous:
+        // refused with the candidate list, never guessed
+        fs::write(
+            dir.join("Договор № 017-2026\u{a0}\u{2013} копия.docx"),
+            docx_bytes("en"),
+        )
+        .unwrap();
+        let r = exec(
+            "read_file",
+            json!({ "rel_path": "02_Договоры/Договор № 017-2026 - копия.docx" }),
+            &env.ctx,
+        );
+        assert!(!r.ok);
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "invalid_args");
+        assert!(err.message.contains("ambiguous"), "{}", err.message);
+        assert!(err.message.contains(real), "{}", err.message);
     }
 
     #[test]

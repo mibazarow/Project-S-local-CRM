@@ -44,15 +44,18 @@ fn resolve_io(args: &Value, ctx: &ToolCtx, wd: &Path) -> std::result::Result<(St
             let output = match out_raw {
                 Some(o) => {
                     let root = with_conn(ctx, |conn| projects::project_root(conn, wd, pid))?;
-                    Some(fs_ops::join_rel(&root, o)?)
+                    Some(fs_ops::lenient_parent(&fs_ops::join_rel(&root, o)?)?)
                 }
                 None => None,
             };
             Ok((raw.to_owned(), path, output))
         }
         None => {
-            let path = resolve_path(raw, wd);
-            let output = out_raw.map(|o| resolve_path(o, wd));
+            let path = super::harness_tools::lenient_existing(&resolve_path(raw, wd))?;
+            let output = match out_raw {
+                Some(o) => Some(fs_ops::lenient_parent(&resolve_path(o, wd))?),
+                None => None,
+            };
             // The label stays the path as given (project scope echoes the
             // project-relative path too); sips gets the resolved absolute one.
             Ok((raw.to_owned(), path, output))

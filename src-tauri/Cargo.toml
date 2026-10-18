@@ -58,6 +58,9 @@ tungstenite = "0.29"
 # DOCX, XLSX and PDF writers, pure Rust, no external binaries.
 docx-rs = "0.4.22"
 rust_xlsxwriter = "0.100.0"
+# NFC/NFD folding in the lenient path resolver (fs_ops::fold_name); already a
+# transitive dep, pinned to the version in Cargo.lock so no new download.
+unicode-normalization = "0.1.25"
 printpdf = { version = "0.12.8", default-features = false }
 
 [features]

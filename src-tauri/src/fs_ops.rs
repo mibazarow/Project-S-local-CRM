@@ -5,6 +5,7 @@ use base64::Engine as _;
 use rusqlite::Connection;
 use serde::Serialize;
 use std::fs;
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 
 const MARKDOWN_EXTS: &[&str] = &["md", "markdown"];
@@ -521,8 +522,11 @@ pub(crate) fn binary_data_url(path: &Path, max_bytes: u64, label: &str) -> Resul
 // absolute paths, "..", and symlink escapes (resolved target must stay
 // inside). `label` names the containing folder in errors ("project", "Notes").
 // Shared by the project resolvers below and the notes vault (notes/mod.rs).
+// Missing exact names go through the lenient resolver (see lenient_join), so
+// NBSP/em-dash/case/NFD variants of an existing entry resolve to the real
+// on-disk name instead of failing.
 pub(crate) fn contain_existing(root: &Path, rel: &str, label: &str) -> Result<PathBuf> {
-    let joined = join_rel(root, rel)?;
+    let joined = resolve_rel(root, rel, label)?;
     let canon = joined
         .canonicalize()
         .map_err(|_| AppError::Invalid(format!("\"{rel}\" not found")))?;
@@ -532,6 +536,190 @@ pub(crate) fn contain_existing(root: &Path, rel: &str, label: &str) -> Result<Pa
         )));
     }
     Ok(canon)
+}
+
+// ---------------------------------------------------------------------------
+// Lenient path resolution (SPEC: unreliable reads of names with NBSP, em
+// dash, №, NFD, case variants). Exact names always win; a miss is re-matched
+// component by component against the real directory entries.
+// ---------------------------------------------------------------------------
+
+// Folds a name for lenient comparison: trims, normalizes to NFC (so NFC and
+// NFD forms compare equal), lowercases, maps dash variants (‐ ‒ – — ─ − and
+// soft hyphen) to '-', drops zero-width characters and maps every other
+// Unicode space (NBSP, thin, narrow, ideographic, …) to a plain space.
+pub(crate) fn fold_name(raw: &str) -> String {
+    use unicode_normalization::UnicodeNormalization as _;
+    let mut out = String::with_capacity(raw.len());
+    for ch in raw.trim().nfc() {
+        match ch {
+            '\u{00ad}' | '\u{2010}'..='\u{2015}' | '\u{2043}' | '\u{2212}' => out.push('-'),
+            '\u{200b}' | '\u{200c}' | '\u{200d}' | '\u{feff}' => {}
+            c if c.is_whitespace() => out.push(' '),
+            c => out.extend(c.to_lowercase()),
+        }
+    }
+    out
+}
+
+// Character-level Levenshtein distance, used only to suggest near names.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let ac: Vec<char> = a.chars().collect();
+    let bc: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=bc.len()).collect();
+    let mut cur = vec![0usize; bc.len() + 1];
+    for i in 1..=ac.len() {
+        cur[0] = i;
+        for j in 1..=bc.len() {
+            let cost = usize::from(ac[i - 1] != bc[j - 1]);
+            cur[j] = (prev[j] + 1).min(cur[j - 1] + 1).min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut cur);
+    }
+    prev[bc.len()]
+}
+
+// "Close enough to be worth suggesting" for the not-found hint.
+fn is_close(a: &str, b: &str) -> bool {
+    let longest = a.chars().count().max(b.chars().count());
+    longest > 0 && levenshtein(a, b) <= (longest / 3).max(2)
+}
+
+// Resolves one component inside `dir`: the exact name first (symlinks pass
+// through; callers canonicalize/refuse later), then a lenient match against
+// the real entries. A unique match returns the ACTUAL on-disk path; several
+// matches are refused with the candidate list (never guessed); none is an
+// error naming the nearest candidates as a hint.
+fn resolve_component(dir: &Path, name: &OsStr, rel: &str, label: &str) -> Result<PathBuf> {
+    let exact = dir.join(name);
+    if fs::symlink_metadata(&exact).is_ok() {
+        return Ok(exact);
+    }
+    let folded = fold_name(&name.to_string_lossy());
+    let mut matches: Vec<PathBuf> = Vec::new();
+    let mut near: Vec<String> = Vec::new();
+    if let Ok(rd) = fs::read_dir(dir) {
+        for item in rd.flatten() {
+            let entry_name = item.file_name().to_string_lossy().into_owned();
+            let entry_folded = fold_name(&entry_name);
+            if entry_folded == folded {
+                matches.push(item.path());
+            } else if is_close(&entry_folded, &folded) {
+                near.push(entry_name);
+            }
+        }
+    }
+    match matches.len() {
+        1 => Ok(matches.pop().unwrap_or(exact)),
+        0 => {
+            near.sort();
+            near.truncate(5);
+            let hint = if near.is_empty() {
+                String::new()
+            } else {
+                let list = near
+                    .iter()
+                    .map(|n| format!("\"{n}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let tool = if label == "project" { "list_tree" } else { "the folder listing" };
+                format!("; nearest names here: {list}; use {tool} for exact names")
+            };
+            Err(AppError::Invalid(format!(
+                "\"{rel}\" not found in the {label} folder{hint}"
+            )))
+        }
+        _ => {
+            let mut names: Vec<String> = matches
+                .iter()
+                .map(|p| {
+                    p.file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default()
+                })
+                .collect();
+            names.sort();
+            let list = names
+                .iter()
+                .map(|n| format!("\"{n}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(AppError::Invalid(format!(
+                "\"{rel}\" is ambiguous in the {label} folder: {list} all match; use one exact name"
+            )))
+        }
+    }
+}
+
+// Lenient per-component resolution of a root-relative path: returns the
+// actual on-disk path; exact components pass through untouched.
+pub(crate) fn lenient_join(root: &Path, rel: &str, label: &str) -> Result<PathBuf> {
+    let mut cur = root.to_path_buf();
+    for part in Path::new(rel).components() {
+        match part {
+            Component::Normal(name) => cur = resolve_component(&cur, name, rel, label)?,
+            _ => {
+                return Err(AppError::Invalid(format!(
+                    "path \"{rel}\" is not project-relative"
+                )))
+            }
+        }
+    }
+    Ok(cur)
+}
+
+// join_rel + lenient fallback: the resolved (not yet canonicalized) target
+// of a root-relative path, for callers that must inspect the pre-canonical
+// path (symlink refusal) before canonicalizing.
+pub(crate) fn resolve_rel(root: &Path, rel: &str, label: &str) -> Result<PathBuf> {
+    let joined = join_rel(root, rel)?;
+    if fs::symlink_metadata(&joined).is_ok() {
+        return Ok(joined);
+    }
+    lenient_join(root, rel, label)
+}
+
+// Lenient per-component resolution of an absolute, lexically normalized
+// path (harness tools): every component is matched exactly first, then
+// leniently against the real entries of its parent folder.
+pub(crate) fn lenient_absolute(path: &Path) -> Result<PathBuf> {
+    let mut cur = PathBuf::new();
+    for part in path.components() {
+        match part {
+            Component::RootDir | Component::Prefix(_) => cur.push(part.as_os_str()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                cur.pop();
+            }
+            Component::Normal(name) => {
+                cur = resolve_component(&cur, name, &path.display().to_string(), "folder")?
+            }
+        }
+    }
+    Ok(cur)
+}
+
+// Re-anchors the parent folders of an absolute path leniently, keeping the
+// final component exactly as requested (create/write targets whose own name
+// may be new). A truly missing parent chain is returned unchanged so the
+// caller can create it; an ambiguous parent folder is refused.
+pub(crate) fn lenient_parent(path: &Path) -> Result<PathBuf> {
+    let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) else {
+        return Ok(path.to_path_buf());
+    };
+    let resolved = if fs::symlink_metadata(parent).is_ok() {
+        parent.to_path_buf()
+    } else {
+        match lenient_absolute(parent) {
+            Ok(p) => p,
+            Err(e) if e.to_string().contains("ambiguous") => return Err(e),
+            Err(_) => parent.to_path_buf(),
+        }
+    };
+    Ok(match path.file_name() {
+        Some(name) => resolved.join(name),
+        None => resolved,
+    })
 }
 
 // Refuses symlink entries for mutating operations.
@@ -580,9 +768,17 @@ fn existing_for_mutation(
             "cannot modify the project folder itself".into(),
         ));
     }
-    let (root, canon) = existing(conn, wd, project_id, rel)?;
-    let joined = join_rel(&root, rel)?;
+    let root = projects::project_root(conn, wd, project_id)?;
+    let joined = resolve_rel(&root, rel, "project")?;
     reject_symlink(&joined, rel)?;
+    let canon = joined
+        .canonicalize()
+        .map_err(|_| AppError::Invalid(format!("\"{rel}\" not found")))?;
+    if !canon.starts_with(&root) {
+        return Err(AppError::Invalid(format!(
+            "\"{rel}\" escapes the project folder"
+        )));
+    }
     Ok((root, canon))
 }
 
@@ -792,6 +988,130 @@ mod tests {
         }
         out.extend_from_slice(&[0u8; 1024]);
         out
+    }
+
+    #[test]
+    fn fold_name_unifies_normalization_case_dashes_and_spaces() {
+        // NFD (е + combining diaeresis) and NFC (ё) of the same name compare equal
+        assert_eq!(fold_name("Все\u{308} ёлки"), fold_name("Всё ёлки"));
+        // every dash variant folds to a plain hyphen
+        for dash in [
+            '\u{2010}', '\u{2011}', '\u{2012}', '\u{2013}', '\u{2014}', '\u{2015}', '\u{2212}',
+        ] {
+            assert_eq!(fold_name(&format!("a{dash}b")), "a-b", "dash {dash:?}");
+        }
+        // NBSP and thin space each fold to a regular space, zero-width dropped
+        assert_eq!(fold_name("a\u{a0}\u{2009}b"), "a  b");
+        assert_eq!(fold_name("a\u{200b}b"), "ab");
+        // case folding and trimming
+        assert_eq!(fold_name("  ДОГОВОР №  "), fold_name("договор №"));
+    }
+
+    #[test]
+    fn lenient_reads_resolve_special_character_name_variants() {
+        let (wd, conn, id) = setup("fs-lenient");
+        create_folder(&conn, &wd, id, "", "02_Договоры").unwrap();
+        // the real demo shape: №, hyphen in the number, NBSP before an em dash
+        let real = "Договор № 017-2026\u{a0}— копия.docx";
+        fs::write(root(&wd).join(format!("02_Договоры/{real}")), "doc bytes").unwrap();
+        fs::write(
+            root(&wd).join("Отчёт – 2026 (финал)! #1 [50%] \"цитата\"?.md"),
+            "p1",
+        )
+        .unwrap();
+        fs::write(root(&wd).join("mixed CASE.txt"), "p2").unwrap();
+        fs::write(root(&wd).join("Все\u{308} ёлки.md"), "p3").unwrap(); // NFD on disk
+
+        // exact name still wins
+        assert_eq!(
+            read_text(&conn, &wd, id, &format!("02_Договоры/{real}")).unwrap(),
+            "doc bytes"
+        );
+        // hyphen + regular spaces (what the agent typed) resolve to the real file
+        assert_eq!(
+            read_text(&conn, &wd, id, "02_Договоры/Договор № 017-2026 - копия.docx").unwrap(),
+            "doc bytes"
+        );
+        // en dash variant likewise
+        assert_eq!(
+            read_text(&conn, &wd, id, "02_Договоры/Договор № 017-2026 – копия.docx").unwrap(),
+            "doc bytes"
+        );
+        // the folder itself via a case variant
+        assert_eq!(
+            read_text(&conn, &wd, id, "02_договоры/Договор № 017-2026 - копия.docx").unwrap(),
+            "doc bytes"
+        );
+        // punctuation-heavy name: exact and case/dash variants
+        let punct = "Отчёт – 2026 (финал)! #1 [50%] \"цитата\"?.md";
+        assert_eq!(read_text(&conn, &wd, id, punct).unwrap(), "p1");
+        assert_eq!(
+            read_text(&conn, &wd, id, "отчёт - 2026 (Финал)! #1 [50%] \"Цитата\"?.md").unwrap(),
+            "p1"
+        );
+        // case-insensitive lookup
+        assert_eq!(read_text(&conn, &wd, id, "MIXED case.TXT").unwrap(), "p2");
+        // NFC query against an NFD name on disk
+        assert_eq!(read_text(&conn, &wd, id, "Всё ёлки.md").unwrap(), "p3");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn lenient_ambiguous_match_lists_candidates_without_guessing() {
+        let (wd, conn, id) = setup("fs-ambiguous");
+        fs::write(root(&wd).join("a\u{2014}b.txt"), "em").unwrap();
+        fs::write(root(&wd).join("a\u{2013}b.txt"), "en").unwrap();
+        let msg = read_text(&conn, &wd, id, "a-b.txt").unwrap_err().to_string();
+        assert!(msg.contains("ambiguous"), "{msg}");
+        assert!(msg.contains("a\u{2014}b.txt") && msg.contains("a\u{2013}b.txt"), "{msg}");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn lenient_not_found_error_hints_near_candidates() {
+        let (wd, conn, id) = setup("fs-near");
+        fs::write(root(&wd).join("Договор № 017-2026.docx"), "x").unwrap();
+        let msg = read_text(&conn, &wd, id, "Договор № 017-2027.docx")
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("not found"), "{msg}");
+        assert!(msg.contains("Договор № 017-2026.docx"), "{msg}");
+        assert!(msg.contains("list_tree"), "{msg}");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn lenient_mutation_ops_use_the_real_on_disk_name() {
+        let (wd, conn, id) = setup("fs-lenient-mutate");
+        let real = "Заметка\u{a0}— правка.md";
+        fs::write(root(&wd).join(real), "one").unwrap();
+        // rename via a variant name renames the real file
+        let renamed = rename(&conn, &wd, id, "Заметка - правка.md", "done.md").unwrap();
+        assert_eq!(renamed.rel_path, "done.md");
+        assert!(!root(&wd).join(real).exists());
+        // delete via a variant name trashes the real file
+        fs::write(root(&wd).join(real), "two").unwrap();
+        delete(&conn, &wd, id, "Заметка – правка.md").unwrap();
+        assert!(!root(&wd).join(real).exists());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn lenient_resolution_still_rejects_traversal() {
+        let (wd, conn, id) = setup("fs-lenient-escape");
+        create_folder(&conn, &wd, id, "", "02_Договоры").unwrap();
+        for bad in [
+            "02_договоры/../../etc/passwd",
+            "..",
+            "../02_договоры",
+            "02_договоры/./x",
+        ] {
+            assert!(
+                matches!(read_text(&conn, &wd, id, bad), Err(AppError::Invalid(_))),
+                "accepted: {bad:?}"
+            );
+        }
+        fs::remove_dir_all(&wd).unwrap();
     }
 
     #[test]

@@ -74,6 +74,7 @@ fn fail(e: AppError) -> ToolResult {
         || msg.contains("is not a folder")
         || msg.contains("invalid name")
         || msg.contains("into itself or its own subfolder")
+        || msg.contains("ambiguous")
     {
         ToolErrorCode::InvalidArgs
     } else {
