@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
+import { useApp } from "../../state/AppStore";
 import type { AgentEventPayload, MessageAttachmentDto } from "../../api/types";
 import {
   chatReducer,
@@ -21,6 +22,7 @@ interface Props {
 }
 
 export default function ProjectChat({ projectId, projectName }: Props) {
+  const { actions } = useApp();
   const [state, dispatch] = useReducer(chatReducer, {});
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -85,9 +87,13 @@ export default function ProjectChat({ projectId, projectName }: Props) {
             reason: p.event.reason,
             reasoning: p.event.reasoning,
           });
+          // Defensive: the run may have created/moved tasks; the kanban
+          // refetches even if a tasks-changed event raced the run end.
+          actions.notifyTasksChanged();
           break;
         case "error":
           dispatch({ type: "runError", key, message: p.event.message });
+          actions.notifyTasksChanged();
           break;
         case "confirmationRequested":
           break; // the id-bearing copy arrives as "agent-confirmation"
@@ -115,7 +121,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
       unConfirm?.();
       unFile?.();
     };
-  }, []);
+  }, [actions]);
 
   useEffect(() => {
     const el = listRef.current;

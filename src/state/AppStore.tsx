@@ -21,6 +21,8 @@ interface AppState {
   treeVersion: number;
   // Bumped on tasks-changed for the active project; the kanban refetches on it.
   tasksVersion: number;
+  // Bumped on schedules-changed (any source); the Harness view refetches on it.
+  schedulesVersion: number;
   // Cross-view navigation intents (command palette): set globally, consumed
   // and cleared by the target view even when it mounts after the request.
   pendingNotePath: string | null;
@@ -38,6 +40,8 @@ type Action =
   | { type: "error"; message: string | null }
   | { type: "fsChanged"; projectId: number }
   | { type: "tasksChanged"; projectId: number }
+  | { type: "tasksChangedForced" }
+  | { type: "schedulesChanged" }
   | { type: "pendingNote"; path: string | null }
   | { type: "pendingSession"; id: number | null }
   | { type: "settingsRequested"; value: boolean }
@@ -52,6 +56,7 @@ const initialState: AppState = {
   error: null,
   treeVersion: 0,
   tasksVersion: 0,
+  schedulesVersion: 0,
   pendingNotePath: null,
   pendingSessionId: null,
   settingsRequested: false,
@@ -79,6 +84,12 @@ function reducer(state: AppState, action: Action): AppState {
       return action.projectId === state.activeProjectId
         ? { ...state, tasksVersion: state.tasksVersion + 1 }
         : state;
+    // Defensive refetch after an agent run: the run may have touched tasks
+    // without a matching tasks-changed event (or the event raced the run end).
+    case "tasksChangedForced":
+      return { ...state, tasksVersion: state.tasksVersion + 1 };
+    case "schedulesChanged":
+      return { ...state, schedulesVersion: state.schedulesVersion + 1 };
     case "pendingNote":
       return { ...state, pendingNotePath: action.path };
     case "pendingSession":
@@ -108,6 +119,9 @@ interface AppActions {
   openProject: (id: number) => Promise<void>;
   moveProject: (id: number, position: number) => Promise<void>;
   refreshProjects: () => Promise<void>;
+  // Defensive task refetch after an agent run finishes (chat views call it):
+  // bumps tasksVersion regardless of the event payload's project match.
+  notifyTasksChanged: () => void;
   // Command-palette navigation intents; each target view clears its own.
   requestNote: (relPath: string) => void;
   requestSession: (id: number) => void;
@@ -217,6 +231,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const requestNote = useCallback((relPath: string) => dispatch({ type: "pendingNote", path: relPath }), []);
+  const notifyTasksChanged = useCallback(() => dispatch({ type: "tasksChangedForced" }), []);
   const requestSession = useCallback((id: number) => dispatch({ type: "pendingSession", id }), []);
   const requestSettings = useCallback(() => dispatch({ type: "settingsRequested", value: true }), []);
   const requestNewProject = useCallback(() => dispatch({ type: "newProjectRequested", value: true }), []);
@@ -237,6 +252,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
     let unFs: (() => void) | undefined;
     let unTasks: (() => void) | undefined;
+    let unSchedules: (() => void) | undefined;
     let unProjects: (() => void) | undefined;
     const refresh = () => void loadProjects();
     const onFs = (payload: FsChanged) => {
@@ -247,13 +263,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       refresh();
       dispatch({ type: "tasksChanged", projectId: payload.projectId });
     };
+    // One shared schedules subscription: every schedule mutation (commands,
+    // agent tools, a fired tick) bumps the counter the Harness view follows.
+    const onSchedules = () => dispatch({ type: "schedulesChanged" });
     void ipc.onFsChanged(onFs).then((u) => (cancelled ? u() : (unFs = u)));
     void ipc.onTasksChanged(onTasks).then((u) => (cancelled ? u() : (unTasks = u)));
+    void ipc.onSchedulesChanged(onSchedules).then((u) => (cancelled ? u() : (unSchedules = u)));
     void ipc.onProjectsChanged(refresh).then((u) => (cancelled ? u() : (unProjects = u)));
     return () => {
       cancelled = true;
       unFs?.();
       unTasks?.();
+      unSchedules?.();
       unProjects?.();
     };
   }, [state.onboarding.configured, loadProjects]);
@@ -266,6 +287,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       openProject,
       moveProject,
       refreshProjects: loadProjects,
+      notifyTasksChanged,
       requestNote,
       requestSession,
       requestSettings,
@@ -284,6 +306,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       openProject,
       moveProject,
       loadProjects,
+      notifyTasksChanged,
       requestNote,
       requestSession,
       requestSettings,

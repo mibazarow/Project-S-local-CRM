@@ -25,71 +25,11 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
   const [addingStatus, setAddingStatus] = useState<string | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    let cancelled = false;
-    ipc.tasksList(projectId)
-      .then((list) => {
-        if (!cancelled) {
-          setTasks(list);
-          setError(null);
-        }
-      })
-      .catch((e) => {
-        if (!cancelled) setError(toMessage(e));
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, tasksVersion]);
-
   const byStatus = useMemo(() => {
     const map: Record<string, TaskDto[]> = { new: [], progress: [], done: [] };
     for (const t of tasks ?? []) map[t.status]?.push(t);
     return map;
   }, [tasks]);
-
-  // Apply the returned DTO locally for immediate feel; tasks-changed refetch reconciles.
-  const upsert = (dto: TaskDto) =>
-    setTasks((prev) => {
-      if (!prev) return prev;
-      const i = prev.findIndex((t) => t.id === dto.id);
-      if (i === -1) return [...prev, dto];
-      const next = [...prev];
-      next[i] = dto;
-      return next;
-    });
-
-  const handleCreate = (status: string, title: string) => {
-    setAddingStatus(null);
-    ipc
-      .taskCreate(projectId, title, status)
-      .then((dto) => {
-        setError(null);
-        upsert(dto);
-      })
-      .catch((e) => setError(toMessage(e)));
-  };
-
-  const handlePatch = (id: number, patch: TaskPatch) => {
-    ipc
-      .taskUpdate(id, patch)
-      .then((dto) => {
-        setError(null);
-        upsert(dto);
-      })
-      .catch((e) => setError(toMessage(e)));
-  };
-
-  const handleDelete = (task: TaskDto) => {
-    if (!window.confirm(`Удалить задачу «${task.title}»?`)) return;
-    ipc
-      .taskDelete(task.id)
-      .then(() => {
-        setError(null);
-        setTasks((prev) => prev?.filter((t) => t.id !== task.id) ?? prev);
-      })
-      .catch((e) => setError(toMessage(e)));
-  };
 
   const { draggingId, dropTarget, onPointerDown } = usePointerDrag({
     // Target column = the one whose bounds contain the pointer; insertion
@@ -140,6 +80,77 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
         .catch((e) => setError(toMessage(e)));
     },
   });
+
+  // Reload on every tasks-changed bump for this project (agent or user
+  // mutation). Debounced so a burst of tool calls lands as one fetch, and
+  // the cancelled flag keeps a late response from overwriting a newer one.
+  // While the user is mid-drag the reload is deferred: an agent move must not
+  // clobber the in-progress drag; draggingId returning to null re-runs this
+  // effect and reconciles then.
+  useEffect(() => {
+    if (draggingId !== null) return;
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      ipc
+        .tasksList(projectId)
+        .then((list) => {
+          if (!cancelled) {
+            setTasks(list);
+            setError(null);
+          }
+        })
+        .catch((e) => {
+          if (!cancelled) setError(toMessage(e));
+        });
+    }, 200);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [projectId, tasksVersion, draggingId]);
+
+  // Apply the returned DTO locally for immediate feel; tasks-changed refetch reconciles.
+  const upsert = (dto: TaskDto) =>
+    setTasks((prev) => {
+      if (!prev) return prev;
+      const i = prev.findIndex((t) => t.id === dto.id);
+      if (i === -1) return [...prev, dto];
+      const next = [...prev];
+      next[i] = dto;
+      return next;
+    });
+
+  const handleCreate = (status: string, title: string) => {
+    setAddingStatus(null);
+    ipc
+      .taskCreate(projectId, title, status)
+      .then((dto) => {
+        setError(null);
+        upsert(dto);
+      })
+      .catch((e) => setError(toMessage(e)));
+  };
+
+  const handlePatch = (id: number, patch: TaskPatch) => {
+    ipc
+      .taskUpdate(id, patch)
+      .then((dto) => {
+        setError(null);
+        upsert(dto);
+      })
+      .catch((e) => setError(toMessage(e)));
+  };
+
+  const handleDelete = (task: TaskDto) => {
+    if (!window.confirm(`Удалить задачу «${task.title}»?`)) return;
+    ipc
+      .taskDelete(task.id)
+      .then(() => {
+        setError(null);
+        setTasks((prev) => prev?.filter((t) => t.id !== task.id) ?? prev);
+      })
+      .catch((e) => setError(toMessage(e)));
+  };
 
   const renderCard = (t: TaskDto, dragging: boolean) => (
     <TaskCard

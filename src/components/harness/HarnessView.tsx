@@ -266,30 +266,46 @@ export default function HarnessView() {
   const running = slice?.run != null;
   const confirmation = slice?.confirmations[0] ?? null;
 
+  // Sequence guards: overlapping reloads (event bursts plus manual actions)
+  // must never let a stale response overwrite a newer one — only the most
+  // recent call applies its result.
+  const sessionsSeq = useRef(0);
+  const schedulesSeq = useRef(0);
+
   const loadSessions = useCallback(async () => {
+    const seq = ++sessionsSeq.current;
     try {
       const list = await ipc.harnessListSessions();
+      if (seq !== sessionsSeq.current) return;
       setSessions(list);
       setActiveId((cur) => (cur != null && list.some((s) => s.id === cur) ? cur : (list[0]?.id ?? null)));
       setSessionsError(null);
     } catch (e) {
-      setSessionsError(toMessage(e));
+      if (seq === sessionsSeq.current) setSessionsError(toMessage(e));
     }
   }, []);
 
   const loadSchedules = useCallback(async () => {
+    const seq = ++schedulesSeq.current;
     try {
-      setSchedules(await ipc.scheduleList());
+      const list = await ipc.scheduleList();
+      if (seq !== schedulesSeq.current) return;
+      setSchedules(list);
       setSchedulesError(null);
     } catch (e) {
-      setSchedulesError(toMessage(e));
+      if (seq === schedulesSeq.current) setSchedulesError(toMessage(e));
     }
   }, []);
 
+  // Initial load plus every schedules-changed bump from the store (the App
+  // provider subscribes once): a schedule created/changed by a command, an
+  // agent tool or a fired tick refreshes the list right away. Sessions reload
+  // with it: a create can bind a freshly created session and a fire touches
+  // the session's last_active.
   useEffect(() => {
     void loadSessions();
     void loadSchedules();
-  }, [loadSessions, loadSchedules]);
+  }, [loadSessions, loadSchedules, state.schedulesVersion]);
 
   // Command-palette intent: switch to a session requested before this view
   // mounted. loadSessions keeps an activeId that exists in the list, so the
@@ -372,7 +388,6 @@ export default function HarnessView() {
     let cancelled = false;
     let unEvent: (() => void) | undefined;
     let unConfirm: (() => void) | undefined;
-    let unSchedules: (() => void) | undefined;
     let unSessions: (() => void) | undefined;
     let unFile: (() => void) | undefined;
     const reloadHistory = (key: number) => {
@@ -413,7 +428,10 @@ export default function HarnessView() {
           if (!run || !run.local) {
             if (key === activeIdRef.current) reloadHistory(key);
           }
+          // Defensive: the run may have created or touched schedules/tasks;
+          // their change events can race the run's done event.
           void loadSessions();
+          void loadSchedules();
           break;
         }
         case "error": {
@@ -423,6 +441,7 @@ export default function HarnessView() {
             if (key === activeIdRef.current) reloadHistory(key);
           }
           void loadSessions();
+          void loadSchedules();
           break;
         }
         case "confirmationRequested":
@@ -436,7 +455,8 @@ export default function HarnessView() {
         dispatch({ type: "confirm", key: p.sessionId, payload: p });
       })
       .then((u) => (cancelled ? u() : (unConfirm = u)));
-    void ipc.onSchedulesChanged(() => void loadSchedules()).then((u) => (cancelled ? u() : (unSchedules = u)));
+    // Schedules refresh arrives through the store's schedulesVersion (the App
+    // provider subscribes to "schedules-changed" once), not a second listener.
     // A fired schedule can create a fresh session (its origin was deleted),
     // and the backend emits this event after a session auto-title or an
     // agent rename_chat: the list (order and titles) refreshes as it changes.
@@ -454,7 +474,6 @@ export default function HarnessView() {
       cancelled = true;
       unEvent?.();
       unConfirm?.();
-      unSchedules?.();
       unSessions?.();
       unFile?.();
     };

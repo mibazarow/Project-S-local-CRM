@@ -111,6 +111,18 @@ pub(crate) fn with_conn<T>(ctx: &ToolCtx, f: impl FnOnce(&Connection) -> Result<
     f(guard.as_ref().ok_or(AppError::NotConfigured)?)
 }
 
+// Best-effort UI notify through the run state's emitter (same path as
+// todowrite's "todos-changed"): the open kanban must follow every task
+// mutation, whether it came from a command or an agent tool; a missing
+// emitter is not an error.
+pub(crate) fn emit_tasks_changed(ctx: &ToolCtx, project_id: i64) {
+    if let Ok(state) = state_of(ctx) {
+        if let Some(emitter) = state.emitter.lock().unwrap().as_ref() {
+            emitter.emit_event("tasks-changed", json!({ "projectId": project_id }));
+        }
+    }
+}
+
 // Maps a domain AppError to the envelope code (SPEC 6.4): missing entities are
 // not_found, path escapes and symlink refusals are permission_denied, the rest
 // (binary files, bad names, IO/DB faults) are execution_error.
@@ -549,6 +561,9 @@ impl Tool for TaskCreateTool {
         let title = args["title"].as_str().unwrap_or_default();
         let status = args.get("status").and_then(Value::as_str).map(str::to_owned);
         let r = with_conn(ctx, |conn| tasks::task_create(conn, pid, title, status));
+        if r.is_ok() {
+            emit_tasks_changed(ctx, pid);
+        }
         Ok(envelope(r))
     }
 }
@@ -598,6 +613,9 @@ impl Tool for TaskUpdateTool {
             require_own_task(conn, id, pid)?;
             tasks::task_update(conn, id, patch)
         });
+        if r.is_ok() {
+            emit_tasks_changed(ctx, pid);
+        }
         Ok(envelope(r))
     }
 }
@@ -645,6 +663,9 @@ impl Tool for TaskMoveTool {
             };
             tasks::task_move(conn, id, status, position)
         });
+        if r.is_ok() {
+            emit_tasks_changed(ctx, pid);
+        }
         Ok(envelope(r))
     }
 }
@@ -679,6 +700,9 @@ impl Tool for TaskDeleteTool {
             require_own_task(conn, id, pid)?;
             tasks::task_delete(conn, id)
         });
+        if r.is_ok() {
+            emit_tasks_changed(ctx, pid);
+        }
         Ok(match r {
             Ok(_) => ToolResult::ok(json!({ "deleted": id })),
             Err(e) => fail(e),
@@ -825,14 +849,30 @@ mod tests {
     use crate::index;
     use crate::onboarding::temp_test_dir;
     use crate::projects;
-    use crate::state::AppState;
+    use crate::state::{AppState, UiEmitter};
     use std::fs;
     use std::io::Write as _;
     use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingEmitter {
+        events: Arc<Mutex<Vec<(String, Value)>>>,
+    }
+
+    impl UiEmitter for RecordingEmitter {
+        fn emit_event(&self, event: &str, payload: Value) {
+            self.events
+                .lock()
+                .unwrap()
+                .push((event.to_owned(), payload));
+        }
+    }
 
     struct Env {
         wd: PathBuf,
         ctx: ToolCtx,
+        events: Arc<Mutex<Vec<(String, Value)>>>,
     }
 
     fn setup(tag: &str) -> Env {
@@ -843,6 +883,9 @@ mod tests {
         let state = Arc::new(AppState::new());
         *state.working_dir.lock().unwrap() = Some(wd.clone());
         *state.db.lock().unwrap() = Some(conn);
+        let recorder = RecordingEmitter::default();
+        let events = recorder.events.clone();
+        *state.emitter.lock().unwrap() = Some(Arc::new(recorder));
         let ctx = ToolCtx {
             project_id: Some(dto.id),
             session_id: None,
@@ -851,7 +894,7 @@ mod tests {
             state: Some(state),
             notes_root: None,
         };
-        Env { wd, ctx }
+        Env { wd, ctx, events }
     }
 
     fn root(wd: &Path) -> PathBuf {
@@ -1197,6 +1240,33 @@ mod tests {
         assert!(r.ok, "{:?}", r.error);
         let r = exec("task_list", json!({}), &env.ctx);
         assert!(r.data.unwrap()["tasks"].as_array().unwrap().is_empty());
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn task_mutations_emit_tasks_changed_for_the_bound_project() {
+        let env = setup("pt-task-events");
+        let pid = env.ctx.project_id.unwrap();
+        let r = exec("task_create", json!({ "title": "live" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let id = r.data.unwrap()["id"].as_i64().unwrap();
+        exec("task_update", json!({ "id": id, "title": "renamed" }), &env.ctx);
+        exec("task_move", json!({ "id": id, "status": "done" }), &env.ctx);
+        // a failed mutation must not notify
+        exec("task_update", json!({ "id": 9999, "title": "ghost" }), &env.ctx);
+        exec("task_delete", json!({ "id": id }), &env.ctx);
+
+        let events = env.events.lock().unwrap().clone();
+        let notified: Vec<&Value> = events
+            .iter()
+            .filter(|(name, _)| name == "tasks-changed")
+            .map(|(_, payload)| payload)
+            .collect();
+        assert_eq!(notified.len(), 4, "create/update/move/delete must notify: {events:?}");
+        assert!(
+            notified.iter().all(|p| p["projectId"] == json!(pid)),
+            "payload must carry the bound project id: {notified:?}"
+        );
         fs::remove_dir_all(&env.wd).unwrap();
     }
 

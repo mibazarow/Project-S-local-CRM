@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
+import { useApp } from "../../state/AppStore";
 import type { AgentEventPayload } from "../../api/types";
 import {
   chatReducer,
@@ -14,6 +15,7 @@ import {
 // backend get-or-creates the singleton chat and routes its runs as
 // "agent-event" / "agent-confirmation" with notes: true, keyed by chatId.
 export default function NotesChat() {
+  const { actions } = useApp();
   const [state, dispatch] = useReducer(chatReducer, {});
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -86,12 +88,16 @@ export default function NotesChat() {
           // A run started while this view was unmounted finalizes from the
           // persisted transcript, not from the stream.
           if (!run || !run.local) reloadHistory(key);
+          // Defensive: refresh the kanban after every run, whatever the
+          // agent touched (its change events can race the run's done event).
+          actions.notifyTasksChanged();
           break;
         }
         case "error": {
           const run = stateRef.current[key]?.run;
           dispatch({ type: "runError", key, message: p.event.message });
           if (!run || !run.local) reloadHistory(key);
+          actions.notifyTasksChanged();
           break;
         }
         case "confirmationRequested":
@@ -124,7 +130,7 @@ export default function NotesChat() {
       unConfirm?.();
       unFile?.();
     };
-  }, []);
+  }, [actions]);
 
   useEffect(() => {
     const el = listRef.current;

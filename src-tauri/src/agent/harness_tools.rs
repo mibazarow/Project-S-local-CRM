@@ -10,7 +10,8 @@
 // the system /tmp. The CDP browser tool lives in browser_tool.rs.
 use super::catalog::Catalog;
 use super::project_tools::{
-    envelope, read_datas, require_wd, state_of, upsert_section, with_conn, write_datas,
+    emit_tasks_changed, envelope, read_datas, require_wd, state_of, upsert_section, with_conn,
+    write_datas,
 };
 use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
@@ -1212,6 +1213,9 @@ impl Tool for CrmTaskCreateTool {
             let pid = resolve_project_id(conn, args)?;
             tasks::task_create(conn, pid, &title, status)
         });
+        if let Ok(dto) = &r {
+            emit_tasks_changed(ctx, dto.project_id);
+        }
         Ok(envelope(r))
     }
 }
@@ -1256,6 +1260,9 @@ impl Tool for CrmTaskUpdateTool {
             task_owner(conn, id)?;
             tasks::task_update(conn, id, patch)
         });
+        if let Ok(dto) = &r {
+            emit_tasks_changed(ctx, dto.project_id);
+        }
         Ok(envelope(r))
     }
 }
@@ -1303,6 +1310,9 @@ impl Tool for CrmTaskMoveTool {
             };
             tasks::task_move(conn, id, &status, position)
         });
+        if let Ok(dto) = &r {
+            emit_tasks_changed(ctx, dto.project_id);
+        }
         Ok(envelope(r))
     }
 }
@@ -1339,6 +1349,9 @@ impl Tool for CrmTaskDeleteTool {
             task_owner(conn, id)?;
             tasks::task_delete(conn, id)
         });
+        if let Ok(pid) = &r {
+            emit_tasks_changed(ctx, *pid);
+        }
         Ok(match r {
             Ok(_) => ToolResult::ok(json!({ "deleted": id })),
             Err(e) => envelope_r(e),
@@ -1436,6 +1449,16 @@ impl Tool for DatasAddTool {
 // runs. schedule_create binds to the session that created it (ToolCtx
 // session_id); a notify schedule needs no session. create/delete are
 // confirmed because they make the agent run (or stop) unattended later.
+// Every mutation notifies the open Harness view through the run state's
+// emitter, mirroring the schedule_* commands in lib.rs.
+fn emit_schedules_changed(ctx: &ToolCtx) {
+    if let Ok(state) = state_of(ctx) {
+        if let Some(emitter) = state.emitter.lock().unwrap().as_ref() {
+            emitter.emit_event("schedules-changed", json!({}));
+        }
+    }
+}
+
 pub struct ScheduleCreateTool;
 
 impl Tool for ScheduleCreateTool {
@@ -1497,6 +1520,9 @@ impl Tool for ScheduleCreateTool {
                 scheduler::now_utc(),
             )
         });
+        if r.is_ok() {
+            emit_schedules_changed(ctx);
+        }
         Ok(envelope(r))
     }
 }
@@ -1554,6 +1580,9 @@ impl Tool for SchedulePauseTool {
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let id = args.get("id").and_then(Value::as_i64).unwrap_or(0);
         let r = with_conn(ctx, |conn| scheduler::pause(conn, id));
+        if r.is_ok() {
+            emit_schedules_changed(ctx);
+        }
         Ok(envelope(r))
     }
 }
@@ -1587,6 +1616,9 @@ impl Tool for ScheduleDeleteTool {
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let id = args.get("id").and_then(Value::as_i64).unwrap_or(0);
         let r = with_conn(ctx, |conn| scheduler::delete(conn, id));
+        if r.is_ok() {
+            emit_schedules_changed(ctx);
+        }
         Ok(match r {
             Ok(_) => ToolResult::ok(json!({ "deleted": id })),
             Err(e) => envelope::<()>(Err(e)),
@@ -1751,13 +1783,29 @@ mod tests {
     use crate::index;
     use crate::onboarding::temp_test_dir;
     use crate::projects;
-    use crate::state::AppState;
+    use crate::state::{AppState, UiEmitter};
     use std::io::Write as _;
     use std::path::PathBuf;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct RecordingEmitter {
+        events: Arc<Mutex<Vec<(String, Value)>>>,
+    }
+
+    impl UiEmitter for RecordingEmitter {
+        fn emit_event(&self, event: &str, payload: Value) {
+            self.events
+                .lock()
+                .unwrap()
+                .push((event.to_owned(), payload));
+        }
+    }
 
     struct Env {
         wd: PathBuf,
         ctx: ToolCtx,
+        events: Arc<Mutex<Vec<(String, Value)>>>,
     }
 
     fn setup(tag: &str) -> Env {
@@ -1768,6 +1816,9 @@ mod tests {
         let state = Arc::new(AppState::new());
         *state.working_dir.lock().unwrap() = Some(wd.clone());
         *state.db.lock().unwrap() = Some(conn);
+        let recorder = RecordingEmitter::default();
+        let events = recorder.events.clone();
+        *state.emitter.lock().unwrap() = Some(Arc::new(recorder));
         let ctx = ToolCtx {
             project_id: None,
             session_id: None,
@@ -1776,7 +1827,7 @@ mod tests {
             state: Some(state),
             notes_root: None,
         };
-        Env { wd, ctx }
+        Env { wd, ctx, events }
     }
 
     fn tool(name: &str) -> Arc<dyn Tool> {
@@ -2041,6 +2092,14 @@ mod tests {
         let r = exec("schedule_list", json!({}), &env.ctx);
         let items = r.data.unwrap()["schedules"].as_array().unwrap().clone();
         assert_eq!(items[0]["sessionId"], Value::Null);
+
+        // every successful schedule mutation notifies the UI; the failed pause does not
+        let events = env.events.lock().unwrap().clone();
+        let notified = events
+            .iter()
+            .filter(|(name, _)| name == "schedules-changed")
+            .count();
+        assert_eq!(notified, 4, "create/pause/delete/create-notify must notify: {events:?}");
         fs::remove_dir_all(&env.wd).unwrap();
     }
 
@@ -2491,6 +2550,19 @@ mod tests {
         assert!(r.ok, "{:?}", r.error);
         let r = exec("crm_task_update", json!({ "id": id, "title": "ghost" }), &env.ctx);
         assert_eq!(r.error.unwrap().code, "not_found");
+
+        // every successful task mutation notifies the UI with the owning project
+        let events = env.events.lock().unwrap().clone();
+        let notified: Vec<&Value> = events
+            .iter()
+            .filter(|(name, _)| name == "tasks-changed")
+            .map(|(_, payload)| payload)
+            .collect();
+        assert_eq!(notified.len(), 4, "create/update/move/delete must notify: {events:?}");
+        assert!(
+            notified.iter().all(|p| p["projectId"] == json!(p1)),
+            "payload must carry the owning project id: {notified:?}"
+        );
 
         // datas for any project
         let r = exec("datas_add", json!({ "project_name": "beta", "title": "FTP example.ru", "body": "login: user-1" }), &env.ctx);
