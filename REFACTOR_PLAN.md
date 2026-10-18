@@ -7,12 +7,11 @@
 
 ## Текущее состояние
 - Последний зелёный HEAD: `ab60b04` — `npm test` **164 passed**, `npm run build` OK, oxlint — только pre-existing `crossActions.ts`.
-- Бэкенд последний раз проверен на `5dd74bc`: `cargo test` **788 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings. Контракты/DTO/схема не затронуты.
+- Бэкенд последний раз проверен на `3537e88`: `cargo test` **791 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings. Контракты/DTO/схема не затронуты.
 - Baseline-скриншоты: `/tmp/project-s-baseline/` (7 экранов).
 - Полный `npm run app:build` — только в финале.
 
 ## Фаза 5 — остаток
-- **S5.5a scheduler-static** — `THREAD_STARTED` (`scheduler/mod.rs:662`): инкапсулировать one-shot запуск, тест на повторный вызов.
 - **S5.5b reindex-static** — `GLOBAL` + `TIMER_STARTED` (`search_reindex.rs:208/214`): инкапсулировать менеджер и one-shot таймер.
 - **S5.5c browser-static** — `SESSION` (`agent/browser_tool.rs:34`): инкапсулировать общую сессию (launch/reuse/kill).
 - **S5.5d processes-static** — `CHILDREN` (`processes.rs:40`): инкапсулировать реестр процессов (shutdown/reconcile).
@@ -30,4 +29,4 @@
 - `BAG_REPORT.md`/`Q.md` — рабочие файлы задач, не менять их в рамках рефакторинга.
 
 ## Следующий шаг
-**S5.5a scheduler-static** — инкапсулировать `THREAD_STARTED` и покрыть тестом one-shot запуска.
+**S5.5b reindex-static** — инкапсулировать `GLOBAL` + `TIMER_STARTED` (`search_reindex.rs`) и one-shot таймер, покрыть тестом повторный вызов.
