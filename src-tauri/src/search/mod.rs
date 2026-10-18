@@ -153,15 +153,94 @@ pub(crate) fn search_with(
             .then_with(|| a.task_id.cmp(&b.task_id))
     });
     hits.truncate(limit);
+    enrich_hits(conn, project_id, &mut hits, &lowered)?;
+    Ok(hits)
+}
 
-    for hit in &mut hits {
-        hit.modified = file_mtime(conn, project_id, &hit.rel_path);
-        if hit.snippet.is_empty() {
-            let content = file_content(conn, project_id, &hit.rel_path).unwrap_or_default();
-            hit.snippet = fallback_snippet(&content, &lowered);
+// Batched hit enrichment (S1.3): one mtime query and one content query per
+// chunk of file hits instead of up to two single-row queries per hit. Chunked
+// to stay clear of SQLite's max-variable-number limit. Task hits (empty
+// rel_path) are skipped: the old per-hit lookups found no row for them, so
+// they keep modified = 0 and their own snippet. Missing rows keep the old
+// fallbacks: mtime 0, empty content.
+const ENRICH_CHUNK: usize = 500;
+
+fn enrich_hits(
+    conn: &Connection,
+    project_id: i64,
+    hits: &mut [SearchHit],
+    lowered: &[String],
+) -> Result<()> {
+    let rels: Vec<&str> = hits
+        .iter()
+        .filter(|h| !h.rel_path.is_empty())
+        .map(|h| h.rel_path.as_str())
+        .collect();
+    if rels.is_empty() {
+        return Ok(());
+    }
+    let mut mtimes: HashMap<String, i64> = HashMap::new();
+    for chunk in rels.chunks(ENRICH_CHUNK) {
+        let mut args: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() + 1);
+        args.push(&project_id);
+        args.extend(chunk.iter().map(|r| r as &dyn rusqlite::ToSql));
+        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT rel_path, mtime FROM indexed_files
+             WHERE project_id = ?1 AND rel_path IN ({placeholders})"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })?;
+        for row in rows {
+            let (rel, mtime) = row?;
+            mtimes.insert(rel, mtime);
         }
     }
-    Ok(hits)
+
+    // Content is only needed for hits without an FTS snippet (semantic-only
+    // hits and name-column matches), same condition as the old per-hit leg.
+    let need_content: Vec<&str> = hits
+        .iter()
+        .filter(|h| !h.rel_path.is_empty() && h.snippet.is_empty())
+        .map(|h| h.rel_path.as_str())
+        .collect();
+    let mut contents: HashMap<String, Option<String>> = HashMap::new();
+    let pid_text = project_id.to_string();
+    for chunk in need_content.chunks(ENRICH_CHUNK) {
+        let mut args: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() + 1);
+        args.push(&pid_text);
+        args.extend(chunk.iter().map(|r| r as &dyn rusqlite::ToSql));
+        let placeholders = vec!["?"; chunk.len()].join(", ");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT rel_path, content FROM files_fts
+             WHERE project_id = ?1 AND rel_path IN ({placeholders})"
+        ))?;
+        let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })?;
+        for row in rows {
+            let (rel, content) = row?;
+            // or_insert: on duplicate FTS rows the first one wins, matching
+            // the old query_row which took the first row of the scan.
+            contents.entry(rel).or_insert(content);
+        }
+    }
+
+    for hit in hits.iter_mut() {
+        if hit.rel_path.is_empty() {
+            continue;
+        }
+        hit.modified = mtimes.get(hit.rel_path.as_str()).copied().unwrap_or(0);
+        if hit.snippet.is_empty() {
+            let content = contents
+                .get(hit.rel_path.as_str())
+                .and_then(Option::as_deref)
+                .unwrap_or("");
+            hit.snippet = fallback_snippet(content, lowered);
+        }
+    }
+    Ok(())
 }
 
 // Harness chat search: FTS5 over messages_fts plus KNN over vec_messages,
@@ -512,24 +591,6 @@ fn fts_search(
         },
     )?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-}
-
-fn file_mtime(conn: &Connection, project_id: i64, rel: &str) -> i64 {
-    conn.query_row(
-        "SELECT mtime FROM indexed_files WHERE project_id = ?1 AND rel_path = ?2",
-        params![project_id, rel],
-        |r| r.get(0),
-    )
-    .unwrap_or(0)
-}
-
-fn file_content(conn: &Connection, project_id: i64, rel: &str) -> Option<String> {
-    conn.query_row(
-        "SELECT content FROM files_fts WHERE project_id = ?1 AND rel_path = ?2",
-        params![project_id.to_string(), rel],
-        |r| r.get(0),
-    )
-    .ok()
 }
 
 // Short window around the first query token found in the stored content, else
@@ -1001,6 +1062,98 @@ mod tests {
         fs::remove_dir_all(&wd).unwrap();
     }
 
+    #[test]
+    fn enrichment_carries_per_hit_mtime_and_fallback_snippet() {
+        // S1.3: the batched enrichment must yield exactly the values the old
+        // per-hit lookups did: own mtime row per hit, FTS snippet kept,
+        // semantic-only hits get a fallback snippet from stored content.
+        let (wd, conn, id, _state) = setup("search-enrich-values");
+        fs::write(root(&wd).join("а.md"), "слово в файле а").unwrap();
+        fs::write(root(&wd).join("б.md"), "слово в файле б").unwrap();
+        fs::write(root(&wd).join("в.md"), "кошки кошки кошки").unwrap();
+        index::index_root(
+            &conn,
+            id,
+            &root(&wd),
+            &IndexingConfig::default(),
+            &FakeEmbedder,
+        )
+        .unwrap();
+        for (rel, m) in [("а.md", 111), ("б.md", 222), ("в.md", 333)] {
+            conn.execute(
+                "UPDATE indexed_files SET mtime = ?1 WHERE rel_path = ?2",
+                params![m, rel],
+            )
+            .unwrap();
+        }
+
+        let hits = search_with(&conn, &FakeEmbedder, 0.3, id, "слово", 10).unwrap();
+        let by_rel = |rel: &str| hits.iter().find(|h| h.rel_path == rel).expect(rel);
+        for (rel, m) in [("а.md", 111), ("б.md", 222)] {
+            let hit = by_rel(rel);
+            assert_eq!(hit.modified, m, "{rel} must carry its own mtime");
+            assert!(hit.snippet.contains("<<слово>>"), "{rel}: {:?}", hit.snippet);
+        }
+        let sem = by_rel("в.md");
+        assert_eq!(sem.match_types, ["semantic"]);
+        assert_eq!(sem.modified, 333);
+        assert!(sem.snippet.contains("кошки"), "{:?}", sem.snippet);
+        // A file with no indexed row keeps the old fallbacks: mtime 0.
+        conn.execute("DELETE FROM indexed_files WHERE rel_path = 'а.md'", [])
+            .unwrap();
+        let hits2 = search_with(&conn, &FakeEmbedder, 0.3, id, "слово", 10).unwrap();
+        let stale = hits2.iter().find(|h| h.rel_path == "а.md").expect("а.md");
+        assert_eq!(stale.modified, 0);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn enrichment_uses_batched_queries_instead_of_one_per_hit() {
+        // S1.3: statement trace must show exactly one mtime and one content
+        // batch query for the whole call, no per-hit single-row lookups.
+        let (wd, conn, id, _state) = setup("search-enrich-count");
+        for name in ["а.md", "б.md", "в.md", "г.md"] {
+            fs::write(root(&wd).join(name), "слово в тексте").unwrap();
+        }
+        fs::write(root(&wd).join("sem.md"), "кошки кошки кошки").unwrap();
+        index::index_root(
+            &conn,
+            id,
+            &root(&wd),
+            &IndexingConfig::default(),
+            &FakeEmbedder,
+        )
+        .unwrap();
+
+        thread_local! {
+            static BATCHED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+        }
+        fn count_batched(event: rusqlite::trace::TraceEvent<'_>) {
+            let sql = match event {
+                rusqlite::trace::TraceEvent::Stmt(_, sql) => sql,
+                _ => return,
+            };
+            if sql.contains("rel_path IN (") {
+                BATCHED.with(|c| c.set(c.get() + 1));
+            }
+        }
+        conn.trace_v2(
+            rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+            Some(count_batched),
+        );
+        let hits = search_with(&conn, &FakeEmbedder, 0.3, id, "слово", 10).unwrap();
+        conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+
+        assert!(hits.len() >= 5, "expected several file hits: {hits:?}");
+        assert_eq!(
+            BATCHED.with(|c| c.get()),
+            2,
+            "one mtime + one content batch query for {} hits",
+            hits.len(),
+        );
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
     // Representative cross-project query on the demo working dir
     // (~/Documents/PROJECT-S, PROJECT_S_WD override; indexed demo data and a
     // provisioned model). "Before" = crm_search's old shape: search_project
@@ -1092,6 +1245,131 @@ mod tests {
             runs.push((fts_old_ms, fts_new_ms));
         }
         assert!(runs.iter().all(|(many, one)| many > one));
+    }
+
+    // Representative FTS-only query on the demo working dir (S1.3). Two
+    // measurements, 3 rounds each: the whole cross-project call (end-to-end,
+    // noise-dominated at demo scale) and the enrichment stage in isolation —
+    // the old per-hit point queries vs the batched enrich_hits. Enrichment is
+    // idempotent, so both shapes run over the same already-enriched hits and
+    // measure the same query work. The digest (rel_path|modified|snippet over
+    // all hits, FNV-1a) must match between the two shapes:
+    //   cargo test --release search_batch_enrich_timing -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn search_batch_enrich_timing_fts_only() {
+        use std::time::Instant;
+        let wd = crate::embed::model_store::real_working_dir();
+        let db_file = paths::db_path(&wd);
+        assert!(db_file.exists(), "demo DB not found at {}", db_file.display());
+        let conn = db::open(&db_file).unwrap();
+        let pids: Vec<i64> = {
+            let mut stmt = conn.prepare("SELECT id FROM projects ORDER BY id").unwrap();
+            stmt.query_map([], |r| r.get::<_, i64>(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        assert!(!pids.is_empty(), "demo DB has no projects");
+        // "example" matches 29 of the 85 demo files: near-limit hit counts per
+        // project, the worst realistic N+1 case on this DB.
+        let query = "example";
+        let limit = 10usize;
+        let lowered: Vec<String> = tokenize(query).iter().map(|t| t.to_lowercase()).collect();
+        search_with(&conn, &embed::NoopEmbedder, embed::NAME_WEIGHT, pids[0], query, limit).unwrap();
+
+        // The per-hit shape this slice removes, kept here only to time it.
+        fn old_file_mtime(conn: &Connection, project_id: i64, rel: &str) -> i64 {
+            conn.query_row(
+                "SELECT mtime FROM indexed_files WHERE project_id = ?1 AND rel_path = ?2",
+                rusqlite::params![project_id, rel],
+                |r| r.get(0),
+            )
+            .unwrap_or(0)
+        }
+        fn old_file_content(conn: &Connection, project_id: i64, rel: &str) -> Option<String> {
+            conn.query_row(
+                "SELECT content FROM files_fts WHERE project_id = ?1 AND rel_path = ?2",
+                rusqlite::params![project_id.to_string(), rel],
+                |r| r.get(0),
+            )
+            .ok()
+        }
+        let digest = |sets: &[(i64, Vec<SearchHit>)]| -> u64 {
+            let mut hash: u64 = 0xcbf29ce484222325;
+            for (_, hits) in sets {
+                for h in hits {
+                    for b in format!("{}|{}|{}\u{1}", h.rel_path, h.modified, h.snippet).bytes() {
+                        hash ^= b as u64;
+                        hash = hash.wrapping_mul(0x100000001b3);
+                    }
+                }
+            }
+            hash
+        };
+
+        let mut total_ms = 0.0;
+        let mut call_digests = Vec::new();
+        for round in 1..=3 {
+            let started = Instant::now();
+            let per_pid: Vec<(i64, Vec<SearchHit>)> = pids
+                .iter()
+                .map(|pid| {
+                    (
+                        *pid,
+                        search_with(&conn, &embed::NoopEmbedder, embed::NAME_WEIGHT, *pid, query, limit)
+                            .unwrap(),
+                    )
+                })
+                .collect();
+            let ms = started.elapsed().as_secs_f64() * 1000.0;
+            total_ms += ms;
+            call_digests.push(digest(&per_pid));
+            let hits: usize = per_pid.iter().map(|(_, h)| h.len()).sum();
+            eprintln!(
+                "search enrich timing #{round}/3: FTS-only cross-project call = {ms:.2} ms \
+                 ({hits} hits, {} projects), digest = {:016x}",
+                pids.len(),
+                call_digests[round - 1],
+            );
+
+            let started = Instant::now();
+            let mut old_set = per_pid.clone();
+            for (pid, hits) in &mut old_set {
+                for hit in hits.iter_mut() {
+                    hit.modified = old_file_mtime(&conn, *pid, &hit.rel_path);
+                    if hit.snippet.is_empty() {
+                        let content = old_file_content(&conn, *pid, &hit.rel_path).unwrap_or_default();
+                        hit.snippet = fallback_snippet(&content, &lowered);
+                    }
+                }
+            }
+            let old_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+            let started = Instant::now();
+            let mut new_set = per_pid.clone();
+            for (pid, hits) in &mut new_set {
+                enrich_hits(&conn, *pid, hits, &lowered).unwrap();
+            }
+            let new_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+            assert_eq!(
+                digest(&old_set),
+                digest(&new_set),
+                "round {round}: enrichment values changed"
+            );
+            eprintln!(
+                "search enrich stage #{round}/3: per-hit queries = {old_ms:.3} ms, \
+                 batched = {new_ms:.3} ms ({hits} hits)"
+            );
+            assert!(new_ms < old_ms, "round {round}: batching must be faster");
+        }
+        assert!(call_digests.windows(2).all(|w| w[0] == w[1]), "digest unstable");
+        eprintln!(
+            "search enrich timing: call mean = {:.2} ms, digest = {:016x}",
+            total_ms / 3.0,
+            call_digests[0],
+        );
     }
 
     #[test]
