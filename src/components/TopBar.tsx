@@ -8,6 +8,10 @@ import { toast } from "./shared/toast";
 
 export type Tab = "today" | "projects" | "harness" | "notes";
 
+// Backend REINDEX_INTERVAL_MS mirror: the "reindex-done" payload carries no
+// nextRunAt, so the reset countdown is derived client-side from event arrival.
+const REINDEX_INTERVAL_MS = 5 * 60 * 1000;
+
 interface Props {
   tab: Tab;
   onTab: (tab: Tab) => void;
@@ -46,26 +50,29 @@ export default function TopBar({ tab, onTab, onSettings, onSearch }: Props) {
   const [reindex, setReindex] = useState<ReindexStatus | null>(null);
   const [now, setNow] = useState(() => Date.now());
 
-  // Status poll: every 1 s while running, every 5 s idle.
+  // Status: fetched once on mount, then updated only from backend events
+  // («reindex-progress» / «reindex-done»); no polling.
   useEffect(() => {
     let alive = true;
-    const tick = () => {
-      setNow(Date.now());
-      ipc
-        .reindexStatus()
-        .then((s) => alive && setReindex(s))
-        .catch(() => {});
-    };
-    tick();
-    const timer = setInterval(tick, reindex?.running ? 1000 : 5000);
+    ipc
+      .reindexStatus()
+      .then((s) => alive && setReindex(s))
+      .catch(() => {});
     return () => {
       alive = false;
-      clearInterval(timer);
     };
+  }, []);
+
+  // Countdown tick: recomputes the displayed time from the known nextRunAt,
+  // never fetches status.
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), reindex?.running ? 1000 : 5000);
+    return () => clearInterval(timer);
   }, [reindex?.running]);
 
-  // Backend events: progress updates the counter right away, done toasts and
-  // refetches the status (the countdown resets to 5:00 with the new nextRunAt).
+  // Backend events: progress updates the counter right away (also flips the
+  // idle display to running when an automatic pass starts), done toasts and
+  // resets the countdown to 5:00 from the event arrival time.
   useEffect(() => {
     let alive = true;
     const unlisten: Array<() => void> = [];
@@ -83,18 +90,48 @@ export default function TopBar({ tab, onTab, onSettings, onSearch }: Props) {
       ),
     );
     track(
-      ipc.onReindexDone(() => {
+      ipc.onReindexDone((p) => {
         if (!alive) return;
         toast("ok", "Поиск переиндексирован");
-        ipc
-          .reindexStatus()
-          .then((s) => alive && setReindex(s))
-          .catch(() => {});
+        setReindex((prev) =>
+          prev
+            ? {
+                ...prev,
+                running: false,
+                done: p.done,
+                total: p.total,
+                nextRunAt: Date.now() + REINDEX_INTERVAL_MS,
+              }
+            : prev,
+        );
       }),
     );
     return () => {
       alive = false;
       unlisten.forEach((u) => u());
+    };
+  }, []);
+
+  // No event exists for an auto-pass starting or for events dropped while the
+  // webview was hidden, so refetch the status when the window regains focus or
+  // visibility; this heals the countdown without reintroducing polling.
+  useEffect(() => {
+    let alive = true;
+    const heal = () => {
+      ipc
+        .reindexStatus()
+        .then((s) => alive && setReindex(s))
+        .catch(() => {});
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") heal();
+    };
+    window.addEventListener("focus", heal);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      alive = false;
+      window.removeEventListener("focus", heal);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, []);
 
