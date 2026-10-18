@@ -1,8 +1,9 @@
-// Notes-agent tool set (SPEC notes chat slice): list/read/write/create/
-// rename/delete notes in the vault and search the notes index. Every path
-// argument is resolved strictly inside the Notes/ folder handed to the run
-// through ToolCtx.notes_root; the tools refuse to work without it, so a
-// project or harness run can never reach the vault through this catalog.
+// Notes-agent tool set (SPEC notes chat slice): list/read/write/create notes
+// in the vault, manage its folder structure (mkdir/move/copy), rename/delete
+// entries and search the notes index. Every path argument is resolved strictly
+// inside the Notes/ folder handed to the run through ToolCtx.notes_root; the
+// tools refuse to work without it, so a project or harness run can never reach
+// the vault through this catalog.
 use super::catalog::Catalog;
 use super::project_tools::state_of;
 use super::result::{ToolErrorCode, ToolResult};
@@ -28,7 +29,10 @@ pub fn notes_catalog() -> Catalog {
         Arc::new(NotesReadTool),
         Arc::new(NotesWriteTool),
         Arc::new(NotesCreateTool),
+        Arc::new(NotesMkdirTool),
         Arc::new(NotesRenameTool),
+        Arc::new(NotesMoveTool),
+        Arc::new(NotesCopyTool),
         Arc::new(NotesDeleteTool),
         Arc::new(SearchNotesTool),
         // Agent-initiated chat attachment (SPEC 6.1): hand a Notes file to
@@ -50,8 +54,9 @@ fn require_root(ctx: &ToolCtx) -> Result<PathBuf> {
 
 // Maps a vault AppError to the envelope code (SPEC 6.4): missing entries are
 // not_found, path escapes and symlink refusals are permission_denied (the
-// shared join_rel helper words its refusal as "not project-relative"), the
-// rest (bad names, IO faults) are execution_error.
+// shared join_rel helper words its refusal as "not project-relative"), name
+// clashes and wrong folder targets are invalid_args, the rest (IO faults) are
+// execution_error.
 fn fail(e: AppError) -> ToolResult {
     let msg = e.to_string();
     let code = if msg.contains("not found") {
@@ -62,10 +67,21 @@ fn fail(e: AppError) -> ToolResult {
         || msg.contains("symlink")
     {
         ToolErrorCode::PermissionDenied
+    } else if msg.contains("already exists")
+        || msg.contains("is not a folder")
+        || msg.contains("invalid name")
+        || msg.contains("into itself or its own subfolder")
+    {
+        ToolErrorCode::InvalidArgs
     } else {
         ToolErrorCode::ExecutionError
     };
     ToolResult::err(code, msg)
+}
+
+// Compact shape returned by the folder tools (mkdir/move/copy): the new entry.
+fn entry_data(item: &crate::fs_ops::FsEntry) -> Value {
+    json!({ "relPath": item.rel_path, "name": item.name, "kind": item.kind })
 }
 
 pub struct NotesListTool;
@@ -250,6 +266,120 @@ impl Tool for NotesRenameTool {
     }
 }
 
+pub struct NotesMkdirTool;
+
+impl Tool for NotesMkdirTool {
+    fn name(&self) -> &str {
+        "notes_mkdir"
+    }
+    fn description(&self) -> &str {
+        "Create a new folder inside the Notes vault under parentRel (empty parentRel = vault root). Fails if the name is already taken; parents are never created implicitly."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "parentRel": { "type": "string" },
+                "name": { "type": "string" }
+            },
+            "required": ["name"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let root = require_root(ctx)?;
+        let parent = args
+            .get("parentRel")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        let name = args["name"].as_str().unwrap_or_default();
+        Ok(match notes::mkdir_at(&root, parent, name) {
+            Ok(item) => ToolResult::ok(entry_data(&item)),
+            Err(e) => fail(e),
+        })
+    }
+}
+
+pub struct NotesMoveTool;
+
+impl Tool for NotesMoveTool {
+    fn name(&self) -> &str {
+        "notes_move"
+    }
+    fn description(&self) -> &str {
+        "Move a note or a whole folder into an existing Notes folder (empty toDirRel = vault root). The target folder must exist, nothing is ever overwritten (a name clash is an error), and a folder cannot move into itself or its own subfolder."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "fromRel": { "type": "string" },
+                "toDirRel": { "type": "string" }
+            },
+            "required": ["fromRel", "toDirRel"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let root = require_root(ctx)?;
+        let from = args["fromRel"].as_str().unwrap_or_default();
+        let to_dir = args["toDirRel"].as_str().unwrap_or_default();
+        Ok(match notes::move_at(&root, from, to_dir) {
+            Ok(item) => ToolResult::ok(entry_data(&item)),
+            Err(e) => fail(e),
+        })
+    }
+}
+
+pub struct NotesCopyTool;
+
+impl Tool for NotesCopyTool {
+    fn name(&self) -> &str {
+        "notes_copy"
+    }
+    fn description(&self) -> &str {
+        "Copy a note or a whole folder (recursively) into an existing Notes folder (empty toDirRel = vault root). The source stays in place; on a name clash the copy is renamed with a \" copy\" / \" copy N\" suffix."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "fromRel": { "type": "string" },
+                "toDirRel": { "type": "string" }
+            },
+            "required": ["fromRel", "toDirRel"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let root = require_root(ctx)?;
+        let from = args["fromRel"].as_str().unwrap_or_default();
+        let to_dir = args["toDirRel"].as_str().unwrap_or_default();
+        Ok(match notes::copy_at(&root, from, to_dir) {
+            Ok(item) => ToolResult::ok(entry_data(&item)),
+            Err(e) => fail(e),
+        })
+    }
+}
+
 pub struct NotesDeleteTool;
 
 impl Tool for NotesDeleteTool {
@@ -383,7 +513,10 @@ mod tests {
             "notes_read",
             "notes_write",
             "notes_create",
+            "notes_mkdir",
             "notes_rename",
+            "notes_move",
+            "notes_copy",
             "notes_delete",
             "search_notes",
             "send_file",
@@ -400,7 +533,15 @@ mod tests {
             assert_eq!(t.class(), ToolClass::ReadOnly, "{name}");
             assert_eq!(t.policy(), Policy::Skip, "{name}");
         }
-        for name in ["notes_write", "notes_create", "notes_rename", "send_file"] {
+        for name in [
+            "notes_write",
+            "notes_create",
+            "notes_mkdir",
+            "notes_rename",
+            "notes_move",
+            "notes_copy",
+            "send_file",
+        ] {
             let Resolution::Found(t) = catalog.resolve(name) else { unreachable!() };
             assert_eq!(t.class(), ToolClass::Mutating, "{name}");
             assert_eq!(t.policy(), Policy::Skip, "{name}");
@@ -420,7 +561,10 @@ mod tests {
             ("notes_read", json!({ "relPath": "x.md" })),
             ("notes_write", json!({ "relPath": "x.md", "content": "c" })),
             ("notes_create", json!({ "relPath": "x.md" })),
+            ("notes_mkdir", json!({ "name": "x" })),
             ("notes_rename", json!({ "relPath": "x.md", "newName": "y.md" })),
+            ("notes_move", json!({ "fromRel": "x.md", "toDirRel": "" })),
+            ("notes_copy", json!({ "fromRel": "x.md", "toDirRel": "" })),
             ("notes_delete", json!({ "relPath": "x.md" })),
             ("search_notes", json!({ "query": "q" })),
         ] {
@@ -465,6 +609,101 @@ mod tests {
         assert_eq!(missing.error.unwrap().code, "not_found");
     }
 
+    // Vault folder management through the tools: mkdir, move, copy, plus the
+    // envelope codes for clashes, self-moves and bad destinations.
+    #[test]
+    fn folder_tools_mkdir_move_copy_roundtrip() {
+        let (_state, ctx) = setup("notes-tools-folders");
+        assert!(
+            exec("notes_create", json!({ "relPath": "нота.md", "content": "раз" }), &ctx).ok
+        );
+        let dir = exec("notes_mkdir", json!({ "parentRel": "", "name": "папка" }), &ctx);
+        assert!(dir.ok, "{:?}", dir.error);
+        assert_eq!(dir.data.unwrap()["relPath"], "папка");
+        assert_eq!(
+            exec("notes_mkdir", json!({ "parentRel": "", "name": "папка" }), &ctx)
+                .error
+                .unwrap()
+                .code,
+            "invalid_args"
+        );
+        assert_eq!(
+            exec("notes_mkdir", json!({ "name": "a/b" }), &ctx)
+                .error
+                .unwrap()
+                .code,
+            "invalid_args"
+        );
+
+        let moved = exec(
+            "notes_move",
+            json!({ "fromRel": "нота.md", "toDirRel": "папка" }),
+            &ctx,
+        );
+        assert!(moved.ok, "{:?}", moved.error);
+        assert_eq!(moved.data.as_ref().unwrap()["relPath"], "папка/нота.md");
+        assert_eq!(moved.data.unwrap()["kind"], "file");
+        // no overwrite, no move into itself
+        assert_eq!(
+            exec("notes_move", json!({ "fromRel": "папка", "toDirRel": "папка" }), &ctx)
+                .error
+                .unwrap()
+                .code,
+            "invalid_args"
+        );
+        assert_eq!(
+            exec("notes_move", json!({ "fromRel": "папка/нота.md", "toDirRel": "нет" }), &ctx)
+                .error
+                .unwrap()
+                .code,
+            "not_found"
+        );
+
+        let copied = exec(
+            "notes_copy",
+            json!({ "fromRel": "папка/нота.md", "toDirRel": "" }),
+            &ctx,
+        );
+        assert!(copied.ok, "{:?}", copied.error);
+        assert_eq!(copied.data.unwrap()["relPath"], "нота.md");
+        let again = exec(
+            "notes_copy",
+            json!({ "fromRel": "папка/нота.md", "toDirRel": "" }),
+            &ctx,
+        );
+        assert_eq!(again.data.unwrap()["relPath"], "нота copy.md");
+        let third = exec(
+            "notes_copy",
+            json!({ "fromRel": "папка/нота.md", "toDirRel": "" }),
+            &ctx,
+        );
+        assert_eq!(third.data.unwrap()["relPath"], "нота copy 1.md");
+        let dir_copy = exec("notes_copy", json!({ "fromRel": "папка", "toDirRel": "" }), &ctx);
+        assert_eq!(dir_copy.data.as_ref().unwrap()["relPath"], "папка copy");
+        assert_eq!(dir_copy.data.unwrap()["kind"], "dir");
+        let read = exec("notes_read", json!({ "relPath": "папка copy/нота.md" }), &ctx);
+        assert_eq!(read.data.unwrap()["content"], "раз");
+        // the source of every copy is still in place
+        assert!(
+            exec("notes_read", json!({ "relPath": "папка/нота.md" }), &ctx).ok,
+            "copy removed the source"
+        );
+
+        for bad in ["../x", "/etc/passwd"] {
+            for (name, args) in [
+                ("notes_move", json!({ "fromRel": "папка", "toDirRel": bad })),
+                ("notes_copy", json!({ "fromRel": "папка", "toDirRel": bad })),
+            ] {
+                let r = exec(name, args, &ctx);
+                assert_eq!(
+                    r.error.as_ref().unwrap().code,
+                    "permission_denied",
+                    "{name} accepted toDirRel {bad:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn path_escapes_map_to_permission_denied() {
         let (_state, ctx) = setup("notes-tools-escape");
@@ -474,6 +713,9 @@ mod tests {
                 ("notes_read", json!({ "relPath": bad })),
                 ("notes_write", json!({ "relPath": bad, "content": "x" })),
                 ("notes_create", json!({ "relPath": bad })),
+                ("notes_mkdir", json!({ "parentRel": bad, "name": "x" })),
+                ("notes_move", json!({ "fromRel": bad, "toDirRel": "" })),
+                ("notes_copy", json!({ "fromRel": bad, "toDirRel": "" })),
                 ("notes_delete", json!({ "relPath": bad })),
             ] {
                 let r = exec(name, args, &ctx);

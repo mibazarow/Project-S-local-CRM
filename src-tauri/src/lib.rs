@@ -623,6 +623,48 @@ fn notes_rename(
 }
 
 #[tauri::command]
+fn notes_mkdir(
+    app: AppHandle,
+    state: State<AppState>,
+    parent_rel: Option<String>,
+    name: String,
+) -> Result<FsEntry> {
+    let item = notes::mkdir(
+        &state.working_dir()?,
+        parent_rel.as_deref().unwrap_or(""),
+        &name,
+    )?;
+    emit_notes_changed(&app, item.rel_path.clone());
+    Ok(item)
+}
+
+// Move never overwrites: a name clash in the target folder is an error.
+#[tauri::command]
+fn notes_move(
+    app: AppHandle,
+    state: State<AppState>,
+    from_rel: String,
+    to_dir_rel: String,
+) -> Result<FsEntry> {
+    let item = notes::move_entry(&state.working_dir()?, &from_rel, &to_dir_rel)?;
+    emit_notes_changed(&app, item.rel_path.clone());
+    Ok(item)
+}
+
+// Copy keeps the source and suffixes the new entry on a name clash.
+#[tauri::command]
+fn notes_copy(
+    app: AppHandle,
+    state: State<AppState>,
+    from_rel: String,
+    to_dir_rel: String,
+) -> Result<FsEntry> {
+    let item = notes::copy(&state.working_dir()?, &from_rel, &to_dir_rel)?;
+    emit_notes_changed(&app, item.rel_path.clone());
+    Ok(item)
+}
+
+#[tauri::command]
 fn notes_delete(app: AppHandle, state: State<AppState>, rel: String) -> Result<()> {
     notes::delete(&state.working_dir()?, &rel)?;
     emit_notes_changed(&app, rel);
@@ -1460,7 +1502,10 @@ pub fn run() {
             notes_read,
             notes_write,
             notes_create,
+            notes_mkdir,
             notes_rename,
+            notes_move,
+            notes_copy,
             notes_delete,
             ensure_notes_chat,
             notes_chat_history,

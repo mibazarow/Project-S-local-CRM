@@ -196,6 +196,96 @@ pub(crate) fn delete_at(root: &Path, rel: &str) -> Result<()> {
     Ok(())
 }
 
+// Creates a folder inside the vault (empty parent = vault root). The name is
+// validated as a bare name, so it can never escape the validated parent.
+pub fn mkdir(wd: &Path, parent_rel: &str, name: &str) -> Result<FsEntry> {
+    mkdir_at(&vault_root(wd)?, parent_rel, name)
+}
+
+pub(crate) fn mkdir_at(root: &Path, parent_rel: &str, name: &str) -> Result<FsEntry> {
+    let name = fs_ops::check_name(name)?;
+    let parent = existing_at(root, parent_rel)?;
+    if !parent.is_dir() {
+        return Err(AppError::Invalid(format!(
+            "\"{parent_rel}\" is not a folder"
+        )));
+    }
+    let target = parent.join(&name);
+    // symlink_metadata also catches dangling links, which exists() misses.
+    if fs::symlink_metadata(&target).is_ok() {
+        return Err(AppError::Invalid(format!("\"{name}\" already exists")));
+    }
+    fs::create_dir(&target)?;
+    fs_ops::entry(root, &target)
+}
+
+// Moves a note or folder into an existing target folder (empty = vault root).
+// Never overwrites: a name clash is an error. A folder cannot move into
+// itself or into its own subfolder.
+pub fn move_entry(wd: &Path, from_rel: &str, to_dir_rel: &str) -> Result<FsEntry> {
+    move_at(&vault_root(wd)?, from_rel, to_dir_rel)
+}
+
+pub(crate) fn move_at(root: &Path, from_rel: &str, to_dir_rel: &str) -> Result<FsEntry> {
+    let from = existing_for_mutation_at(root, from_rel)?;
+    let dest_dir = existing_at(root, to_dir_rel)?;
+    if !dest_dir.is_dir() {
+        return Err(AppError::Invalid(format!(
+            "\"{to_dir_rel}\" is not a folder"
+        )));
+    }
+    if from.is_dir() && dest_dir.starts_with(&from) {
+        return Err(AppError::Invalid(
+            "cannot move a folder into itself or its own subfolder".into(),
+        ));
+    }
+    let name = from
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let target = dest_dir.join(&name);
+    if target != from {
+        if fs::symlink_metadata(&target).is_ok() {
+            return Err(AppError::Invalid(format!("\"{name}\" already exists")));
+        }
+        fs::rename(&from, &target)?;
+    }
+    fs_ops::entry(root, &target)
+}
+
+// Copies a note or folder (recursively) into an existing target folder. On a
+// name clash the copy gets the " copy" / " copy N" suffix, like duplicate.
+pub fn copy(wd: &Path, from_rel: &str, to_dir_rel: &str) -> Result<FsEntry> {
+    copy_at(&vault_root(wd)?, from_rel, to_dir_rel)
+}
+
+pub(crate) fn copy_at(root: &Path, from_rel: &str, to_dir_rel: &str) -> Result<FsEntry> {
+    let from = existing_for_mutation_at(root, from_rel)?;
+    let dest_dir = existing_at(root, to_dir_rel)?;
+    if !dest_dir.is_dir() {
+        return Err(AppError::Invalid(format!(
+            "\"{to_dir_rel}\" is not a folder"
+        )));
+    }
+    // Copying a folder into its own subtree would recurse forever.
+    if from.is_dir() && dest_dir.starts_with(&from) {
+        return Err(AppError::Invalid(
+            "cannot copy a folder into itself or its own subfolder".into(),
+        ));
+    }
+    let name = from
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let target = dest_dir.join(fs_ops::unique_name(&dest_dir, &name, from.is_dir()));
+    if from.is_dir() {
+        fs_ops::copy_tree(&from, &target)?;
+    } else {
+        fs::copy(&from, &target)?;
+    }
+    fs_ops::entry(root, &target)
+}
+
 // Notes chat (SPEC notes chat slice): one continuous chat per working dir,
 // a chats row with kind='notes' and no project/session. The partial unique
 // index uniq_chats_one_notes_chat enforces the singleton, so ensure is
@@ -436,6 +526,12 @@ mod tests {
             rename(&wd, "link.md", "x.md"),
             Err(AppError::Invalid(_))
         ));
+        // move and copy refuse symlinks as sources, and a symlinked parent
+        assert!(matches!(move_entry(&wd, "link.md", ""), Err(AppError::Invalid(_))));
+        assert!(matches!(copy(&wd, "link.md", ""), Err(AppError::Invalid(_))));
+        assert!(matches!(move_entry(&wd, "filelink", "dirlink"), Err(AppError::Invalid(_))));
+        assert!(matches!(mkdir(&wd, "dirlink", "x"), Err(AppError::Invalid(_))));
+        assert!(matches!(mkdir(&wd, "", "link.md"), Err(AppError::Invalid(_))));
         // create cannot be redirected through a symlinked parent
         assert!(matches!(
             create(&wd, "dirlink/evil.md", None),
@@ -499,6 +595,145 @@ mod tests {
         delete(&wd, "новое.md").unwrap();
         assert!(!notes(&wd).join("новое.md").exists());
         assert!(matches!(delete(&wd, "нет-такого.md"), Err(AppError::Invalid(_))));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn mkdir_creates_folders_and_refuses_clashes_bad_names_and_escapes() {
+        let wd = setup("notes-mkdir");
+        let dir = mkdir(&wd, "", "Рабочие").unwrap();
+        assert_eq!(dir.rel_path, "Рабочие");
+        assert_eq!(dir.kind, "dir");
+        assert!(notes(&wd).join("Рабочие").is_dir());
+        assert_eq!(mkdir(&wd, "Рабочие", "2026").unwrap().rel_path, "Рабочие/2026");
+
+        create(&wd, "файл.md", None).unwrap();
+        for clash in ["Рабочие", "файл.md"] {
+            assert!(
+                matches!(mkdir(&wd, "", clash), Err(AppError::Invalid(_))),
+                "clash accepted: {clash}"
+            );
+        }
+        for bad in ["", " ", ".", "..", "a/b", "a\\b"] {
+            assert!(
+                matches!(mkdir(&wd, "", bad), Err(AppError::Invalid(_))),
+                "name accepted: {bad:?}"
+            );
+        }
+        for bad in ["../x", "/etc", "Рабочие/../..", "./Рабочие"] {
+            assert!(
+                matches!(mkdir(&wd, bad, "x"), Err(AppError::Invalid(_))),
+                "parent accepted: {bad:?}"
+            );
+        }
+        // parent must be an existing folder, not a file or a missing path
+        assert!(matches!(mkdir(&wd, "файл.md", "x"), Err(AppError::Invalid(_))));
+        assert!(matches!(mkdir(&wd, "нет-такого", "x"), Err(AppError::Invalid(_))));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn move_carries_notes_and_folders_and_is_a_noop_in_place() {
+        let wd = setup("notes-move");
+        create(&wd, "нота.md", Some("текст")).unwrap();
+        mkdir(&wd, "", "папка").unwrap();
+        let moved = move_entry(&wd, "нота.md", "папка").unwrap();
+        assert_eq!(moved.rel_path, "папка/нота.md");
+        assert!(!notes(&wd).join("нота.md").exists());
+        assert_eq!(read(&wd, "папка/нота.md").unwrap(), "текст");
+
+        mkdir(&wd, "", "другая").unwrap();
+        let dir_moved = move_entry(&wd, "папка", "другая").unwrap();
+        assert_eq!(dir_moved.rel_path, "другая/папка");
+        assert_eq!(dir_moved.kind, "dir");
+        assert_eq!(read(&wd, "другая/папка/нота.md").unwrap(), "текст");
+
+        // same parent and name is a no-op, not a collision
+        let same = move_entry(&wd, "другая/папка", "другая").unwrap();
+        assert_eq!(same.rel_path, "другая/папка");
+        assert!(notes(&wd).join("другая/папка/нота.md").is_file());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn move_rejects_self_descendant_collisions_and_bad_destinations() {
+        let wd = setup("notes-move-clash");
+        mkdir(&wd, "", "a").unwrap();
+        mkdir(&wd, "a", "b").unwrap();
+        create(&wd, "c.md", Some("снаружи")).unwrap();
+        create(&wd, "a/c.md", Some("внутри")).unwrap();
+
+        for (from, to) in [("a", "a"), ("a", "a/b"), ("c.md", "a")] {
+            assert!(
+                matches!(move_entry(&wd, from, to), Err(AppError::Invalid(_))),
+                "move accepted: {from} -> {to}"
+            );
+        }
+        // nothing moved and nothing overwritten
+        assert_eq!(read(&wd, "c.md").unwrap(), "снаружи");
+        assert_eq!(read(&wd, "a/c.md").unwrap(), "внутри");
+        assert!(notes(&wd).join("a/b").is_dir());
+
+        // destination must be an existing folder; source must exist
+        assert!(matches!(move_entry(&wd, "c.md", "c.md"), Err(AppError::Invalid(_))));
+        assert!(matches!(move_entry(&wd, "c.md", "нет"), Err(AppError::Invalid(_))));
+        assert!(matches!(move_entry(&wd, "нет.md", ""), Err(AppError::Invalid(_))));
+        // the vault root itself is never a source
+        assert!(matches!(move_entry(&wd, "", ""), Err(AppError::Invalid(_))));
+        for bad in ["../x", "/etc/passwd", "a/../../x"] {
+            assert!(
+                matches!(move_entry(&wd, bad, ""), Err(AppError::Invalid(_))),
+                "from accepted: {bad:?}"
+            );
+            assert!(
+                matches!(move_entry(&wd, "c.md", bad), Err(AppError::Invalid(_))),
+                "to accepted: {bad:?}"
+            );
+        }
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn copy_keeps_the_source_and_suffixes_collisions() {
+        let wd = setup("notes-copy");
+        create(&wd, "нота.md", Some("раз")).unwrap();
+        mkdir(&wd, "", "папка").unwrap();
+
+        let copied = copy(&wd, "нота.md", "папка").unwrap();
+        assert_eq!(copied.rel_path, "папка/нота.md");
+        assert_eq!(read(&wd, "нота.md").unwrap(), "раз"); // source stays
+        assert_eq!(read(&wd, "папка/нота.md").unwrap(), "раз");
+
+        assert_eq!(copy(&wd, "нота.md", "").unwrap().rel_path, "нота copy.md");
+        assert_eq!(copy(&wd, "нота.md", "").unwrap().rel_path, "нота copy 1.md");
+
+        create(&wd, "папка/внутри.md", Some("два")).unwrap();
+        let dir_copy = copy(&wd, "папка", "").unwrap();
+        assert_eq!(dir_copy.rel_path, "папка copy");
+        assert_eq!(dir_copy.kind, "dir");
+        assert_eq!(read(&wd, "папка copy/внутри.md").unwrap(), "два");
+        assert_eq!(read(&wd, "папка copy/нота.md").unwrap(), "раз");
+        assert_eq!(copy(&wd, "папка", "").unwrap().rel_path, "папка copy 1");
+
+        // a folder cannot be copied into its own subtree (infinite recursion)
+        assert!(matches!(copy(&wd, "папка", "папка"), Err(AppError::Invalid(_))));
+        assert!(matches!(copy(&wd, "папка", "папка/внутри.md"), Err(AppError::Invalid(_))));
+        // a sibling folder is a fine destination, even for a copy of itself
+        assert_eq!(copy(&wd, "папка", "папка copy").unwrap().rel_path, "папка copy/папка");
+        assert!(matches!(copy(&wd, "нота.md", "нота.md"), Err(AppError::Invalid(_))));
+        assert!(matches!(copy(&wd, "нота.md", "нет"), Err(AppError::Invalid(_))));
+        assert!(matches!(copy(&wd, "нет.md", ""), Err(AppError::Invalid(_))));
+        assert!(matches!(copy(&wd, "", ""), Err(AppError::Invalid(_))));
+        for bad in ["../x", "/etc/passwd", "a/../../x"] {
+            assert!(
+                matches!(copy(&wd, bad, ""), Err(AppError::Invalid(_))),
+                "from accepted: {bad:?}"
+            );
+            assert!(
+                matches!(copy(&wd, "нота.md", bad), Err(AppError::Invalid(_))),
+                "to accepted: {bad:?}"
+            );
+        }
         fs::remove_dir_all(&wd).unwrap();
     }
 

@@ -495,7 +495,7 @@ pub(crate) fn unique_name(parent: &Path, name: &str, is_dir: bool) -> String {
     }
 }
 
-fn copy_tree(from: &Path, to: &Path) -> Result<()> {
+pub(crate) fn copy_tree(from: &Path, to: &Path) -> Result<()> {
     fs::create_dir_all(to)?;
     let mut stack = vec![(from.to_path_buf(), to.to_path_buf())];
     while let Some((src_dir, dst_dir)) = stack.pop() {
