@@ -38,6 +38,9 @@ pub const CONFIG_MCP: &str = "mcp.json";
 pub const CONFIG_SSH: &str = "ssh.json";
 // Per-extension "open with" app choices, written by remember_open_with.
 pub const CONFIG_OPEN_WITH: &str = "openWith.json";
+// Reusable templates for projects/tasks/notes/documents (templates.rs);
+// created with seeded defaults on first use, hand-editable.
+pub const CONFIG_TEMPLATES: &str = "templates.json";
 
 pub const SKILLS_BUILTIN: &str = "builtin";
 pub const SKILLS_USER: &str = "user";

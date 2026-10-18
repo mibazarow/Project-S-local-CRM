@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as ipc from "../../api/ipc";
-import type { TaskDto, TaskPatch } from "../../api/types";
+import type { TaskDto, TaskPatch, TemplateSummary } from "../../api/types";
 import { toMessage } from "../files/fileOps";
 import RenameInput from "../files/RenameInput";
 import { IconClose, IconPlus, IconSearch, IconTrash } from "../files/icons";
@@ -86,7 +86,20 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [views, setViews] = useState<SavedView[]>([]);
   const [activeView, setActiveView] = useState("");
+  const [taskTemplates, setTaskTemplates] = useState<TemplateSummary[]>([]);
   const boardRef = useRef<HTMLDivElement>(null);
+
+  // Task templates for the «Задача из шаблона» picker; a failed load hides it.
+  useEffect(() => {
+    let cancelled = false;
+    void ipc
+      .templatesList()
+      .then((t) => !cancelled && setTaskTemplates(t.tasks))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // Per-project filter/view state: reset and reload on project switch.
   useEffect(() => {
@@ -224,6 +237,17 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
       .catch((e) => setError(toMessage(e)));
   };
 
+  const handleTemplateTask = (templateName: string) => {
+    if (!templateName) return;
+    ipc
+      .templateCreateTask(projectId, templateName)
+      .then((dto) => {
+        setError(null);
+        upsert(dto);
+      })
+      .catch((e) => setError(toMessage(e)));
+  };
+
   const handlePatch = (id: number, patch: TaskPatch) => {
     ipc
       .taskUpdate(id, patch)
@@ -332,6 +356,21 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
             </option>
           ))}
         </select>
+        {taskTemplates.length > 0 && (
+          <select
+            className="tf-select"
+            value=""
+            title="Создать задачу из шаблона"
+            onChange={(e) => handleTemplateTask(e.target.value)}
+          >
+            <option value="">Задача из шаблона…</option>
+            {taskTemplates.map((t) => (
+              <option key={t.name} value={t.name}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        )}
         <label className="tf-check">
           <input
             type="checkbox"

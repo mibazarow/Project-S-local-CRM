@@ -29,6 +29,7 @@ mod search;
 mod skills;
 mod state;
 mod tasks;
+mod templates;
 mod todos;
 mod watcher;
 
@@ -729,6 +730,70 @@ fn notes_delete(app: AppHandle, state: State<AppState>, rel: String) -> Result<(
     emit_notes_changed(&app, rel);
     emit_trash_changed(&app, Some(trash_id));
     Ok(())
+}
+
+// Reusable templates (Settings/config/templates.json, seeded on first use):
+// pickers list name + short description; the create commands instantiate one
+// template as a project / task / note. template_document only returns the
+// markdown, which the agent or UI fills in and creates via create_document.
+#[tauri::command]
+fn templates_list(state: State<AppState>) -> Result<templates::TemplatesSummary> {
+    templates::summary(&state.working_dir()?)
+}
+
+#[tauri::command]
+fn template_create_project(
+    app: AppHandle,
+    state: State<AppState>,
+    template_name: String,
+    project_name: Option<String>,
+) -> Result<ProjectDto> {
+    let wd = state.working_dir()?;
+    let dto = with_db(&state, |conn| {
+        templates::create_project(conn, &wd, &template_name, project_name.as_deref())
+    })?;
+    watcher::start(&app, &state, &wd);
+    emit_fs_changed(&app, dto.id, "");
+    emit_projects_changed(&app);
+    Ok(dto)
+}
+
+#[tauri::command]
+fn template_create_task(
+    app: AppHandle,
+    state: State<AppState>,
+    project_id: i64,
+    template_name: String,
+) -> Result<TaskDto> {
+    let wd = state.working_dir()?;
+    let dto = with_db(&state, |conn| {
+        let dto = templates::create_task(conn, &wd, project_id, &template_name)?;
+        export::export_project(conn, &wd, project_id)?;
+        Ok(dto)
+    })?;
+    emit_tasks_changed(&app, dto.project_id);
+    Ok(dto)
+}
+
+#[tauri::command]
+fn template_create_note(
+    app: AppHandle,
+    state: State<AppState>,
+    template_name: String,
+    note_name: Option<String>,
+) -> Result<FsEntry> {
+    let item = templates::create_note(
+        &state.working_dir()?,
+        &template_name,
+        note_name.as_deref(),
+    )?;
+    emit_notes_changed(&app, item.rel_path.clone());
+    Ok(item)
+}
+
+#[tauri::command]
+fn template_document(state: State<AppState>, template_name: String) -> Result<templates::DocumentDto> {
+    templates::document(&state.working_dir()?, &template_name)
 }
 
 // Trash (SPEC trash/versions slice): every delete from the UI or the agents
@@ -1663,6 +1728,11 @@ pub fn run() {
             notes_move,
             notes_copy,
             notes_delete,
+            templates_list,
+            template_create_project,
+            template_create_task,
+            template_create_note,
+            template_document,
             trash_list,
             trash_restore,
             trash_purge,

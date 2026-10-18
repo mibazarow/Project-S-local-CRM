@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import * as ipc from "../../api/ipc";
-import type { FsEntry } from "../../api/types";
+import type { FsEntry, TemplateSummary } from "../../api/types";
 import { toMessage } from "../chat/chatShared";
 import RenameInput from "../files/RenameInput";
 import {
@@ -134,6 +134,35 @@ export default function NotesTree({
   const [creating, setCreating] = useState<{ parentRel: string; kind: "dir" | "file" } | null>(
     null,
   );
+  const [noteTemplates, setNoteTemplates] = useState<TemplateSummary[]>([]);
+
+  // Note templates for the «Из шаблона» picker; a failed load just hides it.
+  useEffect(() => {
+    let cancelled = false;
+    void ipc
+      .templatesList()
+      .then((t) => !cancelled && setNoteTemplates(t.notes))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleTemplate = async (templateName: string) => {
+    if (!templateName) return;
+    const custom = window.prompt("Имя новой заметки (можно оставить имя шаблона):", templateName);
+    if (custom === null) return;
+    const name = custom.trim();
+    try {
+      const created = await ipc.templateCreateNote(
+        templateName,
+        name && name !== templateName ? name : undefined,
+      );
+      onSelect(created);
+    } catch (e) {
+      setError(toMessage(e));
+    }
+  };
 
   // notes_tree returns the whole vault as one flat list; group it by parent
   // dir (backend order is already dirs-first case-insensitive).
@@ -296,6 +325,21 @@ export default function NotesTree({
           <IconFolderPlus />
           Новая папка
         </button>
+        {noteTemplates.length > 0 && (
+          <select
+            className="tf-select"
+            value=""
+            title="Создать заметку из шаблона"
+            onChange={(e) => void handleTemplate(e.target.value)}
+          >
+            <option value="">Из шаблона…</option>
+            {noteTemplates.map((t) => (
+              <option key={t.name} value={t.name}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
       {error && <div className="tree-error">{error}</div>}
       <div className="notes-tree">{body}</div>

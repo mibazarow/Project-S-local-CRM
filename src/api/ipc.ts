@@ -36,6 +36,7 @@ import type {
   TaskDto,
   TaskPatch,
   TasksChanged,
+  TemplatesSummary,
   TodoDto,
   TodosChanged,
   TrashChanged,
@@ -212,6 +213,27 @@ export const notesDelete = (rel: string) => invoke<void>("notes_delete", { rel }
 
 export const searchNotes = (query: string, limit?: number) =>
   invoke<SearchHit[]>("search_notes", { query, limit: limit ?? null });
+
+// Reusable templates (Settings/config/templates.json, seeded on first use):
+// the pickers list name + short description; create commands instantiate one
+// template as a project / task / note. templateDocument only returns the
+// markdown to fill in and create via the agent's create_document tool.
+export const templatesList = () => invoke<TemplatesSummary>("templates_list");
+
+export const templateCreateProject = (templateName: string, projectName?: string) =>
+  invoke<ProjectDto>("template_create_project", {
+    templateName,
+    projectName: projectName ?? null,
+  });
+
+export const templateCreateTask = (projectId: number, templateName: string) =>
+  invoke<TaskDto>("template_create_task", { projectId, templateName });
+
+export const templateCreateNote = (templateName: string, noteName?: string) =>
+  invoke<FsEntry>("template_create_note", { templateName, noteName: noteName ?? null });
+
+export const templateDocument = (templateName: string) =>
+  invoke<{ name: string; markdown: string }>("template_document", { templateName });
 
 // Notes chat: one continuous chat per working dir; events route by
 // "notes: true" on agent-event / agent-confirmation.

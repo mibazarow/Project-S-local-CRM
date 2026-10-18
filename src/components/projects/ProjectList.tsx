@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
+import * as ipc from "../../api/ipc";
+import type { TemplateSummary } from "../../api/types";
 import { useApp } from "../../state/AppStore";
 import { usePointerDrag } from "../../hooks/usePointerDrag";
 import ProjectItem from "./ProjectItem";
@@ -7,7 +9,31 @@ export default function ProjectList() {
   const { state, actions } = useApp();
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
+  const [projectTemplates, setProjectTemplates] = useState<TemplateSummary[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
+
+  // Project templates for the «Из шаблона» picker; a failed load just hides it.
+  useEffect(() => {
+    let cancelled = false;
+    void ipc
+      .templatesList()
+      .then((t) => !cancelled && setProjectTemplates(t.projects))
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleTemplate = async (templateName: string) => {
+    if (!templateName) return;
+    const custom = window.prompt("Имя нового проекта (можно оставить имя шаблона):", templateName);
+    if (custom === null) return;
+    const name = custom.trim();
+    await actions.createProjectFromTemplate(
+      templateName,
+      name && name !== templateName ? name : undefined,
+    );
+  };
 
   // Command-palette intent: open the inline "new project" input.
   useEffect(() => {
@@ -111,26 +137,43 @@ export default function ProjectList() {
     <aside className="sidebar">
       <div className="sidebar-head">
         <span className="sidebar-title">Проекты</span>
-        <button
-          className="icon-btn small"
-          title="Добавить проект"
-          onClick={() => {
-            setDraft("");
-            setAdding(true);
-          }}
-        >
-          <svg
-            viewBox="0 0 24 24"
-            width="16"
-            height="16"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
+        <span className="sidebar-head-actions">
+          {projectTemplates.length > 0 && (
+            <select
+              className="tf-select"
+              value=""
+              title="Создать проект из шаблона"
+              onChange={(e) => void handleTemplate(e.target.value)}
+            >
+              <option value="">Из шаблона…</option>
+              {projectTemplates.map((t) => (
+                <option key={t.name} value={t.name}>
+                  {t.name}
+                </option>
+              ))}
+            </select>
+          )}
+          <button
+            className="icon-btn small"
+            title="Добавить проект"
+            onClick={() => {
+              setDraft("");
+              setAdding(true);
+            }}
           >
-            <path d="M12 5v14M5 12h14" />
-          </svg>
-        </button>
+            <svg
+              viewBox="0 0 24 24"
+              width="16"
+              height="16"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+            >
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+          </button>
+        </span>
       </div>
       <div ref={listRef} className="project-list">
         {adding && (

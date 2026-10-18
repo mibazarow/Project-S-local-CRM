@@ -152,6 +152,7 @@ function writeLastProjectId(workingDir: string | null, id: number): void {
 interface AppActions {
   chooseWorkingDir: (path: string) => Promise<void>;
   createProject: (name: string) => Promise<void>;
+  createProjectFromTemplate: (templateName: string, projectName?: string) => Promise<void>;
   renameProject: (id: number, newName: string) => Promise<void>;
   openProject: (id: number) => Promise<void>;
   moveProject: (id: number, position: number) => Promise<void>;
@@ -242,6 +243,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
       dispatch({ type: "error", message: toMessage(e) });
     }
   }, []);
+
+  const createProjectFromTemplate = useCallback(
+    async (templateName: string, projectName?: string) => {
+      dispatch({ type: "error", message: null });
+      try {
+        const dto = await ipc.templateCreateProject(templateName, projectName);
+        await ipc.touchProjectOpened(dto.id);
+        configuredRef.current = true;
+        dispatch({ type: "projects", projects: await ipc.listProjects() });
+        dispatch({ type: "activeProject", id: dto.id });
+      } catch (e) {
+        dispatch({ type: "error", message: toMessage(e) });
+      }
+    },
+    [],
+  );
 
   const renameProject = useCallback(async (id: number, newName: string) => {
     const trimmed = newName.trim();
@@ -356,6 +373,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     () => ({
       chooseWorkingDir,
       createProject,
+      createProjectFromTemplate,
       renameProject,
       openProject,
       moveProject,
@@ -379,6 +397,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [
       chooseWorkingDir,
       createProject,
+      createProjectFromTemplate,
       renameProject,
       openProject,
       moveProject,
