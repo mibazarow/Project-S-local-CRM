@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
 import { useAppActions } from "../../state/AppStore";
 import type { AgentEventPayload } from "../../api/types";
@@ -41,7 +41,7 @@ export default function NotesChat() {
   // chat id so they key by the locally known id; agent-file/compaction events
   // match that same id. A run that finished while this view was unmounted (a
   // remote run) finalizes from the persisted transcript.
-  const { state, dispatch } = useChatRun(
+  const { state, stateRef, dispatch } = useChatRun(
     {
       routeAgentEvent: (p: AgentEventPayload) => (p.notes === true ? p.chatId : null),
       routeConfirmation: (p) => (p.notes === true ? chatIdRef.current : null),
@@ -126,40 +126,55 @@ export default function NotesChat() {
 
   // Message-level UX: live items carry no DB ids, so both handlers refetch
   // the history and map the item by position before touching the transcript.
-  const pinItem = async (item: ChatItem, pinned: boolean) => {
-    if (chatId == null) return;
-    const messageId = await resolvePinMessageId(
-      () => ipc.notesChatHistory(),
-      slice?.items ?? [],
-      item.key,
-    );
-    if (!messageId) return;
-    try {
-      await ipc.chatPin(chatId, messageId, pinned);
-      dispatch({ type: "pin", key: chatId, itemKey: item.key, pinned });
-    } catch {
-      // The pin flag simply stays as it was.
-    }
-  };
+  const pinItem = useCallback(
+    async (item: ChatItem, pinned: boolean) => {
+      const chatId = chatIdRef.current;
+      if (chatId == null) return;
+      const messageId = await resolvePinMessageId(
+        () => ipc.notesChatHistory(),
+        stateRef.current[chatId]?.items ?? [],
+        item.key,
+      );
+      if (!messageId) return;
+      try {
+        await ipc.chatPin(chatId, messageId, pinned);
+        dispatch({ type: "pin", key: chatId, itemKey: item.key, pinned });
+      } catch {
+        // The pin flag simply stays as it was.
+      }
+    },
+    [stateRef, dispatch],
+  );
 
-  const regenerateItem = async (item: ChatItem) => {
-    if (chatId == null || running) return;
-    const turn = await resolveRegenerateTurn(
-      () => ipc.notesChatHistory(),
-      slice?.items ?? [],
-      item.key,
-    );
-    if (!turn) return;
-    try {
-      await ipc.chatTruncateAfter(chatId, turn.messageId);
-      dispatch({ type: "regenerate", key: chatId, itemKey: item.key });
-      await ipc
-        .sendNotesMessage(turn.userText)
-        .catch((e) => dispatch({ type: "sendFailed", key: chatId, message: toMessage(e) }));
-    } catch (e) {
-      dispatch({ type: "sendFailed", key: chatId, message: toMessage(e) });
-    }
-  };
+  const regenerateItem = useCallback(
+    async (item: ChatItem) => {
+      const chatId = chatIdRef.current;
+      if (chatId == null) return;
+      const sliceNow = stateRef.current[chatId];
+      if (sliceNow?.run != null) return;
+      const turn = await resolveRegenerateTurn(
+        () => ipc.notesChatHistory(),
+        sliceNow?.items ?? [],
+        item.key,
+      );
+      if (!turn) return;
+      try {
+        await ipc.chatTruncateAfter(chatId, turn.messageId);
+        dispatch({ type: "regenerate", key: chatId, itemKey: item.key });
+        await ipc
+          .sendNotesMessage(turn.userText)
+          .catch((e) => dispatch({ type: "sendFailed", key: chatId, message: toMessage(e) }));
+      } catch (e) {
+        dispatch({ type: "sendFailed", key: chatId, message: toMessage(e) });
+      }
+    },
+    [stateRef, dispatch],
+  );
+
+  const transcriptActions = useMemo(
+    () => ({ onPin: pinItem, onRegenerate: regenerateItem }),
+    [pinItem, regenerateItem],
+  );
 
   const exportChat = () => {
     if (chatId == null) return;
@@ -186,7 +201,7 @@ export default function NotesChat() {
         empty="Спросите агента о заметках…"
         projectId={null}
         chatId={chatId}
-        actions={{ onPin: pinItem, onRegenerate: regenerateItem }}
+        actions={transcriptActions}
         search={chatQuery}
       />
 

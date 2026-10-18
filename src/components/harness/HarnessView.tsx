@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
 import { useApp } from "../../state/AppStore";
 import { useDebouncedValue } from "../../hooks/useDebouncedValue";
@@ -151,8 +151,11 @@ export default function HarnessView() {
   const [sessionChatIds, setSessionChatIds] = useState<Record<number, number>>({});
   const sessionChatIdsRef = useRef(sessionChatIds);
   sessionChatIdsRef.current = sessionChatIds;
-  const rememberChatId = (session: number, chatId: number) =>
-    setSessionChatIds((prev) => (prev[session] === chatId ? prev : { ...prev, [session]: chatId }));
+  const rememberChatId = useCallback(
+    (session: number, chatId: number) =>
+      setSessionChatIds((prev) => (prev[session] === chatId ? prev : { ...prev, [session]: chatId })),
+    [],
+  );
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
   const [text, setText] = useState("");
@@ -464,71 +467,87 @@ export default function HarnessView() {
 
   // Message-level UX: live items carry no DB ids, so the handlers refetch the
   // history and map the item by position before touching the transcript.
-  const pinItem = async (item: ChatItem, pinned: boolean) => {
-    if (activeId == null) return;
-    const chatId = sessionChatIds[activeId];
-    if (chatId == null) return;
-    const messageId = await resolvePinMessageId(
-      () => ipc.harnessSessionHistory(activeId),
-      slice?.items ?? [],
-      item.key,
-    );
-    if (!messageId) return;
-    try {
-      await ipc.chatPin(chatId, messageId, pinned);
-      dispatch({ type: "pin", key: activeId, itemKey: item.key, pinned });
-    } catch {
-      // The pin flag simply stays as it was.
-    }
-  };
+  const pinItem = useCallback(
+    async (item: ChatItem, pinned: boolean) => {
+      if (activeId == null) return;
+      const chatId = sessionChatIdsRef.current[activeId];
+      if (chatId == null) return;
+      const messageId = await resolvePinMessageId(
+        () => ipc.harnessSessionHistory(activeId),
+        stateRef.current[activeId]?.items ?? [],
+        item.key,
+      );
+      if (!messageId) return;
+      try {
+        await ipc.chatPin(chatId, messageId, pinned);
+        dispatch({ type: "pin", key: activeId, itemKey: item.key, pinned });
+      } catch {
+        // The pin flag simply stays as it was.
+      }
+    },
+    [activeId, stateRef, dispatch],
+  );
 
-  const regenerateItem = async (item: ChatItem) => {
-    if (activeId == null || running) return;
-    const chatId = sessionChatIds[activeId];
-    if (chatId == null) return;
-    const turn = await resolveRegenerateTurn(
-      () => ipc.harnessSessionHistory(activeId),
-      slice?.items ?? [],
-      item.key,
-    );
-    if (!turn) return;
-    try {
-      await ipc.chatTruncateAfter(chatId, turn.messageId);
-      dispatch({ type: "regenerate", key: activeId, itemKey: item.key });
-      await ipc
-        .sendSessionMessage(activeId, turn.userText)
-        .then((chat) => {
-          rememberChatId(activeId, chat);
-          return loadSessions();
-        })
-        .catch((e) => dispatch({ type: "sendFailed", key: activeId, message: toMessage(e) }));
-    } catch (e) {
-      dispatch({ type: "sendFailed", key: activeId, message: toMessage(e) });
-    }
-  };
+  const regenerateItem = useCallback(
+    async (item: ChatItem) => {
+      if (activeId == null) return;
+      const sliceNow = stateRef.current[activeId];
+      if (sliceNow?.run != null) return;
+      const chatId = sessionChatIdsRef.current[activeId];
+      if (chatId == null) return;
+      const turn = await resolveRegenerateTurn(
+        () => ipc.harnessSessionHistory(activeId),
+        sliceNow?.items ?? [],
+        item.key,
+      );
+      if (!turn) return;
+      try {
+        await ipc.chatTruncateAfter(chatId, turn.messageId);
+        dispatch({ type: "regenerate", key: activeId, itemKey: item.key });
+        await ipc
+          .sendSessionMessage(activeId, turn.userText)
+          .then((chat) => {
+            rememberChatId(activeId, chat);
+            return loadSessions();
+          })
+          .catch((e) => dispatch({ type: "sendFailed", key: activeId, message: toMessage(e) }));
+      } catch (e) {
+        dispatch({ type: "sendFailed", key: activeId, message: toMessage(e) });
+      }
+    },
+    [activeId, stateRef, dispatch, rememberChatId, loadSessions],
+  );
 
   // Branching forks the session at a message: the fresh session opens through
   // the pendingSessionId intent, and chat_branch's "sessions-changed" event
   // refreshes the sidebar list.
-  const branchItem = async (item: ChatItem) => {
-    if (activeId == null) return;
-    const chatId = sessionChatIds[activeId];
-    if (chatId == null) return;
-    const messageId = await resolvePinMessageId(
-      () => ipc.harnessSessionHistory(activeId),
-      slice?.items ?? [],
-      item.key,
-    );
-    if (!messageId) return;
-    try {
-      const res = await ipc.chatBranch(chatId, messageId);
-      rememberChatId(res.sessionId, res.chatId);
-      actions.requestSession(res.sessionId);
-      setBranchNote("Ветка создана — открыта новая сессия.");
-    } catch (e) {
-      setBranchNote(toMessage(e));
-    }
-  };
+  const branchItem = useCallback(
+    async (item: ChatItem) => {
+      if (activeId == null) return;
+      const chatId = sessionChatIdsRef.current[activeId];
+      if (chatId == null) return;
+      const messageId = await resolvePinMessageId(
+        () => ipc.harnessSessionHistory(activeId),
+        stateRef.current[activeId]?.items ?? [],
+        item.key,
+      );
+      if (!messageId) return;
+      try {
+        const res = await ipc.chatBranch(chatId, messageId);
+        rememberChatId(res.sessionId, res.chatId);
+        actions.requestSession(res.sessionId);
+        setBranchNote("Ветка создана — открыта новая сессия.");
+      } catch (e) {
+        setBranchNote(toMessage(e));
+      }
+    },
+    [activeId, stateRef, rememberChatId, actions],
+  );
+
+  const transcriptActions = useMemo(
+    () => ({ onPin: pinItem, onRegenerate: regenerateItem, onBranch: branchItem }),
+    [pinItem, regenerateItem, branchItem],
+  );
 
   const exportChat = () => {
     if (activeId == null) return;
@@ -708,7 +727,7 @@ export default function HarnessView() {
           }
           projectId={null}
           chatId={activeId != null ? (sessionChatIds[activeId] ?? null) : null}
-          actions={{ onPin: pinItem, onRegenerate: regenerateItem, onBranch: branchItem }}
+          actions={transcriptActions}
           search={chatQuery}
         />
 

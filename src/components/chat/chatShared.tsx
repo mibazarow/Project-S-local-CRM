@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode, type RefObject } from "react";
+import { memo, useEffect, useState, type ReactNode, type RefObject } from "react";
 import * as ipc from "../../api/ipc";
 import { MarkdownMessage } from "./MarkdownMessage";
 import type {
@@ -912,6 +912,131 @@ export interface TranscriptActions {
   onToTask?: (item: ChatItem) => void;
 }
 
+// One settled transcript row. Memoized so a streaming delta (which only
+// changes the slice's run) or an unrelated store bump never re-renders the
+// settled rows: the props are the item itself plus primitives and the
+// view-stable actions object.
+const MessageRow = memo(function MessageRow({
+  item,
+  q,
+  isLast,
+  hasRun,
+  projectId,
+  chatId,
+  actions,
+}: {
+  item: ChatItem;
+  q: string;
+  isLast: boolean;
+  hasRun: boolean;
+  projectId: number | null;
+  chatId: number | null;
+  actions?: TranscriptActions;
+}) {
+  const canRegenerate = !!actions?.onRegenerate && item.role === "agent" && isLast && !hasRun;
+  const onPin = actions?.onPin;
+  const onRegenerate = canRegenerate ? actions?.onRegenerate : undefined;
+  const onBranch = actions?.onBranch;
+  const hasText = item.text.trim() !== "";
+  const onToNote = hasText ? actions?.onToNote : undefined;
+  const onToTask = hasText ? actions?.onToTask : undefined;
+  return (
+    <div
+      className={`msg ${item.role}${item.pinned ? " pinned" : ""}`}
+      data-msg-key={item.key}
+    >
+      <span className="who">
+        {item.role === "user" ? "Вы" : "Агент"}
+        {item.pinned && (
+          <span className="pin-mark" title="Закреплено">
+            <PinIcon />
+          </span>
+        )}
+      </span>
+      {(onPin || onRegenerate || onBranch || onToNote || onToTask) && (
+        <span className="msg-actions">
+          {onPin && (
+            <button
+              className={`mini-btn${item.pinned ? " on" : ""}`}
+              type="button"
+              title={item.pinned ? "Открепить" : "Закрепить"}
+              onClick={() => onPin(item, !item.pinned)}
+            >
+              <PinIcon />
+            </button>
+          )}
+          {onRegenerate && (
+            <button
+              className="mini-btn"
+              type="button"
+              title="Перегенерировать ответ"
+              onClick={() => onRegenerate(item)}
+            >
+              <RegenerateIcon />
+            </button>
+          )}
+          {onBranch && (
+            <button
+              className="mini-btn"
+              type="button"
+              title="Создать ветку сессии"
+              onClick={() => onBranch(item)}
+            >
+              <BranchIcon />
+            </button>
+          )}
+          {onToNote && (
+            <button
+              className="mini-btn"
+              type="button"
+              title="В заметку"
+              onClick={() => onToNote(item)}
+            >
+              <NoteIcon />
+            </button>
+          )}
+          {onToTask && (
+            <button
+              className="mini-btn"
+              type="button"
+              title="В задачу"
+              onClick={() => onToTask(item)}
+            >
+              <TaskIcon />
+            </button>
+          )}
+        </span>
+      )}
+      <ReasoningBlock text={item.reasoning} />
+      {item.text &&
+        (q ? (
+          <div className="bubble">{highlight(item.text, q)}</div>
+        ) : item.role === "agent" ? (
+          <MarkdownMessage text={item.text} />
+        ) : (
+          <div className="bubble">{item.text}</div>
+        ))}
+      <MessageAttachments
+        attachments={item.attachments}
+        projectId={projectId}
+        chatId={chatId}
+      />
+      <StepsList steps={item.steps} />
+      {item.compactions.map((c) => (
+        <CompactionNote key={c.key} compaction={c} />
+      ))}
+      {item.note && <span className="note">{item.note}</span>}
+      {item.error && (
+        <div className="error">
+          {item.error}
+          <br />
+          Проверьте Настройки → Модель.
+        </div>
+      )}
+    </div>
+  );
+});
+
 export function ChatTranscript({
   slice,
   listRef,
@@ -969,113 +1094,18 @@ export function ChatTranscript({
         <div className="chat-empty">Ничего не найдено</div>
       ) : (
         <>
-          {visible.map((item) => {
-            const isLast = items[items.length - 1]?.key === item.key;
-            const canRegenerate =
-              !!actions?.onRegenerate && item.role === "agent" && isLast && !slice.run;
-            const onPin = actions?.onPin;
-            const onRegenerate = canRegenerate ? actions?.onRegenerate : undefined;
-            const onBranch = actions?.onBranch;
-            const hasText = item.text.trim() !== "";
-            const onToNote = hasText ? actions?.onToNote : undefined;
-            const onToTask = hasText ? actions?.onToTask : undefined;
-            return (
-              <div
-                key={item.key}
-                className={`msg ${item.role}${item.pinned ? " pinned" : ""}`}
-                data-msg-key={item.key}
-              >
-                <span className="who">
-                  {item.role === "user" ? "Вы" : "Агент"}
-                  {item.pinned && (
-                    <span className="pin-mark" title="Закреплено">
-                      <PinIcon />
-                    </span>
-                  )}
-                </span>
-                {(onPin || onRegenerate || onBranch || onToNote || onToTask) && (
-                  <span className="msg-actions">
-                    {onPin && (
-                      <button
-                        className={`mini-btn${item.pinned ? " on" : ""}`}
-                        type="button"
-                        title={item.pinned ? "Открепить" : "Закрепить"}
-                        onClick={() => onPin(item, !item.pinned)}
-                      >
-                        <PinIcon />
-                      </button>
-                    )}
-                    {onRegenerate && (
-                      <button
-                        className="mini-btn"
-                        type="button"
-                        title="Перегенерировать ответ"
-                        onClick={() => onRegenerate(item)}
-                      >
-                        <RegenerateIcon />
-                      </button>
-                    )}
-                    {onBranch && (
-                      <button
-                        className="mini-btn"
-                        type="button"
-                        title="Создать ветку сессии"
-                        onClick={() => onBranch(item)}
-                      >
-                        <BranchIcon />
-                      </button>
-                    )}
-                    {onToNote && (
-                      <button
-                        className="mini-btn"
-                        type="button"
-                        title="В заметку"
-                        onClick={() => onToNote(item)}
-                      >
-                        <NoteIcon />
-                      </button>
-                    )}
-                    {onToTask && (
-                      <button
-                        className="mini-btn"
-                        type="button"
-                        title="В задачу"
-                        onClick={() => onToTask(item)}
-                      >
-                        <TaskIcon />
-                      </button>
-                    )}
-                  </span>
-                )}
-                <ReasoningBlock text={item.reasoning} />
-                {item.text &&
-                  (q ? (
-                    <div className="bubble">{highlight(item.text, q)}</div>
-                  ) : item.role === "agent" ? (
-                    <MarkdownMessage text={item.text} />
-                  ) : (
-                    <div className="bubble">{item.text}</div>
-                  ))}
-                <MessageAttachments
-                  attachments={item.attachments}
-                  projectId={projectId}
-                  chatId={chatId}
-                />
-                <StepsList steps={item.steps} />
-                {item.compactions.map((c) => (
-                  <CompactionNote key={c.key} compaction={c} />
-                ))}
-                {item.note && <span className="note">{item.note}</span>}
-                {item.error && (
-                  <div className="error">
-                    {item.error}
-                    <br />
-                    Проверьте Настройки → Модель.
-                  </div>
-                )}
-              </div>
-            );
-          })}
+          {visible.map((item) => (
+            <MessageRow
+              key={item.key}
+              item={item}
+              q={q}
+              isLast={items[items.length - 1]?.key === item.key}
+              hasRun={slice.run != null}
+              projectId={projectId}
+              chatId={chatId}
+              actions={actions}
+            />
+          ))}
           {slice.run && (
             <div className="msg agent">
               <span className="who">Агент</span>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { renderMarkdown } from "../shared/markdown";
 
 const COPIED_MS = 1500;
@@ -73,7 +73,7 @@ function decorateCodeBlocks(html: string): string {
 // the whole message (copies the RAW text) and one per code block. Re-renders
 // incrementally on streaming deltas; unclosed fences are auto-closed by
 // marked, so partial markdown never breaks the bubble.
-export function MarkdownMessage({ text }: { text: string }) {
+export const MarkdownMessage = memo(function MarkdownMessage({ text }: { text: string }) {
   const html = useMemo(
     () => decorateCodeBlocks(renderMarkdown(text, { breaks: true })),
     [text],
@@ -116,4 +116,4 @@ export function MarkdownMessage({ text }: { text: string }) {
       />
     </div>
   );
-}
+});

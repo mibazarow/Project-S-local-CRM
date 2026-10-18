@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
 import { useApp } from "../../state/AppStore";
 import type { AgentEventPayload, MessageAttachmentDto } from "../../api/types";
@@ -38,8 +38,11 @@ export default function ProjectChat({ projectId, projectName }: Props) {
   const [chatIds, setChatIds] = useState<Record<number, number>>({});
   const chatIdsRef = useRef(chatIds);
   chatIdsRef.current = chatIds;
-  const rememberChatId = (project: number, chat: number) =>
-    setChatIds((prev) => (prev[project] === chat ? prev : { ...prev, [project]: chat }));
+  const rememberChatId = useCallback(
+    (project: number, chat: number) =>
+      setChatIds((prev) => (prev[project] === chat ? prev : { ...prev, [project]: chat })),
+    [],
+  );
   const [text, setText] = useState("");
   const [chatQuery, setChatQuery] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
@@ -156,36 +159,42 @@ export default function ProjectChat({ projectId, projectName }: Props) {
   // Message quick actions: the text becomes a Notes/ note (name from its first
   // line) or a task in this project (first line as title, full text as comment).
   // Both record a background link to this chat (links slice), best-effort.
-  const messageToNote = (item: ChatItem) => {
-    const full = item.text.trim();
-    if (!full) return;
-    const chatId = projectId != null ? chatIds[projectId] : undefined;
-    void createNote(noteNameFromText(full), full)
-      .then((rel) => {
-        if (chatId != null) void ipc.linkCreate("note", rel, "chat", String(chatId)).catch(() => {});
-        toast("ok", `Заметка «${rel}» создана`);
-      })
-      .catch((e) => toast("err", toMessage(e)));
-  };
+  const messageToNote = useCallback(
+    (item: ChatItem) => {
+      const full = item.text.trim();
+      if (!full) return;
+      const chatId = projectId != null ? chatIdsRef.current[projectId] : undefined;
+      void createNote(noteNameFromText(full), full)
+        .then((rel) => {
+          if (chatId != null) void ipc.linkCreate("note", rel, "chat", String(chatId)).catch(() => {});
+          toast("ok", `Заметка «${rel}» создана`);
+        })
+        .catch((e) => toast("err", toMessage(e)));
+    },
+    [projectId],
+  );
 
-  const messageToTask = (item: ChatItem) => {
-    if (projectId == null) return;
-    const full = item.text.trim();
-    if (!full) return;
-    const chatId = chatIds[projectId];
-    const title = (full.split(/\r?\n/)[0] ?? "").trim().slice(0, 120) || full.slice(0, 120);
-    void (async () => {
-      try {
-        const dto = await ipc.taskCreate(projectId, title);
-        if (full !== title) await ipc.taskUpdate(dto.id, { comment: full });
-        if (chatId != null)
-          void ipc.linkCreate("task", String(dto.id), "chat", String(chatId)).catch(() => {});
-        toast("ok", `Задача «${title}» создана`);
-      } catch (e) {
-        toast("err", toMessage(e));
-      }
-    })();
-  };
+  const messageToTask = useCallback(
+    (item: ChatItem) => {
+      if (projectId == null) return;
+      const full = item.text.trim();
+      if (!full) return;
+      const chatId = chatIdsRef.current[projectId];
+      const title = (full.split(/\r?\n/)[0] ?? "").trim().slice(0, 120) || full.slice(0, 120);
+      void (async () => {
+        try {
+          const dto = await ipc.taskCreate(projectId, title);
+          if (full !== title) await ipc.taskUpdate(dto.id, { comment: full });
+          if (chatId != null)
+            void ipc.linkCreate("task", String(dto.id), "chat", String(chatId)).catch(() => {});
+          toast("ok", `Задача «${title}» создана`);
+        } catch (e) {
+          toast("err", toMessage(e));
+        }
+      })();
+    },
+    [projectId],
+  );
 
   const resolve = (decision: "allow" | "deny" | "allowAlways") => {
     if (!confirmation || projectId == null) return;
@@ -199,52 +208,70 @@ export default function ProjectChat({ projectId, projectName }: Props) {
 
   // Message-level UX: live items carry no DB ids, so both handlers refetch
   // the history and map the item by position before touching the transcript.
-  const pinItem = async (item: ChatItem, pinned: boolean) => {
-    if (projectId == null) return;
-    const chatId = chatIds[projectId];
-    if (chatId == null) return;
-    const messageId = await resolvePinMessageId(
-      () => ipc.projectChatHistory(projectId),
-      slice?.items ?? [],
-      item.key,
-    );
-    if (!messageId) return;
-    try {
-      await ipc.chatPin(chatId, messageId, pinned);
-      dispatch({ type: "pin", key: projectId, itemKey: item.key, pinned });
-    } catch {
-      // The pin flag simply stays as it was.
-    }
-  };
+  const pinItem = useCallback(
+    async (item: ChatItem, pinned: boolean) => {
+      if (projectId == null) return;
+      const chatId = chatIdsRef.current[projectId];
+      if (chatId == null) return;
+      const messageId = await resolvePinMessageId(
+        () => ipc.projectChatHistory(projectId),
+        stateRef.current[projectId]?.items ?? [],
+        item.key,
+      );
+      if (!messageId) return;
+      try {
+        await ipc.chatPin(chatId, messageId, pinned);
+        dispatch({ type: "pin", key: projectId, itemKey: item.key, pinned });
+      } catch {
+        // The pin flag simply stays as it was.
+      }
+    },
+    [projectId, stateRef, dispatch],
+  );
 
-  const regenerateItem = async (item: ChatItem) => {
-    if (projectId == null || running) return;
-    const chatId = chatIds[projectId];
-    if (chatId == null) return;
-    const turn = await resolveRegenerateTurn(
-      () => ipc.projectChatHistory(projectId),
-      slice?.items ?? [],
-      item.key,
-    );
-    if (!turn) return;
-    try {
-      await ipc.chatTruncateAfter(chatId, turn.messageId);
-      dispatch({ type: "regenerate", key: projectId, itemKey: item.key });
-      await ipc
-        .sendProjectMessage(projectId, turn.userText)
-        .then((chat) => rememberChatId(projectId, chat))
-        .catch((e) => dispatch({ type: "sendFailed", key: projectId, message: toMessage(e) }));
-    } catch (e) {
-      dispatch({ type: "sendFailed", key: projectId, message: toMessage(e) });
-    }
-  };
+  const regenerateItem = useCallback(
+    async (item: ChatItem) => {
+      if (projectId == null) return;
+      const sliceNow = stateRef.current[projectId];
+      if (sliceNow?.run != null) return;
+      const chatId = chatIdsRef.current[projectId];
+      if (chatId == null) return;
+      const turn = await resolveRegenerateTurn(
+        () => ipc.projectChatHistory(projectId),
+        sliceNow?.items ?? [],
+        item.key,
+      );
+      if (!turn) return;
+      try {
+        await ipc.chatTruncateAfter(chatId, turn.messageId);
+        dispatch({ type: "regenerate", key: projectId, itemKey: item.key });
+        await ipc
+          .sendProjectMessage(projectId, turn.userText)
+          .then((chat) => rememberChatId(projectId, chat))
+          .catch((e) => dispatch({ type: "sendFailed", key: projectId, message: toMessage(e) }));
+      } catch (e) {
+        dispatch({ type: "sendFailed", key: projectId, message: toMessage(e) });
+      }
+    },
+    [projectId, stateRef, dispatch, rememberChatId],
+  );
 
-  const exportChat = () => {
+  const exportChat = useCallback(() => {
     if (projectId == null) return;
-    const chatId = chatIds[projectId];
+    const chatId = chatIdsRef.current[projectId];
     if (chatId == null) return;
     runChatExport(chatId, (r) => downloadMarkdown(r.markdown, `chat-${chatId}.md`));
-  };
+  }, [projectId]);
+
+  const transcriptActions = useMemo(
+    () => ({
+      onPin: pinItem,
+      onRegenerate: regenerateItem,
+      onToNote: messageToNote,
+      onToTask: messageToTask,
+    }),
+    [pinItem, regenerateItem, messageToNote, messageToTask],
+  );
 
   return (
     <aside
@@ -272,12 +299,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
         empty="Начните диалог — агент проекта ответит здесь."
         projectId={projectId}
         chatId={projectId != null ? (chatIds[projectId] ?? null) : null}
-        actions={{
-          onPin: pinItem,
-          onRegenerate: regenerateItem,
-          onToNote: messageToNote,
-          onToTask: messageToTask,
-        }}
+        actions={transcriptActions}
         search={chatQuery}
       />
 
