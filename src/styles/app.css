@@ -1100,11 +1100,28 @@ body.dnd-active .project-item, body.dnd-active .task-card { cursor: grabbing; }
   align-items: center;
   gap: 10px;
   background: var(--surface-2);
+  cursor: pointer;
 }
+.schedule-item:hover { border-color: var(--border-strong); }
 .schedule-item .info { flex: 1; min-width: 0; }
 .schedule-item .info .t { font-size: 12.5px; font-weight: 500; }
 .schedule-item .info .c { font-size: 11px; color: var(--text-muted); }
 .schedule-item .badge { flex-shrink: 0; }
+.schedule-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 50%;
+  font-size: 9.5px;
+  line-height: 1;
+  color: var(--text-muted);
+  cursor: help;
+  vertical-align: 2px;
+}
 .badge.st-active { color: var(--ok); }
 .badge.st-error { color: var(--danger); }
 .schedule-group { display: flex; flex-direction: column; gap: 8px; }

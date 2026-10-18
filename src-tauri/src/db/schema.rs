@@ -1,7 +1,7 @@
 use crate::error::Result;
-use rusqlite::Connection;
+use rusqlite::{params, Connection};
 
-pub const SCHEMA_VERSION: i64 = 22;
+pub const SCHEMA_VERSION: i64 = 23;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -449,6 +449,14 @@ const MIGRATION_22: &str = "
 ALTER TABLE messages ADD COLUMN reasoning TEXT;
 ";
 
+// Schedules UI (SPEC 5.3): a short human title per schedule, shown in the
+// panel instead of the raw spec. Guarded per column (v14/v22 recipe); the
+// backfill runs in Rust because "first non-empty line of the prompt, cut to
+// 80 chars" is scheduler logic (derive_title), falling back to the spec.
+const MIGRATION_23: &str = "
+ALTER TABLE schedules ADD COLUMN title TEXT;
+";
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -581,6 +589,30 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         )?;
         if has_reasoning == 0 {
             conn.execute_batch(MIGRATION_22)?;
+        }
+        conn.pragma_update(None, "user_version", 22)?;
+    }
+    if version < 23 {
+        let has_title: i64 = conn.query_row(
+            "SELECT count(*) FROM pragma_table_info('schedules') WHERE name = 'title'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_title == 0 {
+            conn.execute_batch(MIGRATION_23)?;
+        }
+        let rows: Vec<(i64, Option<String>, String)> = {
+            let mut stmt =
+                conn.prepare("SELECT id, prompt, spec FROM schedules WHERE title IS NULL")?;
+            let mapped = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+            mapped.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (id, prompt, spec) in rows {
+            let title = crate::scheduler::derive_title(prompt.as_deref(), &spec, 80);
+            conn.execute(
+                "UPDATE schedules SET title = ?1 WHERE id = ?2",
+                params![title, id],
+            )?;
         }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
@@ -1568,6 +1600,55 @@ CREATE UNIQUE INDEX uniq_chats_one_project_chat ON chats(project_id) WHERE kind 
             )
             .unwrap();
         assert_eq!(has_reasoning, 1);
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_v23_adds_schedule_title_and_backfills_from_prompt_or_spec() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        // Simulate a pre-v23 database: no title column, rows without titles.
+        conn.execute("ALTER TABLE schedules DROP COLUMN title", [])
+            .unwrap();
+        // Multi-line prompt: the first non-empty line, trimmed.
+        conn.execute(
+            "INSERT INTO schedules (kind, spec, prompt, status, created_at) VALUES ('cron', '0 10 * * *', ?1, 'active', '2026-01-01')",
+            params!["\n\n   Проверить конкурентов и подготовить отчёт по ценам \nвторая строка"],
+        )
+        .unwrap();
+        // A 100-char first line is cut to 80.
+        conn.execute(
+            "INSERT INTO schedules (kind, spec, prompt, status, created_at) VALUES ('run_at', '2026-01-02T10:00:00Z', ?1, 'active', '2026-01-01')",
+            params!["к".repeat(100)],
+        )
+        .unwrap();
+        // No prompt: the spec becomes the title.
+        conn.execute(
+            "INSERT INTO schedules (kind, spec, prompt, status, created_at) VALUES ('notify', '2026-01-03T10:00:00Z', NULL, 'active', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 22).unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let titles: Vec<Option<String>> = {
+            let mut stmt = conn.prepare("SELECT title FROM schedules ORDER BY id").unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(
+            titles[0].as_deref(),
+            Some("Проверить конкурентов и подготовить отчёт по ценам")
+        );
+        assert_eq!(titles[1].as_deref().unwrap().chars().count(), 80);
+        assert_eq!(titles[2].as_deref(), Some("2026-01-03T10:00:00Z"));
 
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);

@@ -73,11 +73,6 @@ function formatInstant(value: string): string {
   return d.toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
-function formatSpec(kind: string, spec: string): string {
-  if (kind === "cron") return spec;
-  return formatInstant(spec);
-}
-
 const PencilIcon = () => (
   <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
     <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
@@ -184,26 +179,59 @@ function ScheduleItem({
   schedule,
   onToggle,
   onDelete,
+  onOpen,
 }: {
   schedule: ScheduleDto;
   onToggle: (s: ScheduleDto) => void;
   onDelete: (s: ScheduleDto) => void;
+  onOpen: (s: ScheduleDto) => void;
 }) {
   const s = schedule;
+  // Full details for the «?» tooltip: the whole prompt, the raw spec and the
+  // next run — the row itself only carries the short title.
+  const details = [
+    s.prompt ? `Задание: ${s.prompt}` : null,
+    `Расписание: ${s.spec}`,
+    s.nextRunAt ? `Следующий запуск: ${formatInstant(s.nextRunAt)}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n");
   return (
-    <div className="schedule-item">
+    <div
+      className="schedule-item"
+      role="button"
+      tabIndex={0}
+      title="Открыть чат расписания"
+      onClick={() => onOpen(s)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") onOpen(s);
+      }}
+    >
       <div className="info">
         <div className="t">
-          {KIND_LABEL[s.kind] ?? s.kind} · {formatSpec(s.kind, s.spec)}
+          {s.title ?? s.spec}
+          <span
+            className="schedule-help"
+            title={details}
+            onClick={(e) => e.stopPropagation()}
+          >
+            ?
+          </span>
         </div>
         <div className="c">
+          {KIND_LABEL[s.kind] ?? s.kind}
+          {" · "}
           {s.timezone ?? "часовой пояс системы"}
           {s.nextRunAt ? ` · след.: ${formatInstant(s.nextRunAt)}` : ""}
         </div>
         {s.error && <div className="c">{s.error}</div>}
       </div>
       <span className={`badge st-${s.status}`}>{STATUS_LABEL[s.status] ?? s.status}</span>
-      <label className="switch" title={s.status === "active" ? "Поставить на паузу" : "Возобновить"}>
+      <label
+        className="switch"
+        title={s.status === "active" ? "Поставить на паузу" : "Возобновить"}
+        onClick={(e) => e.stopPropagation()}
+      >
         <input
           type="checkbox"
           checked={s.status === "active"}
@@ -212,7 +240,15 @@ function ScheduleItem({
         />
         <span className="track" />
       </label>
-      <button className="mini-btn danger" type="button" title="Удалить расписание" onClick={() => onDelete(s)}>
+      <button
+        className="mini-btn danger"
+        type="button"
+        title="Удалить расписание"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete(s);
+        }}
+      >
         <TrashIcon />
       </button>
     </div>
@@ -613,6 +649,29 @@ export default function HarnessView() {
     }
   };
 
+  // Click-through: open the schedule's chat (the backend reuses its session
+  // or creates one titled after the schedule) and ask the agent to explain
+  // the task there — the question and the answer are visible in the chat.
+  const openSchedule = async (s: ScheduleDto) => {
+    try {
+      const { sessionId } = await ipc.scheduleOpen(s.id);
+      setActiveId(sessionId);
+      await loadSessions();
+      if (chatRef.current[sessionId]?.run) return; // a run is already live there
+      const question = `Коротко (1–2 предложения) объясни, что это за задача по расписанию: «${s.title ?? s.spec}» (id ${s.id}).`;
+      dispatch({ type: "send", key: sessionId, text: question, attachments: [] });
+      void ipc
+        .sendSessionMessage(sessionId, question)
+        .then((chatId) => {
+          rememberChatId(sessionId, chatId);
+          return loadSessions();
+        })
+        .catch((e) => dispatch({ type: "sendFailed", key: sessionId, message: toMessage(e) }));
+    } catch (e) {
+      setSchedulesError(toMessage(e));
+    }
+  };
+
   const addSchedule = async (e: FormEvent) => {
     e.preventDefault();
     setFormError(null);
@@ -926,6 +985,7 @@ export default function HarnessView() {
                     schedule={s}
                     onToggle={(sch) => void toggleSchedule(sch)}
                     onDelete={(sch) => void deleteSchedule(sch)}
+                    onOpen={(sch) => void openSchedule(sch)}
                   />
                 ))}
               </div>

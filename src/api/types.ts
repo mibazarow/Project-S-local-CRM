@@ -377,4 +377,5 @@ export interface ScheduleDto {
   nextRunAt: string | null;
   timezone: string | null;
   error: string | null;
+  title: string | null;
 }

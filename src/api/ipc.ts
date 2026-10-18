@@ -301,6 +301,11 @@ export const scheduleResume = (id: number) => invoke<ScheduleDto>("schedule_resu
 
 export const scheduleDelete = (id: number) => invoke<void>("schedule_delete", { id });
 
+// Click-through: returns the session whose chat the UI opens (the schedule's
+// own, or a fresh one titled after the schedule created by the backend).
+export const scheduleOpen = (id: number) =>
+  invoke<{ sessionId: number }>("schedule_open", { id });
+
 // Global memory (SPEC 6.3): CRUD for the settings UI; mutations emit
 // "memory-changed" so open lists refresh.
 export const memoryList = () => invoke<MemoryDto[]>("memory_list");

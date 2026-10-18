@@ -1468,7 +1468,7 @@ impl Tool for ScheduleCreateTool {
         "schedule_create"
     }
     fn description(&self) -> &str {
-        "Create a schedule: kind=run_at (one-shot ISO datetime in spec), cron (5-field expression in spec), or notify (native notification, no model call). prompt is the user turn for run_at/cron and the body for notify; timezone is IANA (default: system). Fires while the app is open."
+        "Create a schedule: kind=run_at (one-shot ISO datetime in spec), cron (5-field expression in spec), or notify (native notification, no model call). prompt is the user turn for run_at/cron and the body for notify; timezone is IANA (default: system); title is a short label for the UI (derived from the prompt when absent). Fires while the app is open."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -1477,7 +1477,8 @@ impl Tool for ScheduleCreateTool {
                 "kind": { "type": "string", "enum": ["run_at", "cron", "notify"] },
                 "spec": { "type": "string" },
                 "prompt": { "type": "string" },
-                "timezone": { "type": "string" }
+                "timezone": { "type": "string" },
+                "title": { "type": "string" }
             },
             "required": ["kind", "spec"],
             "additionalProperties": false
@@ -1500,6 +1501,7 @@ impl Tool for ScheduleCreateTool {
         let spec = args["spec"].as_str().unwrap_or_default();
         let prompt = args.get("prompt").and_then(Value::as_str);
         let timezone = args.get("timezone").and_then(Value::as_str);
+        let title = args.get("title").and_then(Value::as_str);
         let r = with_conn(ctx, |conn| {
             let session_id = if kind == "notify" {
                 ctx.session_id
@@ -1518,6 +1520,7 @@ impl Tool for ScheduleCreateTool {
                     timezone,
                     session_id,
                     related_task_id: None,
+                    title,
                 },
                 scheduler::now_utc(),
             )
@@ -1536,7 +1539,7 @@ impl Tool for ScheduleListTool {
         "schedule_list"
     }
     fn description(&self) -> &str {
-        "List all schedules with kind, spec, prompt, status, timezone and next run."
+        "List all schedules with title, kind, spec, prompt, status, timezone and next run."
     }
     fn parameters(&self) -> Value {
         json!({ "type": "object", "properties": {}, "required": [], "additionalProperties": false })
@@ -2208,6 +2211,7 @@ mod tests {
         let items = r.data.unwrap()["schedules"].as_array().unwrap().clone();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["kind"], "cron");
+        assert_eq!(items[0]["title"], "daily", "title derived from the prompt");
         assert!(items[0]["nextRunAt"].is_string());
 
         let r = exec("schedule_pause", json!({ "id": id }), &env.ctx);

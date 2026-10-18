@@ -30,7 +30,7 @@ pub const TICK_SECONDS: u64 = 30;
 
 pub const KINDS: [&str; 3] = ["run_at", "cron", "notify"];
 
-const COLS: &str = "id, session_id, kind, spec, prompt, status, related_task_id, created_at, last_run_at, next_run_at, timezone, error";
+const COLS: &str = "id, session_id, kind, spec, prompt, status, related_task_id, created_at, last_run_at, next_run_at, timezone, error, title";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +47,7 @@ pub struct ScheduleDto {
     pub next_run_at: Option<String>,
     pub timezone: Option<String>,
     pub error: Option<String>,
+    pub title: Option<String>,
 }
 
 fn dto_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScheduleDto> {
@@ -63,7 +64,24 @@ fn dto_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScheduleDto> {
         next_run_at: row.get(9)?,
         timezone: row.get(10)?,
         error: row.get(11)?,
+        title: row.get(12)?,
     })
+}
+
+// Short human title for a schedule: the first non-empty line of the prompt
+// cut to `max_chars`, falling back to the spec when there is no prompt text.
+// Shared by create() and the v23 backfill.
+pub(crate) fn derive_title(prompt: Option<&str>, spec: &str, max_chars: usize) -> String {
+    let line = prompt
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    if line.is_empty() {
+        return spec.trim().to_string();
+    }
+    line.chars().take(max_chars).collect::<String>().trim().to_string()
 }
 
 // Native notifications go through tauri-plugin-notification; on macOS the
@@ -279,6 +297,7 @@ pub struct CreateIn<'a> {
     pub timezone: Option<&'a str>,
     pub session_id: Option<i64>,
     pub related_task_id: Option<i64>,
+    pub title: Option<&'a str>,
 }
 
 pub fn create(conn: &Connection, input: &CreateIn<'_>, now: DateTime<Utc>) -> Result<ScheduleDto> {
@@ -295,9 +314,15 @@ pub fn create(conn: &Connection, input: &CreateIn<'_>, now: DateTime<Utc>) -> Re
             return Err(AppError::Invalid(format!("session {sid} not found")));
         }
     }
+    let title = input
+        .title
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| derive_title(input.prompt, input.spec, 60));
     conn.execute(
-        "INSERT INTO schedules (session_id, kind, spec, prompt, status, related_task_id, created_at, next_run_at, timezone)
-         VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6, ?7, ?8)",
+        "INSERT INTO schedules (session_id, kind, spec, prompt, status, related_task_id, created_at, next_run_at, timezone, title)
+         VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6, ?7, ?8, ?9)",
         params![
             input.session_id,
             input.kind,
@@ -307,6 +332,7 @@ pub fn create(conn: &Connection, input: &CreateIn<'_>, now: DateTime<Utc>) -> Re
             fmt_utc(now),
             fmt_utc(next),
             input.timezone.map(str::trim).filter(|s| !s.is_empty()),
+            title,
         ],
     )?;
     schedule_dto(conn, conn.last_insert_rowid())
@@ -371,6 +397,31 @@ pub fn delete(conn: &Connection, id: i64) -> Result<()> {
         return Err(AppError::Invalid(format!("schedule {id} not found")));
     }
     Ok(())
+}
+
+// Click-through from the schedules panel: the session whose chat the UI
+// opens. The schedule's own session while it exists; otherwise a fresh one
+// titled after the schedule, linked back so later opens and fires reuse it
+// (same rule as ensure_run_session at fire time).
+pub fn open_session(conn: &Connection, id: i64) -> Result<i64> {
+    let s = schedule_dto(conn, id)?;
+    if let Some(sid) = s.session_id {
+        let exists: i64 = conn.query_row(
+            "SELECT count(*) FROM sessions WHERE id = ?1",
+            params![sid],
+            |r| r.get(0),
+        )?;
+        if exists > 0 {
+            return Ok(sid);
+        }
+    }
+    let label = s.title.clone().unwrap_or_else(|| s.spec.clone());
+    let session = harness::create_session(conn, Some(&format!("Расписание: {label}")))?;
+    conn.execute(
+        "UPDATE schedules SET session_id = ?1 WHERE id = ?2",
+        params![session.id, id],
+    )?;
+    Ok(session.id)
 }
 
 // Engine CRUD used by the schedules UI slice (later): edit spec/prompt/tz/status.
@@ -725,7 +776,7 @@ mod tests {
                 prompt: Some("check rates"),
                 timezone: Some("Europe/Moscow"),
                 session_id: Some(session),
-                related_task_id: Some(7),
+                related_task_id: Some(7), title: None,
             },
             now,
         )
@@ -743,7 +794,7 @@ mod tests {
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
                 session_id: Some(session),
-                related_task_id: None,
+                related_task_id: None, title: None,
             },
             now,
         )
@@ -753,7 +804,7 @@ mod tests {
         assert!(matches!(
             create(
                 &conn,
-                &CreateIn { kind: "bogus", spec: "x", prompt: None, timezone: None, session_id: None, related_task_id: None },
+                &CreateIn { kind: "bogus", spec: "x", prompt: None, timezone: None, session_id: None, related_task_id: None, title: None },
                 now,
             ),
             Err(AppError::Invalid(_))
@@ -761,7 +812,7 @@ mod tests {
         assert!(matches!(
             create(
                 &conn,
-                &CreateIn { kind: "run_at", spec: "tomorrow", prompt: None, timezone: None, session_id: None, related_task_id: None },
+                &CreateIn { kind: "run_at", spec: "tomorrow", prompt: None, timezone: None, session_id: None, related_task_id: None, title: None },
                 now,
             ),
             Err(AppError::Invalid(_))
@@ -769,7 +820,7 @@ mod tests {
         assert!(matches!(
             create(
                 &conn,
-                &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: None, timezone: Some("Mars/Olympus"), session_id: None, related_task_id: None },
+                &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: None, timezone: Some("Mars/Olympus"), session_id: None, related_task_id: None, title: None },
                 now,
             ),
             Err(AppError::Invalid(_))
@@ -777,7 +828,7 @@ mod tests {
         assert!(matches!(
             create(
                 &conn,
-                &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: None, timezone: None, session_id: Some(999), related_task_id: None },
+                &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: None, timezone: None, session_id: Some(999), related_task_id: None, title: None },
                 now,
             ),
             Err(AppError::Invalid(_))
@@ -797,7 +848,7 @@ mod tests {
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
                 session_id: Some(session),
-                related_task_id: None,
+                related_task_id: None, title: None,
             },
             now,
         )
@@ -834,7 +885,7 @@ mod tests {
                 prompt: Some("call the client"),
                 timezone: Some("Europe/Moscow"),
                 session_id: None,
-                related_task_id: None,
+                related_task_id: None, title: None,
             },
             now,
         )
@@ -847,7 +898,7 @@ mod tests {
                 prompt: Some("do the thing"),
                 timezone: Some("Europe/Moscow"),
                 session_id: Some(session),
-                related_task_id: None,
+                related_task_id: None, title: None,
             },
             now,
         )
@@ -860,7 +911,7 @@ mod tests {
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
                 session_id: Some(session),
-                related_task_id: None,
+                related_task_id: None, title: None,
             },
             now,
         )
@@ -955,7 +1006,7 @@ mod tests {
                 prompt: Some("go"),
                 timezone: Some("Europe/Moscow"),
                 session_id: Some(session),
-                related_task_id: None,
+                related_task_id: None, title: None,
             },
             now,
         )
@@ -969,7 +1020,7 @@ mod tests {
                 prompt: Some("ping"),
                 timezone: Some("Europe/Moscow"),
                 session_id: None,
-                related_task_id: None,
+                related_task_id: None, title: None,
             },
             now,
         )
@@ -1003,7 +1054,7 @@ mod tests {
                 prompt: Some("go"),
                 timezone: Some("Europe/Moscow"),
                 session_id: Some(session),
-                related_task_id: None,
+                related_task_id: None, title: None,
             },
             utc("2026-10-16T08:00:00Z"),
         )
@@ -1027,7 +1078,7 @@ mod tests {
                 prompt: Some("go"),
                 timezone: Some("Europe/Moscow"),
                 session_id: Some(old),
-                related_task_id: None,
+                related_task_id: None, title: None,
             },
             utc("2026-10-16T08:00:00Z"),
         )
@@ -1075,7 +1126,7 @@ mod tests {
                 prompt: Some("go"),
                 timezone: Some("Europe/Moscow"),
                 session_id: None,
-                related_task_id: None,
+                related_task_id: None, title: None,
             },
             utc("2026-10-16T08:00:00Z"),
         )
@@ -1107,7 +1158,7 @@ mod tests {
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
                 session_id: Some(session),
-                related_task_id: None,
+                related_task_id: None, title: None,
             },
             utc("2026-10-16T08:00:00Z"),
         )
@@ -1143,7 +1194,7 @@ mod tests {
                 prompt: Some("x"),
                 timezone: Some("Europe/Moscow"),
                 session_id: Some(session),
-                related_task_id: None,
+                related_task_id: None, title: None,
             },
             now,
         )
@@ -1180,7 +1231,7 @@ mod tests {
                 prompt: Some("old"),
                 timezone: Some("Europe/Moscow"),
                 session_id: Some(session),
-                related_task_id: None,
+                related_task_id: None, title: None,
             },
             now,
         )
@@ -1224,13 +1275,13 @@ mod tests {
         let now = utc("2026-10-16T08:00:00Z");
         let later = create(
             &conn,
-            &CreateIn { kind: "run_at", spec: "2026-10-20T10:00:00", prompt: Some("later"), timezone: Some("Europe/Moscow"), session_id: Some(session), related_task_id: Some(3) },
+            &CreateIn { kind: "run_at", spec: "2026-10-20T10:00:00", prompt: Some("later"), timezone: Some("Europe/Moscow"), session_id: Some(session), related_task_id: Some(3), title: None },
             now,
         )
         .unwrap();
         let sooner = create(
             &conn,
-            &CreateIn { kind: "run_at", spec: "2026-10-18T10:00:00", prompt: Some("sooner"), timezone: Some("Europe/Moscow"), session_id: Some(session), related_task_id: None },
+            &CreateIn { kind: "run_at", spec: "2026-10-18T10:00:00", prompt: Some("sooner"), timezone: Some("Europe/Moscow"), session_id: Some(session), related_task_id: None, title: None },
             now,
         )
         .unwrap();
@@ -1238,6 +1289,77 @@ mod tests {
         assert_eq!(items.iter().map(|s| s.id).collect::<Vec<_>>(), vec![sooner.id, later.id]);
         assert_eq!(items[1].related_task_id, Some(3));
         assert_eq!(items[1].prompt.as_deref(), Some("later"));
+        assert_eq!(items[1].title.as_deref(), Some("later"));
+    }
+
+    #[test]
+    fn create_takes_an_explicit_title_or_derives_one_from_prompt_or_spec() {
+        let conn = setup();
+        let now = utc("2026-10-16T08:00:00Z");
+        let s = create(
+            &conn,
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("  \n  проверить цены на сайте\nлишняя строка\n"), timezone: None, session_id: None, related_task_id: None, title: None },
+            now,
+        )
+        .unwrap();
+        assert_eq!(s.title.as_deref(), Some("проверить цены на сайте"));
+
+        // A long first line is cut to 60 chars.
+        let long = "д".repeat(80);
+        let s = create(
+            &conn,
+            &CreateIn { kind: "cron", spec: "@daily", prompt: Some(&long), timezone: None, session_id: None, related_task_id: None, title: None },
+            now,
+        )
+        .unwrap();
+        assert_eq!(s.title.as_deref().unwrap().chars().count(), 60);
+
+        // No prompt: the spec becomes the title.
+        let s = create(
+            &conn,
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: None, timezone: None, session_id: None, related_task_id: None, title: None },
+            now,
+        )
+        .unwrap();
+        assert_eq!(s.title.as_deref(), Some("0 10 * * *"));
+
+        // An explicit title wins and is trimmed.
+        let s = create(
+            &conn,
+            &CreateIn { kind: "run_at", spec: "2026-10-20T10:00:00", prompt: Some("x"), timezone: None, session_id: None, related_task_id: None, title: Some("  Утренняя сводка  ") },
+            now,
+        )
+        .unwrap();
+        assert_eq!(s.title.as_deref(), Some("Утренняя сводка"));
+    }
+
+    #[test]
+    fn open_session_reuses_the_linked_session_or_creates_a_titled_one() {
+        let conn = setup();
+        let session = create_session_row(&conn);
+        let s = create(
+            &conn,
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("daily"), timezone: Some("Europe/Moscow"), session_id: Some(session), related_task_id: None, title: Some("Ежедневный отчёт") },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+        assert_eq!(open_session(&conn, s.id).unwrap(), session);
+
+        // The session was deleted: a fresh one titled after the schedule is
+        // created and linked back, and later opens reuse it. (The fresh rowid
+        // may equal the deleted one — SQLite reuses rowids without
+        // AUTOINCREMENT — so the link and the title carry the assertion.)
+        harness::delete_session(&conn, session).unwrap();
+        let fresh = open_session(&conn, s.id).unwrap();
+        let after = schedule_dto(&conn, s.id).unwrap();
+        assert_eq!(after.session_id, Some(fresh));
+        let title: Option<String> = conn
+            .query_row("SELECT title FROM sessions WHERE id = ?1", params![fresh], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title.as_deref(), Some("Расписание: Ежедневный отчёт"));
+        assert_eq!(open_session(&conn, s.id).unwrap(), fresh);
+
+        assert!(matches!(open_session(&conn, 999), Err(AppError::Invalid(_))));
     }
 }
 

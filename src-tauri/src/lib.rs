@@ -1051,6 +1051,7 @@ fn schedule_list(state: State<AppState>) -> Result<Vec<scheduler::ScheduleDto>> 
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 fn schedule_create(
     app: AppHandle,
     state: State<AppState>,
@@ -1059,6 +1060,7 @@ fn schedule_create(
     prompt: Option<String>,
     timezone: Option<String>,
     session_id: Option<i64>,
+    title: Option<String>,
 ) -> Result<scheduler::ScheduleDto> {
     let dto = with_db(&state, |conn| {
         scheduler::create(
@@ -1070,6 +1072,7 @@ fn schedule_create(
                 timezone: timezone.as_deref(),
                 session_id,
                 related_task_id: None,
+                title: title.as_deref(),
             },
             scheduler::now_utc(),
         )
@@ -1097,6 +1100,22 @@ fn schedule_delete(app: AppHandle, state: State<AppState>, id: i64) -> Result<()
     with_db(&state, |conn| scheduler::delete(conn, id))?;
     emit_schedules_changed(&app);
     Ok(())
+}
+
+// Click-through from the schedules panel: returns the session whose chat the
+// UI opens (the schedule's own, or a fresh one titled after the schedule);
+// "sessions-changed" makes a freshly created session appear in the sidebar.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ScheduleOpenResult {
+    session_id: i64,
+}
+
+#[tauri::command]
+fn schedule_open(app: AppHandle, state: State<AppState>, id: i64) -> Result<ScheduleOpenResult> {
+    let session_id = with_db(&state, |conn| scheduler::open_session(conn, id))?;
+    let _ = app.emit("sessions-changed", serde_json::json!({}));
+    Ok(ScheduleOpenResult { session_id })
 }
 
 // Global memory CRUD for the UI (SPEC 6.3/6.5); mutations notify listeners
@@ -1448,6 +1467,7 @@ pub fn run() {
             schedule_pause,
             schedule_resume,
             schedule_delete,
+            schedule_open,
             memory_list,
             memory_add,
             memory_update,
