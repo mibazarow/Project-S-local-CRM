@@ -241,13 +241,29 @@ fn write_config(state: State<AppState>, kind: config::ConfigKind, value: Value) 
 
 #[tauri::command]
 fn list_projects(state: State<AppState>) -> Result<Vec<ProjectDto>> {
-    with_db(&state, projects::list_projects)
+    // Rows under the DB mutex; the per-project folder walk (file_count) runs
+    // after the lock is released.
+    let rows = with_db(&state, projects::list_project_rows)?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, row)| projects::dto_from_row(id, row))
+        .collect())
 }
 
 #[tauri::command]
 fn create_project(app: AppHandle, state: State<AppState>, name: String) -> Result<ProjectDto> {
     let wd = state.working_dir()?;
-    let dto = with_db(&state, |conn| projects::create_project(conn, &wd, &name))?;
+    // Folder tree first (outside the DB mutex), then the single INSERT; if
+    // the DB fails, remove exactly what this call created.
+    let made = projects::create_project_fs(&wd, &name)?;
+    let (id, row) = match with_db(&state, |conn| projects::create_project_db(conn, &made)) {
+        Ok(v) => v,
+        Err(e) => {
+            projects::undo_create(&made);
+            return Err(e);
+        }
+    };
+    let dto = projects::dto_from_row(id, row);
     watcher::start(&app, &state, &wd);
     emit_fs_changed(&app, dto.id, "");
     emit_projects_changed(&app);
@@ -262,7 +278,18 @@ fn rename_project(
     new_name: String,
 ) -> Result<ProjectDto> {
     let wd = state.working_dir()?;
-    let dto = with_db(&state, |conn| projects::rename_project(conn, &wd, id, &new_name))?;
+    // Resolve under a short DB read, rename on disk outside the mutex, then
+    // the single UPDATE; on DB failure rename back (same compensation).
+    let plan = with_db(&state, |conn| projects::rename_plan(conn, &wd, id, &new_name))?;
+    projects::rename_move(&plan)?;
+    let row = match with_db(&state, |conn| projects::rename_apply(conn, id, &plan)) {
+        Ok(row) => row,
+        Err(e) => {
+            projects::rename_rollback(&plan);
+            return Err(e);
+        }
+    };
+    let dto = projects::dto_from_row(id, row);
     watcher::start(&app, &state, &wd);
     emit_fs_changed(&app, dto.id, "");
     emit_projects_changed(&app);
@@ -701,7 +728,16 @@ fn fs_delete(
             .map(|p| p.display().to_string())
     })
     .ok();
-    let trash_id = with_db(&state, |conn| fs_ops::delete(conn, &wd, project_id, &rel_path))?;
+    // Resolve under a short DB read, move the item into the trash store
+    // outside the DB mutex (a folder move can copy a whole tree), then the
+    // single trash-row INSERT. Same order as before: move, then row.
+    let (kind, path) = with_db(&state, |conn| {
+        fs_ops::delete_plan(conn, &wd, project_id, &rel_path)
+    })?;
+    let staged = reliability::trash_stage(&wd, &path)?;
+    let trash_id = with_db(&state, |conn| {
+        reliability::trash_record(conn, "project", &kind, &path, &staged, None)
+    })?;
     if let Some(path_abs) = path_abs {
         let _ = with_db(&state, |conn| {
             undo::push_delete(

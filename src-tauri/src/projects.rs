@@ -103,7 +103,10 @@ pub fn project_path(conn: &Connection, wd: &Path, id: i64) -> Result<String> {
     Ok(project_root(conn, wd, id)?.display().to_string())
 }
 
-pub fn list_projects(conn: &Connection) -> Result<Vec<ProjectDto>> {
+// DB-only part of the project list: rows without the on-disk file count.
+// The command collects these under the DB mutex, then walks the folders
+// outside the lock (dto_from_row).
+pub(crate) fn list_project_rows(conn: &Connection) -> Result<Vec<(i64, ProjectDbRow)>> {
     let mut ids = Vec::new();
     {
         let mut stmt = conn.prepare("SELECT id FROM projects ORDER BY position, id")?;
@@ -112,47 +115,130 @@ pub fn list_projects(conn: &Connection) -> Result<Vec<ProjectDto>> {
             ids.push(row?);
         }
     }
-    ids.iter().map(|id| dto(conn, *id)).collect()
+    ids.iter().map(|id| Ok((*id, db_row(conn, *id)?))).collect()
 }
 
-pub fn create_project(conn: &Connection, wd: &Path, raw_name: &str) -> Result<ProjectDto> {
+pub fn list_projects(conn: &Connection) -> Result<Vec<ProjectDto>> {
+    Ok(list_project_rows(conn)?
+        .into_iter()
+        .map(|(id, row)| dto_from_row(id, row))
+        .collect())
+}
+
+// Everything the create flow does on disk, with no DB touched: the command
+// runs this outside the DB mutex, then calls create_project_db for the single
+// INSERT. `undo_create` removes only what this call created.
+#[derive(Debug)]
+pub(crate) struct CreatedProject {
+    name: String,
+    root: PathBuf,
+    projects_dir: PathBuf,
+    created_projects_dir: bool,
+}
+
+pub(crate) fn create_project_fs(wd: &Path, raw_name: &str) -> Result<CreatedProject> {
     let name = sanitize_project_name(raw_name)?;
     let projects = paths::projects_dir(wd);
+    let created_projects_dir = !projects.exists();
     fs::create_dir_all(&projects)?;
     let root = projects.join(&name);
-    if root.exists() {
-        return Err(AppError::Invalid(format!("project \"{name}\" already exists")));
+    // create_dir (not create_dir_all) reserves the folder atomically: an
+    // existing entry maps to the same "already exists" error as the old
+    // exists() check, without a TOCTOU window between check and create.
+    if let Err(e) = fs::create_dir(&root) {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            return Err(AppError::Invalid(format!("project \"{name}\" already exists")));
+        }
+        return Err(e.into());
     }
     fs::create_dir_all(root.join(paths::PROJECT_TASKS))?;
     fs::create_dir_all(root.join(paths::PROJECT_INBOX))?;
     fs::write(root.join(paths::DATAS_MD), "")?;
+    Ok(CreatedProject {
+        name,
+        root,
+        projects_dir: projects,
+        created_projects_dir,
+    })
+}
+
+pub(crate) fn create_project_db(
+    conn: &Connection,
+    made: &CreatedProject,
+) -> Result<(i64, ProjectDbRow)> {
     conn.execute(
         "INSERT INTO projects (name, path, created_at, position)
          VALUES (?1, ?2, datetime('now','localtime'),
                  (SELECT COALESCE(MAX(position), 0) + 1 FROM projects))",
-        params![name, root.display().to_string()],
+        params![made.name, made.root.display().to_string()],
     )?;
-    dto(conn, conn.last_insert_rowid())
+    let id = conn.last_insert_rowid();
+    Ok((id, db_row(conn, id)?))
 }
 
-// Renames the folder on disk first, then updates the DB row in one statement.
-pub fn rename_project(conn: &Connection, wd: &Path, id: i64, raw_name: &str) -> Result<ProjectDto> {
+pub(crate) fn undo_create(made: &CreatedProject) {
+    let _ = fs::remove_dir_all(&made.root);
+    if made.created_projects_dir {
+        // Only if still empty: another concurrent create may own its content.
+        let _ = fs::remove_dir(&made.projects_dir);
+    }
+}
+
+pub fn create_project(conn: &Connection, wd: &Path, raw_name: &str) -> Result<ProjectDto> {
+    let made = create_project_fs(wd, raw_name)?;
+    let (id, row) = match create_project_db(conn, &made) {
+        Ok(v) => v,
+        Err(e) => {
+            undo_create(&made);
+            return Err(e);
+        }
+    };
+    Ok(dto_from_row(id, row))
+}
+
+// Everything rename_project does except the folder rename and the tree walk:
+// the command resolves under a short DB read, renames outside the DB mutex,
+// then applies the single UPDATE. On DB failure the caller renames back with
+// rename_rollback (same compensation as before).
+#[derive(Debug)]
+pub(crate) struct RenamePlan {
+    name: String,
+    old_root: PathBuf,
+    new_root: PathBuf,
+}
+
+pub(crate) fn rename_plan(conn: &Connection, wd: &Path, id: i64, raw_name: &str) -> Result<RenamePlan> {
     let name = sanitize_project_name(raw_name)?;
     let old_root = project_root(conn, wd, id)?;
     let new_root = paths::projects_dir(wd).canonicalize()?.join(&name);
     if new_root.exists() {
         return Err(AppError::Invalid(format!("project \"{name}\" already exists")));
     }
-    fs::rename(&old_root, &new_root)?;
+    Ok(RenamePlan {
+        name,
+        old_root,
+        new_root,
+    })
+}
+
+pub(crate) fn rename_move(plan: &RenamePlan) -> Result<()> {
+    fs::rename(&plan.old_root, &plan.new_root)?;
+    Ok(())
+}
+
+pub(crate) fn rename_apply(conn: &Connection, id: i64, plan: &RenamePlan) -> Result<ProjectDbRow> {
     let updated = conn.execute(
         "UPDATE projects SET name = ?1, path = ?2 WHERE id = ?3",
-        params![name, new_root.display().to_string(), id],
+        params![plan.name, plan.new_root.display().to_string(), id],
     )?;
     if updated != 1 {
-        let _ = fs::rename(&new_root, &old_root);
         return Err(AppError::Db(format!("project {id} not found")));
     }
-    dto(conn, id)
+    db_row(conn, id)
+}
+
+pub(crate) fn rename_rollback(plan: &RenamePlan) {
+    let _ = fs::rename(&plan.new_root, &plan.old_root);
 }
 
 pub fn touch_project_opened(conn: &Connection, id: i64) -> Result<()> {
@@ -198,7 +284,20 @@ pub fn get_project(conn: &Connection, id: i64) -> Result<ProjectDto> {    let ex
     dto(conn, id)
 }
 
-fn dto(conn: &Connection, id: i64) -> Result<ProjectDto> {
+// Everything a project DTO needs from the DB, without the filesystem walk.
+#[derive(Debug)]
+pub(crate) struct ProjectDbRow {
+    name: String,
+    path: String,
+    created_at: String,
+    opened_at: Option<String>,
+    position: f64,
+    task_columns: String,
+    task_count: i64,
+    overdue_count: i64,
+}
+
+fn db_row(conn: &Connection, id: i64) -> Result<ProjectDbRow> {
     let (name, path, created_at, opened_at, position, task_columns) = conn.query_row(
         "SELECT name, path, created_at, opened_at, position, task_columns FROM projects WHERE id = ?1",
         params![id],
@@ -213,18 +312,37 @@ fn dto(conn: &Connection, id: i64) -> Result<ProjectDto> {
     )?;
     let task_count = conn.query_row(TASK_COUNT_SQL, params![id], |r| r.get(0))?;
     let overdue_count = conn.query_row(OVERDUE_SQL, params![id], |r| r.get(0))?;
-    Ok(ProjectDto {
-        id,
+    Ok(ProjectDbRow {
         name,
-        path: path.clone(),
+        path,
         created_at,
         opened_at,
         position,
-        file_count: count_files(Path::new(&path)),
+        task_columns,
         task_count,
         overdue_count,
-        task_columns: parse_task_columns(&task_columns),
     })
+}
+
+// Assembles the DTO from DB parts; the file count walks the project folder,
+// so callers that hold the DB mutex must drop it before calling this.
+pub(crate) fn dto_from_row(id: i64, row: ProjectDbRow) -> ProjectDto {
+    ProjectDto {
+        id,
+        name: row.name,
+        path: row.path.clone(),
+        created_at: row.created_at,
+        opened_at: row.opened_at,
+        position: row.position,
+        file_count: count_files(Path::new(&row.path)),
+        task_count: row.task_count,
+        overdue_count: row.overdue_count,
+        task_columns: parse_task_columns(&row.task_columns),
+    }
+}
+
+fn dto(conn: &Connection, id: i64) -> Result<ProjectDto> {
+    Ok(dto_from_row(id, db_row(conn, id)?))
 }
 
 fn count_files(root: &Path) -> i64 {
@@ -305,7 +423,9 @@ mod tests {
     fn rename_project_updates_folder_and_db_row() {
         let (wd, conn) = setup("proj-rename");
         let dto = create_project(&conn, &wd, "old").unwrap();
-        let renamed = rename_project(&conn, &wd, dto.id, "new").unwrap();
+        let plan = rename_plan(&conn, &wd, dto.id, "new").unwrap();
+        rename_move(&plan).unwrap();
+        let renamed = dto_from_row(dto.id, rename_apply(&conn, dto.id, &plan).unwrap());
         assert_eq!(renamed.name, "new");
         assert!(!paths::projects_dir(&wd).join("old").exists());
         assert!(paths::projects_dir(&wd).join("new").is_dir());
@@ -321,15 +441,57 @@ mod tests {
 
         let clash = create_project(&conn, &wd, "taken").unwrap();
         assert!(matches!(
-            rename_project(&conn, &wd, dto.id, "taken"),
+            rename_plan(&conn, &wd, dto.id, "taken"),
             Err(AppError::Invalid(_))
         ));
         assert!(matches!(
-            rename_project(&conn, &wd, 999, "x"),
+            rename_plan(&conn, &wd, 999, "x"),
             Err(AppError::Invalid(_))
         ));
         fs::remove_dir_all(&wd).unwrap();
         let _ = clash;
+    }
+
+    // The staged flow the command uses: plan under the DB read, rename on
+    // disk, apply the UPDATE. A conflicting DB state (row gone between plan
+    // and apply) must fail with Db and the caller's rename_rollback must
+    // restore the folder, as before.
+    #[test]
+    fn rename_rolls_back_folder_when_db_update_fails() {
+        let (wd, conn) = setup("proj-rename-rollback");
+        let dto = create_project(&conn, &wd, "old").unwrap();
+        let plan = rename_plan(&conn, &wd, dto.id, "new").unwrap();
+        rename_move(&plan).unwrap();
+        assert!(!paths::projects_dir(&wd).join("old").exists());
+        conn.execute("DELETE FROM projects WHERE id = ?1", params![dto.id])
+            .unwrap();
+        let err = rename_apply(&conn, dto.id, &plan).unwrap_err();
+        assert!(matches!(err, AppError::Db(_)), "{err}");
+        rename_rollback(&plan);
+        let old_root = paths::projects_dir(&wd).join("old");
+        assert!(old_root.is_dir());
+        assert!(!paths::projects_dir(&wd).join("new").exists());
+        assert!(old_root.join(paths::DATAS_MD).is_file());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // The staged create flow: the folder tree is made outside the DB, the
+    // INSERT fails (conflicting DB state), and undo_create removes exactly
+    // what this call created — the project folder, but not the pre-existing
+    // Projects/ dir.
+    #[test]
+    fn create_project_cleans_up_created_folder_when_db_insert_fails() {
+        let (wd, conn) = setup("proj-create-cleanup");
+        let made = create_project_fs(&wd, "doomed").unwrap();
+        let root = paths::projects_dir(&wd).join("doomed");
+        assert!(root.join(paths::DATAS_MD).is_file());
+        conn.execute("DROP TABLE projects", []).unwrap();
+        let err = create_project_db(&conn, &made).unwrap_err();
+        assert!(matches!(err, AppError::Db(_)), "{err}");
+        undo_create(&made);
+        assert!(!root.exists());
+        assert!(paths::projects_dir(&wd).is_dir());
+        fs::remove_dir_all(&wd).unwrap();
     }
 
     #[test]

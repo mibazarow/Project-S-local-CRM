@@ -121,16 +121,16 @@ fn fetch_trash(conn: &Connection, id: i64) -> Result<TrashDto> {
     .ok_or_else(|| AppError::Invalid(format!("trash entry {id} not found")))
 }
 
-// Moves the existing item at `original_path` into Settings/.trash/<id>/<name>
-// and records the row; the caller gets the trash id back.
-pub fn trash_put(
-    conn: &Connection,
-    wd: &Path,
-    scope: &str,
-    kind: &str,
-    original_path: &Path,
-    meta: Option<&str>,
-) -> Result<i64> {
+// Filesystem part of trash_put: moves the item into Settings/.trash/<id>/
+// <name>. Split from the row insert so command callers can run the (possibly
+// slow, copy-on-cross-device) move outside the DB mutex.
+#[derive(Debug)]
+pub(crate) struct StagedTrash {
+    pub name: String,
+    pub stored: PathBuf,
+}
+
+pub(crate) fn trash_stage(wd: &Path, original_path: &Path) -> Result<StagedTrash> {
     let raw_name = original_path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -142,12 +142,38 @@ pub fn trash_put(
     fs::create_dir_all(&stored_dir)?;
     let stored = stored_dir.join(&name);
     move_item(original_path, &stored)?;
+    Ok(StagedTrash { name, stored })
+}
+
+// DB part of trash_put: the single row insert for an already-staged item.
+pub(crate) fn trash_record(
+    conn: &Connection,
+    scope: &str,
+    kind: &str,
+    original_path: &Path,
+    staged: &StagedTrash,
+    meta: Option<&str>,
+) -> Result<i64> {
     conn.execute(
         "INSERT INTO trash (scope, kind, original_path, stored_path, name, deleted_at, meta)
          VALUES (?1, ?2, ?3, ?4, ?5, datetime('now','localtime'), ?6)",
-        params![scope, kind, original_path.display().to_string(), stored.display().to_string(), name, meta],
+        params![scope, kind, original_path.display().to_string(), staged.stored.display().to_string(), staged.name, meta],
     )?;
     Ok(conn.last_insert_rowid())
+}
+
+// Moves the existing item at `original_path` into Settings/.trash/<id>/<name>
+// and records the row; the caller gets the trash id back.
+pub fn trash_put(
+    conn: &Connection,
+    wd: &Path,
+    scope: &str,
+    kind: &str,
+    original_path: &Path,
+    meta: Option<&str>,
+) -> Result<i64> {
+    let staged = trash_stage(wd, original_path)?;
+    trash_record(conn, scope, kind, original_path, &staged, meta)
 }
 
 // DB-only snapshot (deleted task): the whole item lives in `meta`, no file is
