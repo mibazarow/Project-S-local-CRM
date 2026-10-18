@@ -737,6 +737,73 @@ mod tests {
     }
 
     #[test]
+    fn semantic_leg_does_not_leak_across_projects() {
+        let (wd, conn, a, _state) = setup("search-sem-scope");
+        let b = projects::create_project(&conn, &wd, "other").unwrap();
+        fs::write(root(&wd).join("самолет.md"), "самолет летит над морем").unwrap();
+        fs::write(
+            paths::projects_dir(&wd).join("other/кошки.md"),
+            "кошки кошки кошки",
+        )
+        .unwrap();
+        let cfg = crate::config::IndexingConfig::default();
+        index::index_root(&conn, a, &root(&wd), &cfg, &FakeEmbedder).unwrap();
+        index::index_root(
+            &conn,
+            b.id,
+            &paths::projects_dir(&wd).join("other"),
+            &cfg,
+            &FakeEmbedder,
+        )
+        .unwrap();
+
+        // Query semantically closest to B's file: A's hits must carry only A's
+        // files, B's rel_path must never surface in A's results.
+        let hits_a = search_with(&conn, &FakeEmbedder, 0.3, a, "кошечка", 10).unwrap();
+        assert!(
+            !hits_a.iter().any(|h| h.rel_path == "кошки.md"),
+            "B file leaked into A: {hits_a:?}"
+        );
+        assert!(hits_a.iter().all(|h| h.rel_path == "самолет.md" || h.rel_path == "datas.md"));
+
+        let hits_b = search_with(&conn, &FakeEmbedder, 0.3, b.id, "кошечка", 10).unwrap();
+        assert!(
+            hits_b.iter().any(|h| h.rel_path == "кошки.md"),
+            "B file missing from B: {hits_b:?}"
+        );
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn query_matching_only_other_project_returns_empty_for_unindexed_project() {
+        // FTS-only leg (noop embedder via search_project through AppState).
+        let (wd, conn, a, state) = setup("search-scope-fts-empty");
+        let b = projects::create_project(&conn, &wd, "other").unwrap();
+        fs::write(
+            paths::projects_dir(&wd).join("other/кошки.md"),
+            "кошки кошки кошки",
+        )
+        .unwrap();
+        index::index_project(&state, b.id).unwrap(); // A stays unindexed
+
+        assert!(search_project(&state, a, "кошки", 10).unwrap().is_empty());
+        assert_eq!(rels(&search_project(&state, b.id, "кошки", 10).unwrap()), ["кошки.md"]);
+
+        // Semantic leg with a fake embedder over the same state.
+        let fake = FakeEmbedder;
+        let cfg = crate::config::IndexingConfig::default();
+        index::index_root(&conn, b.id, &paths::projects_dir(&wd).join("other"), &cfg, &fake).unwrap();
+        let hits_a = search_with(&conn, &fake, 0.3, a, "кошечка", 10).unwrap();
+        assert!(hits_a.is_empty(), "B vectors leaked into A: {hits_a:?}");
+        let hits_b = search_with(&conn, &fake, 0.3, b.id, "кошечка", 10).unwrap();
+        assert!(
+            hits_b.iter().any(|h| h.rel_path == "кошки.md"),
+            "B file missing from B: {hits_b:?}"
+        );
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
     fn task_fts_hit_includes_closed_task_and_carries_task_fields() {
         let (wd, conn, id, state) = setup("search-task-closed");
         let t = tasks::task_create(&conn, id, "Сделать редизайн главной", None).unwrap();
