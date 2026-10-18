@@ -648,7 +648,7 @@ impl Tool for TaskCreateTool {
         "task_create"
     }
     fn description(&self) -> &str {
-        "Create a task in this project; optional status (new|progress|done, default new), priority (low|normal|high|urgent, default normal), recurrence (none|daily|weekly|monthly, default none), checklist ([{text, done?}], max 100 items)."
+        "Create a task in this project; optional status (new|progress|done, default new), dueDate (YYYY-MM-DD), isPriority (true|false, default false), recurrence (none|daily|weekly|monthly, default none), checklist ([{text, done?}], max 100 items)."
     }
     fn parameters(&self) -> Value {
         create_schema(false)
@@ -680,7 +680,7 @@ impl Tool for TaskUpdateTool {
         "task_update"
     }
     fn description(&self) -> &str {
-        "Update fields of one of this project's tasks; absent fields stay unchanged, explicit null clears comment/dueDate/remindAt. Dates: YYYY-MM-DD, remindAt: YYYY-MM-DDTHH:MM. priority: low|normal|high|urgent, recurrence: none|daily|weekly|monthly, checklist: [{text, done?}] max 100 (null/absent keeps the current value)."
+        "Update fields of one of this project's tasks; absent fields stay unchanged, explicit null clears comment/dueDate/remindAt. Dates: YYYY-MM-DD, remindAt: YYYY-MM-DDTHH:MM. isPriority: true|false, recurrence: none|daily|weekly|monthly, checklist: [{text, done?}] max 100 (null/absent keeps the current value)."
     }
     fn parameters(&self) -> Value {
         update_schema()
@@ -1261,7 +1261,7 @@ mod tests {
 
         let r = exec(
             "task_update",
-            json!({ "id": id, "title": "renamed", "comment": "note", "dueDate": "2099-01-02", "tags": ["a", ""] }),
+            json!({ "id": id, "title": "renamed", "comment": "note", "dueDate": "2099-01-02", "isPriority": true }),
             &env.ctx,
         );
         assert!(r.ok, "{:?}", r.error);
@@ -1269,7 +1269,7 @@ mod tests {
         assert_eq!(data["title"], "renamed");
         assert_eq!(data["comment"], "note");
         assert_eq!(data["dueDate"], "2099-01-02");
-        assert_eq!(data["tags"], json!(["a"]));
+        assert_eq!(data["isPriority"], true);
 
         // explicit null clears the comment
         let r = exec("task_update", json!({ "id": id, "comment": null }), &env.ctx);
@@ -1297,13 +1297,14 @@ mod tests {
     }
 
     #[test]
-    fn task_tools_accept_and_validate_priority_checklist_recurrence() {
+    fn task_tools_accept_and_validate_is_priority_due_date_checklist_recurrence() {
         let env = setup("pt-tasks-upgrade");
         let r = exec(
             "task_create",
             json!({
                 "title": "report",
-                "priority": "urgent",
+                "dueDate": "2099-01-02",
+                "isPriority": true,
                 "recurrence": "weekly",
                 "checklist": [{ "text": "draft", "done": true }, { "text": "send" }]
             }),
@@ -1312,7 +1313,8 @@ mod tests {
         assert!(r.ok, "{:?}", r.error);
         let data = r.data.unwrap();
         let id = data["id"].as_i64().unwrap();
-        assert_eq!(data["priority"], "urgent");
+        assert_eq!(data["isPriority"], true);
+        assert_eq!(data["dueDate"], "2099-01-02");
         assert_eq!(data["recurrence"], "weekly");
         assert_eq!(
             data["checklist"],
@@ -1321,21 +1323,19 @@ mod tests {
 
         let r = exec(
             "task_update",
-            json!({ "id": id, "priority": "low", "recurrence": "none", "checklist": [{ "text": "only", "done": true }] }),
+            json!({ "id": id, "isPriority": false, "recurrence": "none", "checklist": [{ "text": "only", "done": true }] }),
             &env.ctx,
         );
         assert!(r.ok, "{:?}", r.error);
         let data = r.data.unwrap();
-        assert_eq!(
-            (data["priority"].as_str(), data["recurrence"].as_str()),
-            (Some("low"), Some("none"))
-        );
+        assert_eq!(data["isPriority"], false);
+        assert_eq!(data["recurrence"].as_str(), Some("none"));
         assert_eq!(data["checklist"], json!([{ "text": "only", "done": true }]));
 
         // Domain validation surfaces as a tool error, not a panic.
-        let r = exec("task_create", json!({ "title": "x", "priority": "critical" }), &env.ctx);
+        let r = exec("task_create", json!({ "title": "x", "dueDate": "2099-13-01" }), &env.ctx);
         assert!(!r.ok);
-        assert!(r.error.unwrap().message.contains("priority"));
+        assert!(r.error.unwrap().message.contains("due_date"));
         let r = exec("task_create", json!({ "title": "x", "recurrence": "yearly" }), &env.ctx);
         assert!(!r.ok);
         assert!(r.error.unwrap().message.contains("recurrence"));
@@ -1346,7 +1346,7 @@ mod tests {
         // done move of a recurring task queues the next occurrence in 'new'.
         let r = exec(
             "task_update",
-            json!({ "id": id, "recurrence": "daily", "dueDate": "2099-01-02" }),
+            json!({ "id": id, "isPriority": true, "recurrence": "daily", "dueDate": "2099-01-02" }),
             &env.ctx,
         );
         assert!(r.ok, "{:?}", r.error);
@@ -1357,6 +1357,7 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0]["title"], "report");
         assert_eq!(tasks[0]["dueDate"], "2099-01-03");
+        assert_eq!(tasks[0]["isPriority"], true, "the flag must be copied to the next occurrence");
         fs::remove_dir_all(&env.wd).unwrap();
     }
 

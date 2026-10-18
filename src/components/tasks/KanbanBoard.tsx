@@ -1,93 +1,117 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import * as ipc from "../../api/ipc";
-import type { TaskDto, TaskPatch, TemplateSummary } from "../../api/types";
+import type { ProjectDto, TaskDto, TaskPatch } from "../../api/types";
 import { toMessage } from "../files/fileOps";
 import RenameInput from "../files/RenameInput";
-import { IconClose, IconPlus, IconSearch, IconTrash } from "../files/icons";
+import { IconCheck, IconClose, IconPencil, IconPlus, IconSearch } from "../files/icons";
 import TaskCard from "./TaskCard";
-import { usePointerDrag } from "../../hooks/usePointerDrag";
+import { usePointerDrag, type DropTarget } from "../../hooks/usePointerDrag";
 import { useApp } from "../../state/AppStore";
 
-const COLUMNS = [
-  { status: "new", label: "Новые" },
-  { status: "progress", label: "В работе" },
-  { status: "done", label: "Готово" },
-] as const;
-
-const PRIORITY_OPTIONS = [
-  { value: "low", label: "низкий" },
-  { value: "normal", label: "обычный" },
-  { value: "high", label: "высокий" },
-  { value: "urgent", label: "срочный" },
-];
+// Column identities are fixed backend statuses; only the labels are
+// per-project (ProjectDto.taskColumns).
+const STATUSES = ["new", "progress", "done"] as const;
+const DEFAULT_COLUMNS = ["Новые", "В работе", "Готово"];
 
 interface Filters {
   query: string;
-  priority: string;
-  tag: string;
   overdueOnly: boolean;
-  hideDone: boolean;
 }
 
-const EMPTY_FILTERS: Filters = {
-  query: "",
-  priority: "",
-  tag: "",
-  overdueOnly: false,
-  hideDone: false,
-};
+const EMPTY_FILTERS: Filters = { query: "", overdueOnly: false };
 
-const isDefaultFilters = (f: Filters) =>
-  !f.query.trim() && !f.priority && !f.tag && !f.overdueOnly && !f.hideDone;
+const isDefaultFilters = (f: Filters) => !f.query.trim() && !f.overdueOnly;
 
-// Saved views: named filter sets per project in localStorage.
-interface SavedView {
-  name: string;
-  filters: Filters;
+interface NewTaskDraft {
+  title: string;
+  dueDate: string | null;
+  isPriority: boolean;
 }
 
-const viewsKey = (projectId: number) => `project-s:taskViews:${projectId}`;
+// Inline create form in a column: title + due date + «Приоритетная».
+function AddTaskForm({
+  onCommit,
+  onCancel,
+}: {
+  onCommit: (draft: NewTaskDraft) => void;
+  onCancel: () => void;
+}) {
+  const titleRef = useRef<HTMLInputElement>(null);
+  const [due, setDue] = useState("");
+  const [priority, setPriority] = useState(false);
+  const done = useRef(false);
 
-function readViews(projectId: number): SavedView[] {
-  try {
-    const raw = localStorage.getItem(viewsKey(projectId));
-    const parsed: unknown = raw === null ? [] : JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (v): v is SavedView =>
-        typeof v === "object" &&
-        v !== null &&
-        typeof (v as SavedView).name === "string" &&
-        typeof (v as SavedView).filters === "object" &&
-        (v as SavedView).filters !== null,
-    );
-  } catch {
-    return [];
-  }
-}
+  useEffect(() => {
+    titleRef.current?.focus();
+  }, []);
 
-function writeViews(projectId: number, views: SavedView[]): void {
-  try {
-    localStorage.setItem(viewsKey(projectId), JSON.stringify(views));
-  } catch {
-    // Storage unavailable: views simply won't persist across restarts.
-  }
+  const submit = () => {
+    if (done.current) return;
+    done.current = true;
+    const title = titleRef.current?.value.trim() ?? "";
+    if (!title) onCancel();
+    else onCommit({ title, dueDate: due || null, isPriority: priority });
+  };
+
+  const onKeyDown = (e: KeyboardEvent) => {
+    if (e.key === "Enter") submit();
+    if (e.key === "Escape") onCancel();
+  };
+
+  return (
+    <div className="task-add-form" onKeyDown={onKeyDown}>
+      <input
+        ref={titleRef}
+        className="rename-input"
+        placeholder="Новая задача…"
+        onKeyDown={onKeyDown}
+      />
+      <input
+        className="rename-input"
+        type="date"
+        value={due}
+        onChange={(e) => setDue(e.target.value)}
+      />
+      <div className="task-add-row">
+        <label className="tf-check">
+          <input
+            type="checkbox"
+            checked={priority}
+            onChange={(e) => setPriority(e.target.checked)}
+          />
+          Приоритетная
+        </label>
+        <button className="mini-btn" title="Создать задачу" onClick={submit}>
+          <IconCheck />
+        </button>
+        <button className="mini-btn danger" title="Отменить" onClick={onCancel}>
+          <IconClose />
+        </button>
+      </div>
+    </div>
+  );
 }
 
 interface Props {
-  projectId: number;
+  project: ProjectDto;
   tasksVersion: number;
   highlightTaskId: number | null;
 }
 
-export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }: Props) {
+export default function KanbanBoard({ project, tasksVersion, highlightTaskId }: Props) {
+  const projectId = project.id;
   const [tasks, setTasks] = useState<TaskDto[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [addingStatus, setAddingStatus] = useState<string | null>(null);
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
-  const [views, setViews] = useState<SavedView[]>([]);
-  const [activeView, setActiveView] = useState("");
-  const [taskTemplates, setTaskTemplates] = useState<TemplateSummary[]>([]);
+  const [renamingIndex, setRenamingIndex] = useState<number | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
   const { actions } = useApp();
 
@@ -100,44 +124,31 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
     );
   };
 
-  // Task templates for the «Задача из шаблона» picker; a failed load hides it.
-  useEffect(() => {
-    let cancelled = false;
-    void ipc
-      .templatesList()
-      .then((t) => !cancelled && setTaskTemplates(t.tasks))
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  // Per-project filter/view state: reset and reload on project switch.
+  // Per-project filter state: reset on project switch.
   useEffect(() => {
     setFilters(EMPTY_FILTERS);
-    setActiveView("");
-    setViews(readViews(projectId));
   }, [projectId]);
 
-  const patchFilters = (patch: Partial<Filters>) => {
-    setFilters((prev) => ({ ...prev, ...patch }));
-    setActiveView("");
-  };
+  const columns =
+    project.taskColumns?.length === 3 ? project.taskColumns : DEFAULT_COLUMNS;
 
-  const allTags = useMemo(() => {
-    const set = new Set<string>((tasks ?? []).flatMap((t) => t.tags));
-    if (filters.tag) set.add(filters.tag);
-    return Array.from(set).sort((a, b) => a.localeCompare(b, "ru"));
-  }, [tasks, filters.tag]);
+  const commitColumnRename = (index: number, label: string) => {
+    setRenamingIndex(null);
+    if (label === columns[index]) return;
+    const next = columns.map((c, j) => (j === index ? label : c));
+    // The backend emits "projects-changed"; AppStore refreshes the project
+    // list, so the new labels arrive back through the `project` prop.
+    ipc
+      .setTaskColumns(projectId, next)
+      .then(() => setError(null))
+      .catch((e) => setError(toMessage(e)));
+  };
 
   const visible = useMemo(() => {
     const q = filters.query.trim().toLowerCase();
     return (tasks ?? []).filter((t) => {
       if (q && !t.title.toLowerCase().includes(q)) return false;
-      if (filters.priority && t.priority !== filters.priority) return false;
-      if (filters.tag && !t.tags.includes(filters.tag)) return false;
       if (filters.overdueOnly && !t.overdue) return false;
-      if (filters.hideDone && t.status === "done") return false;
       return true;
     });
   }, [tasks, filters]);
@@ -151,7 +162,7 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
   const { draggingId, dropTarget, onPointerDown } = usePointerDrag({
     // Target column = the one whose bounds contain the pointer; insertion
     // index = pointer Y vs the midlines of that column's non-dragged cards.
-    resolveTarget: (clientX, clientY, id) => {
+    resolveTarget: (clientX, clientY, id): DropTarget<number> | null => {
       const cols = Array.from(
         boardRef.current?.querySelectorAll<HTMLElement>(".task-col[data-status]") ?? [],
       );
@@ -176,7 +187,7 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
             break;
           }
         }
-        return { container: col.dataset.status ?? "", index };
+        return { container: col.dataset.status ?? "", index, draggingId: id };
       }
       return null;
     },
@@ -237,21 +248,10 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
       return next;
     });
 
-  const handleCreate = (status: string, title: string) => {
+  const handleCreate = (status: string, draft: NewTaskDraft) => {
     setAddingStatus(null);
     ipc
-      .taskCreate(projectId, title, status)
-      .then((dto) => {
-        setError(null);
-        upsert(dto);
-      })
-      .catch((e) => setError(toMessage(e)));
-  };
-
-  const handleTemplateTask = (templateName: string) => {
-    if (!templateName) return;
-    ipc
-      .templateCreateTask(projectId, templateName)
+      .taskCreate(projectId, draft.title, status, draft.dueDate, draft.isPriority)
       .then((dto) => {
         setError(null);
         upsert(dto);
@@ -280,35 +280,6 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
       .catch((e) => setError(toMessage(e)));
   };
 
-  const handleViewSelect = (name: string) => {
-    if (name === "") {
-      setFilters(EMPTY_FILTERS);
-      setActiveView("");
-      return;
-    }
-    const view = views.find((v) => v.name === name);
-    if (!view) return;
-    setFilters({ ...EMPTY_FILTERS, ...view.filters });
-    setActiveView(name);
-  };
-
-  const handleSaveView = () => {
-    const name = window.prompt("Название вида фильтров:");
-    if (!name?.trim()) return;
-    const trimmed = name.trim();
-    const next = [...views.filter((v) => v.name !== trimmed), { name: trimmed, filters }];
-    setViews(next);
-    writeViews(projectId, next);
-    setActiveView(trimmed);
-  };
-
-  const handleDeleteView = () => {
-    const next = views.filter((v) => v.name !== activeView);
-    setViews(next);
-    writeViews(projectId, next);
-    setActiveView("");
-  };
-
   const renderCard = (t: TaskDto, dragging: boolean) => (
     <TaskCard
       key={t.id}
@@ -332,108 +303,32 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
             type="text"
             placeholder="Поиск по названию…"
             value={filters.query}
-            onChange={(e) => patchFilters({ query: e.target.value })}
+            onChange={(e) => setFilters((prev) => ({ ...prev, query: e.target.value }))}
           />
           {filters.query && (
             <button
               className="mini-btn"
               title="Очистить поиск"
-              onClick={() => patchFilters({ query: "" })}
+              onClick={() => setFilters((prev) => ({ ...prev, query: "" }))}
             >
               <IconClose />
             </button>
           )}
         </div>
-        <select
-          className="tf-select"
-          value={filters.priority}
-          onChange={(e) => patchFilters({ priority: e.target.value })}
-        >
-          <option value="">Приоритет: все</option>
-          {PRIORITY_OPTIONS.map((p) => (
-            <option key={p.value} value={p.value}>
-              {p.label}
-            </option>
-          ))}
-        </select>
-        <select
-          className="tf-select"
-          value={filters.tag}
-          onChange={(e) => patchFilters({ tag: e.target.value })}
-        >
-          <option value="">Теги: все</option>
-          {allTags.map((tag) => (
-            <option key={tag} value={tag}>
-              {tag}
-            </option>
-          ))}
-        </select>
-        {taskTemplates.length > 0 && (
-          <select
-            className="tf-select"
-            value=""
-            title="Создать задачу из шаблона"
-            onChange={(e) => handleTemplateTask(e.target.value)}
-          >
-            <option value="">Задача из шаблона…</option>
-            {taskTemplates.map((t) => (
-              <option key={t.name} value={t.name}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        )}
         <label className="tf-check">
           <input
             type="checkbox"
             checked={filters.overdueOnly}
-            onChange={(e) => patchFilters({ overdueOnly: e.target.checked })}
+            onChange={(e) => setFilters((prev) => ({ ...prev, overdueOnly: e.target.checked }))}
           />
           только просроченные
         </label>
-        <label className="tf-check">
-          <input
-            type="checkbox"
-            checked={filters.hideDone}
-            onChange={(e) => patchFilters({ hideDone: e.target.checked })}
-          />
-          скрыть готовые
-        </label>
-        <div className="tf-views">
-          <select
-            className="tf-select"
-            value={activeView || (isDefaultFilters(filters) ? "" : "custom")}
-            onChange={(e) => handleViewSelect(e.target.value)}
-          >
-            <option value="">Вид: по умолчанию</option>
-            {views.map((v) => (
-              <option key={v.name} value={v.name}>
-                {v.name}
-              </option>
-            ))}
-            <option value="custom" disabled>
-              свой набор
-            </option>
-          </select>
-          <button
-            className="mini-btn"
-            title="Сохранить текущие фильтры как вид"
-            onClick={handleSaveView}
-          >
-            <IconPlus />
-          </button>
-          {activeView && (
-            <button className="mini-btn danger" title="Удалить вид" onClick={handleDeleteView}>
-              <IconTrash />
-            </button>
-          )}
-        </div>
       </div>
       {tasks && (
         <div className="task-board" ref={boardRef}>
-          {COLUMNS.map((col) => {
-            const cards = byStatus[col.status];
-            const over = dropTarget !== null && dropTarget.container === col.status;
+          {STATUSES.map((status, i) => {
+            const cards = byStatus[status];
+            const over = dropTarget !== null && dropTarget.container === status;
             const dropIndex = over ? dropTarget.index : null;
             const nodes: ReactNode[] = [];
             let visibleIndex = 0;
@@ -453,31 +348,53 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
             }
             return (
               <div
-                key={col.status}
-                data-status={col.status}
+                key={status}
+                data-status={status}
                 className={over ? "task-col drop-over" : "task-col"}
               >
                 <div className="task-col-head">
-                  {col.label} <span className="count">{cards.length}</span>
+                  {renamingIndex === i ? (
+                    <RenameInput
+                      value={columns[i]}
+                      onCommit={(name) => commitColumnRename(i, name)}
+                      onCancel={() => setRenamingIndex(null)}
+                    />
+                  ) : (
+                    <span
+                      className="task-col-label"
+                      title="Двойной клик — переименовать колонку"
+                      onDoubleClick={() => setRenamingIndex(i)}
+                    >
+                      {columns[i]}
+                    </span>
+                  )}
+                  <span className="count">{cards.length}</span>
+                  {renamingIndex !== i && (
+                    <button
+                      className="mini-btn task-col-rename-btn"
+                      title="Переименовать колонку"
+                      onClick={() => setRenamingIndex(i)}
+                    >
+                      <IconPencil />
+                    </button>
+                  )}
                   <button
                     className="mini-btn task-add-btn"
                     title="Добавить задачу"
-                    onClick={() => setAddingStatus(col.status)}
+                    onClick={() => setAddingStatus(status)}
                   >
                     <IconPlus />
                   </button>
                 </div>
                 <div className="task-list">
-                  {addingStatus === col.status && (
-                    <RenameInput
-                      value=""
-                      placeholder="Новая задача…"
-                      onCommit={(title) => handleCreate(col.status, title)}
+                  {addingStatus === status && (
+                    <AddTaskForm
+                      onCommit={(draft) => handleCreate(status, draft)}
                       onCancel={() => setAddingStatus(null)}
                     />
                   )}
                   {nodes}
-                  {tasks && cards.length === 0 && addingStatus !== col.status && (
+                  {tasks && cards.length === 0 && addingStatus !== status && (
                     <div className="empty-note">
                       {isDefaultFilters(filters) ? "Пусто" : "Нет подходящих"}
                     </div>

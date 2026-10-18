@@ -53,13 +53,6 @@ input, textarea { font-family: inherit; }
   flex-shrink: 0;
 }
 
-.app-title {
-  color: #fff;
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: .2px;
-}
-
 /* сегментный контрол вкладок — как NSSegmentedControl */
 
 .tabs {
@@ -86,6 +79,16 @@ input, textarea { font-family: inherit; }
 }
 .topbar .icon-btn { color: rgba(255, 255, 255, .75); }
 .topbar .icon-btn:hover { background: rgba(255, 255, 255, .14); color: #fff; }
+
+/* «Переиндексация поиска»: иконка + отсчёт/прогресс в одну строку. */
+.reindex-btn { gap: 6px; align-items: center; }
+.reindex-count {
+  font-size: 11px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  min-width: 30px;
+  text-align: right;
+}
 
 .view {
   flex: 1;
@@ -119,6 +122,23 @@ input, textarea { font-family: inherit; }
   letter-spacing: .04em;
   color: var(--text-muted);
 }
+
+/* «Новый проект» — круглая акцентная кнопка с белым плюсом. */
+.add-project-btn {
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background .15s;
+}
+.add-project-btn:hover { background: var(--accent-hover); }
+.add-project-btn:active { transform: scale(.94); }
 
 .project-list {
   flex: 1;
@@ -172,7 +192,7 @@ input, textarea { font-family: inherit; }
 /* ---------- Pointer drag & drop (projects + kanban) ---------- */
 
 body.dnd-active { cursor: grabbing; -webkit-user-select: none; user-select: none; }
-body.dnd-active .project-item, body.dnd-active .task-card { cursor: grabbing; }
+body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .notes-tree .tree-row { cursor: grabbing; }
 
 .drag-ghost {
   opacity: .95;
@@ -360,34 +380,42 @@ body.dnd-active .project-item, body.dnd-active .task-card { cursor: grabbing; }
 .task-col-head { font-size: 11.5px; font-weight: 600; color: var(--text-muted); padding: 2px 4px 10px; display: flex; gap: 8px; align-items: center; }
 .count { background: #e4e4e9; border-radius: 10px; padding: 1px 8px; font-size: 11px; }
 .task-list { display: flex; flex-direction: column; gap: 8px; min-height: 24px; }
-.task-card { border: 1px solid var(--border); border-radius: 7px; padding: 10px; background: #fff; cursor: grab; position: relative; touch-action: none; box-shadow: 0 .5px 1px rgba(0, 0, 0, .04); transition: box-shadow .15s, border-color .15s, opacity .15s; }
+.task-card { border: 1px solid var(--border); border-radius: 7px; padding: 10px; background: #fff; cursor: grab; position: relative; touch-action: none; box-shadow: 0 .5px 1px rgba(0, 0, 0, .04); transition: box-shadow .15s, border-color .15s, opacity .15s; display: flex; flex-direction: column; }
 .task-card:hover { box-shadow: 0 2px 6px rgba(0, 0, 0, .09); border-color: var(--border-strong); }
 .task-card.dragging { opacity: .45; }
 .task-card.overdue { border-color: #ff3b30; background: #fff5f5; }
+.task-card.priority { border-color: rgba(255, 59, 48, .55); box-shadow: 0 0 0 1px rgba(255, 59, 48, .14), 0 0 7px rgba(255, 59, 48, .16); }
+.task-card.priority:hover { border-color: rgba(255, 59, 48, .7); box-shadow: 0 2px 6px rgba(0, 0, 0, .09), 0 0 7px rgba(255, 59, 48, .2); }
 .task-card.highlight { border-color: var(--accent); background: var(--accent-soft); box-shadow: 0 0 0 3px rgba(55, 106, 159, .22); }
 .task-card .m.red { color: #ff3b30; font-weight: 600; }
 .task-card.done .t { text-decoration: line-through; color: var(--text-muted); }
 .task-card .t { font-size: 12.5px; font-weight: 500; margin-bottom: 6px; }
 .task-card .m { font-size: 11px; color: var(--text-muted); display: flex; gap: 8px; }
 .task-card .c { font-size: 11px; color: var(--text-muted); font-style: italic; margin-top: 9px; border-left: 2px solid var(--border-strong); padding-left: 6px; }
-.task-card .tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; }
-.task-card .tag { font-size: 10px; line-height: 1.6; background: #e4e4e9; color: var(--text-muted); border-radius: 8px; padding: 0 7px; }
 .task-col.drop-over { outline: 2px dashed var(--accent); outline-offset: -4px; background: var(--accent-soft); }
-.task-card .task-actions { position: absolute; top: 6px; right: 6px; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
+/* Hover actions sit in their own reserved row above the title (order -1),
+   so they never overlap the title text. */
+.task-card .task-actions { display: flex; justify-content: flex-end; gap: 2px; opacity: 0; transition: opacity .12s; order: -1; margin: -4px -4px 4px 0; }
+.task-card .task-actions .mini-btn { padding: 2px; }
+.task-card .task-actions svg { width: 14px; height: 14px; }
 .task-card:hover .task-actions, .task-card.editing .task-actions { opacity: 1; }
 .task-col-head .task-add-btn { margin-left: auto; }
+.task-col-label { cursor: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-col-head .task-col-rename-btn { opacity: 0; padding: 2px; }
+.task-col-head:hover .task-col-rename-btn { opacity: 1; }
+.task-col-head .rename-input { font-size: 11.5px; font-weight: 600; padding: 1px 4px; flex: 1; min-width: 0; width: auto; }
 .task-list .rename-input { width: 100%; box-sizing: border-box; }
 .task-card textarea.rename-input { width: 100%; box-sizing: border-box; min-height: 46px; font-size: 11.5px; resize: vertical; }
 .task-due-row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
 .task-due-row .rename-input { font-size: 11px; padding: 2px 4px; }
+.task-add-form { display: flex; flex-direction: column; gap: 6px; background: #fff; border: 1px solid var(--border-strong); border-radius: 7px; padding: 8px; }
+.task-add-form .rename-input { width: 100%; box-sizing: border-box; font-size: 11.5px; }
+.task-add-form .rename-input[type="date"] { font-size: 11px; padding: 2px 4px; }
+.task-add-row { display: flex; align-items: center; gap: 6px; }
+.task-add-row .tf-check { margin-right: auto; font-size: 10.5px; }
 
 /* ---------- Приоритет, чек-лист, повтор на карточке ---------- */
 
-.task-card::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: transparent; }
-.task-card.prio-low::before { background: #a9a9b0; }
-.task-card.prio-normal::before { background: var(--accent); }
-.task-card.prio-high::before { background: var(--warn); }
-.task-card.prio-urgent::before { background: var(--danger); }
 .task-card .m span.red { color: #ff3b30; font-weight: 600; }
 .task-card .m .rec { display: inline-flex; align-items: center; gap: 4px; }
 .task-card .check-progress { display: flex; align-items: center; gap: 6px; margin-top: 7px; }
@@ -421,7 +449,6 @@ body.dnd-active .project-item, body.dnd-active .task-card { cursor: grabbing; }
 .tf-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(55, 106, 159, .18); }
 .tf-check { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; user-select: none; }
 .tf-check input { accent-color: var(--accent); }
-.tf-views { display: flex; align-items: center; gap: 4px; margin-left: auto; }
 
 /* ---------- Предпросмотр файла ---------- */
 
@@ -1393,6 +1420,7 @@ mark { background: rgba(55, 106, 159, .25); border-radius: 2px; }
 .notes-tree { flex: 1; overflow-y: auto; min-height: 0; padding: 0 8px 8px; }
 .notes-tree .tree-row .label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .notes-tree .rename-input { min-width: 0; width: 100%; font-size: 12.5px; }
+.notes-tree .tree-row.dragging { opacity: .45; }
 
 .notes-search-results { flex: 1; overflow-y: auto; min-height: 0; padding: 0 8px 8px; }
 .notes-search-results .search-results { max-width: none; gap: 6px; }
@@ -1435,12 +1463,13 @@ mark { background: rgba(55, 106, 159, .25); border-radius: 2px; }
   min-height: 64px;
   resize: none;
   overflow: hidden;
-  border: 1px solid var(--accent);
+  border: none;
   border-radius: 7px;
-  background: var(--surface);
+  background: var(--accent-soft);
   padding: 6px 10px;
   color: var(--text);
   outline: none;
+  caret-color: var(--accent);
   font-family: var(--font);
   font-size: 13px;
   line-height: 1.55;
@@ -1742,6 +1771,37 @@ mark { background: rgba(55, 106, 159, .25); border-radius: 2px; }
 }
 .toast.ok { border-left: 3px solid var(--ok); }
 .toast.err { border-left: 3px solid var(--danger); color: var(--danger); }
+
+/* ---------- Контекстное меню файлов ---------- */
+
+.context-menu {
+  position: fixed;
+  z-index: 1100;
+  min-width: 210px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .18);
+}
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+  white-space: nowrap;
+}
+.context-menu-item:hover:not(:disabled) { background: var(--accent); color: #fff; }
+.context-menu-item:disabled { color: var(--text-muted); cursor: default; }
+.context-menu-item .cm-icon { display: inline-flex; width: 14px; justify-content: center; flex-shrink: 0; }
 
 /* ---------- Скроллбары (overlay, как в macOS) ---------- */
 

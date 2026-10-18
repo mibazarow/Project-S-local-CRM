@@ -2,6 +2,8 @@ import { useEffect, useState, type DragEvent } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { toMessage, useFileOps } from "./fileOps";
+import { fileMenuItems, useFileMenuActions } from "./fileMenu";
+import ContextMenu from "../shared/ContextMenu";
 import { useFileCrossActions } from "../shared/crossActions";
 import { isDocument, useOpenWith } from "./useOpenWith";
 import RenameInput from "./RenameInput";
@@ -16,7 +18,6 @@ import {
   IconFolderPlus,
   IconOpenWith,
   IconPencil,
-  IconToNote,
   IconTrash,
 } from "./icons";
 
@@ -46,7 +47,9 @@ export default function FileGrid({
   );
   const [dragRel, setDragRel] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{ entry: FsEntry; x: number; y: number } | null>(null);
   const ops = useFileOps(projectId);
+  const menuActions = useFileMenuActions(projectId);
   const ow = useOpenWith(projectId);
   const cross = useFileCrossActions(projectId);
   const osHover = useOsFileDrag(
@@ -229,6 +232,13 @@ export default function FileGrid({
               }
               onClick={() => onSelect(entry)}
               onDoubleClick={() => handleDoubleClick(entry)}
+              onContextMenu={(e) => {
+                if (renamingPath === entry.relPath) return;
+                // Right-click must not select/open or start a drag: the menu owns it.
+                e.preventDefault();
+                e.stopPropagation();
+                setMenu({ entry, x: e.clientX, y: e.clientY });
+              }}
             >
               <span className="tile-actions" onDoubleClick={(e) => e.stopPropagation()}>
                 {entry.kind === "file" && (
@@ -241,18 +251,6 @@ export default function FileGrid({
                     }}
                   >
                     <IconAskAgent />
-                  </button>
-                )}
-                {entry.kind === "file" && !entry.isImage && (
-                  <button
-                    className="mini-btn"
-                    title="В заметку"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      cross.toNote(entry);
-                    }}
-                  >
-                    <IconToNote />
                   </button>
                 )}
                 {isDocument(entry) && (
@@ -279,10 +277,10 @@ export default function FileGrid({
                 </button>
                 <button
                   className="mini-btn"
-                  title="Дублировать"
+                  title="Скопировать"
                   onClick={(e) => {
                     e.stopPropagation();
-                    void ops.duplicate(entry.relPath);
+                    menuActions.copyAs(entry);
                   }}
                 >
                   <IconCopy />
@@ -328,6 +326,17 @@ export default function FileGrid({
             </div>
           )}
         </div>
+      )}
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={fileMenuItems(menu.entry, menuActions, () => {
+            setCreating(null);
+            setRenamingPath(menu.entry.relPath);
+          })}
+          onClose={() => setMenu(null)}
+        />
       )}
       {ow.dialog}
     </>

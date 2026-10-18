@@ -111,6 +111,9 @@ export default function FilesPanel({ project }: Props) {
     <section className="center">
       <div className="center-head">
         <h2>{project.name}</h2>
+        {project.overdueCount > 0 && (
+          <span className="badge st-overdue">{project.overdueCount} просрочено</span>
+        )}
         <div className="segmented">
           <button
             className={tab === "files" ? "seg active" : "seg"}
@@ -167,7 +170,7 @@ export default function FilesPanel({ project }: Props) {
 
       {tab === "tasks" ? (
         <KanbanBoard
-          projectId={project.id}
+          project={project}
           tasksVersion={state.tasksVersion}
           highlightTaskId={highlightTaskId}
         />

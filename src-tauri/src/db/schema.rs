@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::{params, Connection};
 
-pub const SCHEMA_VERSION: i64 = 30;
+pub const SCHEMA_VERSION: i64 = 31;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -558,6 +558,18 @@ CREATE TABLE IF NOT EXISTS links (
 );
 ";
 
+// Task model update (SPEC task model slice): a single is_priority flag
+// replaces the four-level priority in the DTO/tools/export (the old priority
+// column stays in the table for data safety, just unused), and per-project
+// kanban column names as a JSON array of 3 strings. Guarded per column
+// (v14 recipe) so a re-run after an interrupted v31 does not re-ALTER; the
+// backfill UPDATE is idempotent.
+const MIGRATION_31_TASK_IS_PRIORITY: &str =
+    "ALTER TABLE tasks ADD COLUMN is_priority INTEGER NOT NULL DEFAULT 0";
+const MIGRATION_31_TASK_IS_PRIORITY_BACKFILL: &str =
+    "UPDATE tasks SET is_priority = 1 WHERE priority IN ('high','urgent')";
+const MIGRATION_31_PROJECT_TASK_COLUMNS: &str = "ALTER TABLE projects ADD COLUMN task_columns TEXT NOT NULL DEFAULT '[\"Новые\",\"В работе\",\"Готово\"]'";
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -805,6 +817,28 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         )?;
         if has_links == 0 {
             conn.execute_batch(MIGRATION_30_LINKS)?;
+        }
+        conn.pragma_update(None, "user_version", 30)?;
+    }
+    if version < 31 {
+        // Guarded per column (v14 recipe) so a re-run after an interrupted
+        // v31 does not re-ALTER.
+        let has_is_priority: i64 = conn.query_row(
+            "SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'is_priority'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_is_priority == 0 {
+            conn.execute(MIGRATION_31_TASK_IS_PRIORITY, [])?;
+        }
+        conn.execute(MIGRATION_31_TASK_IS_PRIORITY_BACKFILL, [])?;
+        let has_task_columns: i64 = conn.query_row(
+            "SELECT count(*) FROM pragma_table_info('projects') WHERE name = 'task_columns'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_task_columns == 0 {
+            conn.execute(MIGRATION_31_PROJECT_TASK_COLUMNS, [])?;
         }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
@@ -2093,5 +2127,79 @@ CREATE UNIQUE INDEX uniq_chats_one_project_chat ON chats(project_id) WHERE kind 
 
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_v31_backfills_is_priority_and_adds_default_task_columns() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        // Simulate a pre-v31 database: drop both columns and roll the version
+        // back, with tasks carrying every old priority value.
+        conn.execute("ALTER TABLE tasks DROP COLUMN is_priority", [])
+            .unwrap();
+        conn.execute("ALTER TABLE projects DROP COLUMN task_columns", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO projects (name, path, created_at) VALUES ('p', '/tmp/p', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        for (title, priority) in [("hi", "high"), ("ur", "urgent"), ("lo", "low"), ("no", "normal")] {
+            conn.execute(
+                "INSERT INTO tasks (project_id, title, created_at, priority) VALUES (1, ?1, '2026-01-01', ?2)",
+                params![title, priority],
+            )
+            .unwrap();
+        }
+        conn.pragma_update(None, "user_version", 30).unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        // high/urgent became priority, low/normal stayed plain.
+        let flags: Vec<(String, i64)> = {
+            let mut stmt = conn.prepare("SELECT title, is_priority FROM tasks ORDER BY id").unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(
+            flags,
+            vec![
+                ("hi".to_owned(), 1),
+                ("ur".to_owned(), 1),
+                ("lo".to_owned(), 0),
+                ("no".to_owned(), 0),
+            ]
+        );
+
+        // New projects and tasks get the defaults; the column names are the
+        // shipped Russian trio as a JSON array of 3 strings.
+        let columns: String = conn
+            .query_row("SELECT task_columns FROM projects WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(columns, "[\"Новые\",\"В работе\",\"Готово\"]");
+        conn.execute(
+            "INSERT INTO tasks (project_id, title, created_at) VALUES (1, 'fresh', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let fresh: i64 = conn
+            .query_row("SELECT is_priority FROM tasks WHERE title = 'fresh'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fresh, 0);
+
+        // Guarded ALTER: a v30 database whose columns already exist is repaired
+        // without re-ALTER errors, and the backfill stays idempotent.
+        conn.pragma_update(None, "user_version", 30).unwrap();
+        run_migrations(&conn).unwrap();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        let hi: i64 = conn
+            .query_row("SELECT is_priority FROM tasks WHERE title = 'hi'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(hi, 1, "re-run must not demote backfilled flags");
     }
 }

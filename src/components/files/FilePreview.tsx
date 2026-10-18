@@ -143,11 +143,6 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
           <button className="ghost-btn small" title="Спросить агента о файле" onClick={() => cross.askAgent(entry)}>
             Спросить агента
           </button>
-          {!entry.isImage && (
-            <button className="ghost-btn small" title="Создать заметку из файла" onClick={() => cross.toNote(entry)}>
-              В заметку
-            </button>
-          )}
           {isTextual && (
             <button
               className="ghost-btn small"

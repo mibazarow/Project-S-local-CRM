@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, type DragEvent } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
+import ContextMenu from "../shared/ContextMenu";
 import { toMessage, useFileOps } from "./fileOps";
+import { fileMenuItems, useFileMenuActions } from "./fileMenu";
 import { useFileCrossActions } from "../shared/crossActions";
 import { isDocument, useOpenWith } from "./useOpenWith";
 import FileRow from "./FileRow";
@@ -34,8 +36,10 @@ export default function FileTree({
   );
   const [dragRel, setDragRel] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
+  const [menu, setMenu] = useState<{ entry: FsEntry; x: number; y: number } | null>(null);
   const openRef = useRef<Set<string>>(new Set());
   const ops = useFileOps(projectId);
+  const menuActions = useFileMenuActions(projectId);
   const ow = useOpenWith(projectId);
   const cross = useFileCrossActions(projectId);
   const osHover = useOsFileDrag(
@@ -226,18 +230,18 @@ export default function FileTree({
           }}
           onRename={(e, name) => void commitRename(e, name)}
           onRenameCancel={() => setRenamingPath(null)}
-          onDuplicate={(e) => void ops.duplicate(e.relPath)}
+          onCopyAs={(e) => menuActions.copyAs(e)}
           onDelete={(e) => void confirmDelete(e)}
           onDragStart={(e) => setDragRel(e.relPath)}
           onDragEnd={endDrag}
           onDirDragOver={handleDirDragOver}
           onDirDrop={handleDirDrop}
+          onContextMenu={(e, ev) => setMenu({ entry: e, x: ev.clientX, y: ev.clientY })}
           onOpenExternal={(e) =>
             void (isDocument(e) ? ow.openDocument(e) : ops.openExternal(e.relPath))
           }
           onOpenWith={isDocument(entry) ? (e) => void ow.showChooser(e) : undefined}
           onAskAgent={entry.kind === "file" ? cross.askAgent : undefined}
-          onToNote={entry.kind === "file" && !entry.isImage ? cross.toNote : undefined}
         />
         {entry.kind === "dir" && open && (
           <ul className="tree-children nested">
@@ -299,6 +303,17 @@ export default function FileTree({
       {ops.error && <div className="tree-error">{ops.error}</div>}
       {ow.error && <div className="tree-error">{ow.error}</div>}
       {body}
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={fileMenuItems(menu.entry, menuActions, () => {
+            setCreating(null);
+            setRenamingPath(menu.entry.relPath);
+          })}
+          onClose={() => setMenu(null)}
+        />
+      )}
       {ow.dialog}
     </>
   );

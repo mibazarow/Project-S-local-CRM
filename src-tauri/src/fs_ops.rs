@@ -1,4 +1,5 @@
 use crate::error::{AppError, Result};
+use crate::paths;
 use crate::projects;
 use base64::Engine as _;
 use rusqlite::Connection;
@@ -159,22 +160,192 @@ pub fn rename(
     entry(&root, &target)
 }
 
-pub fn duplicate(conn: &Connection, wd: &Path, project_id: i64, rel_path: &str) -> Result<FsEntry> {
+// Copies the entry next to its source as "<base> копия N<ext>" (files) or
+// "<name> копия N" (folders), N = 1, 2, …; the merged «Скопировать» action
+// (the former «Дублировать»).
+pub fn copy_as(conn: &Connection, wd: &Path, project_id: i64, rel_path: &str) -> Result<FsEntry> {
     let (root, path) = existing_for_mutation(conn, wd, project_id, rel_path)?;
     let parent = path
         .parent()
-        .ok_or_else(|| AppError::Invalid("cannot duplicate the project folder".into()))?;
+        .ok_or_else(|| AppError::Invalid("cannot copy the project folder".into()))?;
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let target = parent.join(unique_name(parent, &name, path.is_dir()));
+    let target = parent.join(copy_suffix_name(parent, &name, path.is_dir()));
     if path.is_dir() {
         copy_tree(&path, &target)?;
     } else {
         fs::copy(&path, &target)?;
     }
     entry(&root, &target)
+}
+
+// Canonical absolute path of an existing project entry (same containment as
+// read_text); used by «Скопировать путь».
+pub fn absolute_path(conn: &Connection, wd: &Path, project_id: i64, rel_path: &str) -> Result<String> {
+    let (_, path) = existing(conn, wd, project_id, rel_path)?;
+    Ok(path.display().to_string())
+}
+
+// Reveals the entry in Finder (`open -R`, macOS).
+pub fn reveal_in_finder(conn: &Connection, wd: &Path, project_id: i64, rel_path: &str) -> Result<()> {
+    let (_, path) = existing(conn, wd, project_id, rel_path)?;
+    let status = std::process::Command::new("/usr/bin/open")
+        .arg("-R")
+        .arg(&path)
+        .status()
+        .map_err(|e| AppError::Io(format!("open -R: {e}")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(AppError::Io(format!("open -R exited with {status}")))
+    }
+}
+
+// Archive suffixes understood by extract_archive, longest first so ".tar.gz"
+// wins over ".gz". The kind picks the extractor: the zip crate or the system
+// tar (which transparently unpacks gz/bz2/xz streams).
+const ARCHIVE_SUFFIXES: &[(&str, &str)] = &[
+    (".tar.gz", "tar"),
+    (".tar.bz2", "tar"),
+    (".tar.xz", "tar"),
+    (".tgz", "tar"),
+    (".tbz2", "tar"),
+    (".txz", "tar"),
+    (".zip", "zip"),
+    (".tar", "tar"),
+    (".gz", "tar"),
+    (".bz2", "tar"),
+    (".xz", "tar"),
+];
+
+// (kind, stem) for an archive-named path; None for non-archives or when the
+// stem would be empty. The stem keeps the original name's case.
+fn archive_kind(path: &Path) -> Option<(&'static str, String)> {
+    let raw = path.file_name()?.to_string_lossy().into_owned();
+    let lower = raw.to_lowercase();
+    for (suffix, kind) in ARCHIVE_SUFFIXES {
+        if let Some(stem) = lower.strip_suffix(suffix) {
+            if stem.is_empty() {
+                return None;
+            }
+            return Some((kind, raw[..stem.len()].to_owned()));
+        }
+    }
+    None
+}
+
+// Extracts a project archive into a sibling folder named after the archive
+// stem ("foo.zip" → "foo/", collision → unique_name suffix). Extraction runs
+// in a Harness/tmp staging folder first so an unsafe archive never lands in
+// the project, then the staging is moved into place.
+pub fn extract_archive(conn: &Connection, wd: &Path, project_id: i64, rel_path: &str) -> Result<FsEntry> {
+    let (root, path) = existing_for_mutation(conn, wd, project_id, rel_path)?;
+    if path.is_dir() {
+        return Err(AppError::Invalid(format!("\"{rel_path}\" is a folder")));
+    }
+    let (kind, stem) = archive_kind(&path)
+        .ok_or_else(|| AppError::Invalid(format!("\"{rel_path}\" is not a supported archive")))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| AppError::Invalid("cannot extract the project folder".into()))?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let staging = paths::harness_tmp_dir(wd).join(format!("extract-{nanos}"));
+    fs::create_dir_all(&staging)?;
+    let extracted = match kind {
+        "zip" => extract_zip_into(&path, &staging),
+        _ => extract_tar_into(&path, &staging),
+    };
+    if let Err(e) = extracted {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(e);
+    }
+    let dest = parent.join(unique_name(parent, &stem, true));
+    fs::rename(&staging, &dest)?;
+    entry(&root, &dest)
+}
+
+// Unpacks a .zip into `dest`, rejecting absolute, parent-escaping and
+// symlink entries (stricter than importer::extract_zip_safe, which skips
+// symlinks instead of refusing the archive).
+fn extract_zip_into(zip_path: &Path, dest: &Path) -> Result<()> {
+    let file = fs::File::open(zip_path)?;
+    let mut archive =
+        zip::ZipArchive::new(file).map_err(|e| AppError::Invalid(format!("not a valid zip: {e}")))?;
+    for i in 0..archive.len() {
+        let mut item = archive
+            .by_index(i)
+            .map_err(|e| AppError::Invalid(format!("broken zip entry: {e}")))?;
+        let raw = item.name().to_string();
+        if raw.starts_with('/') || raw.starts_with('\\') {
+            return Err(AppError::Invalid(format!("zip entry has an absolute path: {raw:?}")));
+        }
+        if item.is_symlink() {
+            return Err(AppError::Invalid(format!("zip entry is a symlink: {raw:?}")));
+        }
+        let rel = item
+            .enclosed_name()
+            .ok_or_else(|| AppError::Invalid(format!("zip entry has an unsafe path: {raw:?}")))?;
+        if rel.as_os_str().is_empty() {
+            continue;
+        }
+        let out = dest.join(&rel);
+        if item.is_dir() {
+            fs::create_dir_all(&out)?;
+        } else {
+            if let Some(parent) = out.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut out_file = fs::File::create(&out)?;
+            std::io::copy(&mut item, &mut out_file)?;
+        }
+    }
+    Ok(())
+}
+
+// Pre-scans the tar listing and refuses absolute or ".."-escaping entries,
+// then extracts with the system tar into `dest`.
+fn extract_tar_into(archive_path: &Path, dest: &Path) -> Result<()> {
+    let listing = std::process::Command::new("tar")
+        .arg("-tf")
+        .arg(archive_path)
+        .output()
+        .map_err(|e| AppError::Io(format!("tar: {e}")))?;
+    if !listing.status.success() {
+        let name = archive_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        return Err(AppError::Invalid(format!("\"{name}\" is not a readable tar archive")));
+    }
+    for line in String::from_utf8_lossy(&listing.stdout).lines() {
+        let entry = Path::new(line);
+        if entry.is_absolute()
+            || entry.components().any(|c| matches!(c, Component::ParentDir))
+        {
+            return Err(AppError::Invalid(format!(
+                "archive entry escapes the target: {line:?}"
+            )));
+        }
+    }
+    let out = std::process::Command::new("tar")
+        .arg("-xf")
+        .arg(archive_path)
+        .arg("-C")
+        .arg(dest)
+        .output()
+        .map_err(|e| AppError::Io(format!("tar: {e}")))?;
+    if !out.status.success() {
+        return Err(AppError::Io(format!(
+            "tar extract failed: {}",
+            String::from_utf8_lossy(&out.stderr).trim()
+        )));
+    }
+    Ok(())
 }
 
 // Moves the entry into Settings/.trash (reversible delete); returns the
@@ -503,14 +674,7 @@ pub(crate) fn unique_name(parent: &Path, name: &str, is_dir: bool) -> String {
     if !parent.join(name).exists() {
         return name.to_owned();
     }
-    let (stem, ext) = if is_dir {
-        (name.to_owned(), String::new())
-    } else {
-        match name.rfind('.') {
-            Some(i) if i > 0 => (name[..i].to_owned(), name[i..].to_owned()),
-            _ => (name.to_owned(), String::new()),
-        }
-    };
+    let (stem, ext) = split_stem(name, is_dir);
     let mut i = 0;
     loop {
         let candidate = if i == 0 {
@@ -522,6 +686,29 @@ pub(crate) fn unique_name(parent: &Path, name: &str, is_dir: bool) -> String {
             return candidate;
         }
         i += 1;
+    }
+}
+
+// macOS-style copy suffix, always present: "<stem> копия N<ext>", N = 1, 2, …
+pub(crate) fn copy_suffix_name(parent: &Path, name: &str, is_dir: bool) -> String {
+    let (stem, ext) = split_stem(name, is_dir);
+    let mut i = 1;
+    loop {
+        let candidate = format!("{stem} копия {i}{ext}");
+        if !parent.join(&candidate).exists() {
+            return candidate;
+        }
+        i += 1;
+    }
+}
+
+fn split_stem(name: &str, is_dir: bool) -> (String, String) {
+    if is_dir {
+        return (name.to_owned(), String::new());
+    }
+    match name.rfind('.') {
+        Some(i) if i > 0 => (name[..i].to_owned(), name[i..].to_owned()),
+        _ => (name.to_owned(), String::new()),
     }
 }
 
@@ -562,6 +749,49 @@ mod tests {
 
     fn root(wd: &Path) -> PathBuf {
         paths::projects_dir(wd).join("proj")
+    }
+
+    fn zip_bytes(entries: &[(&str, &str)]) -> Vec<u8> {
+        use std::io::Write as _;
+        use zip::write::FileOptions;
+        let mut w = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let opts = FileOptions::<()>::default().compression_method(zip::CompressionMethod::Stored);
+        for (name, content) in entries {
+            w.start_file(name, opts).unwrap();
+            w.write_all(content.as_bytes()).unwrap();
+        }
+        w.finish().unwrap().into_inner()
+    }
+
+    // Minimal ustar archive built by hand, so a test can carry a "../" entry
+    // that the system tar refuses to create.
+    fn tar_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (name, data) in entries {
+            let mut h = vec![0u8; 512];
+            let set = |h: &mut Vec<u8>, off: usize, val: &str| {
+                h[off..off + val.len()].copy_from_slice(val.as_bytes());
+            };
+            set(&mut h, 0, name);
+            set(&mut h, 100, "0000644\0");
+            set(&mut h, 108, "0000000\0");
+            set(&mut h, 116, "0000000\0");
+            set(&mut h, 124, &format!("{:011o}\0", data.len()));
+            set(&mut h, 136, "00000000000\0");
+            for b in h[148..156].iter_mut() {
+                *b = b' ';
+            }
+            h[156] = b'0';
+            set(&mut h, 257, "ustar\0");
+            set(&mut h, 263, "00");
+            let sum: u32 = h.iter().map(|b| *b as u32).sum();
+            set(&mut h, 148, &format!("{sum:06o}\0 "));
+            out.extend_from_slice(&h);
+            out.extend_from_slice(data);
+            out.resize(out.len() + (512 - data.len() % 512) % 512, 0);
+        }
+        out.extend_from_slice(&[0u8; 1024]);
+        out
     }
 
     #[test]
@@ -654,7 +884,7 @@ mod tests {
     }
 
     #[test]
-    fn rename_duplicate_delete_roundtrip() {
+    fn rename_copy_as_delete_roundtrip() {
         let (wd, conn, id) = setup("fs-roundtrip");
         create_file(&conn, &wd, id, "", "a.txt").unwrap();
         write_text(&conn, &wd, id, "a.txt", "one").unwrap();
@@ -664,17 +894,17 @@ mod tests {
         assert_eq!(read_text(&conn, &wd, id, "b.txt").unwrap(), "one");
         assert!(rename(&conn, &wd, id, "b.txt", "b.txt").is_ok()); // same name is a no-op
 
-        let dup = duplicate(&conn, &wd, id, "b.txt").unwrap();
-        assert_eq!(dup.rel_path, "b copy.txt");
-        assert_eq!(read_text(&conn, &wd, id, "b copy.txt").unwrap(), "one");
-        let dup2 = duplicate(&conn, &wd, id, "b.txt").unwrap();
-        assert_eq!(dup2.rel_path, "b copy 1.txt");
+        let dup = copy_as(&conn, &wd, id, "b.txt").unwrap();
+        assert_eq!(dup.rel_path, "b копия 1.txt");
+        assert_eq!(read_text(&conn, &wd, id, "b копия 1.txt").unwrap(), "one");
+        let dup2 = copy_as(&conn, &wd, id, "b.txt").unwrap();
+        assert_eq!(dup2.rel_path, "b копия 2.txt");
 
         create_folder(&conn, &wd, id, "", "d").unwrap();
         create_file(&conn, &wd, id, "d", "inner.md").unwrap();
-        let dir_dup = duplicate(&conn, &wd, id, "d").unwrap();
-        assert_eq!(dir_dup.rel_path, "d copy");
-        assert!(root(&wd).join("d copy/inner.md").is_file());
+        let dir_dup = copy_as(&conn, &wd, id, "d").unwrap();
+        assert_eq!(dir_dup.rel_path, "d копия 1");
+        assert!(root(&wd).join("d копия 1/inner.md").is_file());
 
         delete(&conn, &wd, id, "d").unwrap();
         assert!(!root(&wd).join("d").exists());
@@ -682,6 +912,132 @@ mod tests {
             delete(&conn, &wd, id, ""),
             Err(AppError::Invalid(_))
         ));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn copy_as_numbers_copies_and_keeps_extension() {
+        let (wd, conn, id) = setup("fs-copyas");
+        create_file(&conn, &wd, id, "", "report.final.md").unwrap();
+        let c1 = copy_as(&conn, &wd, id, "report.final.md").unwrap();
+        assert_eq!(c1.rel_path, "report.final копия 1.md");
+        let c2 = copy_as(&conn, &wd, id, "report.final.md").unwrap();
+        assert_eq!(c2.rel_path, "report.final копия 2.md");
+        let c3 = copy_as(&conn, &wd, id, "report.final копия 1.md").unwrap();
+        assert_eq!(c3.rel_path, "report.final копия 1 копия 1.md");
+        // a dotfile keeps its full name as the stem
+        create_file(&conn, &wd, id, "", ".hidden").unwrap();
+        let h = copy_as(&conn, &wd, id, ".hidden").unwrap();
+        assert_eq!(h.rel_path, ".hidden копия 1");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn absolute_path_is_canonical_and_contained() {
+        let (wd, conn, id) = setup("fs-abs");
+        create_folder(&conn, &wd, id, "", "sub").unwrap();
+        create_file(&conn, &wd, id, "sub", "a.txt").unwrap();
+        let abs = absolute_path(&conn, &wd, id, "sub/a.txt").unwrap();
+        assert_eq!(
+            Path::new(&abs),
+            root(&wd).join("sub/a.txt").canonicalize().unwrap()
+        );
+        for bad in ["../x", "..", "/etc/passwd", "a/../../x", "missing.txt"] {
+            assert!(
+                matches!(absolute_path(&conn, &wd, id, bad), Err(AppError::Invalid(_))),
+                "accepted: {bad:?}"
+            );
+        }
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn extract_archive_zip_into_sibling_folder_with_collision_suffix() {
+        let (wd, conn, id) = setup("fs-extract-zip");
+        fs::write(root(&wd).join("pkg.zip"), zip_bytes(&[("inner.txt", "hi"), ("sub/deep.txt", "deep")])).unwrap();
+        let out = extract_archive(&conn, &wd, id, "pkg.zip").unwrap();
+        assert_eq!(out.rel_path, "pkg");
+        assert_eq!(out.kind, "dir");
+        assert_eq!(fs::read_to_string(root(&wd).join("pkg/inner.txt")).unwrap(), "hi");
+        assert!(root(&wd).join("pkg/sub/deep.txt").is_file());
+        // collision → suffixed sibling, the first extraction stays intact
+        let again = extract_archive(&conn, &wd, id, "pkg.zip").unwrap();
+        assert_eq!(again.rel_path, "pkg copy");
+        // not an archive → rejected
+        fs::write(root(&wd).join("plain.txt"), "x").unwrap();
+        assert!(matches!(
+            extract_archive(&conn, &wd, id, "plain.txt"),
+            Err(AppError::Invalid(_))
+        ));
+        assert!(matches!(
+            extract_archive(&conn, &wd, id, "pkg"),
+            Err(AppError::Invalid(_))
+        ));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn extract_archive_rejects_unsafe_zip_entries() {
+        let (wd, conn, id) = setup("fs-extract-evil-zip");
+        fs::write(
+            root(&wd).join("evil.zip"),
+            zip_bytes(&[("ok.txt", "ok"), ("../escape.txt", "nope")]),
+        )
+        .unwrap();
+        assert!(matches!(
+            extract_archive(&conn, &wd, id, "evil.zip"),
+            Err(AppError::Invalid(_))
+        ));
+        assert!(!wd.join("escape.txt").exists());
+        assert!(!root(&wd).join("evil").exists());
+        // the staging folder is cleaned up after the refusal
+        let staging = paths::harness_tmp_dir(&wd);
+        let leftovers = fs::read_dir(&staging).map(|d| d.count()).unwrap_or(0);
+        assert_eq!(leftovers, 0);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn extract_archive_tar_gz_roundtrip() {
+        let (wd, conn, id) = setup("fs-extract-targz");
+        let src = temp_test_dir("fs-extract-targz-src");
+        fs::create_dir_all(src.join("docs")).unwrap();
+        fs::write(src.join("docs/hello.txt"), "hi").unwrap();
+        let status = std::process::Command::new("tar")
+            .arg("-czf")
+            .arg(root(&wd).join("docs.tar.gz"))
+            .arg("-C")
+            .arg(&src)
+            .arg("docs")
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let out = extract_archive(&conn, &wd, id, "docs.tar.gz").unwrap();
+        assert_eq!(out.rel_path, "docs");
+        // the archive carries a top-level "docs/" entry, contents land inside
+        // the stem folder as-is
+        assert_eq!(
+            fs::read_to_string(root(&wd).join("docs/docs/hello.txt")).unwrap(),
+            "hi"
+        );
+        fs::remove_dir_all(&wd).unwrap();
+        fs::remove_dir_all(&src).unwrap();
+    }
+
+    #[test]
+    fn extract_archive_rejects_escaping_tar_entries() {
+        let (wd, conn, id) = setup("fs-extract-evil-tar");
+        fs::write(
+            root(&wd).join("evil.tar"),
+            tar_bytes(&[("../escape.txt", b"nope".as_slice())]),
+        )
+        .unwrap();
+        assert!(matches!(
+            extract_archive(&conn, &wd, id, "evil.tar"),
+            Err(AppError::Invalid(_))
+        ));
+        assert!(!wd.join("escape.txt").exists());
+        assert!(!root(&wd).join("evil").exists());
         fs::remove_dir_all(&wd).unwrap();
     }
 

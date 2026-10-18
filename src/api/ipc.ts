@@ -36,7 +36,10 @@ import type {
    ProjectDto,
    ProjectIndexStats,
    QuickCaptureResult,
-   ScheduleDto,
+  ReindexDone,
+  ReindexProgress,
+  ReindexStatus,
+    ScheduleDto,
   SearchHit,
   SessionDto,
   SkillInfo,
@@ -158,10 +161,26 @@ export const touchProjectOpened = (id: number) =>
 export const moveProject = (id: number, position: number) =>
   invoke<void>("move_project", { id, position });
 
+// Per-project kanban column names (exactly 3); emits "projects-changed".
+export const setTaskColumns = (projectId: number, columns: string[]) =>
+  invoke<ProjectDto>("set_task_columns", { projectId, columns });
+
 export const tasksList = (projectId: number) => invoke<TaskDto[]>("tasks_list", { projectId });
 
-export const taskCreate = (projectId: number, title: string, status?: string) =>
-  invoke<TaskDto>("task_create", { projectId, title, status });
+export const taskCreate = (
+  projectId: number,
+  title: string,
+  status?: string,
+  dueDate?: string | null,
+  isPriority?: boolean,
+) =>
+  invoke<TaskDto>("task_create", {
+    projectId,
+    title,
+    status: status ?? null,
+    dueDate: dueDate ?? null,
+    isPriority: isPriority ?? null,
+  });
 
 export const taskUpdate = (id: number, patch: TaskPatch) =>
   invoke<TaskDto>("task_update", { id, patch });
@@ -223,8 +242,18 @@ export const fsCreateFile = (projectId: number, parentRel: string, name: string)
 export const fsRename = (projectId: number, relPath: string, newName: string) =>
   invoke<FsEntry>("fs_rename", { projectId, relPath, newName });
 
-export const fsDuplicate = (projectId: number, relPath: string) =>
-  invoke<FsEntry>("fs_duplicate", { projectId, relPath });
+// File context menu (fs_copy_as merged the former fs_duplicate «Дублировать»).
+export const fsCopyAs = (projectId: number, relPath: string) =>
+  invoke<FsEntry>("fs_copy_as", { projectId, relPath });
+
+export const fsAbsolutePath = (projectId: number, relPath: string) =>
+  invoke<string>("fs_absolute_path", { projectId, relPath });
+
+export const fsRevealInFinder = (projectId: number, relPath: string) =>
+  invoke<void>("fs_reveal_in_finder", { projectId, relPath });
+
+export const fsExtractArchive = (projectId: number, relPath: string) =>
+  invoke<FsEntry>("fs_extract_archive", { projectId, relPath });
 
 export const fsDelete = (projectId: number, relPath: string) =>
   invoke<void>("fs_delete", { projectId, relPath });
@@ -286,6 +315,9 @@ export const notesCreate = (rel: string, content?: string) =>
 
 export const notesRename = (rel: string, newName: string) =>
   invoke<FsEntry>("notes_rename", { rel, newName });
+
+export const notesMove = (fromRel: string, toDirRel: string) =>
+  invoke<FsEntry>("notes_move", { fromRel, toDirRel });
 
 export const notesDelete = (rel: string) => invoke<void>("notes_delete", { rel });
 
@@ -374,6 +406,13 @@ export const chatAttachmentOpen = (chatId: number, messageId: number, index: num
   invoke<void>("chat_attachment_open", { chatId, messageId, index });
 
 export const reindexAll = () => invoke<ProjectIndexStats[]>("reindex_all");
+
+// Search reindex («Переиндексация поиска»): manual start (no-op while a pass
+// runs) and read-only status; the same pass also fires automatically every
+// 5 minutes. Progress arrives as "reindex-progress" / "reindex-done".
+export const reindexStart = () => invoke<ReindexStatus>("reindex_start");
+
+export const reindexStatus = () => invoke<ReindexStatus>("reindex_status");
 
 export const embedStatus = () => invoke<EmbedStatus>("embed_status");
 
@@ -555,6 +594,14 @@ export const onConfigChanged = (handler: (payload: ConfigChanged) => void) =>
 
 export const onIndexChanged = (handler: (payload: IndexChanged) => void) =>
   listen<IndexChanged>("index-changed", (e) => handler(e.payload));
+
+// Emitted by the reindex pass after each unit (project/notes/tasks/chats/memory).
+export const onReindexProgress = (handler: (payload: ReindexProgress) => void) =>
+  listen<ReindexProgress>("reindex-progress", (e) => handler(e.payload));
+
+// Emitted once when a reindex pass finishes.
+export const onReindexDone = (handler: (payload: ReindexDone) => void) =>
+  listen<ReindexDone>("reindex-done", (e) => handler(e.payload));
 
 export const onAgentEvent = (handler: (payload: AgentEventPayload) => void) =>
   listen<AgentEventPayload>("agent-event", (e) => handler(e.payload));

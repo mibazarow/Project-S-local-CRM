@@ -1,4 +1,4 @@
-import type { DragEvent } from "react";
+import type { DragEvent, MouseEvent } from "react";
 import type { FsEntry } from "../../api/types";
 import RenameInput from "./RenameInput";
 import {
@@ -8,7 +8,6 @@ import {
   IconCopy,
   IconOpenWith,
   IconPencil,
-  IconToNote,
   IconTrash,
 } from "./icons";
 
@@ -24,16 +23,16 @@ interface Props {
   onStartRename: (entry: FsEntry) => void;
   onRename: (entry: FsEntry, newName: string) => void;
   onRenameCancel: () => void;
-  onDuplicate: (entry: FsEntry) => void;
+  onCopyAs: (entry: FsEntry) => void;
   onDelete: (entry: FsEntry) => void;
   onDragStart: (entry: FsEntry) => void;
   onDragEnd: () => void;
   onDirDragOver: (dirRel: string, e: DragEvent<HTMLDivElement>) => void;
   onDirDrop: (dirRel: string, e: DragEvent<HTMLDivElement>) => void;
+  onContextMenu: (entry: FsEntry, e: MouseEvent<HTMLDivElement>) => void;
   onOpenExternal?: (entry: FsEntry) => void;
   onOpenWith?: (entry: FsEntry) => void;
   onAskAgent?: (entry: FsEntry) => void;
-  onToNote?: (entry: FsEntry) => void;
 }
 
 export default function FileRow({
@@ -48,16 +47,16 @@ export default function FileRow({
   onStartRename,
   onRename,
   onRenameCancel,
-  onDuplicate,
+  onCopyAs,
   onDelete,
   onDragStart,
   onDragEnd,
   onDirDragOver,
   onDirDrop,
+  onContextMenu,
   onOpenExternal,
   onOpenWith,
   onAskAgent,
-  onToNote,
 }: Props) {
   const isDir = entry.kind === "dir";
   const classes = [
@@ -103,6 +102,13 @@ export default function FileRow({
         if (isDir) onToggle(entry);
         onSelect(entry);
       }}
+      onContextMenu={(e) => {
+        if (renaming) return;
+        // Right-click must not select/open or start a drag: the menu owns it.
+        e.preventDefault();
+        e.stopPropagation();
+        onContextMenu(entry, e);
+      }}
       onDoubleClick={() => {
         if (isDir) return;
         // PDFs preview inline now: double-click opens the preview like single click.
@@ -141,18 +147,6 @@ export default function FileRow({
             <IconAskAgent />
           </button>
         )}
-        {onToNote && (
-          <button
-            className="mini-btn"
-            title="В заметку"
-            onClick={(e) => {
-              e.stopPropagation();
-              onToNote(entry);
-            }}
-          >
-            <IconToNote />
-          </button>
-        )}
         {onOpenWith && (
           <button
             className="mini-btn"
@@ -177,10 +171,10 @@ export default function FileRow({
         </button>
         <button
           className="mini-btn"
-          title="Дублировать"
+          title="Скопировать"
           onClick={(e) => {
             e.stopPropagation();
-            onDuplicate(entry);
+            onCopyAs(entry);
           }}
         >
           <IconCopy />

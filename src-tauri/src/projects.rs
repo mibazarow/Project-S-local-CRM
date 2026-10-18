@@ -17,10 +17,53 @@ pub struct ProjectDto {
     pub file_count: i64,
     pub task_count: i64,
     pub overdue_count: i64,
+    pub task_columns: [String; 3],
 }
 
 const TASK_COUNT_SQL: &str = "SELECT count(*) FROM tasks WHERE project_id = ?1";
 const OVERDUE_SQL: &str = "SELECT count(*) FROM tasks WHERE project_id = ?1 AND status != 'done' AND due_date IS NOT NULL AND due_date < date('now','localtime')";
+
+// Per-project kanban column names (v31): a JSON array of exactly 3 strings.
+pub const DEFAULT_TASK_COLUMNS: [&str; 3] = ["Новые", "В работе", "Готово"];
+pub const MAX_TASK_COLUMN_NAME_CHARS: usize = 40;
+
+fn parse_task_columns(raw: &str) -> [String; 3] {
+    serde_json::from_str::<Vec<String>>(raw)
+        .ok()
+        .filter(|v| v.len() == 3)
+        .map(|v| [v[0].clone(), v[1].clone(), v[2].clone()])
+        .unwrap_or_else(|| DEFAULT_TASK_COLUMNS.map(str::to_owned))
+}
+
+// Kanban column names: exactly 3, trimmed, non-empty, capped so a column
+// header stays one line in the UI.
+pub fn set_task_columns(conn: &Connection, id: i64, columns: Vec<String>) -> Result<ProjectDto> {
+    if columns.len() != 3 {
+        return Err(AppError::Invalid(format!(
+            "task columns must be exactly 3 names, got {}",
+            columns.len()
+        )));
+    }
+    let cleaned: Vec<String> = columns.iter().map(|c| c.trim().to_owned()).collect();
+    for name in &cleaned {
+        if name.is_empty() {
+            return Err(AppError::Invalid("task column name is empty".into()));
+        }
+        if name.chars().count() > MAX_TASK_COLUMN_NAME_CHARS {
+            return Err(AppError::Invalid(format!(
+                "task column name is limited to {MAX_TASK_COLUMN_NAME_CHARS} characters"
+            )));
+        }
+    }
+    let updated = conn.execute(
+        "UPDATE projects SET task_columns = ?1 WHERE id = ?2",
+        params![serde_json::to_string(&cleaned)?, id],
+    )?;
+    if updated != 1 {
+        return Err(AppError::Invalid(format!("project {id} not found")));
+    }
+    dto(conn, id)
+}
 
 // Project names double as folder names, so keep them filesystem-safe.
 pub fn sanitize_project_name(raw: &str) -> Result<String> {
@@ -156,10 +199,17 @@ pub fn get_project(conn: &Connection, id: i64) -> Result<ProjectDto> {    let ex
 }
 
 fn dto(conn: &Connection, id: i64) -> Result<ProjectDto> {
-    let (name, path, created_at, opened_at, position) = conn.query_row(
-        "SELECT name, path, created_at, opened_at, position FROM projects WHERE id = ?1",
+    let (name, path, created_at, opened_at, position, task_columns) = conn.query_row(
+        "SELECT name, path, created_at, opened_at, position, task_columns FROM projects WHERE id = ?1",
         params![id],
-        |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, f64>(4)?)),
+        |r| Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, Option<String>>(3)?,
+            r.get::<_, f64>(4)?,
+            r.get::<_, String>(5)?,
+        )),
     )?;
     let task_count = conn.query_row(TASK_COUNT_SQL, params![id], |r| r.get(0))?;
     let overdue_count = conn.query_row(OVERDUE_SQL, params![id], |r| r.get(0))?;
@@ -173,6 +223,7 @@ fn dto(conn: &Connection, id: i64) -> Result<ProjectDto> {
         file_count: count_files(Path::new(&path)),
         task_count,
         overdue_count,
+        task_columns: parse_task_columns(&task_columns),
     })
 }
 
@@ -372,6 +423,55 @@ mod tests {
         move_project(&conn, p2.id, last.position + 1.0).unwrap();
         assert_eq!(list_ids(&conn), vec![p1.id, p3.id, p2.id]);
         assert!(matches!(move_project(&conn, 999, 1.0), Err(AppError::Invalid(_))));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn task_columns_default_and_are_per_project() {
+        let (wd, conn) = setup("proj-task-columns");
+        let p1 = create_project(&conn, &wd, "p1").unwrap();
+        let p2 = create_project(&conn, &wd, "p2").unwrap();
+        assert_eq!(p1.task_columns, ["Новые", "В работе", "Готово"]);
+        assert_eq!(p2.task_columns, ["Новые", "В работе", "Готово"]);
+
+        let renamed = set_task_columns(&conn, p1.id, vec![" Backlog ".into(), "Doing".into(), "Done".into()]).unwrap();
+        assert_eq!(renamed.task_columns, ["Backlog", "Doing", "Done"]);
+        // Per project: p2 keeps the defaults, and the stored JSON is trimmed.
+        assert_eq!(list_projects(&conn).unwrap().iter().find(|p| p.id == p2.id).unwrap().task_columns,
+                   ["Новые", "В работе", "Готово"]);
+        let stored: String = conn
+            .query_row("SELECT task_columns FROM projects WHERE id = ?1", params![p1.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, "[\"Backlog\",\"Doing\",\"Done\"]");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn set_task_columns_validates_names_and_project() {
+        let (wd, conn) = setup("proj-task-columns-invalid");
+        let p = create_project(&conn, &wd, "p").unwrap();
+        for bad in [
+            vec!["Новые".into(), "В работе".into()],
+            vec!["a".into(), "b".into(), "c".into(), "d".into()],
+            vec!["Новые".into(), "  ".into(), "Готово".into()],
+            vec!["а".repeat(41), "b".into(), "c".into()],
+        ] {
+            assert!(
+                matches!(set_task_columns(&conn, p.id, bad.clone()), Err(AppError::Invalid(_))),
+                "accepted {bad:?}"
+            );
+        }
+        assert!(matches!(
+            set_task_columns(&conn, 999, vec!["a".into(), "b".into(), "c".into()]),
+            Err(AppError::Invalid(_))
+        ));
+        // A 40-char name is at the cap and accepted.
+        let ok = set_task_columns(&conn, p.id, vec!["а".repeat(40), "b".into(), "c".into()]).unwrap();
+        assert_eq!(ok.task_columns[0].chars().count(), 40);
+        // Corrupt stored JSON falls back to the defaults in the DTO.
+        conn.execute("UPDATE projects SET task_columns = '[]' WHERE id = ?1", params![p.id])
+            .unwrap();
+        assert_eq!(get_project(&conn, p.id).unwrap().task_columns, ["Новые", "В работе", "Готово"]);
         fs::remove_dir_all(&wd).unwrap();
     }
 }

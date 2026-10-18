@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry, TemplateSummary } from "../../api/types";
+import { usePointerDrag } from "../../hooks/usePointerDrag";
 import { toMessage } from "../chat/chatShared";
 import RenameInput from "../files/RenameInput";
 import {
@@ -26,6 +27,7 @@ interface Props {
   onSelect: (entry: FsEntry) => void;
   onDeleted: (rel: string) => void;
   onRenamed: (oldRel: string, entry: FsEntry) => void;
+  onMoved: (oldRel: string, entry: FsEntry) => void;
 }
 
 function joinRel(dir: string, name: string): string {
@@ -42,32 +44,55 @@ function NotesRow({
   open,
   selected,
   renaming,
+  dragging,
+  dropOver,
+  noDrop,
   onToggle,
   onSelect,
   onStartRename,
   onRename,
   onRenameCancel,
   onDelete,
+  onPointerDown,
+  consumeSuppressedClick,
 }: {
   entry: FsEntry;
   open: boolean;
   selected: boolean;
   renaming: boolean;
+  dragging: boolean;
+  dropOver: boolean;
+  noDrop: boolean;
   onToggle: (entry: FsEntry) => void;
   onSelect: (entry: FsEntry) => void;
   onStartRename: (entry: FsEntry) => void;
   onRename: (entry: FsEntry, name: string) => void;
   onRenameCancel: () => void;
   onDelete: (entry: FsEntry) => void;
+  onPointerDown: (entry: FsEntry, e: ReactPointerEvent<HTMLDivElement>) => void;
+  consumeSuppressedClick: () => boolean;
 }) {
   const isDir = entry.kind === "dir";
-  const classes = ["tree-row", isDir && open ? "open" : "", selected ? "selected" : ""]
+  const classes = [
+    "tree-row",
+    isDir && open ? "open" : "",
+    selected ? "selected" : "",
+    dragging ? "dragging" : "",
+    dropOver ? "drop-over" : "",
+    noDrop ? "no-drop" : "",
+  ]
     .filter(Boolean)
     .join(" ");
   return (
     <div
       className={classes}
+      data-drop-dir={isDir ? entry.relPath : undefined}
+      onPointerDown={(e) => {
+        if (!renaming) onPointerDown(entry, e);
+      }}
       onClick={() => {
+        // A drag must not open/toggle the row it ended on.
+        if (consumeSuppressedClick()) return;
         if (isDir) onToggle(entry);
         onSelect(entry);
       }}
@@ -125,6 +150,7 @@ export default function NotesTree({
   onSelect,
   onDeleted,
   onRenamed,
+  onMoved,
 }: Props) {
   const [childrenByDir, setChildrenByDir] = useState<Record<string, FsEntry[]>>({});
   const [openPaths, setOpenPaths] = useState<Record<string, boolean>>({});
@@ -199,6 +225,42 @@ export default function NotesTree({
       else next[entry.relPath] = true;
       return next;
     });
+
+  // Backend also rejects these moves; the UI guard only prevents the attempt.
+  const canDrop = (src: string, dest: string) =>
+    dest !== src && !dest.startsWith(`${src}/`);
+
+  const commitMove = async (fromRel: string, toDirRel: string) => {
+    try {
+      const moved = await ipc.notesMove(fromRel, toDirRel);
+      onMoved(fromRel, moved);
+    } catch (e) {
+      setError(toMessage(e));
+    }
+  };
+
+  // Pointer DnD (HTML5 DnD is unreliable in WKWebView): the drop target is the
+  // folder row under the pointer (data-drop-dir) or the tree root for "".
+  const { draggingId, dropTarget, onPointerDown, consumeSuppressedClick } = usePointerDrag<
+    string
+  >({
+    resolveTarget: (clientX, clientY, id) => {
+      const el = document
+        .elementFromPoint(clientX, clientY)
+        ?.closest<HTMLElement>("[data-drop-dir]");
+      const container = el?.dataset.dropDir;
+      if (container === undefined) return null;
+      return { container, index: 0, draggingId: id };
+    },
+    onDrop: (id, target) => {
+      const dest = target.container;
+      if (!canDrop(id, dest)) return;
+      const slash = id.lastIndexOf("/");
+      const parent = slash === -1 ? "" : id.slice(0, slash);
+      if (parent === dest) return;
+      void commitMove(id, dest);
+    },
+  });
 
   const commitRename = async (entry: FsEntry, newName: string) => {
     setRenamingPath(null);
@@ -279,6 +341,11 @@ export default function NotesTree({
           open={open}
           selected={selectedRelPath === entry.relPath}
           renaming={renamingPath === entry.relPath}
+          dragging={draggingId === entry.relPath}
+          dropOver={!!dropTarget && dropTarget.container === entry.relPath}
+          noDrop={
+            !!dropTarget && dropTarget.container === entry.relPath && !canDrop(draggingId ?? "", entry.relPath)
+          }
           onToggle={toggle}
           onSelect={onSelect}
           onStartRename={(e) => {
@@ -288,6 +355,8 @@ export default function NotesTree({
           onRename={(e, name) => void commitRename(e, name)}
           onRenameCancel={() => setRenamingPath(null)}
           onDelete={(e) => void confirmDelete(e)}
+          onPointerDown={(e, ev) => onPointerDown(ev, e.relPath)}
+          consumeSuppressedClick={consumeSuppressedClick}
         />
         {entry.kind === "dir" && open && (
           <ul className="tree-children nested">
@@ -316,8 +385,7 @@ export default function NotesTree({
 
   return (
     <>
-      <div className="tree-toolbar notes-toolbar">
-        <button className="ghost-btn" onClick={() => startCreate("file")}>
+      <div className="tree-toolbar notes-toolbar">        <button className="ghost-btn" onClick={() => startCreate("file")}>
           <IconFilePlus />
           Новая заметка
         </button>
@@ -342,7 +410,12 @@ export default function NotesTree({
         )}
       </div>
       {error && <div className="tree-error">{error}</div>}
-      <div className="notes-tree">{body}</div>
+      <div
+        className={dropTarget?.container === "" ? "notes-tree drop-over" : "notes-tree"}
+        data-drop-dir=""
+      >
+        {body}
+      </div>
     </>
   );
 }

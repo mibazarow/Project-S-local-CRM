@@ -1,8 +1,6 @@
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { useApp } from "../../state/AppStore";
-import { toast } from "./toast";
-import { toMessage } from "../files/fileOps";
 
 // Shared helpers for the cross-entity quick actions that connect files,
 // tasks, chat messages and the project agent chat.
@@ -44,21 +42,8 @@ export async function createNote(name: string, content: string): Promise<string>
   return rel;
 }
 
-// Text/markdown project file -> Notes/ note named after the file's basename.
-// The new note is linked to its source file in the background (links slice).
-export async function fileToNote(projectId: number, entry: FsEntry): Promise<string> {
-  const content = await ipc.fsReadText(projectId, entry.relPath);
-  const dot = entry.name.lastIndexOf(".");
-  const stem = dot > 0 ? entry.name.slice(0, dot) : entry.name;
-  const rel = await createNote(`${stem}.md`, content);
-  void ipc.linkCreate("file", `${projectId}:${entry.relPath}`, "note", rel).catch(() => {});
-  return rel;
-}
-
-// Hover quick actions for project files (tree rows, grid tiles, preview head):
-// «Спросить агента» routes a prebuilt question to the project chat; «В заметку»
-// copies text/markdown files into the Notes vault, and for non-text documents
-// asks the agent to extract and summarize them instead.
+// Hover quick action for project files (tree rows, grid tiles, preview head):
+// «Спросить агента» routes a prebuilt question to the project chat.
 export function useFileCrossActions(projectId: number) {
   const { actions } = useApp();
   const askAgent = (entry: FsEntry) =>
@@ -66,17 +51,5 @@ export function useFileCrossActions(projectId: number) {
       projectId,
       `Посмотри файл «${entry.relPath}» и коротко расскажи, что в нём.`,
     );
-  const toNote = (entry: FsEntry) => {
-    if (entry.isText || entry.isMarkdown) {
-      void fileToNote(projectId, entry)
-        .then((rel) => toast("ok", `Заметка «${rel}» создана`))
-        .catch((e) => toast("err", toMessage(e)));
-    } else {
-      actions.requestAskAgent(
-        projectId,
-        `Сделай заметку из файла «${entry.relPath}»: извлеки текст и оформи краткий конспект.`,
-      );
-    }
-  };
-  return { askAgent, toNote };
+  return { askAgent };
 }

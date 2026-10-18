@@ -5,24 +5,28 @@ import type { PointerEvent as ReactPointerEvent } from "react";
 // The hook owns the drag lifecycle and the floating ghost; the consumer
 // resolves the drop target from pointer coordinates and commits the move.
 
-export interface DropTarget {
-  // Which list/column the pointer is over (e.g. "list" or a task status).
+export interface DropTarget<IdT = number> {
+  // Which list/column/folder the pointer is over (e.g. "list", a task status,
+  // or a notes folder rel-path).
   container: string;
   // Insertion index among the non-dragged items of that container.
   index: number;
+  // The dragged item id, so the consumer can reject self/descendant drops.
+  draggingId: IdT;
 }
 
-interface Options {
-  resolveTarget: (clientX: number, clientY: number, draggingId: number) => DropTarget | null;
-  onDrop: (draggingId: number, target: DropTarget) => void;
+interface Options<IdT> {
+  resolveTarget: (clientX: number, clientY: number, draggingId: IdT) => DropTarget<IdT> | null;
+  onDrop: (draggingId: IdT, target: DropTarget<IdT>) => void;
 }
 
 const DRAG_THRESHOLD_PX = 5;
-const GHOST_ROTATE_DEG = 10;
+// Shared ghost tilt for every pointer drag (projects, kanban, notes).
+export const GHOST_ROTATE_DEG = 4;
 
-export function usePointerDrag({ resolveTarget, onDrop }: Options) {
-  const [draggingId, setDraggingId] = useState<number | null>(null);
-  const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
+export function usePointerDrag<IdT>({ resolveTarget, onDrop }: Options<IdT>) {
+  const [draggingId, setDraggingId] = useState<IdT | null>(null);
+  const [dropTarget, setDropTarget] = useState<DropTarget<IdT> | null>(null);
 
   const resolveRef = useRef(resolveTarget);
   const onDropRef = useRef(onDrop);
@@ -48,7 +52,7 @@ export function usePointerDrag({ resolveTarget, onDrop }: Options) {
     return suppressed;
   }, []);
 
-  const onPointerDown = useCallback((e: ReactPointerEvent<HTMLElement>, id: number) => {
+  const onPointerDown = useCallback((e: ReactPointerEvent<HTMLElement>, id: IdT) => {
     if (e.button !== 0 || abortRef.current) return;
     const origin = e.target as HTMLElement;
     if (origin.closest("button, input, textarea, select, [contenteditable]")) return;
@@ -89,9 +93,13 @@ export function usePointerDrag({ resolveTarget, onDrop }: Options) {
       if (ghost) {
         ghost.style.transform = `translate3d(${ev.clientX - grabX}px, ${ev.clientY - grabY}px, 0) rotate(${GHOST_ROTATE_DEG}deg)`;
       }
-      const next = resolveRef.current(ev.clientX, ev.clientY, id);
+      const next: DropTarget<IdT> | null = resolveRef.current(ev.clientX, ev.clientY, id);
       setDropTarget((prev) =>
-        prev?.container === next?.container && prev?.index === next?.index ? prev : next,
+        prev?.container === next?.container &&
+        prev?.index === next?.index &&
+        prev?.draggingId === next?.draggingId
+          ? prev
+          : next,
       );
     };
 

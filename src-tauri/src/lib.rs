@@ -29,6 +29,7 @@ mod projects;
 mod reliability;
 mod scheduler;
 mod search;
+mod search_reindex;
 mod skills;
 mod state;
 mod tasks;
@@ -209,6 +210,7 @@ fn choose_working_dir(
     let _ = index::index_notes(&wd);
     *state.mcp.lock().unwrap() = mcp::McpRegistry::start(&wd);
     scheduler::start(app.clone());
+    search_reindex::start_timer(app.clone());
     spawn_auto_backup(&wd);
     Ok(info)
 }
@@ -331,6 +333,19 @@ fn move_project(app: AppHandle, state: State<AppState>, id: i64, position: f64) 
     Ok(())
 }
 
+// Per-project kanban column names (exactly 3, trimmed, max 40 chars each).
+#[tauri::command]
+fn set_task_columns(
+    app: AppHandle,
+    state: State<AppState>,
+    project_id: i64,
+    columns: Vec<String>,
+) -> Result<ProjectDto> {
+    let dto = with_db(&state, |conn| projects::set_task_columns(conn, project_id, columns))?;
+    emit_projects_changed(&app);
+    Ok(dto)
+}
+
 #[tauri::command]
 fn tasks_list(state: State<AppState>, project_id: i64) -> Result<Vec<TaskDto>> {
     with_db(&state, |conn| tasks::tasks_list(conn, project_id))
@@ -411,7 +426,8 @@ fn task_create(
     project_id: i64,
     title: String,
     status: Option<String>,
-    priority: Option<String>,
+    due_date: Option<String>,
+    is_priority: Option<bool>,
     checklist: Option<Vec<tasks::ChecklistItem>>,
     recurrence: Option<String>,
 ) -> Result<TaskDto> {
@@ -422,7 +438,8 @@ fn task_create(
             project_id,
             &title,
             status,
-            priority,
+            due_date,
+            is_priority,
             checklist,
             recurrence,
         )?;
@@ -635,14 +652,39 @@ fn fs_rename(
 }
 
 #[tauri::command]
-fn fs_duplicate(
+fn fs_copy_as(
     app: AppHandle,
     state: State<AppState>,
     project_id: i64,
     rel_path: String,
 ) -> Result<FsEntry> {
     let wd = state.working_dir()?;
-    let item = with_db(&state, |conn| fs_ops::duplicate(conn, &wd, project_id, &rel_path))?;
+    let item = with_db(&state, |conn| fs_ops::copy_as(conn, &wd, project_id, &rel_path))?;
+    emit_fs_changed(&app, project_id, item.rel_path.clone());
+    Ok(item)
+}
+
+#[tauri::command]
+fn fs_absolute_path(state: State<AppState>, project_id: i64, rel_path: String) -> Result<String> {
+    let wd = state.working_dir()?;
+    with_db(&state, |conn| fs_ops::absolute_path(conn, &wd, project_id, &rel_path))
+}
+
+#[tauri::command]
+fn fs_reveal_in_finder(state: State<AppState>, project_id: i64, rel_path: String) -> Result<()> {
+    let wd = state.working_dir()?;
+    with_db(&state, |conn| fs_ops::reveal_in_finder(conn, &wd, project_id, &rel_path))
+}
+
+#[tauri::command]
+fn fs_extract_archive(
+    app: AppHandle,
+    state: State<AppState>,
+    project_id: i64,
+    rel_path: String,
+) -> Result<FsEntry> {
+    let wd = state.working_dir()?;
+    let item = with_db(&state, |conn| fs_ops::extract_archive(conn, &wd, project_id, &rel_path))?;
     emit_fs_changed(&app, project_id, item.rel_path.clone());
     Ok(item)
 }
@@ -1092,7 +1134,8 @@ fn quick_capture(
                     pid,
                     &title,
                     Some("new".into()),
-                    Some("normal".into()),
+                    None,
+                    None,
                     None,
                     None,
                 )?;
@@ -1434,6 +1477,21 @@ fn reindex_all(app: AppHandle, state: State<AppState>) -> Result<Vec<ProjectInde
 #[tauri::command]
 fn index_status(state: State<AppState>, project_id: i64) -> Result<index::IndexStatus> {
     index::index_status(&state, project_id)
+}
+
+// Search reindex («Переиндексация поиска»): manual start from the top bar;
+// the pass runs on its own thread and reports via "reindex-progress" /
+// "reindex-done". The same pass also fires automatically every 5 minutes
+// (background tick started in setup / choose_working_dir).
+#[tauri::command]
+fn reindex_start(app: AppHandle, state: State<AppState>) -> Result<search_reindex::ReindexStatus> {
+    let wd = state.working_dir()?;
+    Ok(search_reindex::global().start(wd, Arc::new(app)))
+}
+
+#[tauri::command]
+fn reindex_status() -> search_reindex::ReindexStatus {
+    search_reindex::global().status()
 }
 
 #[tauri::command]
@@ -2317,6 +2375,7 @@ pub fn run() {
                 let _ = index::index_notes(&wd);
                 *state.mcp.lock().unwrap() = mcp::McpRegistry::start(&wd);
                 scheduler::start(app.handle().clone());
+                search_reindex::start_timer(app.handle().clone());
                 spawn_auto_backup(&wd);
             }
             // Quick capture entry points: menu-bar item + global shortcut.
@@ -2341,6 +2400,7 @@ pub fn run() {
             project_brief,
             refresh_project_brief,
             move_project,
+            set_task_columns,
             tasks_list,
             task_create,
             task_update,
@@ -2359,7 +2419,10 @@ pub fn run() {
             fs_create_folder,
             fs_create_file,
             fs_rename,
-            fs_duplicate,
+            fs_copy_as,
+            fs_absolute_path,
+            fs_reveal_in_finder,
+            fs_extract_archive,
             fs_delete,
             fs_move,
             fs_import,
@@ -2407,6 +2470,8 @@ pub fn run() {
             index_project,
             reindex_all,
             index_status,
+            reindex_start,
+            reindex_status,
             embed_status,
             download_embed_model,
             semantic_search,

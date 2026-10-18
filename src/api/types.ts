@@ -20,6 +20,9 @@ export interface ProjectDto {
   fileCount: number;
   taskCount: number;
   overdueCount: number;
+  // Per-project kanban column labels, always exactly 3 (projects.rs
+  // task_columns); renaming one column replaces the whole triple.
+  taskColumns: string[];
 }
 
 export interface FsEntry {
@@ -60,12 +63,11 @@ export interface TaskDto {
   comment: string | null;
   dueDate: string | null;
   remindAt: string | null;
-  tags: string[];
   position: number;
   createdAt: string;
   closedAt: string | null;
   overdue: boolean;
-  priority: string;
+  isPriority: boolean;
   checklist: ChecklistItem[];
   recurrence: string;
 }
@@ -145,8 +147,7 @@ export interface TaskPatch {
   comment?: string | null;
   dueDate?: string | null;
   remindAt?: string | null;
-  tags?: string[];
-  priority?: string;
+  isPriority?: boolean;
   checklist?: ChecklistItem[];
   recurrence?: string;
 }
@@ -565,4 +566,29 @@ export interface ScheduleDto {
   timezone: string | null;
   error: string | null;
   title: string | null;
+}
+
+// search_reindex::ReindexStatus — result of reindex_start / reindex_status.
+// nextRunAt/lastRunAt are epoch milliseconds; nextRunAt is the auto-reindex
+// countdown target (0 until armed).
+export interface ReindexStatus {
+  running: boolean;
+  done: number;
+  total: number;
+  phase: string;
+  nextRunAt: number;
+  lastRunAt: number | null;
+}
+
+// "reindex-progress" event payload: emitted after each unit of a pass.
+export interface ReindexProgress {
+  done: number;
+  total: number;
+  phase: string;
+}
+
+// "reindex-done" event payload: emitted once a pass finishes.
+export interface ReindexDone {
+  done: number;
+  total: number;
 }

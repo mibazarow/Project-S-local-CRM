@@ -155,6 +155,7 @@ mod tests {
             file_count: 0,
             task_count: 0,
             overdue_count: 0,
+            task_columns: crate::projects::DEFAULT_TASK_COLUMNS.map(str::to_owned),
         }
     }
 

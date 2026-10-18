@@ -16,13 +16,6 @@ import {
 
 type Mode = "title" | "comment" | "due" | "details" | null;
 
-const PRIORITIES = [
-  { value: "low", label: "низкий" },
-  { value: "normal", label: "обычный" },
-  { value: "high", label: "высокий" },
-  { value: "urgent", label: "срочный" },
-];
-
 const RECURRENCES = [
   { value: "none", label: "нет" },
   { value: "daily", label: "ежедневно" },
@@ -160,7 +153,6 @@ function TaskDetails({
   onCancel: () => void;
 }) {
   const [newItem, setNewItem] = useState("");
-  const [tagsDraft, setTagsDraft] = useState(task.tags.join(", "));
 
   const setChecklist = (items: ChecklistItem[]) => onPatch({ checklist: items });
 
@@ -169,11 +161,6 @@ function TaskDetails({
     if (!text) return;
     setNewItem("");
     setChecklist([...task.checklist, { text, done: false }]);
-  };
-
-  const commitTags = () => {
-    const tags = tagsDraft.split(",").map((t) => t.trim()).filter(Boolean);
-    if (tags.join("\u0000") !== task.tags.join("\u0000")) onPatch({ tags });
   };
 
   const onKey = (e: KeyboardEvent) => {
@@ -187,18 +174,13 @@ function TaskDetails({
       onKeyDown={onKey}
     >
       <div className="td-row">
-        <label>
-          Приоритет
-          <select
-            value={task.priority}
-            onChange={(e) => onPatch({ priority: e.target.value })}
-          >
-            {PRIORITIES.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
-              </option>
-            ))}
-          </select>
+        <label className="tf-check td-priority">
+          <input
+            type="checkbox"
+            checked={task.isPriority}
+            onChange={(e) => onPatch({ isPriority: e.target.checked })}
+          />
+          Приоритетная
         </label>
         <label>
           Повтор
@@ -254,19 +236,6 @@ function TaskDetails({
           </button>
         </div>
       </div>
-      <input
-        className="rename-input td-tags"
-        placeholder="Теги через запятую…"
-        value={tagsDraft}
-        onChange={(e) => setTagsDraft(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            e.preventDefault();
-            commitTags();
-          }
-        }}
-        onBlur={commitTags}
-      />
     </div>
   );
 }
@@ -287,7 +256,8 @@ export default function TaskCard({
     if (highlight) cardRef.current?.scrollIntoView({ block: "center" });
   }, [highlight]);
 
-  const classes = ["task-card", `prio-${task.priority}`];
+  const classes = ["task-card"];
+  if (task.isPriority) classes.push("priority");
   if (task.status === "done") classes.push("done");
   if (task.overdue) classes.push("overdue");
   if (dragging) classes.push("dragging");
@@ -383,15 +353,6 @@ export default function TaskCard({
       {mode === "details" && (
         <TaskDetails task={task} onPatch={onPatch} onCancel={() => setMode(null)} />
       )}
-      {task.tags.length > 0 && (
-        <div className="tags">
-          {task.tags.map((tag) => (
-            <span key={tag} className="tag">
-              {tag}
-            </span>
-          ))}
-        </div>
-      )}
       <span className="task-actions">
         {onDiscuss && (
           <button
@@ -437,7 +398,7 @@ export default function TaskCard({
         </button>
         <button
           className="mini-btn"
-          title="Приоритет, повтор, чек-лист, теги"
+          title="Приоритет, повтор, чек-лист"
           onClick={(e) => {
             e.stopPropagation();
             setMode("details");

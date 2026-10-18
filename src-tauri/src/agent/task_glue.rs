@@ -49,7 +49,6 @@ pub(crate) fn parse_task_patch(args: &Value) -> std::result::Result<tasks::TaskP
 // --- shared JSON schemas ----------------------------------------------------
 
 const STATUS_ENUM: [&str; 3] = ["new", "progress", "done"];
-const PRIORITY_ENUM: [&str; 4] = ["low", "normal", "high", "urgent"];
 const RECURRENCE_ENUM: [&str; 4] = ["none", "daily", "weekly", "monthly"];
 
 fn object_schema(props: Map<String, Value>, required: &[&str]) -> Value {
@@ -108,10 +107,8 @@ pub(crate) fn create_schema(with_selector: bool) -> Value {
         "status".to_owned(),
         json!({ "type": "string", "enum": STATUS_ENUM }),
     );
-    props.insert(
-        "priority".to_owned(),
-        json!({ "type": "string", "enum": PRIORITY_ENUM }),
-    );
+    props.insert("dueDate".to_owned(), json!({ "type": "string" }));
+    props.insert("isPriority".to_owned(), json!({ "type": "boolean" }));
     props.insert(
         "recurrence".to_owned(),
         json!({ "type": "string", "enum": RECURRENCE_ENUM }),
@@ -134,14 +131,7 @@ pub(crate) fn update_schema() -> Value {
     props.insert("comment".to_owned(), json!({ "type": ["string", "null"] }));
     props.insert("dueDate".to_owned(), json!({ "type": ["string", "null"] }));
     props.insert("remindAt".to_owned(), json!({ "type": ["string", "null"] }));
-    props.insert(
-        "tags".to_owned(),
-        json!({ "type": "array", "items": { "type": "string" } }),
-    );
-    props.insert(
-        "priority".to_owned(),
-        json!({ "type": "string", "enum": PRIORITY_ENUM }),
-    );
+    props.insert("isPriority".to_owned(), json!({ "type": "boolean" }));
     props.insert(
         "recurrence".to_owned(),
         json!({ "type": "string", "enum": RECURRENCE_ENUM }),
@@ -191,9 +181,10 @@ pub(crate) fn task_create_body(
 ) -> Result<tasks::TaskDto> {
     let title = args["title"].as_str().unwrap_or_default();
     let status = args.get("status").and_then(Value::as_str).map(str::to_owned);
-    let priority = args.get("priority").and_then(Value::as_str).map(str::to_owned);
+    let due_date = args.get("dueDate").and_then(Value::as_str).map(str::to_owned);
+    let is_priority = args.get("isPriority").and_then(Value::as_bool);
     let recurrence = args.get("recurrence").and_then(Value::as_str).map(str::to_owned);
-    let dto = tasks::task_create_with(conn, pid, title, status, priority, checklist, recurrence)?;
+    let dto = tasks::task_create_with(conn, pid, title, status, due_date, is_priority, checklist, recurrence)?;
     let _ = undo::push_task_create(conn, dto.id, pid);
     Ok(dto)
 }
@@ -366,7 +357,8 @@ mod tests {
                 "properties": {
                     "title": { "type": "string" },
                     "status": { "type": "string", "enum": ["new", "progress", "done"] },
-                    "priority": { "type": "string", "enum": ["low", "normal", "high", "urgent"] },
+                    "dueDate": { "type": "string" },
+                    "isPriority": { "type": "boolean" },
                     "recurrence": { "type": "string", "enum": ["none", "daily", "weekly", "monthly"] },
                     "checklist": {
                         "type": "array",
@@ -400,8 +392,7 @@ mod tests {
                     "comment": { "type": ["string", "null"] },
                     "dueDate": { "type": ["string", "null"] },
                     "remindAt": { "type": ["string", "null"] },
-                    "tags": { "type": "array", "items": { "type": "string" } },
-                    "priority": { "type": "string", "enum": ["low", "normal", "high", "urgent"] },
+                    "isPriority": { "type": "boolean" },
                     "recurrence": { "type": "string", "enum": ["none", "daily", "weekly", "monthly"] },
                     "checklist": {
                         "type": "array",

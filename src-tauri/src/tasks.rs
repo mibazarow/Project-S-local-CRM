@@ -3,7 +3,6 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 pub const STATUSES: [&str; 3] = ["new", "progress", "done"];
-pub const PRIORITIES: [&str; 4] = ["low", "normal", "high", "urgent"];
 pub const RECURRENCES: [&str; 4] = ["none", "daily", "weekly", "monthly"];
 pub const MAX_CHECKLIST_ITEMS: usize = 100;
 
@@ -28,12 +27,11 @@ pub struct TaskDto {
     pub comment: Option<String>,
     pub due_date: Option<String>,
     pub remind_at: Option<String>,
-    pub tags: Vec<String>,
     pub position: f64,
     pub created_at: String,
     pub closed_at: Option<String>,
     pub overdue: bool,
-    pub priority: String,
+    pub is_priority: bool,
     pub checklist: Vec<ChecklistItem>,
     pub recurrence: String,
 }
@@ -51,8 +49,8 @@ mod opt_opt_str {
 }
 
 // Absent field leaves the value unchanged; explicit null clears it.
-// priority/checklist/recurrence are NOT NULL columns: like tags, an explicit
-// null is indistinguishable from absent and keeps the current value.
+// is_priority/checklist/recurrence are NOT NULL columns: an explicit null is
+// indistinguishable from absent and keeps the current value.
 #[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct TaskPatch {
@@ -63,8 +61,7 @@ pub struct TaskPatch {
     pub due_date: Option<Option<String>>,
     #[serde(deserialize_with = "opt_opt_str::deserialize")]
     pub remind_at: Option<Option<String>>,
-    pub tags: Option<Vec<String>>,
-    pub priority: Option<String>,
+    pub is_priority: Option<bool>,
     pub checklist: Option<Vec<ChecklistItem>>,
     pub recurrence: Option<String>,
 }
@@ -73,8 +70,8 @@ pub fn tasks_list(conn: &Connection, project_id: i64) -> Result<Vec<TaskDto>> {
     ensure_project(conn, project_id)?;
     let today = today(conn)?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, title, status, comment, due_date, remind_at, tags, position, created_at, closed_at,
-                priority, checklist, recurrence
+        "SELECT id, title, status, comment, due_date, remind_at, position, created_at, closed_at,
+                is_priority, checklist, recurrence
          FROM tasks WHERE project_id = ?1 {ORDER_SQL}"
     ))?;
     let mut rows = stmt.query(params![project_id])?;
@@ -89,17 +86,16 @@ pub fn tasks_list(conn: &Connection, project_id: i64) -> Result<Vec<TaskDto>> {
             project_id,
             title: row.get(1)?,
             overdue,
-            tags: parse_tags(&row.get::<_, String>(6)?)?,
-            position: row.get(7)?,
-            created_at: row.get(8)?,
-            closed_at: row.get(9)?,
+            position: row.get(6)?,
+            created_at: row.get(7)?,
+            closed_at: row.get(8)?,
             comment: row.get(3)?,
             due_date,
             remind_at: row.get(5)?,
             status,
-            priority: row.get(10)?,
-            checklist: parse_checklist(&row.get::<_, String>(11)?)?,
-            recurrence: row.get(12)?,
+            is_priority: row.get::<_, i64>(9)? != 0,
+            checklist: parse_checklist(&row.get::<_, String>(10)?)?,
+            recurrence: row.get(11)?,
         });
     }
     Ok(out)
@@ -114,15 +110,17 @@ pub fn task_create(
     raw_title: &str,
     status: Option<String>,
 ) -> Result<TaskDto> {
-    task_create_with(conn, project_id, raw_title, status, None, None, None)
+    task_create_with(conn, project_id, raw_title, status, None, None, None, None)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn task_create_with(
     conn: &Connection,
     project_id: i64,
     raw_title: &str,
     status: Option<String>,
-    priority: Option<String>,
+    due_date: Option<String>,
+    is_priority: Option<bool>,
     checklist: Option<Vec<ChecklistItem>>,
     recurrence: Option<String>,
 ) -> Result<TaskDto> {
@@ -133,8 +131,14 @@ pub fn task_create_with(
     }
     let status = status.unwrap_or_else(|| "new".into());
     check_status(&status)?;
-    let priority = priority.unwrap_or_else(|| "normal".into());
-    check_priority(&priority)?;
+    let due_date = match due_date {
+        Some(d) => {
+            check_date(&d, "due_date")?;
+            Some(d)
+        }
+        None => None,
+    };
+    let is_priority = is_priority.unwrap_or(false);
     let recurrence = recurrence.unwrap_or_else(|| "none".into());
     check_recurrence(&recurrence)?;
     let checklist_json = match checklist {
@@ -147,12 +151,12 @@ pub fn task_create_with(
         |r| r.get(0),
     )?;
     conn.execute(
-        "INSERT INTO tasks (project_id, title, status, tags, position, created_at, closed_at,
-                            priority, checklist, recurrence)
-         VALUES (?1, ?2, ?3, '[]', ?4, datetime('now','localtime'),
+        "INSERT INTO tasks (project_id, title, status, due_date, position, created_at, closed_at,
+                            is_priority, checklist, recurrence)
+         VALUES (?1, ?2, ?3, ?4, ?5, datetime('now','localtime'),
                  CASE WHEN ?3 = 'done' THEN datetime('now','localtime') ELSE NULL END,
-                 ?5, ?6, ?7)",
-        params![project_id, title, status, position, priority, checklist_json, recurrence],
+                 ?6, ?7, ?8)",
+        params![project_id, title, status, due_date, position, is_priority, checklist_json, recurrence],
     )?;
     let id = conn.last_insert_rowid();
     fts_sync(conn, id)?;
@@ -160,13 +164,21 @@ pub fn task_create_with(
 }
 
 pub fn task_update(conn: &Connection, id: i64, patch: TaskPatch) -> Result<TaskDto> {
-    let (mut title, mut comment, mut due_date, mut remind_at, mut tags_json, mut priority,
+    let (mut title, mut comment, mut due_date, mut remind_at, mut is_priority,
          mut checklist_json, mut recurrence) = conn
         .query_row(
-            "SELECT title, comment, due_date, remind_at, tags, priority, checklist, recurrence
+            "SELECT title, comment, due_date, remind_at, is_priority, checklist, recurrence
              FROM tasks WHERE id = ?1",
             params![id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
+            |r| Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get::<_, i64>(4)? != 0,
+                r.get(5)?,
+                r.get(6)?,
+            )),
         )
         .map_err(|_| AppError::Invalid(format!("task {id} not found")))?;
 
@@ -195,17 +207,8 @@ pub fn task_update(conn: &Connection, id: i64, patch: TaskPatch) -> Result<TaskD
         }
         remind_at = new_remind;
     }
-    if let Some(tags) = patch.tags {
-        let cleaned: Vec<String> = tags
-            .iter()
-            .map(|t| t.trim().to_owned())
-            .filter(|t| !t.is_empty())
-            .collect();
-        tags_json = serde_json::to_string(&cleaned)?;
-    }
-    if let Some(new_priority) = patch.priority {
-        check_priority(&new_priority)?;
-        priority = new_priority;
+    if let Some(new_is_priority) = patch.is_priority {
+        is_priority = new_is_priority;
     }
     if let Some(checklist) = patch.checklist {
         checklist_json = serde_json::to_string(&normalize_checklist(checklist)?)?;
@@ -216,10 +219,10 @@ pub fn task_update(conn: &Connection, id: i64, patch: TaskPatch) -> Result<TaskD
     }
 
     conn.execute(
-        "UPDATE tasks SET title = ?1, comment = ?2, due_date = ?3, remind_at = ?4, tags = ?5,
-                        priority = ?6, checklist = ?7, recurrence = ?8
-         WHERE id = ?9",
-        params![title, comment, due_date, remind_at, tags_json, priority, checklist_json, recurrence, id],
+        "UPDATE tasks SET title = ?1, comment = ?2, due_date = ?3, remind_at = ?4,
+                        is_priority = ?5, checklist = ?6, recurrence = ?7
+         WHERE id = ?8",
+        params![title, comment, due_date, remind_at, is_priority, checklist_json, recurrence, id],
     )?;
     fts_sync(conn, id)?;
     dto(conn, id)
@@ -264,7 +267,7 @@ pub(crate) fn task_move_capture(
     Ok((dto(conn, id)?, spawned))
 }
 
-// Copies title/comment/tags/priority/recurrence and the checklist (done
+// Copies title/comment/is_priority/recurrence and the checklist (done
 // reset); due date advances daily/weekly/monthly from the current one (today
 // when unset). Monthly clamps to the end of the target month (Jan 31 +1
 // month -> Feb 28), which plain date(x,'+1 month') would overflow into March.
@@ -319,10 +322,10 @@ fn spawn_next_occurrence(
         item.done = false;
     }
     let checklist = serde_json::to_string(&items)?;
-    let (project_id, comment, tags, priority): (i64, Option<String>, String, String) = conn.query_row(
-        "SELECT project_id, comment, tags, priority FROM tasks WHERE id = ?1",
+    let (project_id, comment, is_priority): (i64, Option<String>, i64) = conn.query_row(
+        "SELECT project_id, comment, is_priority FROM tasks WHERE id = ?1",
         params![src_id],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
     let position: f64 = conn.query_row(
         "SELECT COALESCE(MAX(position), 0) + 1 FROM tasks WHERE project_id = ?1 AND status = 'new'",
@@ -330,10 +333,10 @@ fn spawn_next_occurrence(
         |r| r.get(0),
     )?;
     conn.execute(
-        "INSERT INTO tasks (project_id, title, status, comment, due_date, remind_at, tags,
-                            position, created_at, closed_at, priority, checklist, recurrence)
-         VALUES (?1, ?2, 'new', ?3, ?4, NULL, ?5, ?6, datetime('now','localtime'), NULL, ?7, ?8, ?9)",
-        params![project_id, title, comment, next_due, tags, position, priority, checklist, recurrence],
+        "INSERT INTO tasks (project_id, title, status, comment, due_date, remind_at,
+                            position, created_at, closed_at, is_priority, checklist, recurrence)
+         VALUES (?1, ?2, 'new', ?3, ?4, NULL, ?5, datetime('now','localtime'), NULL, ?6, ?7, ?8)",
+        params![project_id, title, comment, next_due, position, is_priority, checklist, recurrence],
     )?;
     let spawned_id = conn.last_insert_rowid();
     fts_sync(conn, spawned_id)?;
@@ -363,6 +366,8 @@ pub(crate) struct TaskSnapshot {
     pub(crate) checklist: String,
     #[serde(default = "default_recurrence")]
     pub(crate) recurrence: String,
+    #[serde(default)]
+    pub(crate) is_priority: bool,
 }
 
 fn default_priority() -> String {
@@ -380,7 +385,7 @@ fn default_recurrence() -> String {
 pub(crate) fn task_snapshot(conn: &Connection, id: i64) -> Result<TaskSnapshot> {
     conn.query_row(
         "SELECT id, project_id, title, status, comment, due_date, remind_at,
-                tags, position, created_at, closed_at, priority, checklist, recurrence
+                tags, position, created_at, closed_at, priority, checklist, recurrence, is_priority
          FROM tasks WHERE id = ?1",
         params![id],
         |r| {
@@ -399,6 +404,7 @@ pub(crate) fn task_snapshot(conn: &Connection, id: i64) -> Result<TaskSnapshot> 
                 priority: r.get(11)?,
                 checklist: r.get(12)?,
                 recurrence: r.get(13)?,
+                is_priority: r.get::<_, i64>(14)? != 0,
             })
         },
     )
@@ -439,8 +445,8 @@ pub(crate) fn task_restore_snapshot(conn: &Connection, snapshot: &TaskSnapshot) 
     let updated = conn.execute(
         "UPDATE tasks SET project_id = ?1, title = ?2, status = ?3, comment = ?4,
                 due_date = ?5, remind_at = ?6, tags = ?7, position = ?8, created_at = ?9,
-                closed_at = ?10, priority = ?11, checklist = ?12, recurrence = ?13
-         WHERE id = ?14",
+                closed_at = ?10, priority = ?11, checklist = ?12, recurrence = ?13, is_priority = ?14
+         WHERE id = ?15",
         params![
             snapshot.project_id,
             snapshot.title,
@@ -455,14 +461,15 @@ pub(crate) fn task_restore_snapshot(conn: &Connection, snapshot: &TaskSnapshot) 
             snapshot.priority,
             snapshot.checklist,
             snapshot.recurrence,
+            snapshot.is_priority,
             snapshot.id
         ],
     )?;
     if updated == 0 {
         conn.execute(
             "INSERT INTO tasks (id, project_id, title, status, comment, due_date, remind_at,
-                                tags, position, created_at, closed_at, priority, checklist, recurrence)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                                tags, position, created_at, closed_at, priority, checklist, recurrence, is_priority)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 snapshot.id,
                 snapshot.project_id,
@@ -477,7 +484,8 @@ pub(crate) fn task_restore_snapshot(conn: &Connection, snapshot: &TaskSnapshot) 
                 snapshot.closed_at,
                 snapshot.priority,
                 snapshot.checklist,
-                snapshot.recurrence
+                snapshot.recurrence,
+                snapshot.is_priority
             ],
         )?;
     }
@@ -501,25 +509,25 @@ pub(crate) fn task_restore_from_trash(conn: &Connection, row: &crate::reliabilit
     if taken == 0 {
         conn.execute(
             "INSERT INTO tasks (id, project_id, title, status, comment, due_date, remind_at,
-                                tags, position, created_at, closed_at, priority, checklist, recurrence)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                                tags, position, created_at, closed_at, priority, checklist, recurrence, is_priority)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 snapshot.id, snapshot.project_id, snapshot.title, snapshot.status,
                 snapshot.comment, snapshot.due_date, snapshot.remind_at, snapshot.tags,
                 snapshot.position, snapshot.created_at, snapshot.closed_at,
-                snapshot.priority, snapshot.checklist, snapshot.recurrence
+                snapshot.priority, snapshot.checklist, snapshot.recurrence, snapshot.is_priority
             ],
         )?;
     } else {
         conn.execute(
             "INSERT INTO tasks (project_id, title, status, comment, due_date, remind_at,
-                                tags, position, created_at, closed_at, priority, checklist, recurrence)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                                tags, position, created_at, closed_at, priority, checklist, recurrence, is_priority)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 snapshot.project_id, snapshot.title, snapshot.status,
                 snapshot.comment, snapshot.due_date, snapshot.remind_at, snapshot.tags,
                 snapshot.position, snapshot.created_at, snapshot.closed_at,
-                snapshot.priority, snapshot.checklist, snapshot.recurrence
+                snapshot.priority, snapshot.checklist, snapshot.recurrence, snapshot.is_priority
             ],
         )?;
     }
@@ -527,30 +535,25 @@ pub(crate) fn task_restore_from_trash(conn: &Connection, row: &crate::reliabilit
     Ok(snapshot.project_id)
 }
 
-// tasks_fts mirrors title/comment/tags keyed by task id (SPEC 4.4); search
-// joins tasks for scoping and status, so closed tasks stay findable. The
-// contentless table rejects UPDATE, so re-sync is delete-then-insert; the
-// delete also clears a rowid reused by a newer task. task_move changes only
-// status (kept in tasks, not in the mirror), so it needs no sync.
+// tasks_fts mirrors title/comment keyed by task id (SPEC 4.4); search joins
+// tasks for scoping and status, so closed tasks stay findable. The contentless
+// table rejects UPDATE, so re-sync is delete-then-insert; the delete also
+// clears a rowid reused by a newer task. task_move changes only status (kept
+// in tasks, not in the mirror), so it needs no sync. The legacy tags column of
+// the mirror is written empty: tags are no longer part of the task model.
 fn fts_sync(conn: &Connection, id: i64) -> Result<()> {
     conn.execute("DELETE FROM tasks_fts WHERE rowid = ?1", params![id])?;
     let row = conn
         .query_row(
-            "SELECT title, comment, tags FROM tasks WHERE id = ?1",
+            "SELECT title, comment FROM tasks WHERE id = ?1",
             params![id],
-            |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, String>(2)?,
-                ))
-            },
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?)),
         )
         .optional()?;
-    if let Some((title, comment, tags)) = row {
+    if let Some((title, comment)) = row {
         conn.execute(
-            "INSERT INTO tasks_fts (rowid, title, comment, tags) VALUES (?1, ?2, ?3, ?4)",
-            params![id, title, comment, tags],
+            "INSERT INTO tasks_fts (rowid, title, comment, tags) VALUES (?1, ?2, ?3, '')",
+            params![id, title, comment],
         )?;
     }
     Ok(())
@@ -559,8 +562,8 @@ fn fts_sync(conn: &Connection, id: i64) -> Result<()> {
 fn dto(conn: &Connection, id: i64) -> Result<TaskDto> {
     let today = today(conn)?;
     let mut stmt = conn.prepare(&format!(
-        "SELECT project_id, title, status, comment, due_date, remind_at, tags, position, created_at, closed_at,
-                priority, checklist, recurrence
+        "SELECT project_id, title, status, comment, due_date, remind_at, position, created_at, closed_at,
+                is_priority, checklist, recurrence
          FROM tasks WHERE id = ?1 {ORDER_SQL}"
     ))?;
     let mut rows = stmt.query(params![id])?;
@@ -576,26 +579,21 @@ fn dto(conn: &Connection, id: i64) -> Result<TaskDto> {
         project_id,
         title: row.get(1)?,
         overdue,
-        tags: parse_tags(&row.get::<_, String>(6)?)?,
-        position: row.get(7)?,
-        created_at: row.get(8)?,
-        closed_at: row.get(9)?,
+        position: row.get(6)?,
+        created_at: row.get(7)?,
+        closed_at: row.get(8)?,
         comment: row.get(3)?,
         due_date,
         remind_at: row.get(5)?,
         status,
-        priority: row.get(10)?,
-        checklist: parse_checklist(&row.get::<_, String>(11)?)?,
-        recurrence: row.get(12)?,
+        is_priority: row.get::<_, i64>(9)? != 0,
+        checklist: parse_checklist(&row.get::<_, String>(10)?)?,
+        recurrence: row.get(11)?,
     })
 }
 
 fn today(conn: &Connection) -> Result<String> {
     Ok(conn.query_row("SELECT date('now','localtime')", [], |r| r.get(0))?)
-}
-
-fn parse_tags(raw: &str) -> Result<Vec<String>> {
-    Ok(serde_json::from_str(raw).unwrap_or_default())
 }
 
 fn parse_checklist(raw: &str) -> Result<Vec<ChecklistItem>> {
@@ -617,16 +615,6 @@ fn check_status(status: &str) -> Result<()> {
     } else {
         Err(AppError::Invalid(format!(
             "unknown task status \"{status}\", expected one of {STATUSES:?}"
-        )))
-    }
-}
-
-fn check_priority(priority: &str) -> Result<()> {
-    if PRIORITIES.contains(&priority) {
-        Ok(())
-    } else {
-        Err(AppError::Invalid(format!(
-            "unknown task priority \"{priority}\", expected one of {PRIORITIES:?}"
         )))
     }
 }
@@ -746,7 +734,7 @@ mod tests {
                 comment: Some(Some("note".into())),
                 due_date: Some(Some("2099-01-02".into())),
                 remind_at: Some(Some("2099-01-02T10:30".into())),
-                tags: Some(vec![" one ".into(), "".into(), "two".into()]),
+                is_priority: Some(true),
                 ..Default::default()
             },
         )
@@ -755,7 +743,7 @@ mod tests {
         assert_eq!(updated.comment.as_deref(), Some("note"));
         assert_eq!(updated.due_date.as_deref(), Some("2099-01-02"));
         assert_eq!(updated.remind_at.as_deref(), Some("2099-01-02T10:30"));
-        assert_eq!(updated.tags, vec!["one", "two"]);
+        assert!(updated.is_priority);
 
         let moved = task_move(&conn, t1.id, "progress", 9.5).unwrap();
         assert_eq!(moved.status, "progress");
@@ -770,6 +758,32 @@ mod tests {
             task_create(&conn, 999, "x", None),
             Err(AppError::Invalid(_))
         ));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn dto_json_carries_is_priority_and_drops_tags_and_priority() {
+        let (wd, conn, pid) = setup("tasks-dto-json");
+        let t = task_create_with(
+            &conn,
+            pid,
+            "t",
+            None,
+            Some("2099-01-02".into()),
+            Some(true),
+            None,
+            None,
+        )
+        .unwrap();
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(json["isPriority"], true);
+        assert_eq!(json["dueDate"], "2099-01-02");
+        assert!(json.get("tags").is_none(), "tags must be gone from the DTO");
+        assert!(json.get("priority").is_none(), "priority must be gone from the DTO");
+        // Stale priority/tags keys an old caller may still send are ignored.
+        let patch: TaskPatch = serde_json::from_str(r#"{"priority": "urgent", "tags": ["x"]}"#).unwrap();
+        let kept = task_update(&conn, t.id, patch).unwrap();
+        assert!(kept.is_priority, "stale keys must not flip the flag");
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -794,7 +808,6 @@ mod tests {
             TaskPatch {
                 title: Some("новое слово".into()),
                 comment: Some(Some("комментарий задача".into())),
-                tags: Some(vec!["редизайн".into()]),
                 ..Default::default()
             },
         )
@@ -802,7 +815,6 @@ mod tests {
         assert_eq!(fts_count("старое"), 0, "old text must be gone after update");
         assert_eq!(fts_count("новое"), 1);
         assert_eq!(fts_count("комментарий"), 1);
-        assert_eq!(fts_count("редизайн"), 1);
 
         task_move(&conn, t.id, "done", 1.0).unwrap();
         assert_eq!(fts_count("новое"), 1, "closed tasks stay in the mirror");
@@ -877,7 +889,7 @@ mod tests {
                 comment: Some(Some("note".into())),
                 due_date: Some(Some("2099-01-02".into())),
                 remind_at: Some(Some("2099-01-02T08:00".into())),
-                tags: Some(vec!["x".into()]),
+                is_priority: Some(true),
                 ..Default::default()
             },
         )
@@ -888,7 +900,7 @@ mod tests {
         assert_eq!(kept.comment.as_deref(), Some("note"));
         assert_eq!(kept.due_date.as_deref(), Some("2099-01-02"));
         assert_eq!(kept.remind_at.as_deref(), Some("2099-01-02T08:00"));
-        assert_eq!(kept.tags, vec!["x"]);
+        assert!(kept.is_priority);
 
         let cleared: TaskPatch =
             serde_json::from_str(r#"{"comment": null, "dueDate": null, "remindAt": null}"#).unwrap();
@@ -896,7 +908,7 @@ mod tests {
         assert_eq!(cleared.comment, None);
         assert_eq!(cleared.due_date, None);
         assert_eq!(cleared.remind_at, None);
-        assert_eq!(cleared.tags, vec!["x"]);
+        assert!(cleared.is_priority);
 
         let set_again: TaskPatch = serde_json::from_str(r#"{"comment": "back"}"#).unwrap();
         assert_eq!(task_update(&conn, t.id, set_again).unwrap().comment.as_deref(), Some("back"));
@@ -944,14 +956,15 @@ mod tests {
     }
 
     #[test]
-    fn priority_checklist_recurrence_round_trip() {
+    fn is_priority_checklist_recurrence_round_trip() {
         let (wd, conn, pid) = setup("tasks-upgrade-fields");
         let t = task_create_with(
             &conn,
             pid,
             "report",
             None,
-            Some("urgent".into()),
+            Some("2099-01-02".into()),
+            Some(true),
             Some(vec![
                 ChecklistItem { text: " draft ".into(), done: true },
                 ChecklistItem { text: "send".into(), done: false },
@@ -959,7 +972,8 @@ mod tests {
             Some("weekly".into()),
         )
         .unwrap();
-        assert_eq!(t.priority, "urgent");
+        assert!(t.is_priority);
+        assert_eq!(t.due_date.as_deref(), Some("2099-01-02"));
         assert_eq!(t.recurrence, "weekly");
         assert_eq!(
             t.checklist,
@@ -968,56 +982,42 @@ mod tests {
                 ChecklistItem { text: "send".into(), done: false },
             ]
         );
-        assert_eq!(tasks_list(&conn, pid).unwrap()[0].priority, "urgent");
+        assert!(tasks_list(&conn, pid).unwrap()[0].is_priority);
 
         // camelCase JSON patch: absent fields keep values, set fields replace.
         let patched: TaskPatch = serde_json::from_str(
-            r#"{"priority": "low", "checklist": [{"text": "only", "done": true}], "recurrence": "monthly"}"#,
+            r#"{"isPriority": false, "checklist": [{"text": "only", "done": true}], "recurrence": "monthly"}"#,
         )
         .unwrap();
         let patched = task_update(&conn, t.id, patched).unwrap();
-        assert_eq!(patched.priority, "low");
+        assert!(!patched.is_priority);
         assert_eq!(patched.recurrence, "monthly");
         assert_eq!(patched.checklist, vec![ChecklistItem { text: "only".into(), done: true }]);
 
-        // Defaults on plain create; null for NOT NULL columns keeps values (like tags).
+        // Defaults on plain create; null for NOT NULL columns keeps values.
         let plain = task_create(&conn, pid, "plain", None).unwrap();
-        assert_eq!(plain.priority, "normal");
+        assert!(!plain.is_priority);
+        assert_eq!(plain.due_date, None);
         assert_eq!(plain.recurrence, "none");
         assert!(plain.checklist.is_empty());
         let kept: TaskPatch =
-            serde_json::from_str(r#"{"priority": null, "checklist": null, "recurrence": null}"#)
+            serde_json::from_str(r#"{"isPriority": null, "checklist": null, "recurrence": null}"#)
                 .unwrap();
         let kept = task_update(&conn, t.id, kept).unwrap();
-        assert_eq!((kept.priority.as_str(), kept.recurrence.as_str()), ("low", "monthly"));
+        assert!(!kept.is_priority);
+        assert_eq!(kept.recurrence.as_str(), "monthly");
         assert_eq!(kept.checklist.len(), 1);
         fs::remove_dir_all(&wd).unwrap();
     }
 
     #[test]
-    fn priority_recurrence_and_checklist_are_validated() {
+    fn recurrence_and_checklist_are_validated() {
         let (wd, conn, pid) = setup("tasks-upgrade-invalid");
         let t = task_create(&conn, pid, "t", None).unwrap();
-        for bad in ["bogus", "critical", ""] {
-            assert!(
-                matches!(
-                    task_create_with(&conn, pid, "t", None, Some(bad.into()), None, None),
-                    Err(AppError::Invalid(_))
-                ),
-                "accepted priority {bad:?}"
-            );
-            assert!(
-                matches!(
-                    task_update(&conn, t.id, TaskPatch { priority: Some(bad.into()), ..Default::default() }),
-                    Err(AppError::Invalid(_))
-                ),
-                "accepted priority {bad:?} on update"
-            );
-        }
         for bad in ["yearly", "hourly", ""] {
             assert!(
                 matches!(
-                    task_create_with(&conn, pid, "t", None, None, None, Some(bad.into())),
+                    task_create_with(&conn, pid, "t", None, None, None, None, Some(bad.into())),
                     Err(AppError::Invalid(_))
                 ),
                 "accepted recurrence {bad:?}"
@@ -1030,6 +1030,11 @@ mod tests {
                 "accepted recurrence {bad:?} on update"
             );
         }
+        // A bad due date on create is rejected before any insert.
+        assert!(matches!(
+            task_create_with(&conn, pid, "t", None, Some("2099-13-01".into()), None, None, None),
+            Err(AppError::Invalid(_))
+        ));
         let too_many = vec![ChecklistItem { text: "x".into(), done: false }; MAX_CHECKLIST_ITEMS + 1];
         assert!(matches!(
             task_update(&conn, t.id, TaskPatch { checklist: Some(too_many), ..Default::default() }),
@@ -1049,7 +1054,8 @@ mod tests {
         );
         // Failed patches must not change stored values.
         let fresh = dto(&conn, t.id).unwrap();
-        assert_eq!((fresh.priority.as_str(), fresh.recurrence.as_str()), ("normal", "none"));
+        assert_eq!(fresh.recurrence.as_str(), "none");
+        assert!(!fresh.is_priority);
         assert_eq!(fresh.checklist.len(), MAX_CHECKLIST_ITEMS);
         fs::remove_dir_all(&wd).unwrap();
     }
@@ -1062,7 +1068,8 @@ mod tests {
             pid,
             "standup",
             Some("progress".into()),
-            Some("high".into()),
+            None,
+            Some(true),
             Some(vec![ChecklistItem { text: "prep".into(), done: true }]),
             Some("daily".into()),
         )
@@ -1072,7 +1079,6 @@ mod tests {
             t.id,
             TaskPatch {
                 due_date: Some(Some("2099-01-02".into())),
-                tags: Some(vec!["ops".into()]),
                 comment: Some(Some("daily sync".into())),
                 ..Default::default()
             },
@@ -1087,16 +1093,15 @@ mod tests {
         assert_eq!(next.status, "new");
         assert_eq!(next.title, "standup");
         assert_eq!(next.due_date.as_deref(), Some("2099-01-03"));
-        assert_eq!(next.priority, "high");
+        assert!(next.is_priority, "the priority flag must be copied");
         assert_eq!(next.recurrence, "daily");
-        assert_eq!(next.tags, vec!["ops"]);
         assert_eq!(next.comment.as_deref(), Some("daily sync"));
         assert_eq!(next.checklist, vec![ChecklistItem { text: "prep".into(), done: false }]);
         assert!(next.closed_at.is_none());
         assert!(next.remind_at.is_none());
 
         // weekly advances 7 days; monthly clamps month ends like SQLite date().
-        let weekly = task_create_with(&conn, pid, "w", None, None, None, Some("weekly".into())).unwrap();
+        let weekly = task_create_with(&conn, pid, "w", None, None, None, None, Some("weekly".into())).unwrap();
         let weekly = task_update(&conn, weekly.id, TaskPatch { due_date: Some(Some("2099-01-30".into())), ..Default::default() }).unwrap();
         task_move(&conn, weekly.id, "done", 1.0).unwrap();
         let list = tasks_list(&conn, pid).unwrap();
@@ -1104,7 +1109,7 @@ mod tests {
             list.iter().find(|x| x.id != weekly.id && x.title == "w").unwrap().due_date.as_deref(),
             Some("2099-02-06")
         );
-        let monthly = task_create_with(&conn, pid, "m", None, None, None, Some("monthly".into())).unwrap();
+        let monthly = task_create_with(&conn, pid, "m", None, None, None, None, Some("monthly".into())).unwrap();
         let monthly = task_update(&conn, monthly.id, TaskPatch { due_date: Some(Some("2099-01-31".into())), ..Default::default() }).unwrap();
         task_move(&conn, monthly.id, "done", 1.0).unwrap();
         let list = tasks_list(&conn, pid).unwrap();
@@ -1114,7 +1119,7 @@ mod tests {
             "monthly must clamp to the end of the target month"
         );
         // A day that exists in the target month advances plainly.
-        let monthly2 = task_create_with(&conn, pid, "m2", None, None, None, Some("monthly".into())).unwrap();
+        let monthly2 = task_create_with(&conn, pid, "m2", None, None, None, None, Some("monthly".into())).unwrap();
         let monthly2 = task_update(&conn, monthly2.id, TaskPatch { due_date: Some(Some("2099-01-15".into())), ..Default::default() }).unwrap();
         task_move(&conn, monthly2.id, "done", 1.0).unwrap();
         let list = tasks_list(&conn, pid).unwrap();
@@ -1124,7 +1129,7 @@ mod tests {
         );
 
         // No due date: the next occurrence is dated from today.
-        let undated = task_create_with(&conn, pid, "u", None, None, None, Some("daily".into())).unwrap();
+        let undated = task_create_with(&conn, pid, "u", None, None, None, None, Some("daily".into())).unwrap();
         task_move(&conn, undated.id, "done", 1.0).unwrap();
         let list = tasks_list(&conn, pid).unwrap();
         let next_u = list.iter().find(|x| x.id != undated.id && x.title == "u").unwrap();
@@ -1143,7 +1148,7 @@ mod tests {
         task_move(&conn, t.id, "done", 1.0).unwrap();
         assert_eq!(tasks_list(&conn, pid).unwrap().len(), 1);
 
-        let r = task_create_with(&conn, pid, "weekly", None, None, None, Some("weekly".into())).unwrap();
+        let r = task_create_with(&conn, pid, "weekly", None, None, None, None, Some("weekly".into())).unwrap();
         task_move(&conn, r.id, "progress", 1.0).unwrap();
         assert_eq!(tasks_list(&conn, pid).unwrap().len(), 2, "progress move must not spawn");
         fs::remove_dir_all(&wd).unwrap();
@@ -1152,7 +1157,7 @@ mod tests {
     #[test]
     fn recurrence_no_duplicate_on_repeated_done_moves() {
         let (wd, conn, pid) = setup("tasks-recurrence-dedup");
-        let t = task_create_with(&conn, pid, "daily", None, None, None, Some("daily".into())).unwrap();
+        let t = task_create_with(&conn, pid, "daily", None, None, None, None, Some("daily".into())).unwrap();
         let t = task_update(&conn, t.id, TaskPatch { due_date: Some(Some("2099-01-02".into())), ..Default::default() }).unwrap();
         task_move(&conn, t.id, "done", 1.0).unwrap();
         assert_eq!(tasks_list(&conn, pid).unwrap().len(), 2);

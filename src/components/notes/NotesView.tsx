@@ -82,6 +82,15 @@ export default function NotesView() {
     else if (selected.relPath.startsWith(`${oldRel}/`)) setSelected(null);
   };
 
+  // After a DnD move the open note keeps its content but gets a new path.
+  const handleMoved = (oldRel: string, entry: FsEntry) => {
+    if (!selected) return;
+    if (selected.relPath === oldRel) setSelected(entry);
+    else if (selected.relPath.startsWith(`${oldRel}/`)) {
+      setSelected({ ...selected, relPath: `${entry.relPath}/${selected.relPath.slice(oldRel.length + 1)}` });
+    }
+  };
+
   // Command-palette intent: open a note by vault-relative path (resolved to a
   // real FsEntry through the folder listing, like the search results do).
   useEffect(() => {
@@ -148,6 +157,7 @@ export default function NotesView() {
             onSelect={handleSelect}
             onDeleted={handleDeleted}
             onRenamed={handleRenamed}
+            onMoved={handleMoved}
           />
         )}
       </aside>

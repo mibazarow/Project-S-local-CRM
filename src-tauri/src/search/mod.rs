@@ -361,11 +361,10 @@ struct TaskRow {
     title: String,
     status: String,
     comment: Option<String>,
-    tags: String,
     overdue: bool,
 }
 
-const TASK_COLS: &str = "tasks.id, tasks.title, tasks.status, tasks.comment, tasks.tags, \
+const TASK_COLS: &str = "tasks.id, tasks.title, tasks.status, tasks.comment, \
      (tasks.due_date IS NOT NULL AND tasks.due_date < date('now','localtime') AND tasks.status <> 'done')";
 
 fn task_row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRow> {
@@ -374,8 +373,7 @@ fn task_row_from(row: &rusqlite::Row<'_>) -> rusqlite::Result<TaskRow> {
         title: row.get(1)?,
         status: row.get(2)?,
         comment: row.get(3)?,
-        tags: row.get(4)?,
-        overdue: row.get::<_, i64>(5)? != 0,
+        overdue: row.get::<_, i64>(4)? != 0,
     })
 }
 
@@ -446,15 +444,13 @@ fn task_semantic_hits(
 }
 
 // Contentless FTS tables cannot snippet, so the task snippet is built around
-// the query terms from the task's own title/comment/tags.
+// the query terms from the task's own title/comment.
 fn task_hit(row: &TaskRow, lowered: &[String]) -> SearchHit {
     let mut text = row.title.clone();
     if let Some(comment) = &row.comment {
         text.push(' ');
         text.push_str(comment);
     }
-    text.push(' ');
-    text.push_str(&row.tags);
     SearchHit {
         rel_path: String::new(),
         name: row.title.clone(),
@@ -678,7 +674,7 @@ pub(crate) fn global_search_with(
     // Tasks across all projects, closed included (join tasks, no status filter).
     {
         let mut stmt = conn.prepare(
-            "SELECT tasks.id, tasks.title, tasks.status, tasks.comment, tasks.tags,
+            "SELECT tasks.id, tasks.title, tasks.status, tasks.comment,
                     tasks.due_date, tasks.project_id, p.name
              FROM tasks_fts
              JOIN tasks ON tasks.id = tasks_fts.rowid
@@ -693,21 +689,18 @@ pub(crate) fn global_search_with(
                 r.get::<_, String>(1)?,
                 r.get::<_, String>(2)?,
                 r.get::<_, Option<String>>(3)?,
-                r.get::<_, String>(4)?,
-                r.get::<_, Option<String>>(5)?,
-                r.get::<_, i64>(6)?,
-                r.get::<_, String>(7)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, String>(6)?,
             ))
         })?;
         for (rank, row) in rows.enumerate() {
-            let (id, title, status, comment, tags, due_date, project_id, project) = row?;
+            let (id, title, status, comment, due_date, project_id, project) = row?;
             let mut text = title.clone();
             if let Some(comment) = &comment {
                 text.push(' ');
                 text.push_str(comment);
             }
-            text.push(' ');
-            text.push_str(&tags);
             let mut subtitle = format!("{project} · {}", task_status_label(&status));
             if let Some(due) = due_date {
                 subtitle.push_str(&format!(" · до {due}"));
@@ -1102,7 +1095,7 @@ mod tests {
     }
 
     #[test]
-    fn task_title_comment_and_tags_are_all_searchable() {
+    fn task_title_and_comment_are_searchable_tags_are_not() {
         let (wd, conn, id, state) = setup("search-task-fields");
         let t = tasks::task_create(&conn, id, "Задача про баннер", None).unwrap();
         tasks::task_update(
@@ -1110,17 +1103,22 @@ mod tests {
             t.id,
             tasks::TaskPatch {
                 comment: Some(Some("нужен макет логотипа".into())),
-                tags: Some(vec!["полиграфия".into()]),
                 ..Default::default()
             },
         )
         .unwrap();
+        // Tags are out of the model: a legacy tags value on the row (written
+        // straight to SQL) must not make the task findable.
+        conn.execute("UPDATE tasks SET tags = '[\"полиграфия\"]' WHERE id = ?1", params![t.id])
+            .unwrap();
 
-        for query in ["баннер", "логотипа", "полиграфия"] {
+        for query in ["баннер", "логотипа"] {
             let hits = search_project(&state, id, query, 10).unwrap();
             assert_eq!(hits.len(), 1, "query {query:?}");
             assert_eq!(hits[0].kind, "task");
         }
+        assert!(search_project(&state, id, "полиграфия", 10).unwrap().is_empty(),
+                "tag text must no longer be searchable");
         fs::remove_dir_all(&wd).unwrap();
     }
 

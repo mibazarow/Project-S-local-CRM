@@ -35,9 +35,7 @@ pub struct ProjectTemplate {
 pub struct TaskTemplate {
     pub name: String,
     pub title: String,
-    pub priority: Option<String>,
     pub checklist: Option<Vec<ChecklistItem>>,
-    pub tags: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -109,7 +107,6 @@ pub fn defaults() -> TemplatesConfig {
         tasks: vec![TaskTemplate {
             name: "Позвонить клиенту".into(),
             title: "Позвонить клиенту".into(),
-            priority: Some("high".into()),
             checklist: Some(vec![
                 ChecklistItem {
                     text: "Поднять переписку".into(),
@@ -120,7 +117,6 @@ pub fn defaults() -> TemplatesConfig {
                     done: false,
                 },
             ]),
-            tags: Some(vec!["клиент".into()]),
         }],
         notes: vec![NoteTemplate {
             name: "Заметка о встрече".into(),
@@ -274,8 +270,7 @@ pub fn create_project(
     Ok(dto)
 }
 
-// Creates the task with the template's title/priority/checklist/tags in the
-// 'new' column; tags go through task_update so trimming/dedup rules apply.
+// Creates the task with the template's title/checklist in the 'new' column.
 pub fn create_task(
     conn: &Connection,
     wd: &Path,
@@ -284,26 +279,16 @@ pub fn create_task(
 ) -> Result<TaskDto> {
     let cfg = load(wd)?;
     let tpl = find(&cfg.tasks, template_name, "task", |t| &t.name)?;
-    let dto = tasks::task_create_with(
+    tasks::task_create_with(
         conn,
         project_id,
         &tpl.title,
         None,
-        tpl.priority.clone(),
+        None,
+        None,
         tpl.checklist.clone(),
         None,
-    )?;
-    match &tpl.tags {
-        Some(tags) => tasks::task_update(
-            conn,
-            dto.id,
-            tasks::TaskPatch {
-                tags: Some(tags.clone()),
-                ..Default::default()
-            },
-        ),
-        None => Ok(dto),
-    }
+    )
 }
 
 // Creates the note under Notes/ with the template content; a bare name gets
@@ -375,7 +360,6 @@ mod tests {
 
         let cfg = load(&wd).unwrap();
         assert_eq!(cfg.tasks[0].title, "Позвонить клиенту");
-        assert_eq!(cfg.tasks[0].priority.as_deref(), Some("high"));
         assert!(cfg.projects[0].files.iter().any(|f| f.path == paths::DATAS_MD));
         assert!(cfg.documents[0].markdown.contains("Коммерческое")
             || cfg.documents[0].name.contains("Коммерческое"));
@@ -488,9 +472,8 @@ mod tests {
         let t = create_task(&conn, &wd, project.id, "Позвонить клиенту").unwrap();
         assert_eq!(t.title, "Позвонить клиенту");
         assert_eq!(t.status, "new");
-        assert_eq!(t.priority, "high");
+        assert!(!t.is_priority, "legacy priority/tags keys are ignored");
         assert_eq!(t.checklist, vec![ChecklistItem { text: "раз".into(), done: false }]);
-        assert_eq!(t.tags, vec!["клиент"]);
         fs::remove_dir_all(&wd).unwrap();
     }
 

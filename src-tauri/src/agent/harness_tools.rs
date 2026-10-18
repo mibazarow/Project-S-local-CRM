@@ -1430,7 +1430,7 @@ impl Tool for CrmTaskCreateTool {
         "crm_task_create"
     }
     fn description(&self) -> &str {
-        "Create a task in a project (project_id or project_name); optional status (new|progress|done, default new), priority (low|normal|high|urgent, default normal), recurrence (none|daily|weekly|monthly, default none), checklist ([{text, done?}], max 100 items)."
+        "Create a task in a project (project_id or project_name); optional status (new|progress|done, default new), dueDate (YYYY-MM-DD), isPriority (true|false, default false), recurrence (none|daily|weekly|monthly, default none), checklist ([{text, done?}], max 100 items)."
     }
     fn parameters(&self) -> Value {
         create_schema(true)
@@ -1464,7 +1464,7 @@ impl Tool for CrmTaskUpdateTool {
         "crm_task_update"
     }
     fn description(&self) -> &str {
-        "Update fields of a task by id; absent fields stay unchanged, explicit null clears comment/dueDate/remindAt. Dates: YYYY-MM-DD, remindAt: YYYY-MM-DDTHH:MM. priority: low|normal|high|urgent, recurrence: none|daily|weekly|monthly, checklist: [{text, done?}] max 100 (null/absent keeps the current value)."
+        "Update fields of a task by id; absent fields stay unchanged, explicit null clears comment/dueDate/remindAt. Dates: YYYY-MM-DD, remindAt: YYYY-MM-DDTHH:MM. isPriority: true|false, recurrence: none|daily|weekly|monthly, checklist: [{text, done?}] max 100 (null/absent keeps the current value)."
     }
     fn parameters(&self) -> Value {
         update_schema()
@@ -3147,7 +3147,7 @@ mod tests {
     }
 
     #[test]
-    fn crm_task_tools_accept_and_validate_priority_checklist_recurrence() {
+    fn crm_task_tools_accept_and_validate_is_priority_due_date_checklist_recurrence() {
         let env = setup("ht-crm-upgrade");
         with_conn(&env.ctx, |conn| {
             projects::create_project(conn, &env.wd, "alpha")?;
@@ -3160,7 +3160,8 @@ mod tests {
             json!({
                 "project_name": "alpha",
                 "title": "report",
-                "priority": "high",
+                "dueDate": "2099-01-02",
+                "isPriority": true,
                 "recurrence": "daily",
                 "checklist": [{ "text": "draft", "done": true }]
             }),
@@ -3169,22 +3170,29 @@ mod tests {
         assert!(r.ok, "{:?}", r.error);
         let data = r.data.unwrap();
         let id = data["id"].as_i64().unwrap();
-        assert_eq!(data["priority"], "high");
+        assert_eq!(data["isPriority"], true);
+        assert_eq!(data["dueDate"], "2099-01-02");
         assert_eq!(data["recurrence"], "daily");
         assert_eq!(data["checklist"], json!([{ "text": "draft", "done": true }]));
 
-        let r = exec("crm_task_update", json!({ "id": id, "dueDate": "2099-01-02", "priority": "low" }), &env.ctx);
+        let r = exec("crm_task_update", json!({ "id": id, "isPriority": false }), &env.ctx);
         assert!(r.ok, "{:?}", r.error);
-        assert_eq!(r.data.unwrap()["priority"], "low");
+        assert_eq!(r.data.unwrap()["isPriority"], false);
 
-        let r = exec("crm_task_create", json!({ "project_name": "alpha", "title": "x", "priority": "critical" }), &env.ctx);
+        let r = exec("crm_task_create", json!({ "project_name": "alpha", "title": "x", "dueDate": "2099-13-01" }), &env.ctx);
         assert!(!r.ok);
-        assert!(r.error.unwrap().message.contains("priority"));
+        assert!(r.error.unwrap().message.contains("due_date"));
         let r = exec("crm_task_update", json!({ "id": id, "recurrence": "yearly" }), &env.ctx);
         assert!(!r.ok);
         assert!(r.error.unwrap().message.contains("recurrence"));
 
         // done move queues the next occurrence; crm_tasks sees both.
+        let r = exec(
+            "crm_task_update",
+            json!({ "id": id, "isPriority": true, "dueDate": "2099-01-02" }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
         let r = exec("crm_task_move", json!({ "id": id, "status": "done" }), &env.ctx);
         assert!(r.ok, "{:?}", r.error);
         let r = exec("crm_tasks", json!({ "project_name": "alpha" }), &env.ctx);
@@ -3192,6 +3200,7 @@ mod tests {
         assert_eq!(tasks.len(), 2);
         let next = tasks.iter().find(|t| t["status"] == "new").unwrap();
         assert_eq!(next["dueDate"], "2099-01-03");
+        assert_eq!(next["isPriority"], true, "the flag must be copied to the next occurrence");
         assert_eq!(next["checklist"], json!([{ "text": "draft", "done": false }]));
         fs::remove_dir_all(&env.wd).unwrap();
     }

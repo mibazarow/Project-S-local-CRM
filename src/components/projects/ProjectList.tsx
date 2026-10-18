@@ -1,39 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import * as ipc from "../../api/ipc";
-import type { TemplateSummary } from "../../api/types";
 import { useApp } from "../../state/AppStore";
-import { usePointerDrag } from "../../hooks/usePointerDrag";
+import { usePointerDrag, type DropTarget } from "../../hooks/usePointerDrag";
 import ProjectItem from "./ProjectItem";
 
 export default function ProjectList() {
   const { state, actions } = useApp();
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
-  const [projectTemplates, setProjectTemplates] = useState<TemplateSummary[]>([]);
   const listRef = useRef<HTMLDivElement>(null);
-
-  // Project templates for the «Из шаблона» picker; a failed load just hides it.
-  useEffect(() => {
-    let cancelled = false;
-    void ipc
-      .templatesList()
-      .then((t) => !cancelled && setProjectTemplates(t.projects))
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const handleTemplate = async (templateName: string) => {
-    if (!templateName) return;
-    const custom = window.prompt("Имя нового проекта (можно оставить имя шаблона):", templateName);
-    if (custom === null) return;
-    const name = custom.trim();
-    await actions.createProjectFromTemplate(
-      templateName,
-      name && name !== templateName ? name : undefined,
-    );
-  };
 
   // Command-palette intent: open the inline "new project" input.
   useEffect(() => {
@@ -52,7 +26,7 @@ export default function ProjectList() {
 
   const { draggingId, dropTarget, onPointerDown, consumeSuppressedClick } = usePointerDrag({
     // Insertion index among the non-dragged items, by pointer Y vs item midlines.
-    resolveTarget: (clientX, clientY, id) => {
+    resolveTarget: (clientX, clientY, id): DropTarget<number> | null => {
       const list = listRef.current;
       if (!list) return null;
       const bounds = list.getBoundingClientRect();
@@ -75,7 +49,7 @@ export default function ProjectList() {
           break;
         }
       }
-      return { container: "list", index };
+      return { container: "list", index, draggingId: id };
     },
     // Midpoint between neighbors, first-1 for the top, last+1 for the end.
     onDrop: (id, target) => {
@@ -138,24 +112,9 @@ export default function ProjectList() {
       <div className="sidebar-head">
         <span className="sidebar-title">Проекты</span>
         <span className="sidebar-head-actions">
-          {projectTemplates.length > 0 && (
-            <select
-              className="tf-select"
-              value=""
-              title="Создать проект из шаблона"
-              onChange={(e) => void handleTemplate(e.target.value)}
-            >
-              <option value="">Из шаблона…</option>
-              {projectTemplates.map((t) => (
-                <option key={t.name} value={t.name}>
-                  {t.name}
-                </option>
-              ))}
-            </select>
-          )}
           <button
-            className="icon-btn small"
-            title="Добавить проект"
+            className="add-project-btn"
+            title="Новый проект"
             onClick={() => {
               setDraft("");
               setAdding(true);
@@ -167,7 +126,7 @@ export default function ProjectList() {
               height="16"
               fill="none"
               stroke="currentColor"
-              strokeWidth="2"
+              strokeWidth="2.4"
               strokeLinecap="round"
             >
               <path d="M12 5v14M5 12h14" />

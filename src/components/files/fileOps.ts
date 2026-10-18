@@ -34,7 +34,6 @@ export function useFileOps(projectId: number) {
       run(() => ipc.fsCreateFile(projectId, parentRel, name)),
     rename: (relPath: string, newName: string) =>
       run(() => ipc.fsRename(projectId, relPath, newName)),
-    duplicate: (relPath: string) => run(() => ipc.fsDuplicate(projectId, relPath)),
     remove: (relPath: string) => run(() => ipc.fsDelete(projectId, relPath)),
     move: (fromRel: string, toDirRel: string) =>
       run(() => ipc.fsMove(projectId, fromRel, toDirRel)),
