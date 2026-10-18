@@ -1,21 +1,31 @@
 // "Open with" chooser: open documents with a suitable non-stock macOS app.
-// Scans the Applications folders for .app bundles, excludes the stock macOS
-// denylist (the user does not want .docx opened in Pages), ranks the rest by
-// per-extension preference groups, remembers the user's per-extension choice
-// in Settings/config/openWith.json, and launches `open -a <app> <file>`
-// (falling back to the system default `open <file>` when nothing applies).
+// Asks macOS LaunchServices which apps can actually open the extension
+// through a small embedded Swift helper (NSWorkspace.urlsForApplications),
+// so unrelated apps (App Store, Activity Monitor, …) are never offered. The
+// stock macOS denylist is then applied (the user does not want .docx opened
+// in Pages; stock handlers are only kept when nothing else can open the
+// file), the rest is ranked by per-extension preference groups, and results
+// are cached per extension for the session. The user's per-extension choice
+// is remembered in Settings/config/openWith.json, and the file is launched
+// with `open -a <app> <file>` (falling back to the system default
+// `open <file>` when nothing applies).
+use crate::agent::ocr_tools::{find_swift, read_capped};
 use crate::error::{AppError, Result};
 use crate::fs_ops;
 use crate::paths;
 use rusqlite::Connection;
-use serde::Serialize;
-use std::collections::BTreeMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+const HANDLER_TIMEOUT: Duration = Duration::from_secs(10);
+const HANDLER_STDOUT_CAP: usize = 64_000;
 
 // Stock macOS apps, never offered (lowercase bundle-name stems, exact match).
 const STOCK_APPS: &[&str] = &[
@@ -72,7 +82,50 @@ const PREFERENCES: &[(&[&str], &[&str])] = &[
     (TEXT_DOC_EXTS, &["visual studio code", "cursor"]),
 ];
 
-#[derive(Debug, Clone, Serialize)]
+// Swift helper source, written to the system temp dir on demand. It creates
+// an empty probe file with the requested extension, asks LaunchServices
+// which apps can open it (NSWorkspace.urlsForApplications, macOS 12+), and
+// prints the handlers deduplicated by path as JSON [{"name":…,"path":…}] on
+// stdout; errors go to stderr with a non-zero exit.
+const HANDLERS_SWIFT: &str = r#"import AppKit
+import Foundation
+
+func die(_ message: String) -> Never {
+    FileHandle.standardError.write(Data((message + "\n").utf8))
+    exit(1)
+}
+
+guard CommandLine.arguments.count >= 2 else {
+    die("usage: open_with_handlers.swift <ext>")
+}
+let ext = CommandLine.arguments[1].lowercased()
+guard !ext.isEmpty, ext.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber) }) else {
+    die("bad extension: \(ext)")
+}
+
+let probe = URL(fileURLWithPath: NSTemporaryDirectory())
+    .appendingPathComponent("project-s-probe-\(UUID().uuidString).\(ext)")
+try? Data().write(to: probe)
+defer { try? FileManager.default.removeItem(at: probe) }
+
+var seen = Set<String>()
+var handlers: [[String: String]] = []
+for url in NSWorkspace.shared.urlsForApplications(toOpen: probe) {
+    if seen.insert(url.path).inserted {
+        handlers.append([
+            "name": url.deletingPathExtension().lastPathComponent,
+            "path": url.path,
+        ])
+    }
+}
+guard let data = try? JSONSerialization.data(withJSONObject: handlers) else {
+    die("cannot encode handlers as JSON")
+}
+FileHandle.standardOutput.write(data)
+FileHandle.standardOutput.write(Data([0x0A]))
+"#;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppInfo {
     pub name: String,
@@ -87,13 +140,17 @@ pub struct OpenResult {
     pub app: Option<String>,
 }
 
-pub fn default_scan_dirs() -> Vec<PathBuf> {
-    let mut dirs = vec![PathBuf::from("/Applications")];
-    if let Some(home) = std::env::var_os("HOME") {
-        dirs.push(PathBuf::from(home).join("Applications"));
-    }
-    dirs.push(PathBuf::from("/System/Applications"));
-    dirs
+#[derive(Debug, Deserialize)]
+struct HandlerJson {
+    name: String,
+    path: String,
+}
+
+// Session cache of the final ranked handler list per extension, so the Swift
+// helper runs at most once per extension while the app is up.
+fn handler_cache() -> &'static Mutex<HashMap<String, Vec<AppInfo>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Vec<AppInfo>>>> = OnceLock::new();
+    CACHE.get_or_init(Default::default)
 }
 
 fn is_stock(name: &str) -> bool {
@@ -101,71 +158,157 @@ fn is_stock(name: &str) -> bool {
     STOCK_APPS.iter().any(|stock| *stock == lower)
 }
 
-// Collects non-stock .app bundles under dir recursively; .app bundles are
-// recorded whole and never descended into (their Contents/ subtrees hold
-// helper bundles, not user-facing apps).
-fn scan_dir(dir: &Path, out: &mut Vec<(String, PathBuf)>) {
-    for item in fs::read_dir(dir).into_iter().flatten().flatten() {
-        let path = item.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let name = item.file_name().to_string_lossy().into_owned();
-        if let Some(stem) = name.strip_suffix(".app") {
-            if !stem.is_empty() && !is_stock(stem) {
-                out.push((stem.to_owned(), path));
-            }
-            continue;
-        }
-        if name == "Contents" || name.starts_with('.') {
-            continue;
-        }
-        scan_dir(&path, out);
-    }
+// Extensions are passed to the Swift helper as a single argv token; only
+// plain alphanumeric extensions are probed at all.
+fn normalize_ext(ext: &str) -> Option<String> {
+    let ext = ext.trim().trim_start_matches('.').to_lowercase();
+    (!ext.is_empty() && ext.bytes().all(|b| b.is_ascii_alphanumeric())).then_some(ext)
 }
 
-// Non-stock apps for the extension, ranked: preference-group matches first
-// (in group order, the first match flagged `recommended`), then the rest
-// alphabetically. Empty when the scan finds no non-stock app at all.
-pub fn list_apps(ext: &str, scan_dirs: &[PathBuf]) -> Vec<AppInfo> {
-    let mut found: Vec<(String, PathBuf)> = Vec::new();
-    for dir in scan_dirs {
-        scan_dir(dir, &mut found);
+fn parse_handlers(stdout: &str) -> Result<Vec<AppInfo>> {
+    let parsed: Vec<HandlerJson> = serde_json::from_str(stdout)?;
+    let mut seen = HashSet::new();
+    Ok(parsed
+        .iter()
+        .filter(|h| seen.insert(h.path.as_str()))
+        .map(|h| AppInfo {
+            name: h.name.clone(),
+            path: h.path.clone(),
+            recommended: false,
+        })
+        .collect())
+}
+
+// Runs the Swift helper with `swift <script> <ext>` and parses its JSON
+// stdout; the pattern (capped pipes, poll timeout) follows ocr_tools.rs.
+fn probe_handlers(swift: &Path, ext: &str) -> Result<Vec<AppInfo>> {
+    let script = std::env::temp_dir().join("project-s-open-with.swift");
+    if fs::read_to_string(&script).unwrap_or_default() != HANDLERS_SWIFT {
+        fs::write(&script, HANDLERS_SWIFT)?;
     }
-    found.sort_by_key(|entry| entry.0.to_lowercase());
-    found.dedup_by(|a, b| a.0.to_lowercase() == b.0.to_lowercase());
+    let mut child = Command::new(swift)
+        .arg(&script)
+        .arg(ext)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let out_thread = std::thread::spawn(move || stdout.map(|r| read_capped(r, HANDLER_STDOUT_CAP)));
+    let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped(r, 8_192)));
+    let deadline = Instant::now() + HANDLER_TIMEOUT;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AppError::Io(format!(
+                "handler probe timed out after {} s",
+                HANDLER_TIMEOUT.as_secs()
+            )));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let stdout = out_thread.join().unwrap_or_default().unwrap_or_default();
+    let stderr = err_thread.join().unwrap_or_default().unwrap_or_default();
+    if status.code() != Some(0) {
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim().to_owned()
+        } else {
+            stderr.trim().to_owned()
+        };
+        return Err(AppError::Io(format!(
+            "handler probe failed (exit {}): {detail}",
+            status.code().unwrap_or(-1)
+        )));
+    }
+    parse_handlers(&stdout)
+}
+
+fn launch_services_handlers(ext: &str) -> Result<Vec<AppInfo>> {
+    let Some(swift) = find_swift() else {
+        return Err(AppError::Io(
+            "swift toolchain not found (checked $PROJECT_S_SWIFT, `which swift`, `xcrun --find swift`); the LaunchServices lookup needs the Xcode Command Line Tools".into(),
+        ));
+    };
+    probe_handlers(&swift, ext)
+}
+
+// Applies the stock denylist and the per-extension preference ranking to the
+// LaunchServices handlers: preference-group matches first (in group order,
+// the first match flagged `recommended`), then the rest alphabetically. When
+// every handler is a stock app, the stock handlers are kept rather than
+// returning an empty list; an empty handler list stays empty and the UI
+// falls back to the system default.
+fn rank_handlers(ext: &str, handlers: Vec<AppInfo>) -> Vec<AppInfo> {
+    let non_stock: Vec<AppInfo> = handlers
+        .iter()
+        .filter(|app| !is_stock(&app.name))
+        .cloned()
+        .collect();
+    let mut pool = if non_stock.is_empty() {
+        handlers
+    } else {
+        non_stock
+    };
+    pool.sort_by_key(|app| app.name.to_lowercase());
 
     let prefs: &[&str] = PREFERENCES
         .iter()
         .find(|(exts, _)| exts.contains(&ext))
         .map(|(_, prefs)| *prefs)
         .unwrap_or(&[]);
-    let mut used = vec![false; found.len()];
-    let mut ranked: Vec<(&String, &PathBuf, bool)> = Vec::new();
+    let mut used = vec![false; pool.len()];
+    let mut ranked: Vec<(AppInfo, bool)> = Vec::new();
     let mut recommended = false;
     for pref in prefs {
-        for (i, (name, _)) in found.iter().enumerate() {
-            if !used[i] && name.to_lowercase().contains(pref) {
+        for (i, app) in pool.iter().enumerate() {
+            if !used[i] && app.name.to_lowercase().contains(pref) {
                 used[i] = true;
                 let flag = !recommended;
                 recommended = true;
-                ranked.push((&found[i].0, &found[i].1, flag));
+                ranked.push((pool[i].clone(), flag));
             }
         }
     }
-    for (i, (name, path)) in found.iter().enumerate() {
+    for (i, app) in pool.into_iter().enumerate() {
         if !used[i] {
-            ranked.push((name, path, false));
+            ranked.push((app, false));
         }
     }
     ranked
         .into_iter()
-        .map(|(name, path, recommended)| AppInfo {
-            name: name.clone(),
-            path: path.display().to_string(),
-            recommended,
+        .map(|(mut app, flag)| {
+            app.recommended = flag;
+            app
         })
         .collect()
+}
+
+// LaunchServices handlers for the extension, cached per extension for the
+// session. A failed lookup is logged and yields an empty list (the dialog
+// falls back to "Открыть по умолчанию"); the app folders are never scanned.
+pub fn list_apps(ext: &str) -> Vec<AppInfo> {
+    let Some(ext) = normalize_ext(ext) else {
+        return Vec::new();
+    };
+    if let Some(cached) = handler_cache().lock().unwrap().get(&ext) {
+        return cached.clone();
+    }
+    match launch_services_handlers(&ext) {
+        Ok(handlers) => {
+            let ranked = rank_handlers(&ext, handlers);
+            handler_cache().lock().unwrap().insert(ext, ranked.clone());
+            ranked
+        }
+        Err(e) => {
+            eprintln!("[open-with] LaunchServices lookup for \"{ext}\" failed: {e}");
+            Vec::new()
+        }
+    }
 }
 
 fn config_file(wd: &Path) -> PathBuf {
@@ -232,7 +375,6 @@ pub fn remember(wd: &Path, ext: &str, app_path: &str) -> Result<()> {
 pub fn resolve_choice(
     wd: &Path,
     ext: &str,
-    scan_dirs: &[PathBuf],
     app_path: Option<&str>,
 ) -> Result<Option<AppInfo>> {
     if let Some(path) = app_path {
@@ -241,7 +383,7 @@ pub fn resolve_choice(
     if let Some(app) = get_remembered(wd, ext)? {
         return Ok(Some(app));
     }
-    Ok(list_apps(ext, scan_dirs).into_iter().find(|app| app.recommended))
+    Ok(list_apps(ext).into_iter().find(|app| app.recommended))
 }
 
 // Builds the launch command: `open -a <app> <file>` or plain `open <file>`.
@@ -338,7 +480,7 @@ pub fn open_with(
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    let chosen = resolve_choice(wd, &ext, &default_scan_dirs(), app_path)?;
+    let chosen = resolve_choice(wd, &ext, app_path)?;
     let mut cmd = open_command(chosen.as_ref().map(|app| Path::new(&app.path)), &file);
     run_open(&mut cmd)?;
     Ok(OpenResult {
@@ -361,51 +503,124 @@ mod tests {
         app
     }
 
+    fn handler(name: &str) -> AppInfo {
+        AppInfo {
+            name: name.to_owned(),
+            path: format!("/Applications/{name}.app"),
+            recommended: false,
+        }
+    }
+
     fn names(apps: &[AppInfo]) -> Vec<String> {
         apps.iter().map(|a| a.name.clone()).collect()
     }
 
     #[test]
-    fn stock_apps_are_excluded_and_nested_bundles_skipped() {
-        let dir = temp_test_dir("ow-scan");
-        make_app(&dir, "Pages");
-        make_app(&dir, "TextEdit");
-        make_app(&dir, "Microsoft Word");
-        // a helper bundle inside another bundle's Contents is never offered
-        fs::create_dir_all(dir.join("Outer.app/Contents/Resources/Helper.app")).unwrap();
-        let apps = list_apps("docx", std::slice::from_ref(&dir));
-        assert_eq!(names(&apps), ["Microsoft Word", "Outer"]);
-        fs::remove_dir_all(&dir).unwrap();
+    fn parses_canned_handler_json_and_dedupes_by_path() {
+        let json = r#"[
+            {"name":"Microsoft Word","path":"/Applications/Microsoft Word.app"},
+            {"name":"Microsoft Word","path":"/Applications/Microsoft Word.app"},
+            {"name":"LibreOffice","path":"/Applications/LibreOffice.app"}
+        ]"#;
+        let handlers = parse_handlers(json).unwrap();
+        assert_eq!(names(&handlers), ["Microsoft Word", "LibreOffice"]);
+        assert!(handlers.iter().all(|a| !a.recommended));
+        assert!(matches!(parse_handlers("not json"), Err(AppError::Json(_))));
+        assert!(matches!(parse_handlers("{}"), Err(AppError::Json(_))));
+    }
+
+    #[test]
+    fn stock_handlers_are_dropped_when_anything_else_can_open() {
+        let ranked = rank_handlers(
+            "docx",
+            vec![handler("Pages"), handler("Microsoft Word"), handler("LibreOffice")],
+        );
+        assert_eq!(names(&ranked), ["Microsoft Word", "LibreOffice"]);
+        assert!(ranked[0].recommended);
+        assert!(!ranked[1].recommended);
     }
 
     #[test]
     fn ranking_prefers_word_over_libreoffice_and_marks_recommended() {
-        let dir = temp_test_dir("ow-rank");
-        make_app(&dir, "LibreOffice");
-        make_app(&dir, "Microsoft Word");
-        make_app(&dir, "GIMP");
-        let apps = list_apps("docx", std::slice::from_ref(&dir));
-        assert_eq!(names(&apps), ["Microsoft Word", "LibreOffice", "GIMP"]);
-        assert!(apps[0].recommended);
-        assert!(!apps[1].recommended);
-        assert!(!apps[2].recommended);
+        let ranked = rank_handlers(
+            "docx",
+            vec![handler("LibreOffice"), handler("Microsoft Word"), handler("GIMP")],
+        );
+        assert_eq!(names(&ranked), ["Microsoft Word", "LibreOffice", "GIMP"]);
+        assert!(ranked[0].recommended);
+        assert!(!ranked[1].recommended);
+        assert!(!ranked[2].recommended);
         // the spreadsheet group ranks Excel first, Word is not preferred there
-        make_app(&dir, "Microsoft Excel");
-        let apps = list_apps("xlsx", std::slice::from_ref(&dir));
+        let ranked = rank_handlers(
+            "xlsx",
+            vec![
+                handler("LibreOffice"),
+                handler("Microsoft Word"),
+                handler("GIMP"),
+                handler("Microsoft Excel"),
+            ],
+        );
         assert_eq!(
-            names(&apps),
+            names(&ranked),
             ["Microsoft Excel", "LibreOffice", "GIMP", "Microsoft Word"]
         );
-        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
-    fn empty_scan_yields_empty_list() {
-        let dir = temp_test_dir("ow-empty");
-        make_app(&dir, "Preview");
-        make_app(&dir, "Safari");
-        assert!(list_apps("docx", std::slice::from_ref(&dir)).is_empty());
-        fs::remove_dir_all(&dir).unwrap();
+    fn stock_only_handlers_are_kept_and_empty_handlers_stay_empty() {
+        // every handler is stock: keep them instead of an empty list
+        let ranked = rank_handlers("pdf", vec![handler("Preview")]);
+        assert_eq!(names(&ranked), ["Preview"]);
+        assert!(rank_handlers("docx", Vec::new()).is_empty());
+    }
+
+    #[test]
+    fn junk_extensions_are_refused_without_running_swift() {
+        for bad in ["", "  ", "../x", "d o c", "docx/"] {
+            assert!(normalize_ext(bad).is_none(), "accepted {bad:?}");
+            assert!(list_apps(bad).is_empty(), "offered apps for {bad:?}");
+        }
+        assert_eq!(normalize_ext(" .DOCX "), Some("docx".to_owned()));
+    }
+
+    #[test]
+    fn probe_with_missing_swift_binary_fails() {
+        let err = probe_handlers(Path::new("/no/such/swift"), "docx").unwrap_err();
+        assert!(matches!(err, AppError::Io(_)), "{err}");
+    }
+
+    #[test]
+    fn list_apps_serves_cached_entries_per_extension() {
+        let ext = "owcachedext";
+        let sentinel = vec![handler("Sentinel Handler")];
+        handler_cache()
+            .lock()
+            .unwrap()
+            .insert(ext.to_owned(), sentinel.clone());
+        // served from the cache: a miss would run Swift and never produce the
+        // sentinel app name
+        assert_eq!(list_apps(ext), sentinel);
+        assert_eq!(list_apps(ext), sentinel);
+    }
+
+    #[test]
+    fn live_launch_services_handlers_for_common_document_types() {
+        if find_swift().is_none() {
+            eprintln!("no swift toolchain on this machine, skipping live LaunchServices test");
+            return;
+        }
+        for ext in ["docx", "xlsx", "pdf"] {
+            let apps = list_apps(ext);
+            let got = names(&apps);
+            eprintln!("LaunchServices handlers for {ext}: {got:?}");
+            assert!(!apps.is_empty(), "no handlers found for {ext}");
+            for unrelated in ["App Store", "Activity Monitor", "System Settings"] {
+                assert!(
+                    !got.iter().any(|n| n == unrelated),
+                    "{unrelated} offered for {ext}: {got:?}"
+                );
+            }
+        }
     }
 
     #[test]
@@ -458,45 +673,65 @@ mod tests {
     #[test]
     fn resolve_choice_prefers_explicit_then_remembered_then_recommended() {
         let wd = temp_test_dir("ow-choice");
-        let apps = temp_test_dir("ow-choice-apps");
-        let _word = make_app(&apps, "Microsoft Word");
+        let apps = temp_test_dir("ow-cfg-apps2");
+        let word = make_app(&apps, "Microsoft Word");
         let office = make_app(&apps, "LibreOffice");
+        let ext = "owchoice";
+        // ranked with the docx preference group, cached under the test ext
+        let mut ranked = rank_handlers(
+            "docx",
+            vec![
+                handler("LibreOffice"),
+                AppInfo {
+                    name: "Microsoft Word".to_owned(),
+                    path: word.display().to_string(),
+                    recommended: false,
+                },
+            ],
+        );
+        for app in ranked.iter_mut() {
+            if app.name == "LibreOffice" {
+                app.path = office.display().to_string();
+            }
+        }
+        handler_cache()
+            .lock()
+            .unwrap()
+            .insert(ext.to_owned(), ranked);
         // explicit app wins and is validated
         let chosen = resolve_choice(
             &wd,
-            "docx",
-            std::slice::from_ref(&apps),
+            ext,
             Some(&office.display().to_string()),
         )
         .unwrap()
         .unwrap();
         assert_eq!(chosen.name, "LibreOffice");
         assert!(matches!(
-            resolve_choice(&wd, "docx", std::slice::from_ref(&apps), Some("/etc/hosts")),
+            resolve_choice(&wd, ext, Some("/etc/hosts")),
             Err(AppError::Invalid(_))
         ));
         // remembered wins over recommended
-        remember(&wd, "docx", &office.display().to_string()).unwrap();
-        let chosen = resolve_choice(&wd, "docx", std::slice::from_ref(&apps), None)
-            .unwrap()
-            .unwrap();
+        remember(&wd, ext, &office.display().to_string()).unwrap();
+        let chosen = resolve_choice(&wd, ext, None).unwrap().unwrap();
         assert_eq!(chosen.name, "LibreOffice");
         // no remembered: the top recommended app
         let wd2 = temp_test_dir("ow-choice2");
-        let chosen = resolve_choice(&wd2, "docx", std::slice::from_ref(&apps), None)
-            .unwrap()
-            .unwrap();
+        let chosen = resolve_choice(&wd2, ext, None).unwrap().unwrap();
         assert_eq!(chosen.name, "Microsoft Word");
         // nothing recommended for the extension: system default (None)
-        assert!(resolve_choice(&wd2, "zip", std::slice::from_ref(&apps), None)
+        handler_cache()
+            .lock()
             .unwrap()
-            .is_none());
-        // empty scan: system default (None)
-        let empty = temp_test_dir("ow-choice-empty");
-        assert!(resolve_choice(&wd2, "docx", std::slice::from_ref(&empty), None)
+            .insert("ownone".to_owned(), vec![handler("GIMP")]);
+        assert!(resolve_choice(&wd2, "ownone", None).unwrap().is_none());
+        // empty handler list: system default (None)
+        handler_cache()
+            .lock()
             .unwrap()
-            .is_none());
-        for dir in [wd, apps, wd2, empty] {
+            .insert("owempty".to_owned(), Vec::new());
+        assert!(resolve_choice(&wd2, "owempty", None).unwrap().is_none());
+        for dir in [wd, apps, wd2] {
             fs::remove_dir_all(&dir).unwrap();
         }
     }

@@ -50,7 +50,10 @@ export default function OpenWithDialog({ entry, apps, onPick, onClose }: Props) 
         </div>
         {error && <div className="set-error">{error}</div>}
         {apps.length === 0 ? (
-          <div className="open-with-empty">Приложений кроме стандартных не найдено.</div>
+          <div className="open-with-empty">
+            Не найдено приложений, которые умеют открывать этот формат. Откроется в
+            приложении по умолчанию — нажмите «Открыть по умолчанию».
+          </div>
         ) : (
           <div className="open-with-list">
             {apps.map((app) => (

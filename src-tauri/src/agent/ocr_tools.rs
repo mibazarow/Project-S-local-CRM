@@ -127,7 +127,7 @@ fn run_locator(program: &str, args: &[&str]) -> Option<PathBuf> {
 }
 
 // Reads a pipe up to the cap so a chatty helper can never balloon memory.
-fn read_capped(mut reader: impl Read, cap: usize) -> String {
+pub(crate) fn read_capped(mut reader: impl Read, cap: usize) -> String {
     let mut buf = Vec::new();
     let _ = (&mut reader).take((cap as u64) + 1).read_to_end(&mut buf);
     buf.truncate(cap);

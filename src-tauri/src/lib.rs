@@ -789,11 +789,12 @@ fn fs_open_external(
     })
 }
 
-// "Open with" chooser: non-stock macOS apps for an extension, the remembered
-// per-extension choice, and opening a file with a chosen app via `open -a`.
+// "Open with" chooser: the LaunchServices handler apps for an extension
+// (non-stock first), the remembered per-extension choice, and opening a file
+// with a chosen app via `open -a`.
 #[tauri::command]
 fn list_open_with_apps(ext: String) -> Vec<open_with::AppInfo> {
-    open_with::list_apps(&ext, &open_with::default_scan_dirs())
+    open_with::list_apps(&ext)
 }
 
 #[tauri::command]
