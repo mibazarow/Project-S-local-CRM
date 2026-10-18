@@ -97,6 +97,7 @@ const projects = vi.hoisted(() => [
     overdueCount: 0,
     hasActiveTasks: false,
     taskColumns: ["a"],
+    filesView: "list",
   },
 ]);
 

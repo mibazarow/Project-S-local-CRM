@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::{params, Connection};
 
-pub const SCHEMA_VERSION: i64 = 33;
+pub const SCHEMA_VERSION: i64 = 34;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -588,6 +588,14 @@ const MIGRATION_33_TASK_STARTED_AT: &str = "ALTER TABLE tasks ADD COLUMN started
 const MIGRATION_33_TASK_STARTED_AT_BACKFILL: &str =
     "UPDATE tasks SET started_at = CAST(strftime('%s','now') AS INTEGER) * 1000 WHERE status = 'progress' AND started_at IS NULL";
 
+// Per-project file view mode (SPEC 4.2): "list" | "grid". NOT NULL DEFAULT
+// backfills existing rows with "list" (the mode the UI had before the feature
+// existed); the CHECK keeps the column closed and the default satisfies it,
+// so the guarded ADD COLUMN is valid. Values are also normalized in Rust
+// (projects.rs). Guarded per column (v14 recipe).
+const MIGRATION_34_PROJECT_FILES_VIEW: &str =
+    "ALTER TABLE projects ADD COLUMN files_view TEXT NOT NULL DEFAULT 'list' CHECK (files_view IN ('list','grid'))";
+
 fn migrate_v1(conn: &Connection) -> Result<()> {
     conn.execute_batch(MIGRATION_1)?;
     Ok(())
@@ -925,6 +933,20 @@ fn migrate_v33(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v34(conn: &Connection) -> Result<()> {
+    // Guarded per column (v14 recipe) so a re-run after an interrupted
+    // v34 does not re-ALTER.
+    let has_files_view: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('projects') WHERE name = 'files_view'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_files_view == 0 {
+        conn.execute(MIGRATION_34_PROJECT_FILES_VIEW, [])?;
+    }
+    Ok(())
+}
+
 // Ordered (user_version target, migration body) table: each body runs when
 // the stored user_version is below its target, then the runner bumps
 // user_version to the target, exactly like the previous hand-rolled
@@ -965,7 +987,8 @@ const MIGRATIONS: &[(u32, Migration)] = &[
     (30, migrate_v30),
     (31, migrate_v31),
     (32, migrate_v32),
-    (SCHEMA_VERSION as u32, migrate_v33),
+    (33, migrate_v33),
+    (SCHEMA_VERSION as u32, migrate_v34),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
@@ -2521,6 +2544,58 @@ CREATE UNIQUE INDEX uniq_chats_one_project_chat ON chats(project_id) WHERE kind 
             .query_row("SELECT started_at FROM tasks WHERE status = 'progress'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(first, again, "re-run must not re-stamp the backfill");
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_v34_adds_files_view_with_default_and_check() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        // Simulate a pre-v34 database: drop the column and roll the version back.
+        conn.execute("ALTER TABLE projects DROP COLUMN files_view", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO projects (name, path, created_at) VALUES ('p', '/tmp/p', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 33).unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        // Existing rows get the "list" default; new rows too.
+        let stored: String = conn
+            .query_row("SELECT files_view FROM projects WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, "list");
+        conn.execute(
+            "INSERT INTO projects (name, path, created_at) VALUES ('q', '/tmp/q', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let fresh: String = conn
+            .query_row("SELECT files_view FROM projects WHERE name = 'q'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fresh, "list");
+
+        // CHECK keeps the domain closed: "grid" passes, anything else is rejected.
+        conn.execute("UPDATE projects SET files_view = 'grid' WHERE id = 1", [])
+            .unwrap();
+        let bad = conn.execute("UPDATE projects SET files_view = 'bogus' WHERE id = 1", []);
+        assert!(bad.is_err(), "unknown files_view accepted");
+        let bad_insert = conn.execute(
+            "INSERT INTO projects (name, path, created_at, files_view) VALUES ('r', '/tmp/r', '2026-01-01', 'tiles')",
+            [],
+        );
+        assert!(bad_insert.is_err(), "unknown files_view insert accepted");
+
+        // Guarded ALTER: a v33 database whose column already exists is
+        // repaired without re-ALTER errors.
+        conn.pragma_update(None, "user_version", 33).unwrap();
+        run_migrations(&conn).unwrap();
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
     }

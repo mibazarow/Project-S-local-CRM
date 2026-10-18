@@ -157,6 +157,7 @@ mod tests {
             overdue_count: 0,
             has_active_tasks: false,
             task_columns: crate::projects::DEFAULT_TASK_COLUMNS.map(str::to_owned),
+            files_view: crate::projects::DEFAULT_FILES_VIEW.into(),
         }
     }
 

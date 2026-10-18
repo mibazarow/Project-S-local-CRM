@@ -19,6 +19,7 @@ pub struct ProjectDto {
     pub overdue_count: i64,
     pub has_active_tasks: bool,
     pub task_columns: [String; 3],
+    pub files_view: String,
 }
 
 const TASK_COUNT_SQL: &str = "SELECT count(*) FROM tasks WHERE project_id = ?1";
@@ -59,6 +60,36 @@ pub fn set_task_columns(conn: &Connection, id: i64, columns: Vec<String>) -> Res
     let updated = conn.execute(
         "UPDATE projects SET task_columns = ?1 WHERE id = ?2",
         params![serde_json::to_string(&cleaned)?, id],
+    )?;
+    if updated != 1 {
+        return Err(AppError::Invalid(format!("project {id} not found")));
+    }
+    dto(conn, id)
+}
+
+// Per-project file view mode (SPEC 4.2): "list" | "grid". Unknown values
+// normalize to the default on write, and corrupt stored values fall back to
+// it on read, so the DTO always carries a valid mode.
+pub const DEFAULT_FILES_VIEW: &str = "list";
+
+fn parse_files_view(raw: &str) -> String {
+    if raw == "grid" {
+        "grid".to_owned()
+    } else {
+        DEFAULT_FILES_VIEW.to_owned()
+    }
+}
+
+fn normalize_files_view(raw: &str) -> String {
+    parse_files_view(&raw.trim().to_ascii_lowercase())
+}
+
+// Persist the per-project file view mode; unknown values fall back to the
+// default instead of erroring (the UI only ever sends the two known modes).
+pub fn set_files_view(conn: &Connection, id: i64, raw: &str) -> Result<ProjectDto> {
+    let updated = conn.execute(
+        "UPDATE projects SET files_view = ?1 WHERE id = ?2",
+        params![normalize_files_view(raw), id],
     )?;
     if updated != 1 {
         return Err(AppError::Invalid(format!("project {id} not found")));
@@ -294,14 +325,15 @@ pub(crate) struct ProjectDbRow {
     opened_at: Option<String>,
     position: f64,
     task_columns: String,
+    files_view: String,
     task_count: i64,
     overdue_count: i64,
     has_active_tasks: bool,
 }
 
 fn db_row(conn: &Connection, id: i64) -> Result<ProjectDbRow> {
-    let (name, path, created_at, opened_at, position, task_columns, has_active_tasks) = conn.query_row(
-        "SELECT name, path, created_at, opened_at, position, task_columns,
+    let (name, path, created_at, opened_at, position, task_columns, files_view, has_active_tasks) = conn.query_row(
+        "SELECT name, path, created_at, opened_at, position, task_columns, files_view,
                 EXISTS(SELECT 1 FROM tasks WHERE project_id = ?1 AND status = 'progress')
          FROM projects WHERE id = ?1",
         params![id],
@@ -312,7 +344,8 @@ fn db_row(conn: &Connection, id: i64) -> Result<ProjectDbRow> {
             r.get::<_, Option<String>>(3)?,
             r.get::<_, f64>(4)?,
             r.get::<_, String>(5)?,
-            r.get::<_, bool>(6)?,
+            r.get::<_, String>(6)?,
+            r.get::<_, bool>(7)?,
         )),
     )?;
     let task_count = conn.query_row(TASK_COUNT_SQL, params![id], |r| r.get(0))?;
@@ -324,6 +357,7 @@ fn db_row(conn: &Connection, id: i64) -> Result<ProjectDbRow> {
         opened_at,
         position,
         task_columns,
+        files_view,
         task_count,
         overdue_count,
         has_active_tasks,
@@ -345,6 +379,7 @@ pub(crate) fn dto_from_row(id: i64, row: ProjectDbRow) -> ProjectDto {
         overdue_count: row.overdue_count,
         has_active_tasks: row.has_active_tasks,
         task_columns: parse_task_columns(&row.task_columns),
+        files_view: parse_files_view(&row.files_view),
     }
 }
 
@@ -678,6 +713,47 @@ mod tests {
         conn.execute("UPDATE projects SET task_columns = '[]' WHERE id = ?1", params![p.id])
             .unwrap();
         assert_eq!(get_project(&conn, p.id).unwrap().task_columns, ["Новые", "В работе", "Готово"]);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn files_view_defaults_to_list_and_round_trips_per_project() {
+        let (wd, conn) = setup("proj-files-view");
+        let p1 = create_project(&conn, &wd, "p1").unwrap();
+        let p2 = create_project(&conn, &wd, "p2").unwrap();
+        assert_eq!(p1.files_view, "list");
+        assert_eq!(p2.files_view, "list");
+
+        let updated = set_files_view(&conn, p1.id, "grid").unwrap();
+        assert_eq!(updated.files_view, "grid");
+        // Per project: p2 keeps the default; the stored value is the mode itself.
+        assert_eq!(list_projects(&conn).unwrap().iter().find(|p| p.id == p2.id).unwrap().files_view, "list");
+        let stored: String = conn
+            .query_row("SELECT files_view FROM projects WHERE id = ?1", params![p1.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, "grid");
+        // Persistence: a fresh read (restart path) keeps the mode.
+        assert_eq!(get_project(&conn, p1.id).unwrap().files_view, "grid");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn set_files_view_normalizes_unknown_values_and_validates_project() {
+        let (wd, conn) = setup("proj-files-view-invalid");
+        let p = create_project(&conn, &wd, "p").unwrap();
+        // Case and whitespace are normalized; unknown values fall back to the default.
+        assert_eq!(set_files_view(&conn, p.id, " Grid ").unwrap().files_view, "grid");
+        assert_eq!(set_files_view(&conn, p.id, "bogus").unwrap().files_view, "list");
+        assert_eq!(set_files_view(&conn, p.id, "").unwrap().files_view, "list");
+        let stored: String = conn
+            .query_row("SELECT files_view FROM projects WHERE id = ?1", params![p.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, "list");
+        assert!(matches!(set_files_view(&conn, 999, "grid"), Err(AppError::Invalid(_))));
+        // DTO read fallback: any stored value outside the domain (the DB CHECK
+        // normally prevents this) still renders as the default mode.
+        assert_eq!(parse_files_view("tiles"), "list");
+        assert_eq!(parse_files_view("grid"), "grid");
         fs::remove_dir_all(&wd).unwrap();
     }
 }

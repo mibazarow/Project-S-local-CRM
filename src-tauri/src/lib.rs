@@ -227,6 +227,7 @@ pub fn run() {
             commands::projects::refresh_project_brief,
             commands::projects::move_project,
             commands::projects::set_task_columns,
+            commands::projects::project_set_files_view,
             commands::tasks::tasks_list,
             commands::tasks::task_create,
             commands::tasks::task_update,

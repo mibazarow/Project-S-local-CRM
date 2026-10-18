@@ -20,7 +20,10 @@ interface Props {
 export default function FilesPanel({ project }: Props) {
   const { state, actions } = useApp();
   const [tab, setTab] = useState<"files" | "tasks">("files");
-  const [view, setView] = useState<"list" | "grid">("list");
+  // Per-project file view mode (SPEC 4.2): hydrated from the project DTO;
+  // the panel is keyed by project id in App, so switching projects remounts
+  // and restores each project's remembered mode (no reset to "list").
+  const [view, setView] = useState<"list" | "grid">(project.filesView);
   // Grid navigation: the folder currently shown by the grid ("" = project root).
   const [currentDir, setCurrentDir] = useState("");
   const [selected, setSelected] = useState<FsEntry | null>(null);
@@ -93,6 +96,16 @@ export default function FilesPanel({ project }: Props) {
     if (next !== tab && !confirmDiscard()) return;
     setTab(next);
     setHighlightTaskId(null);
+  };
+
+  // Local state flips immediately; the backend persists the mode per project
+  // and emits "projects-changed", so AppStore refreshes the project list and
+  // the saved value arrives back through the `project` prop (restart path).
+  const changeView = (next: "list" | "grid") => {
+    setView(next);
+    void ipc.projectSetFilesView(project.id, next).catch(() => {
+      // Persistence failed: the local mode stays valid until the next mount.
+    });
   };
 
   // SearchResults only renders on the files tab, so this always switches tabs.
@@ -170,7 +183,7 @@ export default function FilesPanel({ project }: Props) {
                 selectedDirRel={selected && selected.kind === "dir" ? selected.relPath : ""}
                 onSelect={handleSelect}
                 view={view}
-                onViewChange={setView}
+                onViewChange={changeView}
               />
             ) : (
               <FileGrid
@@ -181,7 +194,7 @@ export default function FilesPanel({ project }: Props) {
                 onSelect={handleSelect}
                 onNavigateDir={setCurrentDir}
                 view={view}
-                onViewChange={setView}
+                onViewChange={changeView}
               />
             )}
             {selected && selected.kind === "file" && (

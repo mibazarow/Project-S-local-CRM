@@ -63,6 +63,7 @@ const project = vi.hoisted((): ProjectDto => ({
   overdueCount: 1,
   hasActiveTasks: false,
   taskColumns: ["Новые", "В работе", "Готово"],
+  filesView: "list",
 }));
 
 const noteEntry = vi.hoisted((): FsEntry => ({

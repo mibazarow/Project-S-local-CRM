@@ -137,3 +137,17 @@ pub(crate) fn set_task_columns(
     emit_projects_changed(&app);
     Ok(dto)
 }
+
+// Per-project file view mode ("list" | "grid"); unknown values fall back to
+// the default. Emits "projects-changed" so the store picks the new mode up.
+#[tauri::command]
+pub(crate) fn project_set_files_view(
+    app: AppHandle,
+    state: State<AppState>,
+    project_id: i64,
+    view: String,
+) -> Result<ProjectDto> {
+    let dto = with_db(&state, |conn| projects::set_files_view(conn, project_id, &view))?;
+    emit_projects_changed(&app);
+    Ok(dto)
+}

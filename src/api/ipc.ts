@@ -163,6 +163,11 @@ export const moveProject = (id: number, position: number) =>
 export const setTaskColumns = (projectId: number, columns: string[]) =>
   invoke<ProjectDto>("set_task_columns", { projectId, columns });
 
+// Per-project file view mode (SPEC 4.2); emits "projects-changed" so the
+// store refreshes and the mode survives project switches and restarts.
+export const projectSetFilesView = (projectId: number, view: "list" | "grid") =>
+  invoke<ProjectDto>("project_set_files_view", { projectId, view });
+
 export const tasksList = (projectId: number) => invoke<TaskDto[]>("tasks_list", { projectId });
 
 export const taskCreate = (

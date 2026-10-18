@@ -33,6 +33,7 @@ const makeProject = (overrides: Partial<ProjectDto> = {}): ProjectDto => ({
   overdueCount: 0,
   hasActiveTasks: false,
   taskColumns: ["Новые", "В работе", "Готово"],
+  filesView: "list",
   ...overrides,
 });
 

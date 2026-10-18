@@ -26,6 +26,9 @@ export interface ProjectDto {
   // Per-project kanban column labels, always exactly 3 (projects.rs
   // task_columns); renaming one column replaces the whole triple.
   taskColumns: string[];
+  // Per-project file view mode (SPEC 4.2): remembered list/grid, stored in
+  // the project DB; unknown backend values normalize to "list".
+  filesView: "list" | "grid";
 }
 
 export interface FsEntry {
