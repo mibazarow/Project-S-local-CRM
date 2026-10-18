@@ -7,12 +7,11 @@
 
 ## Текущее состояние
 - Последний зелёный HEAD: `ab60b04` — `npm test` **164 passed**, `npm run build` OK, oxlint — только pre-existing `crossActions.ts`.
-- Бэкенд последний раз проверен на `d123dae`: `cargo test` **807 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings. Контракты/DTO/схема не затронуты.
+- Бэкенд последний раз проверен на `b370c3b`: `cargo test` **813 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings. Контракты/DTO/схема не затронуты.
 - Baseline-скриншоты: `/tmp/project-s-baseline/` (7 экранов).
 - Полный `npm run app:build` — только в финале.
 
 ## Фаза 5 — остаток
-- **S5.5e backups-static** — `ACTIVE_BACKUPS` (`ops.rs:260`): инкапсулировать дедуп конкурентных бэкапов.
 - **S5.5f open-with-cache** — `CACHE` (`open_with.rs:153`): инкапсулировать кэш списка приложений по типу.
 - `embed`-кэши (`EMBEDDER_CACHE`, ORT `ENV`) — осознанно процессные, не трогаем.
 
@@ -26,4 +25,4 @@
 - `BAG_REPORT.md`/`Q.md` — рабочие файлы задач, не менять их в рамках рефакторинга.
 
 ## Следующий шаг
-**S5.5e backups-static** — инкапсулировать `ACTIVE_BACKUPS` (`ops.rs:260`): дедуп конкурентных бэкапов, покрыть тестом повторный вход того же пути.
+**S5.5f open-with-cache** — инкапсулировать `CACHE` (`open_with.rs:153`): кэш списка приложений по типу, покрыть тестом повторный вход того же типа.
