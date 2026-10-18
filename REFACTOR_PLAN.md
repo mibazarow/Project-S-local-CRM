@@ -5,7 +5,7 @@
 
 ## Текущее состояние
 - Закрыто: **Фазы 0–2** (тесты, бэкенд-перф/безопасность, zero-risk фронтенд) и **S3.1–S3.4** (split `lib.rs`, split `harness_tools`, chat-run extract, loop-round extract).
-- Последний зелёный HEAD: `<S3.4-hash>` — `cargo test` **775 passed / 19 ignored**, `npm test` **82 passed**, build OK.
+- Последний зелёный HEAD: `76f6d24` — `cargo test` **775 passed / 19 ignored**, `npm test` **82 passed**, build OK.
 - Baseline-скриншоты: `/tmp/project-s-baseline/` (7 экранов).
 - Полный `npm run app:build` — только в финале.
 
@@ -14,7 +14,7 @@
 
 ## Осталось (18 срезов)
 
-### S3.4 loop-round-extract — `done` (коммит `<S3.4-hash>`)
+### S3.4 loop-round-extract — `done` (коммит `76f6d24`)
 `run_inner` (`agent/loop.rs`, ~250 строк) разложен на именованные шаги в том же модуле: `Run` (per-run состояние: transcript/fallback/reasoning/allowlist/watchdog/`GuardState`) + `is_cancelled`, `check_watchdog`, `call_llm`, `note_round_outcome`, `step`, `handle_claim_guards`, `run_tool_call`, `note_tool_call`, `handle_loop_guard`, `finish_latch`, `finish_run`; колбэки `emit`/`on_message` — через приватный `Hooks`/`HookSet` (адаптер `exec_tool` к нетронутому `execute_tool_call`). Публичные `run`/`run_with`/`AgentRunConfig`/`AgentRunResult`/`AgentEvent`/`RunLimits`/`ChatBackend`/`AgentState` и `execute_tool_call`/`execute_inner`/`execute_with_timeout`/`attach_hint` — без изменений (grep diff: ни одной +/- строки в их сигнатурах). Порядок сохранён байт-за-байтом: cancel→watchdog→stream-события→trace/fallback-латч до аппенда→guards только после аппенда assistant-сообщения→внутри tool-call: Started→exec→Finished→links→tool-msg→bookkeeping→**latch→loop-nudge** (намеренно: finish_task не должен получать nudge — покрыто `guards_do_not_fire_when_finish_task_ends_the_run`). Тесты: 29 существующих loop-тестов без правок + 3 новых юнит-теста на извлечённые шаги (`finish_latch` defaults/не-finish/failed, `note_round_outcome` latch+blank-trace фильтры, `note_tool_call`/`handle_loop_guard` streak+verifying). Проверки: `cargo test` 775 passed / 0 failed / 19 ignored (baseline 772, +3), `cargo check` OK, `cargo clippy --all-targets` 0 warnings, `npm run build` OK.
 
 ### S3.5 skills-split — `pending`
