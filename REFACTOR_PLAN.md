@@ -4,7 +4,7 @@
 Поведение, внешний вид и контракты — без изменений. Один срез = один концерн = один коммит.
 
 ## Текущее состояние
-- Закрыто: **Фазы 0–2** (тесты, бэкенд-перф/безопасность, zero-risk фронтенд) и **S3.1–S3.6** (split `lib.rs`, split `harness_tools`, chat-run extract, loop-round extract, skills split, migration-table).
+- Закрыто: **Фазы 0–2** (тесты, бэкенд-перф/безопасность, zero-risk фронтенд), **S3.1–S3.6** (split `lib.rs`, split `harness_tools`, chat-run extract, loop-round extract, skills split, migration-table) и **S4.1** (chat-hook-dedupe).
 - Последний зелёный HEAD: `f23b488` — `cargo test` **777 passed / 19 ignored**, `npm test` **82 passed**, build OK.
 - Baseline-скриншоты: `/tmp/project-s-baseline/` (7 экранов).
 - Полный `npm run app:build` — только в финале.
@@ -24,7 +24,11 @@
 `run_migrations` (`db/schema.rs`, if-chain ~274 строк / 31 блок) → таблица `MIGRATIONS: &[(u32, Migration)]` (`type Migration = fn(&Connection) -> Result<()>`) из 31 механически извлечённых `migrate_vN`-функций; раннер читает `PRAGMA user_version` один раз, исполняет по порядку при `version < target` и ставит `user_version = target` после каждого тела — та же последовательность версий. Тела блоков перенесены байт-в-байт вместе с комментариями: SQL-константы и `migration_3/11/13/19/20` (format!) не тронуты (diff-ханки начинаются со строки 570, константы v1–v31 — без изменений; multiset всех строковых литералов до-`#[cfg(test)]` идентичен, кроме ключа pragma `"user_version"` 31→1 — переехал в раннер). Guard'ы сохранены внутри функций: v14 (`pragma_table_info('projects').position`), v17 (FK toggle `PRAGMA foreign_keys` OFF→rebuild→восстановление), v18 (две guarded ALTER' с inline-SQL байт-в-байт), v22/v23/v25/v26/v27/v31 (per-column), v24/v28/v29/v30 (per-table), backfill'ы v23 (`derive_title`) и v31 (`is_priority`) — на месте. Последний target таблицы — `SCHEMA_VERSION as u32`, константа и таблица не разъедутся. Тесты: 31 существующий db-тест без правок + 2 новых (`migration_from_zero_yields_current_version_and_all_tables` — user_version=SCHEMA_VERSION и 28 логических таблиц; `fresh_and_stepwise_upgraded_schema_are_identical` — дамп `sqlite_master` (type,name,sql) свежего пути против пошагового прогона всех `migrate_vN` — идентичен). Проверки: `cargo test` 777 passed / 0 failed / 19 ignored (baseline 775, +2), `cargo check --all-targets` OK, `cargo clippy --all-targets` 0 warnings (единственный `type_complexity` закрыт алиасом), `npm run build` OK.
 
 ## Фаза 4 — фронтенд-структура и перф
-- **S4.1 chat-hook-dedupe** — `useChatRun` + `ChatComposer` вместо трёх копий; порядок событий/очередь те же.
+
+### S4.1 chat-hook-dedupe — `done` (коммит `TBD`)
+Три копии chat-run-обвязки (`ProjectChat` / `NotesChat` / `HarnessView`) → `src/components/chat/useChatRun.ts` (тот же `chatReducer`, те же 4 подписки — agent-event / agent-confirmation / agent-file / agent-context-compacted, тот же порядок событий и тот же flush очереди с задержкой 400 мс: dispatch `done`/`runError` → `onRunEnd` → `flushQueue` (clearQueue → combineQueued → через 400 мс enqueue при начавшемся run иначе send+IPC); роутинг payload→ключ и побочные эффекты (history-reload удалённых run'ов, `notifyTasksChanged`, `loadSessions`/`loadSchedules`) инжектятся через config, читаемый через ref — подписки пересоздаются на тех же deps, что раньше) + `ChatComposer.tsx` (авто-растущий textarea, `chat-input`/`chat-tools`/`chat-hint`/`queue-note`/`stop-btn`/`clear-btn`/`send-btn`/`attach-btn` — разметка, классы, svg и тексты идентичны инлайн-версиям; различия по вью — placeholder, disabled-условия, наличие attach — через пропсы). UX pin/regenerate/export → `resolvePinMessageId`/`resolveRegenerateTurn`/`runChatExport` в `chatShared`. Отклонение, найденное при сверке diff: рефакторинг потерял подписку `sessions-changed` → `loadSessions` в `HarnessView` (авто-заголовки, `rename_chat`, `chat_branch`, создаваемые фирами сессии) — восстановлена отдельным эффектом. `grow()` из обработчиков → `useLayoutEffect` на text со скипом mount: при программном cleared высота пересчитывается после обновления DOM (раньше мерилась по старому значению) — визуальный итог тот же. Проверки: `npm test` 82 passed, `npm run build` OK, `npx oxlint src` — только предупреждение в нетронутом `crossActions.ts`.
+
+- **S4.2 settings-tabs** — вкладка на компонент + `useDebouncedConfig`; save-on-blur тот же.
 - **S4.2 settings-tabs** — вкладка на компонент + `useDebouncedConfig`; save-on-blur тот же.
 - **S4.3 harness-schedule-panel** — вынести панель расписаний из `HarnessView`.
 - **S4.4 appstore-split** — Data/Actions контексты; `refresh()` только для списка проектов; замер ререндеров.
@@ -53,4 +57,4 @@
 - `BAG_REPORT.md` — приватный рабочий файл, не трогаем логику рефакторинга.
 
 ## Следующий шаг
-**S4.1 chat-hook-dedupe** — `useChatRun` + `ChatComposer` вместо трёх копий; порядок событий/очередь те же.
+**S4.2 settings-tabs** — вкладка на компонент + `useDebouncedConfig`; save-on-blur тот же.

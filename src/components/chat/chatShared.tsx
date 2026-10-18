@@ -527,6 +527,48 @@ export function freshUserBefore(
   return null;
 }
 
+// Message-level UX shared by all three chats. A live item (a finished run)
+// carries no DB ids, so each handler refetches the history and maps the item by
+// position before touching the transcript; the per-view pieces (which history
+// command, the chat id, the send command) are passed in, the fetch-and-map and
+// error handling are identical here.
+
+// Resolve the DB message id to pin/branch a rendered item: the last id of the
+// group the item maps to in the fresh transcript. Empty when it cannot be found.
+export async function resolvePinMessageId(
+  historyFn: () => Promise<MessageDto[]>,
+  items: ChatItem[],
+  itemKey: number,
+): Promise<number> {
+  const fresh = historyToItems(await historyFn().catch(() => []));
+  const ids = freshIdsForItem(fresh, items, itemKey);
+  return ids[ids.length - 1];
+}
+
+// Resolve the regenerate boundary for an agent answer: the user turn that
+// precedes it in the fresh transcript (its first DB id truncates after, its text
+// is re-sent). Null when there is no such turn.
+export async function resolveRegenerateTurn(
+  historyFn: () => Promise<MessageDto[]>,
+  items: ChatItem[],
+  itemKey: number,
+): Promise<{ messageId: number; userText: string } | null> {
+  const fresh = historyToItems(await historyFn().catch(() => []));
+  const user = freshUserBefore(fresh, items, itemKey);
+  const messageId = user?.messageIds[0];
+  const userText = user?.text ?? "";
+  if (!messageId || !userText) return null;
+  return { messageId, userText };
+}
+
+// Export saves the Markdown transcript as a local download; failures are silent.
+export function runChatExport(chatId: number, download: (r: { markdown: string }) => void): void {
+  void ipc
+    .chatExport(chatId)
+    .then(download)
+    .catch(() => {});
+}
+
 // Case-insensitive occurrence count of the query across item texts (the
 // header shows the total; the transcript filters by it).
 export function countMatches(items: ChatItem[], query: string): number {

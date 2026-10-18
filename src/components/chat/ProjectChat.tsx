@@ -1,12 +1,9 @@
-import { useEffect, useReducer, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
 import { useApp } from "../../state/AppStore";
 import type { AgentEventPayload, MessageAttachmentDto } from "../../api/types";
 import {
-  chatReducer,
-  combineQueued,
   historyToItems,
-  summarizeArgs,
   toMessage,
   ChatTranscript,
   ChatHeaderTools,
@@ -15,11 +12,14 @@ import {
   AttachXIcon,
   countMatches,
   downloadMarkdown,
-  freshIdsForItem,
-  freshUserBefore,
+  resolvePinMessageId,
+  resolveRegenerateTurn,
+  runChatExport,
   useVisionSupport,
   type ChatItem,
 } from "./chatShared";
+import { useChatRun } from "./useChatRun";
+import { ChatComposer } from "./ChatComposer";
 import { useChatAttachments } from "./useChatAttachments";
 import TodoPanel from "./TodoPanel";
 import { createNote, noteNameFromText } from "../shared/crossActions";
@@ -32,9 +32,6 @@ interface Props {
 
 export default function ProjectChat({ projectId, projectName }: Props) {
   const { state: appState, actions } = useApp();
-  const [state, dispatch] = useReducer(chatReducer, {});
-  const stateRef = useRef(state);
-  stateRef.current = state;
   // project id -> chat id, learned from history loads and send returns: the
   // "agent-file" event carries only chatId, so the view maps it back to the
   // project key, and ChatTranscript needs the chat id for agent attachments.
@@ -45,11 +42,36 @@ export default function ProjectChat({ projectId, projectName }: Props) {
     setChatIds((prev) => (prev[project] === chat ? prev : { ...prev, [project]: chat }));
   const [text, setText] = useState("");
   const [chatQuery, setChatQuery] = useState("");
-  const taRef = useRef<HTMLTextAreaElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const chatRootRef = useRef<HTMLElement | null>(null);
   const att = useChatAttachments(chatRootRef);
   const visionSupported = useVisionSupport();
+
+  // Project chats key by projectId; agent-file/compaction events carry only a
+  // chatId, so they route back through the remembered project -> chat map. A
+  // finished run only bumps the kanban defensively (no history reload here).
+  const { state, stateRef, dispatch } = useChatRun(
+    {
+      routeAgentEvent: (p: AgentEventPayload) => (p.projectId == null ? null : p.projectId),
+      routeConfirmation: (p) => (p.projectId == null ? null : p.projectId),
+      routeAgentFile: (p) => {
+        const entry = Object.entries(chatIdsRef.current).find(([, chat]) => chat === p.chatId);
+        return entry ? Number(entry[0]) : null;
+      },
+      routeCompaction: (p) => {
+        const entry = Object.entries(chatIdsRef.current).find(([, chat]) => chat === p.chatId);
+        return entry ? Number(entry[0]) : null;
+      },
+      onRunEnd: () => actions.notifyTasksChanged(),
+      sendQueued: (key, combined, dispatch) => {
+        void ipc
+          .sendProjectMessage(key, combined)
+          .then((chat) => rememberChatId(key, chat))
+          .catch((e) => dispatch({ type: "sendFailed", key, message: toMessage(e) }));
+      },
+    },
+    [actions],
+  );
 
   const slice = projectId != null ? (state[projectId] ?? null) : null;
   const running = slice?.run != null;
@@ -68,119 +90,10 @@ export default function ProjectChat({ projectId, projectName }: Props) {
       .catch(() => dispatch({ type: "loaded", key: projectId, items: [] }));
   }, [projectId]);
 
-  // When a run finishes (done/error/cancelled), flush the queued messages as
-  // one combined user turn. A short delay lets the finished run persist its
-  // final answer before the new run's user turn is appended; if another run
-  // started meanwhile the text is re-queued for its end.
-  const flushQueue = (key: number) => {
-    const queued = stateRef.current[key]?.queue ?? [];
-    if (queued.length === 0) return;
-    dispatch({ type: "clearQueue", key });
-    const combined = combineQueued(queued);
-    setTimeout(() => {
-      if (stateRef.current[key]?.run) {
-        dispatch({ type: "enqueue", key, text: combined });
-        return;
-      }
-      dispatch({ type: "send", key, text: combined, attachments: [] });
-      void ipc
-        .sendProjectMessage(key, combined)
-        .then((chat) => rememberChatId(key, chat))
-        .catch((e) => dispatch({ type: "sendFailed", key, message: toMessage(e) }));
-    }, 400);
-  };
-
-  useEffect(() => {
-    let cancelled = false;
-    let unEvent: (() => void) | undefined;
-    let unConfirm: (() => void) | undefined;
-    let unFile: (() => void) | undefined;
-    let unCompaction: (() => void) | undefined;
-    const onEvent = (p: AgentEventPayload) => {
-      if (p.projectId == null) return; // harness-session events carry sessionId
-      const key = p.projectId;
-      switch (p.event.type) {
-        case "textDelta":
-          dispatch({ type: "delta", key, text: p.event.text });
-          break;
-        case "reasoningDelta":
-          dispatch({ type: "reasoningDelta", key, text: p.event.text });
-          break;
-        case "toolCallStarted":
-          dispatch({ type: "stepStart", key, name: p.event.name, summary: summarizeArgs(p.event.args) });
-          break;
-        case "toolCallFinished":
-          dispatch({ type: "stepFinish", key, ok: p.event.ok });
-          break;
-        case "done":
-          dispatch({
-            type: "done",
-            key,
-            answer: p.event.answer,
-            reason: p.event.reason,
-            reasoning: p.event.reasoning,
-          });
-          // Defensive: the run may have created/moved tasks; the kanban
-          // refetches even if a tasks-changed event raced the run end.
-          actions.notifyTasksChanged();
-          flushQueue(key);
-          break;
-        case "error":
-          dispatch({ type: "runError", key, message: p.event.message });
-          actions.notifyTasksChanged();
-          flushQueue(key);
-          break;
-        case "confirmationRequested":
-          break; // the id-bearing copy arrives as "agent-confirmation"
-      }
-    };
-    void ipc.onAgentEvent(onEvent).then((u) => (cancelled ? u() : (unEvent = u)));
-    void ipc
-      .onAgentConfirmation((p) => {
-        if (p.projectId == null) return;
-        dispatch({ type: "confirm", key: p.projectId, payload: p });
-      })
-      .then((u) => (cancelled ? u() : (unConfirm = u)));
-    // Agent-sent files: the event carries only chatId, so route it through the
-    // remembered project -> chat map; the reducer dedupes by messageId.
-    void ipc
-      .onAgentFile((p) => {
-        const entry = Object.entries(chatIdsRef.current).find(([, chat]) => chat === p.chatId);
-        if (!entry) return;
-        dispatch({ type: "agentFile", key: Number(entry[0]), payload: p });
-      })
-      .then((u) => (cancelled ? u() : (unFile = u)));
-    // Context compaction: the event carries only chatId, so route it through
-    // the remembered project -> chat map; the summary shows as a status item.
-    void ipc
-      .onAgentCompaction((p) => {
-        const entry = Object.entries(chatIdsRef.current).find(([, chat]) => chat === p.chatId);
-        if (!entry) return;
-        dispatch({ type: "compaction", key: Number(entry[0]), summary: p.summary });
-      })
-      .then((u) => (cancelled ? u() : (unCompaction = u)));
-    return () => {
-      cancelled = true;
-      unEvent?.();
-      unConfirm?.();
-      unFile?.();
-      unCompaction?.();
-    };
-  }, [actions]);
-
   useEffect(() => {
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [slice]);
-
-  const grow = () => {
-    const ta = taRef.current;
-    if (!ta) return;
-    ta.style.height = "auto";
-    const cs = getComputedStyle(ta);
-    const lh = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.5;
-    ta.style.height = Math.min(ta.scrollHeight, 10 * lh + 16) + "px";
-  };
 
   const sendText = (value: string) => {
     if (projectId == null || running) return;
@@ -207,7 +120,6 @@ export default function ProjectChat({ projectId, projectName }: Props) {
         }
       }
       setText("");
-      grow();
       att.clear();
       dispatch({ type: "send", key: projectId, text: trimmed, attachments: refs });
       void ipc
@@ -227,7 +139,6 @@ export default function ProjectChat({ projectId, projectName }: Props) {
     if (running) {
       dispatch({ type: "enqueue", key: projectId, text: trimmed });
       setText("");
-      grow();
       return;
     }
     sendText(text);
@@ -292,9 +203,11 @@ export default function ProjectChat({ projectId, projectName }: Props) {
     if (projectId == null) return;
     const chatId = chatIds[projectId];
     if (chatId == null) return;
-    const fresh = historyToItems(await ipc.projectChatHistory(projectId).catch(() => []));
-    const ids = freshIdsForItem(fresh, slice?.items ?? [], item.key);
-    const messageId = ids[ids.length - 1];
+    const messageId = await resolvePinMessageId(
+      () => ipc.projectChatHistory(projectId),
+      slice?.items ?? [],
+      item.key,
+    );
     if (!messageId) return;
     try {
       await ipc.chatPin(chatId, messageId, pinned);
@@ -308,16 +221,17 @@ export default function ProjectChat({ projectId, projectName }: Props) {
     if (projectId == null || running) return;
     const chatId = chatIds[projectId];
     if (chatId == null) return;
-    const fresh = historyToItems(await ipc.projectChatHistory(projectId).catch(() => []));
-    const user = freshUserBefore(fresh, slice?.items ?? [], item.key);
-    const messageId = user?.messageIds[0];
-    const userText = user?.text ?? "";
-    if (!messageId || !userText) return;
+    const turn = await resolveRegenerateTurn(
+      () => ipc.projectChatHistory(projectId),
+      slice?.items ?? [],
+      item.key,
+    );
+    if (!turn) return;
     try {
-      await ipc.chatTruncateAfter(chatId, messageId);
+      await ipc.chatTruncateAfter(chatId, turn.messageId);
       dispatch({ type: "regenerate", key: projectId, itemKey: item.key });
       await ipc
-        .sendProjectMessage(projectId, userText)
+        .sendProjectMessage(projectId, turn.userText)
         .then((chat) => rememberChatId(projectId, chat))
         .catch((e) => dispatch({ type: "sendFailed", key: projectId, message: toMessage(e) }));
     } catch (e) {
@@ -329,10 +243,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
     if (projectId == null) return;
     const chatId = chatIds[projectId];
     if (chatId == null) return;
-    void ipc
-      .chatExport(chatId)
-      .then((r) => downloadMarkdown(r.markdown, `chat-${chatId}.md`))
-      .catch(() => {});
+    runChatExport(chatId, (r) => downloadMarkdown(r.markdown, `chat-${chatId}.md`));
   };
 
   return (
@@ -400,69 +311,21 @@ export default function ProjectChat({ projectId, projectName }: Props) {
 
       {confirmation && <ConfirmCard confirmation={confirmation} onResolve={resolve} />}
 
-      <div className="chat-input">
-        <textarea
-          ref={taRef}
-          rows={3}
-          placeholder="Спроси агента о проекте…"
-          value={text}
-          disabled={projectId == null}
-          onChange={(e) => {
-            setText(e.target.value);
-            grow();
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && !e.shiftKey) {
-              e.preventDefault();
-              send();
-            }
-          }}
-        />
-        <div className="chat-tools">
-          <button
-            className="icon-btn attach-btn"
-            type="button"
-            title="Приложить файл или картинку"
-            disabled={projectId == null}
-            onClick={() => void att.pick().catch(() => {})}
-          >
-            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.49-8.48" /></svg>
-          </button>
-          <span className="chat-hint">Shift+Enter — перенос строки, Enter — отправить</span>
-          {(slice?.queue.length ?? 0) > 0 && (
-            <span className="queue-note" title="Уйдёт одним сообщением, когда агент закончит">
-              В очереди: {slice?.queue.length}
-            </span>
-          )}
-          {running ? (
-            <button className="ghost-btn small stop-btn" type="button" onClick={stop}>
-              Стоп
-            </button>
-          ) : (
-            <button
-              className="icon-btn clear-btn"
-              type="button"
-              title="Очистить"
-              onClick={() => {
-                setText("");
-                grow();
-                att.clear();
-              }}
-            >
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6M10 11v6M14 11v6" /></svg>
-            </button>
-          )}
-          <button
-            className="icon-btn send-btn"
-            type="button"
-            title={running ? "Отправить в очередь" : "Отправить"}
-            disabled={!text.trim()}
-            onClick={send}
-          >
-            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4 20-7z" /></svg>
-          </button>
-        </div>
-      </div>
+      <ChatComposer
+        text={text}
+        onTextChange={setText}
+        onSend={send}
+        onStop={stop}
+        onClear={() => {
+          setText("");
+          att.clear();
+        }}
+        running={running}
+        queueCount={slice?.queue.length ?? 0}
+        placeholder="Спроси агента о проекте…"
+        disabled={projectId == null}
+        attach={{ onPick: () => att.pick().catch(() => {}), disabled: projectId == null }}
+      />
     </aside>
   );
 }
