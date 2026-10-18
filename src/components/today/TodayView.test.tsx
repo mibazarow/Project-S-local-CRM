@@ -243,6 +243,9 @@ describe("TodayView card reorder", () => {
     await mount();
     expect(cardTitles()).toEqual(DEFAULT_TITLES);
     expect(readPersistedOrder()).toBeNull();
+    // The removed header summary must not render any counter chips.
+    expect(container.querySelector(".today-summary")).toBeNull();
+    expect(container.querySelectorAll(".today-chip")).toHaveLength(0);
   });
 
   it("dragging a card header reorders the DOM and persists the order globally", async () => {

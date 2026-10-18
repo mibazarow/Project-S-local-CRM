@@ -1756,43 +1756,6 @@ details.set-card code {
 .today-greeting { margin-top: 4px; font-size: 13px; color: var(--text-muted); }
 .today-refresh { margin-left: auto; flex-shrink: 0; }
 
-/* Компактная сводка: четыре счётчика-чипа. */
-.today-summary {
-  margin-top: 14px;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
-}
-.today-chip {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  min-width: 0;
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  box-shadow: var(--shadow);
-}
-.today-chip-label {
-  font-size: 11px;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: .04em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.today-chip-value {
-  font-size: 19px;
-  font-weight: 600;
-  line-height: 1.1;
-  font-variant-numeric: tabular-nums;
-}
-.today-chip.is-danger { border-color: rgba(255, 59, 48, .35); background: rgba(255, 59, 48, .05); }
-.today-chip.is-danger .today-chip-label { color: var(--danger); }
-.today-chip.is-danger .today-chip-value { color: var(--danger); }
-
 /* Сетка карточек: 2 колонки от 1100px, иначе 1. */
 .today-grid {
   display: grid;

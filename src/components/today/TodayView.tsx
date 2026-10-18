@@ -707,27 +707,6 @@ export default function TodayView({ onTab }: Props) {
               <RefreshIcon />
             </button>
           </div>
-
-          {data && (
-            <div className="today-summary">
-              <div className={`today-chip${data.overdue.length ? " is-danger" : ""}`}>
-                <span className="today-chip-label">Просрочено</span>
-                <span className="today-chip-value">{data.overdue.length}</span>
-              </div>
-              <div className="today-chip">
-                <span className="today-chip-label">На неделе</span>
-                <span className="today-chip-value">{data.soon.length}</span>
-              </div>
-              <div className="today-chip">
-                <span className="today-chip-label">Расписаний</span>
-                <span className="today-chip-value">{data.schedules.length}</span>
-              </div>
-              <div className="today-chip">
-                <span className="today-chip-label">Целей в работе</span>
-                <span className="today-chip-value">{activeGoals}</span>
-              </div>
-            </div>
-          )}
         </header>
 
         <div className="center-body">
