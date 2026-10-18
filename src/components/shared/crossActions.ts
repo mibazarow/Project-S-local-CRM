@@ -1,6 +1,6 @@
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
-import { useApp } from "../../state/AppStore";
+import { useAppActions } from "../../state/AppStore";
 
 // Shared helpers for the cross-entity quick actions that connect files,
 // tasks, chat messages and the project agent chat.
@@ -45,7 +45,7 @@ export async function createNote(name: string, content: string): Promise<string>
 // Hover quick action for project files (tree rows, grid tiles, preview head):
 // «Спросить агента» routes a prebuilt question to the project chat.
 export function useFileCrossActions(projectId: number) {
-  const { actions } = useApp();
+  const actions = useAppActions();
   const askAgent = (entry: FsEntry) =>
     actions.requestAskAgent(
       projectId,

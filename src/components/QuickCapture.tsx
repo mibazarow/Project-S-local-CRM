@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import * as ipc from "../api/ipc";
-import { useApp } from "../state/AppStore";
+import { useAppState } from "../state/AppStore";
 
 interface Props {
   initialTarget: "note" | "task";
@@ -12,7 +12,7 @@ import { toMessage } from "../shared/errors";
 export { toMessage } from "../shared/errors";
 
 export default function QuickCapture({ initialTarget, onClose }: Props) {
-  const { state } = useApp();
+  const state = useAppState();
   const [target, setTarget] = useState<"note" | "task">(initialTarget);
   const [text, setText] = useState("");
   const [projectId, setProjectId] = useState<number | null>(

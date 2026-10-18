@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import * as ipc from "../../api/ipc";
-import { useApp } from "../../state/AppStore";
+import { useAppActions } from "../../state/AppStore";
 import type { FsEntry, ObjectiveDto, ProjectDto, ScheduleDto, SessionDto, TaskDto } from "../../api/types";
 import { toMessage } from "../chat/chatShared";
 import { formatActivity, formatDue, formatInstant, formatModified } from "../../shared/format";
@@ -168,7 +168,7 @@ function TaskRow({
 }
 
 export default function TodayView({ onTab }: Props) {
-  const { actions } = useApp();
+  const actions = useAppActions();
   const [data, setData] = useState<TodayData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<number, boolean>>({});

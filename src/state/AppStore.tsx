@@ -187,7 +187,8 @@ interface AppContextValue {
   actions: AppActions;
 }
 
-const AppContext = createContext<AppContextValue | null>(null);
+const AppStateContext = createContext<AppState | null>(null);
+const AppActionsContext = createContext<AppActions | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
@@ -434,12 +435,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
     ],
   );
 
-  const value = useMemo(() => ({ state, actions }), [state, actions]);
-  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
+  return (
+    <AppActionsContext.Provider value={actions}>
+      <AppStateContext.Provider value={state}>{children}</AppStateContext.Provider>
+    </AppActionsContext.Provider>
+  );
+}
+
+export function useAppState(): AppState {
+  const state = useContext(AppStateContext);
+  if (!state) throw new Error("useAppState must be used within AppProvider");
+  return state;
+}
+
+export function useAppActions(): AppActions {
+  const actions = useContext(AppActionsContext);
+  if (!actions) throw new Error("useAppActions must be used within AppProvider");
+  return actions;
 }
 
 export function useApp(): AppContextValue {
-  const ctx = useContext(AppContext);
-  if (!ctx) throw new Error("useApp must be used within AppProvider");
-  return ctx;
+  return { state: useAppState(), actions: useAppActions() };
 }

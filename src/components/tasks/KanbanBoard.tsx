@@ -13,7 +13,7 @@ import RenameInput from "../files/RenameInput";
 import { IconCheck, IconClose, IconPencil, IconPlus, IconSearch } from "../files/icons";
 import TaskCard from "./TaskCard";
 import { usePointerDrag, type DropTarget } from "../../hooks/usePointerDrag";
-import { useApp } from "../../state/AppStore";
+import { useAppActions } from "../../state/AppStore";
 
 // Column identities are fixed backend statuses; only the labels are
 // per-project (ProjectDto.taskColumns).
@@ -118,7 +118,7 @@ export default function KanbanBoard({ project, tasksVersion, highlightTaskId }: 
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [renamingIndex, setRenamingIndex] = useState<number | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
-  const { actions } = useApp();
+  const actions = useAppActions();
 
   // «Обсудить»: a prebuilt question about the task for the project chat.
   const discussTask = (task: TaskDto) => {

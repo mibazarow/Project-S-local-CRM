@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
-import { useApp } from "../../state/AppStore";
+import { useAppActions } from "../../state/AppStore";
 import type { AgentEventPayload } from "../../api/types";
 import {
   historyToItems,
@@ -22,7 +22,7 @@ import { ChatComposer } from "../chat/ChatComposer";
 // backend get-or-creates the singleton chat and routes its runs as
 // "agent-event" / "agent-confirmation" with notes: true, keyed by chatId.
 export default function NotesChat() {
-  const { actions } = useApp();
+  const actions = useAppActions();
   const [chatId, setChatId] = useState<number | null>(null);
   const chatIdRef = useRef<number | null>(null);
   const [text, setText] = useState("");
