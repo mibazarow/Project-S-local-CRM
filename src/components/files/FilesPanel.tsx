@@ -3,6 +3,7 @@ import * as ipc from "../../api/ipc";
 import type { FsEntry, ProjectDto } from "../../api/types";
 import { useApp } from "../../state/AppStore";
 import { useDebouncedValue } from "../../hooks/useDebouncedValue";
+import { resolveEntry } from "../../shared/resolveEntry";
 import Breadcrumbs from "./Breadcrumbs";
 import FileGrid from "./FileGrid";
 import FilePreview from "./FilePreview";
@@ -51,11 +52,8 @@ export default function FilesPanel({ project }: Props) {
     actions.clearPendingFile();
     if (!confirmDiscard()) return;
     void (async () => {
-      const slash = path.lastIndexOf("/");
-      const dir = slash === -1 ? "" : path.slice(0, slash);
       try {
-        const entries = await ipc.fsListDir(project.id, dir);
-        const entry = entries.find((e) => e.relPath === path);
+        const entry = await resolveEntry(path, (dir) => ipc.fsListDir(project.id, dir));
         if (entry) {
           setTab("files");
           setSelected(entry);

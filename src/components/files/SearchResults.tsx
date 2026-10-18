@@ -1,7 +1,9 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { type ReactNode } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry, SearchHit } from "../../api/types";
 import { toMessage } from "./fileOps";
+import { useSearchHits } from "../../hooks/useSearchHits";
+import { resolveEntry } from "../../shared/resolveEntry";
 
 interface Props {
   projectId: number;
@@ -29,37 +31,16 @@ export function renderSnippet(snippet: string): ReactNode[] {
 }
 
 export default function SearchResults({ projectId, query, onSelect, onOpenTask }: Props) {
-  const [hits, setHits] = useState<SearchHit[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    void (async () => {
-      try {
-        const result = await ipc.searchProject(projectId, query);
-        if (!cancelled) setHits(result);
-      } catch (e) {
-        if (!cancelled) setError(toMessage(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [projectId, query]);
+  const { hits, loading, error, setError } = useSearchHits(
+    () => ipc.searchProject(projectId, query),
+    [projectId, query],
+  );
 
   // A hit carries no fs metadata; resolve the real FsEntry through the tree's
   // own listing so FilePreview gets correct flags and size.
   const openHit = async (hit: SearchHit) => {
-    const slash = hit.relPath.lastIndexOf("/");
-    const dir = slash === -1 ? "" : hit.relPath.slice(0, slash);
     try {
-      const entries = await ipc.fsListDir(projectId, dir);
-      const entry = entries.find((e) => e.relPath === hit.relPath);
+      const entry = await resolveEntry(hit.relPath, (dir) => ipc.fsListDir(projectId, dir));
       if (entry) onSelect(entry);
       else setError(`Файл «${hit.name}» больше недоступен`);
     } catch (e) {

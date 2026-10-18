@@ -1,8 +1,9 @@
-import { useEffect, useState } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry, SearchHit } from "../../api/types";
 import { toMessage } from "../chat/chatShared";
 import { renderSnippet } from "../files/SearchResults";
+import { useSearchHits } from "../../hooks/useSearchHits";
+import { resolveEntry } from "../../shared/resolveEntry";
 
 interface Props {
   query: string;
@@ -11,37 +12,16 @@ interface Props {
 }
 
 export default function NotesSearchResults({ query, treeVersion, onOpen }: Props) {
-  const [hits, setHits] = useState<SearchHit[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    void (async () => {
-      try {
-        const result = await ipc.searchNotes(query);
-        if (!cancelled) setHits(result);
-      } catch (e) {
-        if (!cancelled) setError(toMessage(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [query, treeVersion]);
+  const { hits, loading, error, setError } = useSearchHits(
+    () => ipc.searchNotes(query),
+    [query, treeVersion],
+  );
 
   // A hit carries no fs metadata; resolve the real FsEntry through the
   // folder listing so the editor gets correct flags.
   const openHit = async (hit: SearchHit) => {
-    const slash = hit.relPath.lastIndexOf("/");
-    const dir = slash === -1 ? "" : hit.relPath.slice(0, slash);
     try {
-      const entries = await ipc.notesList(dir);
-      const entry = entries.find((e) => e.relPath === hit.relPath);
+      const entry = await resolveEntry(hit.relPath, (dir) => ipc.notesList(dir));
       if (entry) onOpen(entry);
       else setError(`Заметка «${hit.name}» больше недоступна`);
     } catch (e) {

@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
 import { useApp } from "../../state/AppStore";
 import { useDebouncedValue } from "../../hooks/useDebouncedValue";
+import { useSearchHits } from "../../hooks/useSearchHits";
 import type {
   AgentEventPayload,
-  ChatHit,
   MessageAttachmentDto,
   ScheduleDto,
   SessionDto,
@@ -140,9 +140,6 @@ export default function HarnessView() {
   const [sessionsError, setSessionsError] = useState<string | null>(null);
 
   const [query, setQuery] = useState("");
-  const [hits, setHits] = useState<ChatHit[]>([]);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
   const [indexNote, setIndexNote] = useState<string | null>(null);
 
   // session id -> chat id, learned from history loads and send returns: the
@@ -293,31 +290,13 @@ export default function HarnessView() {
   // Chat search: the query is debounced into activeQuery (one request per
   // pause, no polling); an empty query restores the plain session list.
   const activeQuery = useDebouncedValue(query.trim(), 250);
-
-  useEffect(() => {
-    if (!activeQuery) {
-      setHits([]);
-      setSearchError(null);
-      setSearchLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setSearchLoading(true);
-    setSearchError(null);
-    void (async () => {
-      try {
-        const result = await ipc.searchChats(activeQuery, 10);
-        if (!cancelled) setHits(result);
-      } catch (e) {
-        if (!cancelled) setSearchError(toMessage(e));
-      } finally {
-        if (!cancelled) setSearchLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [activeQuery]);
+  const {
+    hits,
+    loading: searchLoading,
+    error: searchError,
+  } = useSearchHits(() => ipc.searchChats(activeQuery, 10), [activeQuery], {
+    skip: !activeQuery,
+  });
 
   // Chat message index: backfill once on mount (best-effort, silent), on
   // demand via the toolbar button; failures never surface.

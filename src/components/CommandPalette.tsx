@@ -3,6 +3,7 @@ import * as ipc from "../api/ipc";
 import type { FsEntry, GlobalHit, SessionDto } from "../api/types";
 import { useApp } from "../state/AppStore";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
+import { useSearchHits } from "../hooks/useSearchHits";
 import type { Tab } from "./TopBar";
 import { renderSnippet } from "./files/SearchResults";
 import { IconSearch } from "./files/icons";
@@ -55,7 +56,6 @@ export default function CommandPalette({ onTab, onClose }: Props) {
   const [query, setQuery] = useState("");
   const [notes, setNotes] = useState<FsEntry[] | null>(null);
   const [sessions, setSessions] = useState<SessionDto[] | null>(null);
-  const [hits, setHits] = useState<GlobalHit[] | null>(null);
   const [active, setActive] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -74,34 +74,28 @@ export default function CommandPalette({ onTab, onClose }: Props) {
     };
   }, []);
 
-  // Clear results synchronously when the raw (trimmed) query drops below 2
-  // chars, so hits disappear on the keystroke instead of after the debounce.
-  const trimmedQuery = query.trim();
-  useEffect(() => {
-    if (trimmedQuery.length < 2) setHits(null);
-  }, [trimmedQuery]);
-
   // Global cross-entity search: debounced, only for queries of 2+ chars; the
   // backend merges projects/files/tasks/notes/chats into one ranked list.
+  const trimmedQuery = query.trim();
   const debouncedQuery = useDebouncedValue(trimmedQuery, SEARCH_DEBOUNCE_MS);
+  const { hits, clearHits } = useSearchHits(
+    () => ipc.globalSearch(debouncedQuery),
+    [debouncedQuery],
+    { skip: debouncedQuery.length < 2, onSkip: "keep", onError: "emptyHits" },
+  );
+
+  // Clear results synchronously when the raw (trimmed) query drops below 2
+  // chars, so hits disappear on the keystroke instead of after the debounce.
   useEffect(() => {
-    if (debouncedQuery.length < 2) return;
-    let cancelled = false;
-    void ipc
-      .globalSearch(debouncedQuery)
-      .then((h) => !cancelled && setHits(h))
-      .catch(() => !cancelled && setHits([]));
-    return () => {
-      cancelled = true;
-    };
-  }, [debouncedQuery]);
+    if (trimmedQuery.length < 2) clearHits();
+  }, [trimmedQuery, clearHits]);
 
   const q = query.trim().toLowerCase();
 
   const groups = useMemo(() => {
     // Backend-ranked hits: navigation opens the target entity, setting the
     // matching store intent for the view that mounts with the tab switch.
-    const searchItems: PaletteItem[] = (hits ?? []).map((h) => ({
+    const searchItems: PaletteItem[] = hits.map((h) => ({
       key: `gs-${h.kind}-${h.id}`,
       label: h.title,
       hint: h.subtitle,
@@ -146,7 +140,7 @@ export default function CommandPalette({ onTab, onClose }: Props) {
     // Static groups drop entries the search group already lists, so the same
     // target never appears twice.
     const searchTargets = new Set<string>();
-    for (const h of hits ?? []) {
+    for (const h of hits) {
       if (h.kind === "project") searchTargets.add(`project-${h.id}`);
       else if (h.kind === "note" && h.relPath) searchTargets.add(`note-${h.relPath}`);
       else if (h.kind === "chat" && h.sessionId != null) searchTargets.add(`session-${h.sessionId}`);

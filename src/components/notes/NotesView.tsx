@@ -3,6 +3,7 @@ import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { useApp } from "../../state/AppStore";
 import { useDebouncedValue } from "../../hooks/useDebouncedValue";
+import { resolveEntry } from "../../shared/resolveEntry";
 import NoteEditor from "./NoteEditor";
 import NotesChat from "./NotesChat";
 import NotesSearchResults from "./NotesSearchResults";
@@ -95,11 +96,8 @@ export default function NotesView() {
     actions.clearPendingNote();
     if (!confirmDiscard()) return;
     void (async () => {
-      const slash = path.lastIndexOf("/");
-      const dir = slash === -1 ? "" : path.slice(0, slash);
       try {
-        const entries = await ipc.notesList(dir);
-        const entry = entries.find((e) => e.relPath === path);
+        const entry = await resolveEntry(path, (dir) => ipc.notesList(dir));
         if (entry) setSelected(entry);
       } catch {
         // The note vanished between palette load and open: stay put.
