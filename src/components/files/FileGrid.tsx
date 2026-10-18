@@ -1,6 +1,7 @@
 import { useEffect, useState, type DragEvent } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
+import { confirmRemove } from "../../shared/confirm";
 import { toMessage, useFileOps } from "./fileOps";
 import { fileMenuItems, useFileMenuActions } from "./fileMenu";
 import ContextMenu from "../shared/ContextMenu";
@@ -101,7 +102,7 @@ export default function FileGrid({
       entry.kind === "dir"
         ? `папку «${entry.name}» со всем содержимым`
         : `файл «${entry.name}»`;
-    if (!window.confirm(`Удалить ${what}?`)) return;
+    if (!confirmRemove(what)) return;
     await ops.remove(entry.relPath);
   };
 

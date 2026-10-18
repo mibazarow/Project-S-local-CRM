@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { useApp } from "../../state/AppStore";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import NoteEditor from "./NoteEditor";
 import NotesChat from "./NotesChat";
 import NotesSearchResults from "./NotesSearchResults";
@@ -17,17 +18,12 @@ export default function NotesView() {
   const [treeVersion, setTreeVersion] = useState(0);
   const [selected, setSelected] = useState<FsEntry | null>(null);
   const [query, setQuery] = useState("");
-  const [activeQuery, setActiveQuery] = useState("");
+  const activeQuery = useDebouncedValue(query.trim(), 250);
   const [createTick, setCreateTick] = useState(0);
   const dirtyRef = useRef(false);
   const setDirty = useCallback((dirty: boolean) => {
     dirtyRef.current = dirty;
   }, []);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setActiveQuery(query.trim()), 250);
-    return () => clearTimeout(timer);
-  }, [query]);
 
   // Seed Notes/ and the welcome note on first open, then load the tree.
   useEffect(() => {

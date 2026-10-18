@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry, ProjectDto } from "../../api/types";
 import { useApp } from "../../state/AppStore";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import Breadcrumbs from "./Breadcrumbs";
 import FileGrid from "./FileGrid";
 import FilePreview from "./FilePreview";
@@ -22,17 +23,12 @@ export default function FilesPanel({ project }: Props) {
   const [currentDir, setCurrentDir] = useState("");
   const [selected, setSelected] = useState<FsEntry | null>(null);
   const [query, setQuery] = useState("");
-  const [activeQuery, setActiveQuery] = useState("");
+  const activeQuery = useDebouncedValue(query.trim(), 250);
   const [highlightTaskId, setHighlightTaskId] = useState<number | null>(null);
   const dirtyRef = useRef(false);
   const setDirty = useCallback((dirty: boolean) => {
     dirtyRef.current = dirty;
   }, []);
-
-  useEffect(() => {
-    const timer = setTimeout(() => setActiveQuery(query.trim()), 250);
-    return () => clearTimeout(timer);
-  }, [query]);
 
   useEffect(() => {
     if (highlightTaskId === null) return;

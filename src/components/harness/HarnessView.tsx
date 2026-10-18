@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useReducer, useRef, useState, type FormEvent } from "react";
 import * as ipc from "../../api/ipc";
 import { useApp } from "../../state/AppStore";
+import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import type {
   AgentEventPayload,
   ChatHit,
@@ -237,7 +238,6 @@ export default function HarnessView() {
   const [sessionsError, setSessionsError] = useState<string | null>(null);
 
   const [query, setQuery] = useState("");
-  const [activeQuery, setActiveQuery] = useState("");
   const [hits, setHits] = useState<ChatHit[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -333,10 +333,7 @@ export default function HarnessView() {
 
   // Chat search: the query is debounced into activeQuery (one request per
   // pause, no polling); an empty query restores the plain session list.
-  useEffect(() => {
-    const timer = setTimeout(() => setActiveQuery(query.trim()), 250);
-    return () => clearTimeout(timer);
-  }, [query]);
+  const activeQuery = useDebouncedValue(query.trim(), 250);
 
   useEffect(() => {
     if (!activeQuery) {

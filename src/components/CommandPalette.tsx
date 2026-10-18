@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react"
 import * as ipc from "../api/ipc";
 import type { FsEntry, GlobalHit, SessionDto } from "../api/types";
 import { useApp } from "../state/AppStore";
+import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import type { Tab } from "./TopBar";
 import { renderSnippet } from "./files/SearchResults";
 import { IconSearch } from "./files/icons";
@@ -75,24 +76,21 @@ export default function CommandPalette({ onTab, onClose }: Props) {
 
   // Global cross-entity search: debounced, only for queries of 2+ chars; the
   // backend merges projects/files/tasks/notes/chats into one ranked list.
+  const debouncedQuery = useDebouncedValue(query.trim(), SEARCH_DEBOUNCE_MS);
   useEffect(() => {
-    const trimmed = query.trim();
-    if (trimmed.length < 2) {
+    if (debouncedQuery.length < 2) {
       setHits(null);
       return;
     }
     let cancelled = false;
-    const timer = setTimeout(() => {
-      void ipc
-        .globalSearch(trimmed)
-        .then((h) => !cancelled && setHits(h))
-        .catch(() => !cancelled && setHits([]));
-    }, SEARCH_DEBOUNCE_MS);
+    void ipc
+      .globalSearch(debouncedQuery)
+      .then((h) => !cancelled && setHits(h))
+      .catch(() => !cancelled && setHits([]));
     return () => {
       cancelled = true;
-      clearTimeout(timer);
     };
-  }, [query]);
+  }, [debouncedQuery]);
 
   const q = query.trim().toLowerCase();
 

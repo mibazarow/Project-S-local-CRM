@@ -1,6 +1,7 @@
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry, TemplateSummary } from "../../api/types";
+import { confirmRemove } from "../../shared/confirm";
 import { usePointerDrag } from "../../hooks/usePointerDrag";
 import { toMessage } from "../chat/chatShared";
 import RenameInput from "../files/RenameInput";
@@ -278,7 +279,7 @@ export default function NotesTree({
       entry.kind === "dir"
         ? `папку «${entry.name}» со всем содержимым`
         : `заметку «${entry.name}»`;
-    if (!window.confirm(`Удалить ${what}?`)) return;
+    if (!confirmRemove(what)) return;
     try {
       await ipc.notesDelete(entry.relPath);
       onDeleted(entry.relPath);
