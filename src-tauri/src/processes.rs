@@ -35,14 +35,79 @@ const LOG_TAIL_BYTES: usize = 1024 * 1024;
 const STOP_GRACE: Duration = Duration::from_secs(2);
 const STOP_POLL: Duration = Duration::from_millis(100);
 
+// A tracked spawned child; tests substitute a fake instead of real processes.
+trait TrackedChild {
+    fn id(&self) -> u32;
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>>;
+    fn kill(&mut self) -> std::io::Result<()>;
+}
+
+impl TrackedChild for Child {
+    fn id(&self) -> u32 {
+        Child::id(self)
+    }
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        Child::try_wait(self)
+    }
+    fn kill(&mut self) -> std::io::Result<()> {
+        Child::kill(self)
+    }
+}
+
 // pid is unique per boot, so it keys the registry across test databases.
 // (Lazy: HashMap::new is not const, so the map materializes on first use.)
-static CHILDREN: Mutex<Option<HashMap<u32, Child>>> = Mutex::new(None);
-
-fn with_children<T>(f: impl FnOnce(&mut HashMap<u32, Child>) -> T) -> T {
-    let mut guard = lock_recover(&CHILDREN);
-    f(guard.get_or_insert_with(HashMap::new))
+struct ProcessRegistry<C: TrackedChild = Child> {
+    children: Mutex<Option<HashMap<u32, C>>>,
 }
+
+impl<C: TrackedChild> ProcessRegistry<C> {
+    const fn new() -> Self {
+        Self {
+            children: Mutex::new(None),
+        }
+    }
+
+    fn with_children<T>(&self, f: impl FnOnce(&mut HashMap<u32, C>) -> T) -> T {
+        let mut guard = lock_recover(&self.children);
+        f(guard.get_or_insert_with(HashMap::new))
+    }
+
+    fn register(&self, child: C) {
+        let pid = child.id();
+        self.with_children(|children| {
+            children.insert(pid, child);
+        });
+    }
+
+    fn reap(&self, pid: u32) -> Option<ExitStatus> {
+        self.with_children(|children| {
+            if let Some(child) = children.get_mut(&pid) {
+                if let Ok(Some(status)) = child.try_wait() {
+                    children.remove(&pid);
+                    return Some(status);
+                }
+            }
+            None
+        })
+    }
+
+    fn contains(&self, pid: u32) -> bool {
+        self.with_children(|children| children.contains_key(&pid))
+    }
+
+    #[allow(dead_code)] // runtime exit hook; exercised by cfg(test), not wired to app exit yet
+    fn shutdown(&self) {
+        let drained: Vec<C> = {
+            let mut guard = lock_recover(&self.children);
+            guard.take().map_or_else(Vec::new, |children| children.into_values().collect())
+        };
+        for mut child in drained {
+            let _ = child.kill();
+        }
+    }
+}
+
+static REGISTRY: ProcessRegistry = ProcessRegistry::new();
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -135,19 +200,11 @@ fn signal_group(pgid: i64, signal: &str) {
 // Reaps a spawned child that has already exited and returns its status;
 // children from a previous app run are not in the registry.
 fn reap(pid: u32) -> Option<ExitStatus> {
-    with_children(|children| {
-        if let Some(child) = children.get_mut(&pid) {
-            if let Ok(Some(status)) = child.try_wait() {
-                children.remove(&pid);
-                return Some(status);
-            }
-        }
-        None
-    })
+    REGISTRY.reap(pid)
 }
 
 fn is_our_child(pid: i64) -> bool {
-    with_children(|children| children.contains_key(&(pid as u32)))
+    REGISTRY.contains(pid as u32)
 }
 
 // Group liveness for the stop poll: reap first, so an exited-but-unreaped
@@ -261,9 +318,7 @@ pub fn start(
          WHERE id = ?4",
         params![pid, pid, log_path.display().to_string(), id],
     )?;
-    with_children(|children| {
-        children.insert(pid as u32, child);
-    });
+    REGISTRY.register(child);
     get_required(conn, id)
 }
 
@@ -343,6 +398,114 @@ pub fn list(conn: &Connection) -> Result<Vec<ProcessDto>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::process::ExitStatusExt;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct FakeChild {
+        pid: u32,
+        exited: Arc<AtomicBool>,
+        kills: Arc<AtomicUsize>,
+    }
+
+    fn fake_child(pid: u32, kills: &Arc<AtomicUsize>) -> (FakeChild, Arc<AtomicBool>) {
+        let exited = Arc::new(AtomicBool::new(false));
+        (
+            FakeChild {
+                pid,
+                exited: Arc::clone(&exited),
+                kills: Arc::clone(kills),
+            },
+            exited,
+        )
+    }
+
+    impl TrackedChild for FakeChild {
+        fn id(&self) -> u32 {
+            self.pid
+        }
+        fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+            if self.exited.load(Ordering::SeqCst) {
+                Ok(Some(ExitStatus::from_raw(0)))
+            } else {
+                Ok(None)
+            }
+        }
+        fn kill(&mut self) -> std::io::Result<()> {
+            self.kills.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn registry_register_reap_removes_exited_child() {
+        let reg = ProcessRegistry::<FakeChild>::new();
+        let kills = Arc::new(AtomicUsize::new(0));
+        let (child, exited) = fake_child(11, &kills);
+        reg.register(child);
+        assert!(reg.contains(11));
+        assert!(reg.reap(11).is_none());
+        exited.store(true, Ordering::SeqCst);
+        let status = reg.reap(11).expect("exited child should reap");
+        assert_eq!(status.code(), Some(0));
+        assert!(!reg.contains(11));
+        assert!(reg.reap(11).is_none());
+        assert_eq!(kills.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn reap_drops_dead_children_without_touching_live_ones() {
+        let reg = ProcessRegistry::<FakeChild>::new();
+        let kills = Arc::new(AtomicUsize::new(0));
+        let (dead, dead_exited) = fake_child(1, &kills);
+        let (live, _) = fake_child(2, &kills);
+        reg.register(dead);
+        reg.register(live);
+        dead_exited.store(true, Ordering::SeqCst);
+        assert!(reg.reap(1).is_some());
+        assert!(reg.reap(2).is_none());
+        assert!(!reg.contains(1));
+        assert!(reg.contains(2));
+        assert_eq!(kills.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn shutdown_kills_all_once_and_is_idempotent() {
+        let reg = ProcessRegistry::<FakeChild>::new();
+        let kills = Arc::new(AtomicUsize::new(0));
+        for pid in 1..=3u32 {
+            let (child, _) = fake_child(pid, &kills);
+            reg.register(child);
+        }
+        reg.shutdown();
+        reg.shutdown();
+        assert_eq!(kills.load(Ordering::SeqCst), 3);
+        for pid in 1..=3u32 {
+            assert!(!reg.contains(pid));
+        }
+    }
+
+    #[test]
+    fn concurrent_registry_access_serializes_registrations() {
+        let reg = Arc::new(ProcessRegistry::<FakeChild>::new());
+        let mut handles = Vec::new();
+        for pid in 1..=8u32 {
+            let reg = Arc::clone(&reg);
+            handles.push(std::thread::spawn(move || {
+                let kills = Arc::new(AtomicUsize::new(0));
+                let (child, _) = fake_child(pid, &kills);
+                reg.register(child);
+                reg.reap(pid);
+                reg.contains(pid)
+            }));
+        }
+        for handle in handles {
+            assert!(handle.join().unwrap());
+        }
+        for pid in 1..=8u32 {
+            assert!(reg.contains(pid));
+        }
+    }
 
     #[test]
     fn slug_keeps_filenames_safe() {
