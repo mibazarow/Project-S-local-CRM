@@ -1,5 +1,5 @@
 use crate::{attachments, chat};
-use crate::agent::permissions::ConfirmDecision;
+use crate::confirm::ConfirmDecision;
 use crate::error::{AppError, Result};
 use crate::state::{AgentRegistry, AppState, RunKey};
 use super::{with_db};

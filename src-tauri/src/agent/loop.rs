@@ -7,7 +7,7 @@
 // nudges to the model-facing transcript, never through on_message.
 use super::catalog::{Catalog, EnableOutcome, Resolution, ENABLE_TOOLS, LIST_TOOLS};
 use super::hints::hint_for;
-use super::permissions::{ConfirmDecision, ConfirmRequest, Confirmer};
+use crate::confirm::{ConfirmDecision, ConfirmRequest, Confirmer};
 use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{coerce_args, validate_args, PermissionPolicy, Tool, ToolCtx};
 use crate::error::Result;
@@ -823,8 +823,8 @@ fn execute_with_timeout(
 mod tests {
     use super::*;
     use crate::agent::finish::FinishTaskTool;
-    use crate::agent::permissions::{AutoConfirmer, DenyAllConfirmer};
     use crate::agent::tool::{EchoTool, PermissionPolicy};
+    use crate::confirm::{AutoConfirmer, DenyAllConfirmer};
     use crate::error::AppError;
     use crate::llm::Role;
     use std::collections::VecDeque;

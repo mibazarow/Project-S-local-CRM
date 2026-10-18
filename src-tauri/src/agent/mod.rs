@@ -15,7 +15,6 @@ pub mod invariants;
 pub mod notes_tools;
 pub mod ocr_tools;
 pub mod pdf_tools;
-pub mod permissions;
 pub mod process_tools;
 pub mod project_tools;
 pub mod prompts;

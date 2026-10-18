@@ -363,9 +363,9 @@ pub fn run_session_on(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::permissions::DenyAllConfirmer;
     use crate::agent::r#loop::{self as agent_loop, ChatBackend};
     use crate::chat::{append_message, load_history, persist_final_answer};
+    use crate::confirm::DenyAllConfirmer;
     use crate::db::schema;
     use crate::error::AppError;
     use crate::llm::{ChatEvent, ChatMessage, ChatOutcome, ChatParams, ToolCall, ToolSpec};

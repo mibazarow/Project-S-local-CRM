@@ -893,10 +893,10 @@ mod tests {
 
     // --- notes chat (SPEC notes chat slice) ---
 
-    use crate::agent::permissions::DenyAllConfirmer;
     use crate::agent::r#loop as agent_loop;
     use crate::agent::r#loop::ChatBackend;
     use crate::chat;
+    use crate::confirm::DenyAllConfirmer;
     use crate::db;
     use crate::llm::{ChatEvent, ChatMessage, ChatOutcome, ChatParams, Role, ToolCall, ToolSpec};
     use serde_json::json;

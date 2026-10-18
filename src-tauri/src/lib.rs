@@ -5,6 +5,7 @@ mod cdp;
 mod chat;
 mod commands;
 mod config;
+mod confirm;
 mod db;
 mod embed;
 mod error;

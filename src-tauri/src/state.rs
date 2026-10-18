@@ -1,4 +1,4 @@
-use crate::agent::permissions::ConfirmDecision;
+use crate::confirm::ConfirmDecision;
 use crate::error::{AppError, Result};
 use crate::sync_util::lock_recover;
 use notify::RecommendedWatcher;

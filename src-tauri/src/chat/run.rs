@@ -8,7 +8,7 @@
 use crate::agent::catalog::Catalog;
 use crate::sync_util::lock_recover;
 use crate::agent::r#loop as agent_loop;
-use crate::agent::permissions::{ConfirmDecision, ConfirmRequest, Confirmer};
+use crate::confirm::{ConfirmDecision, ConfirmRequest, Confirmer};
 use crate::agent::project_tools::project_catalog;
 use crate::agent::prompts::project_system_prompt;
 use crate::agent::tool::Tool;
@@ -491,9 +491,9 @@ mod tests {
     use crate::agent::catalog::{Catalog, Resolution};
     use crate::agent::finish::FinishTaskTool;
     use crate::agent::r#loop::ChatBackend;
-    use crate::agent::permissions::{AutoConfirmer, DenyAllConfirmer};
     use crate::agent::result::ToolResult;
     use crate::agent::tool::{EchoTool, PermissionPolicy, ToolCtx};
+    use crate::confirm::{AutoConfirmer, DenyAllConfirmer};
     use crate::chat::test_support::{call, setup};
     use crate::chat::{chat_history, load_history};
     use crate::llm::{ChatEvent, ChatOutcome, ChatParams, ToolCall, ToolSpec};
