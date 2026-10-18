@@ -4,8 +4,8 @@
 Поведение, внешний вид и контракты — без изменений. Один срез = один концерн = один коммит.
 
 ## Текущее состояние
-- Закрыто: **Фазы 0–2** (тесты, бэкенд-перф/безопасность, zero-risk фронтенд) и **S3.1–S3.5** (split `lib.rs`, split `harness_tools`, chat-run extract, loop-round extract, skills split).
-- Последний зелёный HEAD: `4836b06` — `cargo test` **775 passed / 19 ignored**, `npm test` **82 passed**, build OK.
+- Закрыто: **Фазы 0–2** (тесты, бэкенд-перф/безопасность, zero-risk фронтенд) и **S3.1–S3.6** (split `lib.rs`, split `harness_tools`, chat-run extract, loop-round extract, skills split, migration-table).
+- Последний зелёный HEAD: `f23b488` — `cargo test` **777 passed / 19 ignored**, `npm test` **82 passed**, build OK.
 - Baseline-скриншоты: `/tmp/project-s-baseline/` (7 экранов).
 - Полный `npm run app:build` — только в финале.
 
@@ -20,8 +20,8 @@
 ### S3.5 skills-split — `done` (коммит `4836b06`)
 `skills/mod.rs` (2335 строк) → `manifest.rs` (фронтматтер-YAML-парсер, discovery builtin/user с conflicts/errors, enabled.json, нормализация имён и close-name подсказки, `body`/`load_full`, `skill`-тул, `list`/`set_enabled`) + `import.rs` (импорт folder/.zip/git со staging в Harness/tmp, установка и startup-синк builtin-набора, `create`, `create_skill`-тул) + `exec.rs` (`skill_exec`: resolve_entry/runner по exec-биту или расширению, cwd=папка скилла, TMPDIR→Harness/tmp, kill-timeout 120 s с clamp из `timeout_sec`, кап 30k на поток, argv без шелла) + `mod.rs` (re-export'ы + общий `#[cfg(test)] testutil` с `write_skill`/`scaffold`). Тела байт-в-байт идентичны HEAD (sorted-line diff против HEAD: только комментарии, per-file `use` и три расширения видимости `split_frontmatter`/`manifest_from_frontmatter`/`skill_info` → `pub(crate)`); правила парсинга, conflict/overwrite-семантика, runner-выбор, таймауты, капы и error envelopes — те же. Публичные пути call sites не менялись: `skills::{list,set_enabled,import,install_builtin,sync_builtin,create,SkillInfo,ImportResult,short_list,SkillTool,CreateSkillTool,SkillExecTool}`; re-export'ы урезаны до call sites (по образцу S3.3), `find`/`load_full` — `#[cfg(test)]` (зовут только тесты). Тесты: 33 skill-теста перенесены без правок по концернам — 11 в `manifest`, 11 в `import`, 11 в `exec`; общие хелперы — в `testutil`. Проверки: `cargo test` 775 passed / 0 failed / 19 ignored (baseline 775/19 — счёт тот же, тесты только перенесены), `cargo check --all-targets` и `cargo clippy --all-targets` — 0 warnings, `npm test` 82 passed, `npm run build` OK.
 
-### S3.6 migration-table — `pending`
-`run_migrations` → таблица миграций; SQL байт-в-байт, `user_version` и guard'ы v14/v17/v18 — те же.
+### S3.6 migration-table — `done` (коммит `f23b488`)
+`run_migrations` (`db/schema.rs`, if-chain ~274 строк / 31 блок) → таблица `MIGRATIONS: &[(u32, Migration)]` (`type Migration = fn(&Connection) -> Result<()>`) из 31 механически извлечённых `migrate_vN`-функций; раннер читает `PRAGMA user_version` один раз, исполняет по порядку при `version < target` и ставит `user_version = target` после каждого тела — та же последовательность версий. Тела блоков перенесены байт-в-байт вместе с комментариями: SQL-константы и `migration_3/11/13/19/20` (format!) не тронуты (diff-ханки начинаются со строки 570, константы v1–v31 — без изменений; multiset всех строковых литералов до-`#[cfg(test)]` идентичен, кроме ключа pragma `"user_version"` 31→1 — переехал в раннер). Guard'ы сохранены внутри функций: v14 (`pragma_table_info('projects').position`), v17 (FK toggle `PRAGMA foreign_keys` OFF→rebuild→восстановление), v18 (две guarded ALTER' с inline-SQL байт-в-байт), v22/v23/v25/v26/v27/v31 (per-column), v24/v28/v29/v30 (per-table), backfill'ы v23 (`derive_title`) и v31 (`is_priority`) — на месте. Последний target таблицы — `SCHEMA_VERSION as u32`, константа и таблица не разъедутся. Тесты: 31 существующий db-тест без правок + 2 новых (`migration_from_zero_yields_current_version_and_all_tables` — user_version=SCHEMA_VERSION и 28 логических таблиц; `fresh_and_stepwise_upgraded_schema_are_identical` — дамп `sqlite_master` (type,name,sql) свежего пути против пошагового прогона всех `migrate_vN` — идентичен). Проверки: `cargo test` 777 passed / 0 failed / 19 ignored (baseline 775, +2), `cargo check --all-targets` OK, `cargo clippy --all-targets` 0 warnings (единственный `type_complexity` закрыт алиасом), `npm run build` OK.
 
 ## Фаза 4 — фронтенд-структура и перф
 - **S4.1 chat-hook-dedupe** — `useChatRun` + `ChatComposer` вместо трёх копий; порядок событий/очередь те же.
@@ -53,4 +53,4 @@
 - `BAG_REPORT.md` — приватный рабочий файл, не трогаем логику рефакторинга.
 
 ## Следующий шаг
-**S3.6 migration-table** — `run_migrations` → таблица миграций; SQL байт-в-байт, `user_version` и guard'ы v14/v17/v18 — те же.
+**S4.1 chat-hook-dedupe** — `useChatRun` + `ChatComposer` вместо трёх копий; порядок событий/очередь те же.
