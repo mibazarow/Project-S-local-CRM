@@ -32,6 +32,7 @@ mod state;
 mod tasks;
 mod templates;
 mod todos;
+mod undo;
 mod watcher;
 
 use agent::permissions::ConfirmDecision;
@@ -359,6 +360,7 @@ fn task_create(
             checklist,
             recurrence,
         )?;
+        let _ = undo::push_task_create(conn, dto.id, dto.project_id);
         export::export_project(conn, &wd, project_id)?;
         Ok(dto)
     })?;
@@ -375,7 +377,11 @@ fn task_update(
 ) -> Result<TaskDto> {
     let wd = state.working_dir()?;
     let dto = with_db(&state, |conn| {
+        let snapshot = tasks::task_snapshot(conn, id).ok();
         let dto = tasks::task_update(conn, id, patch)?;
+        if let Some(snapshot) = snapshot {
+            let _ = undo::push_task_snapshot(conn, "task_update", &snapshot, None);
+        }
         export::export_project(conn, &wd, dto.project_id)?;
         Ok(dto)
     })?;
@@ -393,7 +399,11 @@ fn task_move(
 ) -> Result<TaskDto> {
     let wd = state.working_dir()?;
     let dto = with_db(&state, |conn| {
-        let dto = tasks::task_move(conn, id, &status, position)?;
+        let snapshot = tasks::task_snapshot(conn, id).ok();
+        let (dto, spawned) = tasks::task_move_capture(conn, id, &status, position)?;
+        if let Some(snapshot) = snapshot {
+            let _ = undo::push_task_snapshot(conn, "task_move", &snapshot, spawned);
+        }
         export::export_project(conn, &wd, dto.project_id)?;
         Ok(dto)
     })?;
@@ -405,7 +415,8 @@ fn task_move(
 fn task_delete(app: AppHandle, state: State<AppState>, id: i64) -> Result<()> {
     let wd = state.working_dir()?;
     let project_id = with_db(&state, |conn| {
-        let project_id = tasks::task_delete(conn, id)?;
+        let (project_id, trash_id) = tasks::task_delete_with_trash(conn, id)?;
+        let _ = undo::push_task_delete(conn, trash_id, project_id);
         export::export_project(conn, &wd, project_id)?;
         Ok(project_id)
     })?;
@@ -439,9 +450,31 @@ fn fs_write_text(
     content: String,
 ) -> Result<FsEntry> {
     let wd = state.working_dir()?;
+    let previous = with_db(&state, |conn| {
+        let path = fs_ops::resolve_existing(conn, &wd, project_id, &rel_path)?;
+        let abs = path.display().to_string();
+        let version_id = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|c| reliability::version_save(conn, &wd, "project", &abs, &c).ok());
+        Ok::<Option<(String, i64)>, AppError>(version_id.map(|id| (abs, id)))
+    })
+    .unwrap_or(None);
     let item = with_db(&state, |conn| {
         fs_ops::write_text(conn, &wd, project_id, &rel_path, &content)
     })?;
+    if let Some((abs, version_id)) = previous {
+        let _ = with_db(&state, |conn| {
+            undo::push_file_write(
+                conn,
+                "project",
+                &abs,
+                Some(version_id),
+                false,
+                Some(project_id),
+                Some(&item.rel_path),
+            )
+        });
+    }
     emit_fs_changed(&app, project_id, item.rel_path.clone());
     Ok(item)
 }
@@ -487,9 +520,33 @@ fn fs_rename(
     new_name: String,
 ) -> Result<FsEntry> {
     let wd = state.working_dir()?;
+    let from_abs = with_db(&state, |conn| {
+        fs_ops::resolve_existing(conn, &wd, project_id, &rel_path)
+            .map(|p| p.display().to_string())
+    })
+    .ok();
     let item = with_db(&state, |conn| {
         fs_ops::rename(conn, &wd, project_id, &rel_path, &new_name)
     })?;
+    if let Some(from_abs) = from_abs {
+        let to_abs = with_db(&state, |conn| {
+            fs_ops::resolve_existing(conn, &wd, project_id, &item.rel_path)
+                .map(|p| p.display().to_string())
+        })
+        .ok();
+        if let Some(to_abs) = to_abs {
+            let _ = with_db(&state, |conn| {
+                undo::push_rename(
+                    conn,
+                    "project",
+                    &from_abs,
+                    &to_abs,
+                    Some(project_id),
+                    Some(&item.rel_path),
+                )
+            });
+        }
+    }
     emit_fs_changed(&app, project_id, item.rel_path.clone());
     Ok(item)
 }
@@ -515,7 +572,24 @@ fn fs_delete(
     rel_path: String,
 ) -> Result<()> {
     let wd = state.working_dir()?;
+    let path_abs = with_db(&state, |conn| {
+        fs_ops::resolve_existing(conn, &wd, project_id, &rel_path)
+            .map(|p| p.display().to_string())
+    })
+    .ok();
     let trash_id = with_db(&state, |conn| fs_ops::delete(conn, &wd, project_id, &rel_path))?;
+    if let Some(path_abs) = path_abs {
+        let _ = with_db(&state, |conn| {
+            undo::push_delete(
+                conn,
+                trash_id,
+                "project",
+                &path_abs,
+                Some(project_id),
+                Some(&rel_path),
+            )
+        });
+    }
     emit_fs_changed(&app, project_id, rel_path);
     emit_trash_changed(&app, Some(trash_id));
     Ok(())
@@ -530,9 +604,33 @@ fn fs_move(
     to_dir_rel: String,
 ) -> Result<FsEntry> {
     let wd = state.working_dir()?;
+    let from_abs = with_db(&state, |conn| {
+        fs_ops::resolve_existing(conn, &wd, project_id, &from_rel)
+            .map(|p| p.display().to_string())
+    })
+    .ok();
     let item = with_db(&state, |conn| {
         fs_ops::move_entry(conn, &wd, project_id, &from_rel, &to_dir_rel)
     })?;
+    if let Some(from_abs) = from_abs {
+        let to_abs = with_db(&state, |conn| {
+            fs_ops::resolve_existing(conn, &wd, project_id, &item.rel_path)
+                .map(|p| p.display().to_string())
+        })
+        .ok();
+        if let Some(to_abs) = to_abs {
+            let _ = with_db(&state, |conn| {
+                undo::push_rename(
+                    conn,
+                    "project",
+                    &from_abs,
+                    &to_abs,
+                    Some(project_id),
+                    Some(&item.rel_path),
+                )
+            });
+        }
+    }
     emit_fs_changed(&app, project_id, item.rel_path.clone());
     Ok(item)
 }
@@ -650,9 +748,30 @@ fn notes_write(
         .and_then(|root| fs_ops::contain_existing(&root, &rel, "Notes").ok())
         .and_then(|p| std::fs::read_to_string(&p).ok().map(|c| (p.display().to_string(), c)));
     let item = notes::write(&wd, &rel, &content)?;
-    if let Some((abs, prev)) = &previous {
-        let _ = with_db(&state, |conn| reliability::version_save(conn, &wd, "notes", abs, prev));
-        emit_versions_changed(&app, "notes", abs);
+    let version_id = previous
+        .as_ref()
+        .and_then(|(abs, prev)| {
+            let id = with_db(&state, |conn| {
+                reliability::version_save(conn, &wd, "notes", abs, prev)
+            })
+            .ok();
+            if id.is_some() {
+                emit_versions_changed(&app, "notes", abs);
+            }
+            id
+        });
+    if let (Some((abs, _)), Some(version_id)) = (&previous, version_id) {
+        let _ = with_db(&state, |conn| {
+            undo::push_file_write(
+                conn,
+                "notes",
+                abs,
+                Some(version_id),
+                false,
+                None,
+                Some(&item.rel_path),
+            )
+        });
     }
     emit_notes_changed(&app, item.rel_path.clone());
     Ok(item)
@@ -665,7 +784,25 @@ fn notes_create(
     rel: String,
     content: Option<String>,
 ) -> Result<FsEntry> {
-    let item = notes::create(&state.working_dir()?, &rel, content.as_deref())?;
+    let wd = state.working_dir()?;
+    let item = notes::create(&wd, &rel, content.as_deref())?;
+    let created_abs = notes::vault_root(&wd)
+        .ok()
+        .and_then(|root| fs_ops::contain_existing(&root, &item.rel_path, "Notes").ok())
+        .map(|p| p.display().to_string());
+    if let Some(created_abs) = created_abs {
+        let _ = with_db(&state, |conn| {
+            undo::push_file_write(
+                conn,
+                "notes",
+                &created_abs,
+                None,
+                true,
+                None,
+                Some(&item.rel_path),
+            )
+        });
+    }
     emit_notes_changed(&app, item.rel_path.clone());
     Ok(item)
 }
@@ -677,7 +814,23 @@ fn notes_rename(
     rel: String,
     new_name: String,
 ) -> Result<FsEntry> {
-    let item = notes::rename(&state.working_dir()?, &rel, &new_name)?;
+    let wd = state.working_dir()?;
+    let from_abs = notes::vault_root(&wd)
+        .ok()
+        .and_then(|root| fs_ops::contain_existing(&root, &rel, "Notes").ok())
+        .map(|p| p.display().to_string());
+    let item = notes::rename(&wd, &rel, &new_name)?;
+    if let Some(from_abs) = from_abs {
+        let to_abs = notes::vault_root(&wd)
+            .ok()
+            .and_then(|root| fs_ops::contain_existing(&root, &item.rel_path, "Notes").ok())
+            .map(|p| p.display().to_string());
+        if let Some(to_abs) = to_abs {
+            let _ = with_db(&state, |conn| {
+                undo::push_rename(conn, "notes", &from_abs, &to_abs, None, Some(&item.rel_path))
+            });
+        }
+    }
     emit_notes_changed(&app, item.rel_path.clone());
     Ok(item)
 }
@@ -706,7 +859,23 @@ fn notes_move(
     from_rel: String,
     to_dir_rel: String,
 ) -> Result<FsEntry> {
-    let item = notes::move_entry(&state.working_dir()?, &from_rel, &to_dir_rel)?;
+    let wd = state.working_dir()?;
+    let from_abs = notes::vault_root(&wd)
+        .ok()
+        .and_then(|root| fs_ops::contain_existing(&root, &from_rel, "Notes").ok())
+        .map(|p| p.display().to_string());
+    let item = notes::move_entry(&wd, &from_rel, &to_dir_rel)?;
+    if let Some(from_abs) = from_abs {
+        let to_abs = notes::vault_root(&wd)
+            .ok()
+            .and_then(|root| fs_ops::contain_existing(&root, &item.rel_path, "Notes").ok())
+            .map(|p| p.display().to_string());
+        if let Some(to_abs) = to_abs {
+            let _ = with_db(&state, |conn| {
+                undo::push_note_move(conn, &from_abs, &to_abs, &item.rel_path)
+            });
+        }
+    }
     emit_notes_changed(&app, item.rel_path.clone());
     Ok(item)
 }
@@ -719,7 +888,17 @@ fn notes_copy(
     from_rel: String,
     to_dir_rel: String,
 ) -> Result<FsEntry> {
-    let item = notes::copy(&state.working_dir()?, &from_rel, &to_dir_rel)?;
+    let wd = state.working_dir()?;
+    let item = notes::copy(&wd, &from_rel, &to_dir_rel)?;
+    let created_abs = notes::vault_root(&wd)
+        .ok()
+        .and_then(|root| fs_ops::contain_existing(&root, &item.rel_path, "Notes").ok())
+        .map(|p| p.display().to_string());
+    if let Some(created_abs) = created_abs {
+        let _ = with_db(&state, |conn| {
+            undo::push_note_copy(conn, &created_abs, &item.rel_path)
+        });
+    }
     emit_notes_changed(&app, item.rel_path.clone());
     Ok(item)
 }
@@ -727,10 +906,49 @@ fn notes_copy(
 #[tauri::command]
 fn notes_delete(app: AppHandle, state: State<AppState>, rel: String) -> Result<()> {
     let wd = state.working_dir()?;
+    let path_abs = notes::vault_root(&wd)
+        .ok()
+        .and_then(|root| fs_ops::contain_existing(&root, &rel, "Notes").ok())
+        .map(|p| p.display().to_string());
     let trash_id = with_db(&state, |conn| notes::delete(conn, &wd, &rel))?;
+    if let Some(path_abs) = path_abs {
+        let _ = with_db(&state, |conn| {
+            undo::push_delete(conn, trash_id, "notes", &path_abs, None, Some(&rel))
+        });
+    }
     emit_notes_changed(&app, rel);
     emit_trash_changed(&app, Some(trash_id));
     Ok(())
+}
+
+// Bounded undo stack (SPEC undo slice): undo_last pops and reverses the newest
+// mutation, undo_list previews the stack. Undo is best-effort: a failed undo is
+// reported to the caller, but the mutation that pushed the entry already ran.
+#[tauri::command]
+fn undo_last(app: AppHandle, state: State<AppState>) -> Result<undo::UndoOutcome> {
+    let wd = state.working_dir()?;
+    let out = with_db(&state, |conn| undo::undo_last(conn, &wd))?;
+    if let Some(fs) = &out.fs_event {
+        emit_fs_changed(&app, fs.project_id, fs.rel_path.clone());
+    }
+    if let Some(rel) = &out.notes_rel_path {
+        emit_notes_changed(&app, rel.clone());
+    }
+    if let Some(project_id) = out.task_project_id {
+        emit_tasks_changed(&app, project_id);
+    }
+    if out.trash_id.is_some() {
+        emit_trash_changed(&app, out.trash_id);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+fn undo_list(
+    state: State<AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<undo::UndoEntryDto>> {
+    with_db(&state, |conn| undo::list(conn, limit))
 }
 
 // Quick capture (SPEC quick capture slice): the capture modal (global
@@ -2073,6 +2291,8 @@ pub fn run() {
             notes_move,
             notes_copy,
             notes_delete,
+            undo_last,
+            undo_list,
             quick_capture,
             templates_list,
             template_create_project,

@@ -68,6 +68,9 @@ const MUTATING_SKIP_ALLOWLIST: &[&str] = &[
     // Pausing/resuming a schedule is a reversible flag toggle; schedule_delete
     // (the destructive one) confirms.
     "schedule_pause",
+    // Undo pops the bounded undo stack and restores a prior snapshot/trash
+    // entry; it only reverses an earlier mutation, never reaches a new path.
+    "undo_last",
 ];
 
 fn is_valid_tool_name(name: &str) -> bool {

@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::{params, Connection};
 
-pub const SCHEMA_VERSION: i64 = 27;
+pub const SCHEMA_VERSION: i64 = 28;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -506,6 +506,18 @@ const MIGRATION_26_PINNED: &str = "ALTER TABLE messages ADD COLUMN pinned INTEGE
 const MIGRATION_27_RETRY_COUNT: &str =
     "ALTER TABLE schedules ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0";
 
+// Bounded undo stack (SPEC undo slice): one row per reversible mutation. The
+// payload is a JSON blob whose shape depends on kind; the stack is pruned to
+// the newest UNDO_LIMIT rows after every push.
+const MIGRATION_28_UNDO_LOG: &str = "
+CREATE TABLE IF NOT EXISTS undo_log (
+    id INTEGER PRIMARY KEY,
+    kind TEXT NOT NULL,
+    payload TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+";
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -716,6 +728,17 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
         )?;
         if has_retry_count == 0 {
             conn.execute(MIGRATION_27_RETRY_COUNT, [])?;
+        }
+        conn.pragma_update(None, "user_version", 27)?;
+    }
+    if version < 28 {
+        let has_undo_log: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'undo_log'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_undo_log == 0 {
+            conn.execute_batch(MIGRATION_28_UNDO_LOG)?;
         }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }

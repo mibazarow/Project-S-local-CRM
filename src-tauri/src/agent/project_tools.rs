@@ -6,7 +6,7 @@ use super::catalog::Catalog;
 use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
-use crate::{extract, fs_ops, paths, search, tasks};
+use crate::{extract, fs_ops, paths, search, tasks, undo};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use std::path::Path;
@@ -94,6 +94,10 @@ pub fn project_catalog() -> Catalog {
         // Agent-initiated chat attachment (SPEC 6.1): hand a project file to
         // the user as a new assistant turn.
         Arc::new(crate::agent::send_file::SendFileTool),
+        // Bounded undo stack (SPEC undo slice): undo the newest reversible
+        // file/note/task mutation made by commands or agent tools.
+        Arc::new(crate::agent::undo_tools::UndoLastTool),
+        Arc::new(crate::agent::undo_tools::UndoListTool),
     ];
     for tool in tools {
         // Names are statically unique; a failure here is a programming bug.
@@ -414,12 +418,45 @@ impl Tool for WriteFileTool {
             }),
             other => other,
         };
-        if result.is_ok() {
+        if let Ok(entry) = &result {
             if let Some((abs, prev)) = &previous {
-                let _ = with_conn(ctx, |conn| {
+                let version_id = with_conn(ctx, |conn| {
                     crate::reliability::version_save(conn, &wd, "project", abs, prev)
-                });
-                emit_versions_changed(ctx, "project", abs);
+                })
+                .ok();
+                if let Some(version_id) = version_id {
+                    emit_versions_changed(ctx, "project", abs);
+                    let _ = with_conn(ctx, |conn| {
+                        undo::push_file_write(
+                            conn,
+                            "project",
+                            abs,
+                            Some(version_id),
+                            false,
+                            Some(pid),
+                            Some(&entry.rel_path),
+                        )
+                    });
+                }
+            } else {
+                let abs = with_conn(ctx, |conn| {
+                    fs_ops::resolve_existing(conn, &wd, pid, &entry.rel_path)
+                        .map(|p| p.display().to_string())
+                })
+                .ok();
+                if let Some(abs) = abs {
+                    let _ = with_conn(ctx, |conn| {
+                        undo::push_file_write(
+                            conn,
+                            "project",
+                            &abs,
+                            None,
+                            true,
+                            Some(pid),
+                            Some(&entry.rel_path),
+                        )
+                    });
+                }
             }
         }
         Ok(match result {
@@ -496,7 +533,30 @@ impl Tool for RenamePathTool {
         let wd = require_wd(ctx)?;
         let rel = args["rel_path"].as_str().unwrap_or_default();
         let new_name = args["new_name"].as_str().unwrap_or_default();
+        let from_abs = with_conn(ctx, |conn| {
+            fs_ops::resolve_existing(conn, &wd, pid, rel).map(|p| p.display().to_string())
+        })
+        .ok();
         let r = with_conn(ctx, |conn| fs_ops::rename(conn, &wd, pid, rel, new_name));
+        if let (Ok(entry), Some(from_abs)) = (&r, from_abs) {
+            let to_abs = with_conn(ctx, |conn| {
+                fs_ops::resolve_existing(conn, &wd, pid, &entry.rel_path)
+                    .map(|p| p.display().to_string())
+            })
+            .ok();
+            if let Some(to_abs) = to_abs {
+                let _ = with_conn(ctx, |conn| {
+                    undo::push_rename(
+                        conn,
+                        "project",
+                        &from_abs,
+                        &to_abs,
+                        Some(pid),
+                        Some(&entry.rel_path),
+                    )
+                });
+            }
+        }
         Ok(envelope(r))
     }
 }
@@ -528,8 +588,17 @@ impl Tool for DeletePathTool {
         let pid = require_project(ctx)?;
         let wd = require_wd(ctx)?;
         let rel = args["rel_path"].as_str().unwrap_or_default();
+        let path_abs = with_conn(ctx, |conn| {
+            fs_ops::resolve_existing(conn, &wd, pid, rel).map(|p| p.display().to_string())
+        })
+        .ok();
         let r = with_conn(ctx, |conn| fs_ops::delete(conn, &wd, pid, rel));
         if let Ok(id) = &r {
+            if let Some(path_abs) = path_abs {
+                let _ = with_conn(ctx, |conn| {
+                    undo::push_delete(conn, *id, "project", &path_abs, Some(pid), Some(rel))
+                });
+            }
             emit_trash_changed(ctx, Some(*id));
         }
         Ok(match r {
@@ -636,7 +705,8 @@ impl Tool for TaskCreateTool {
         let r = with_conn(ctx, |conn| {
             tasks::task_create_with(conn, pid, title, status, priority, checklist, recurrence)
         });
-        if r.is_ok() {
+        if let Ok(dto) = &r {
+            let _ = with_conn(ctx, |conn| undo::push_task_create(conn, dto.id, pid));
             emit_tasks_changed(ctx, pid);
         }
         Ok(envelope(r))
@@ -713,7 +783,12 @@ impl Tool for TaskUpdateTool {
         };
         let r = with_conn(ctx, |conn| {
             require_own_task(conn, id, pid)?;
-            tasks::task_update(conn, id, patch)
+            let snapshot = tasks::task_snapshot(conn, id).ok();
+            let dto = tasks::task_update(conn, id, patch)?;
+            if let Some(snapshot) = snapshot {
+                let _ = undo::push_task_snapshot(conn, "task_update", &snapshot, None);
+            }
+            Ok(dto)
         });
         if r.is_ok() {
             emit_tasks_changed(ctx, pid);
@@ -755,6 +830,7 @@ impl Tool for TaskMoveTool {
         let status = args["status"].as_str().unwrap_or_default();
         let r = with_conn(ctx, |conn| {
             require_own_task(conn, id, pid)?;
+            let snapshot = tasks::task_snapshot(conn, id).ok();
             let position = match args.get("position").and_then(Value::as_f64) {
                 Some(p) => p,
                 None => conn.query_row(
@@ -763,7 +839,11 @@ impl Tool for TaskMoveTool {
                     |row| row.get(0),
                 )?,
             };
-            tasks::task_move(conn, id, status, position)
+            let (dto, spawned) = tasks::task_move_capture(conn, id, status, position)?;
+            if let Some(snapshot) = snapshot {
+                let _ = undo::push_task_snapshot(conn, "task_move", &snapshot, spawned);
+            }
+            Ok(dto)
         });
         if r.is_ok() {
             emit_tasks_changed(ctx, pid);
@@ -800,7 +880,9 @@ impl Tool for TaskDeleteTool {
         let id = args.get("id").and_then(Value::as_i64).unwrap_or(0);
         let r = with_conn(ctx, |conn| {
             require_own_task(conn, id, pid)?;
-            tasks::task_delete(conn, id)
+            let (project_id, trash_id) = tasks::task_delete_with_trash(conn, id)?;
+            let _ = undo::push_task_delete(conn, trash_id, project_id);
+            Ok(trash_id)
         });
         if r.is_ok() {
             emit_tasks_changed(ctx, pid);
@@ -1016,7 +1098,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 51] = [
+    const TOOL_NAMES: [&str; 53] = [
         "finish_task",
         "search",
         "read_file",
@@ -1068,6 +1150,8 @@ mod tests {
         "todowrite",
         "todoread",
         "send_file",
+        "undo_last",
+        "undo_list",
     ];
 
     #[test]

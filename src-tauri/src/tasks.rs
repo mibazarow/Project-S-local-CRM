@@ -225,7 +225,17 @@ pub fn task_update(conn: &Connection, id: i64, patch: TaskPatch) -> Result<TaskD
     dto(conn, id)
 }
 
+#[allow(dead_code)]
 pub fn task_move(conn: &Connection, id: i64, status: &str, position: f64) -> Result<TaskDto> {
+    Ok(task_move_capture(conn, id, status, position)?.0)
+}
+
+pub(crate) fn task_move_capture(
+    conn: &Connection,
+    id: i64,
+    status: &str,
+    position: f64,
+) -> Result<(TaskDto, Option<i64>)> {
     check_status(status)?;
     let prev: Option<(String, Option<String>, String, String, String)> = conn
         .query_row(
@@ -246,10 +256,12 @@ pub fn task_move(conn: &Connection, id: i64, status: &str, position: f64) -> Res
     )?;
     // A recurring task completed in the kanban queues its next occurrence in
     // the 'new' column; the tasks-changed event (per project) covers both.
-    if status == "done" && prev_status != "done" && recurrence != "none" {
-        spawn_next_occurrence(conn, id, &title, due_date.as_deref(), &recurrence, &checklist_json)?;
-    }
-    dto(conn, id)
+    let spawned = if status == "done" && prev_status != "done" && recurrence != "none" {
+        spawn_next_occurrence(conn, id, &title, due_date.as_deref(), &recurrence, &checklist_json)?
+    } else {
+        None
+    };
+    Ok((dto(conn, id)?, spawned))
 }
 
 // Copies title/comment/tags/priority/recurrence and the checklist (done
@@ -265,12 +277,12 @@ fn spawn_next_occurrence(
     due_date: Option<&str>,
     recurrence: &str,
     checklist_json: &str,
-) -> Result<()> {
+) -> Result<Option<i64>> {
     let modifier = match recurrence {
         "daily" => "+1 day",
         "weekly" => "+7 days",
         "monthly" => "+1 month",
-        _ => return Ok(()),
+        _ => return Ok(None),
     };
     let base = match due_date {
         Some(d) => d.to_owned(),
@@ -300,7 +312,7 @@ fn spawn_next_occurrence(
         |r| r.get(0),
     )?;
     if duplicate > 0 {
-        return Ok(());
+        return Ok(None);
     }
     let mut items: Vec<ChecklistItem> = serde_json::from_str(checklist_json).unwrap_or_default();
     for item in &mut items {
@@ -323,8 +335,9 @@ fn spawn_next_occurrence(
          VALUES (?1, ?2, 'new', ?3, ?4, NULL, ?5, ?6, datetime('now','localtime'), NULL, ?7, ?8, ?9)",
         params![project_id, title, comment, next_due, tags, position, priority, checklist, recurrence],
     )?;
-    fts_sync(conn, conn.last_insert_rowid())?;
-    Ok(())
+    let spawned_id = conn.last_insert_rowid();
+    fts_sync(conn, spawned_id)?;
+    Ok(Some(spawned_id))
 }
 
 // Full tasks row as JSON, snapshotted into the trash table before delete
@@ -332,24 +345,24 @@ fn spawn_next_occurrence(
 // The serde defaults keep snapshots written before v25 restorable.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct TaskSnapshot {
-    id: i64,
-    project_id: i64,
-    title: String,
-    status: String,
-    comment: Option<String>,
-    due_date: Option<String>,
-    remind_at: Option<String>,
-    tags: String,
-    position: f64,
-    created_at: String,
-    closed_at: Option<String>,
+pub(crate) struct TaskSnapshot {
+    pub(crate) id: i64,
+    pub(crate) project_id: i64,
+    pub(crate) title: String,
+    pub(crate) status: String,
+    pub(crate) comment: Option<String>,
+    pub(crate) due_date: Option<String>,
+    pub(crate) remind_at: Option<String>,
+    pub(crate) tags: String,
+    pub(crate) position: f64,
+    pub(crate) created_at: String,
+    pub(crate) closed_at: Option<String>,
     #[serde(default = "default_priority")]
-    priority: String,
+    pub(crate) priority: String,
     #[serde(default = "default_empty_json")]
-    checklist: String,
+    pub(crate) checklist: String,
     #[serde(default = "default_recurrence")]
-    recurrence: String,
+    pub(crate) recurrence: String,
 }
 
 fn default_priority() -> String {
@@ -364,38 +377,46 @@ fn default_recurrence() -> String {
     "none".to_owned()
 }
 
+pub(crate) fn task_snapshot(conn: &Connection, id: i64) -> Result<TaskSnapshot> {
+    conn.query_row(
+        "SELECT id, project_id, title, status, comment, due_date, remind_at,
+                tags, position, created_at, closed_at, priority, checklist, recurrence
+         FROM tasks WHERE id = ?1",
+        params![id],
+        |r| {
+            Ok(TaskSnapshot {
+                id: r.get(0)?,
+                project_id: r.get(1)?,
+                title: r.get(2)?,
+                status: r.get(3)?,
+                comment: r.get(4)?,
+                due_date: r.get(5)?,
+                remind_at: r.get(6)?,
+                tags: r.get(7)?,
+                position: r.get(8)?,
+                created_at: r.get(9)?,
+                closed_at: r.get(10)?,
+                priority: r.get(11)?,
+                checklist: r.get(12)?,
+                recurrence: r.get(13)?,
+            })
+        },
+    )
+    .optional()?
+    .ok_or_else(|| AppError::Invalid(format!("task {id} not found")))
+}
+
 // Returns the owning project id so the caller can re-export it. The row is
 // snapshotted into the trash table first, so a deleted task stays restorable.
+#[allow(dead_code)]
 pub fn task_delete(conn: &Connection, id: i64) -> Result<i64> {
-    let snapshot: TaskSnapshot = conn
-        .query_row(
-            "SELECT id, project_id, title, status, comment, due_date, remind_at,
-                    tags, position, created_at, closed_at, priority, checklist, recurrence
-             FROM tasks WHERE id = ?1",
-            params![id],
-            |r| {
-                Ok(TaskSnapshot {
-                    id: r.get(0)?,
-                    project_id: r.get(1)?,
-                    title: r.get(2)?,
-                    status: r.get(3)?,
-                    comment: r.get(4)?,
-                    due_date: r.get(5)?,
-                    remind_at: r.get(6)?,
-                    tags: r.get(7)?,
-                    position: r.get(8)?,
-                    created_at: r.get(9)?,
-                    closed_at: r.get(10)?,
-                    priority: r.get(11)?,
-                    checklist: r.get(12)?,
-                    recurrence: r.get(13)?,
-                })
-            },
-        )
-        .optional()?
-        .ok_or_else(|| AppError::Invalid(format!("task {id} not found")))?;
+    Ok(task_delete_with_trash(conn, id)?.0)
+}
+
+pub(crate) fn task_delete_with_trash(conn: &Connection, id: i64) -> Result<(i64, i64)> {
+    let snapshot = task_snapshot(conn, id)?;
     let project_id = snapshot.project_id;
-    crate::reliability::trash_put_meta(
+    let trash_id = crate::reliability::trash_put_meta(
         conn,
         "task",
         "task",
@@ -405,7 +426,63 @@ pub fn task_delete(conn: &Connection, id: i64) -> Result<i64> {
     )?;
     conn.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
     fts_sync(conn, id)?;
-    Ok(project_id)
+    Ok((project_id, trash_id))
+}
+
+pub(crate) fn task_delete_row(conn: &Connection, id: i64) -> Result<()> {
+    conn.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
+    fts_sync(conn, id)?;
+    Ok(())
+}
+
+pub(crate) fn task_restore_snapshot(conn: &Connection, snapshot: &TaskSnapshot) -> Result<()> {
+    let updated = conn.execute(
+        "UPDATE tasks SET project_id = ?1, title = ?2, status = ?3, comment = ?4,
+                due_date = ?5, remind_at = ?6, tags = ?7, position = ?8, created_at = ?9,
+                closed_at = ?10, priority = ?11, checklist = ?12, recurrence = ?13
+         WHERE id = ?14",
+        params![
+            snapshot.project_id,
+            snapshot.title,
+            snapshot.status,
+            snapshot.comment,
+            snapshot.due_date,
+            snapshot.remind_at,
+            snapshot.tags,
+            snapshot.position,
+            snapshot.created_at,
+            snapshot.closed_at,
+            snapshot.priority,
+            snapshot.checklist,
+            snapshot.recurrence,
+            snapshot.id
+        ],
+    )?;
+    if updated == 0 {
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, title, status, comment, due_date, remind_at,
+                                tags, position, created_at, closed_at, priority, checklist, recurrence)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                snapshot.id,
+                snapshot.project_id,
+                snapshot.title,
+                snapshot.status,
+                snapshot.comment,
+                snapshot.due_date,
+                snapshot.remind_at,
+                snapshot.tags,
+                snapshot.position,
+                snapshot.created_at,
+                snapshot.closed_at,
+                snapshot.priority,
+                snapshot.checklist,
+                snapshot.recurrence
+            ],
+        )?;
+    }
+    fts_sync(conn, snapshot.id)?;
+    Ok(())
 }
 
 // Re-inserts a trashed task snapshot (reliability::trash_restore calls this):

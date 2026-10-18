@@ -11,7 +11,7 @@ use super::project_tools::{
 use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
-use crate::{fs_ops, notes, search};
+use crate::{fs_ops, notes, search, undo};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -194,13 +194,27 @@ impl Tool for NotesWriteTool {
             .ok()
             .and_then(|p| std::fs::read_to_string(&p).ok().map(|c| (p, c)));
         let result = notes::write_at(&root, rel, content);
-        if result.is_ok() {
+        if let Ok(item) = &result {
             if let Some((path, prev)) = &previous {
                 let abs = path.display().to_string();
-                let _ = with_conn(ctx, |conn| {
+                let version_id = with_conn(ctx, |conn| {
                     crate::reliability::version_save(conn, &wd, "notes", &abs, prev)
-                });
-                emit_versions_changed(ctx, "notes", &abs);
+                })
+                .ok();
+                if let Some(version_id) = version_id {
+                    emit_versions_changed(ctx, "notes", &abs);
+                    let _ = with_conn(ctx, |conn| {
+                        undo::push_file_write(
+                            conn,
+                            "notes",
+                            &abs,
+                            Some(version_id),
+                            false,
+                            None,
+                            Some(&item.rel_path),
+                        )
+                    });
+                }
             }
         }
         Ok(match result {
@@ -241,7 +255,25 @@ impl Tool for NotesCreateTool {
         let rel = args["relPath"].as_str().unwrap_or_default();
         let content = args.get("content").and_then(Value::as_str);
         Ok(match notes::create_at(&root, rel, content) {
-            Ok(item) => ToolResult::ok(json!({ "relPath": item.rel_path, "size": item.size })),
+            Ok(item) => {
+                let created_abs = fs_ops::contain_existing(&root, &item.rel_path, "Notes")
+                    .ok()
+                    .map(|p| p.display().to_string());
+                if let Some(created_abs) = created_abs {
+                    let _ = with_conn(ctx, |conn| {
+                        undo::push_file_write(
+                            conn,
+                            "notes",
+                            &created_abs,
+                            None,
+                            true,
+                            None,
+                            Some(&item.rel_path),
+                        )
+                    });
+                }
+                ToolResult::ok(json!({ "relPath": item.rel_path, "size": item.size }))
+            }
             Err(e) => fail(e),
         })
     }
@@ -277,8 +309,23 @@ impl Tool for NotesRenameTool {
         let root = require_root(ctx)?;
         let rel = args["relPath"].as_str().unwrap_or_default();
         let new_name = args["newName"].as_str().unwrap_or_default();
+        let from_abs = fs_ops::contain_existing(&root, rel, "Notes")
+            .ok()
+            .map(|p| p.display().to_string());
         Ok(match notes::rename_at(&root, rel, new_name) {
-            Ok(item) => ToolResult::ok(json!({ "relPath": item.rel_path })),
+            Ok(item) => {
+                if let Some(from_abs) = from_abs {
+                    let to_abs = fs_ops::contain_existing(&root, &item.rel_path, "Notes")
+                        .ok()
+                        .map(|p| p.display().to_string());
+                    if let Some(to_abs) = to_abs {
+                        let _ = with_conn(ctx, |conn| {
+                            undo::push_rename(conn, "notes", &from_abs, &to_abs, None, Some(&item.rel_path))
+                        });
+                    }
+                }
+                ToolResult::ok(json!({ "relPath": item.rel_path }))
+            }
             Err(e) => fail(e),
         })
     }
@@ -354,8 +401,23 @@ impl Tool for NotesMoveTool {
         let root = require_root(ctx)?;
         let from = args["fromRel"].as_str().unwrap_or_default();
         let to_dir = args["toDirRel"].as_str().unwrap_or_default();
+        let from_abs = fs_ops::contain_existing(&root, from, "Notes")
+            .ok()
+            .map(|p| p.display().to_string());
         Ok(match notes::move_at(&root, from, to_dir) {
-            Ok(item) => ToolResult::ok(entry_data(&item)),
+            Ok(item) => {
+                if let Some(from_abs) = from_abs {
+                    let to_abs = fs_ops::contain_existing(&root, &item.rel_path, "Notes")
+                        .ok()
+                        .map(|p| p.display().to_string());
+                    if let Some(to_abs) = to_abs {
+                        let _ = with_conn(ctx, |conn| {
+                            undo::push_note_move(conn, &from_abs, &to_abs, &item.rel_path)
+                        });
+                    }
+                }
+                ToolResult::ok(entry_data(&item))
+            }
             Err(e) => fail(e),
         })
     }
@@ -392,7 +454,17 @@ impl Tool for NotesCopyTool {
         let from = args["fromRel"].as_str().unwrap_or_default();
         let to_dir = args["toDirRel"].as_str().unwrap_or_default();
         Ok(match notes::copy_at(&root, from, to_dir) {
-            Ok(item) => ToolResult::ok(entry_data(&item)),
+            Ok(item) => {
+                let created_abs = fs_ops::contain_existing(&root, &item.rel_path, "Notes")
+                    .ok()
+                    .map(|p| p.display().to_string());
+                if let Some(created_abs) = created_abs {
+                    let _ = with_conn(ctx, |conn| {
+                        undo::push_note_copy(conn, &created_abs, &item.rel_path)
+                    });
+                }
+                ToolResult::ok(entry_data(&item))
+            }
             Err(e) => fail(e),
         })
     }
@@ -430,9 +502,17 @@ impl Tool for NotesDeleteTool {
         let wd = require_wd(ctx)?;
         let rel = args["relPath"].as_str().unwrap_or_default();
         // Reversible delete: the note moves into Settings/.trash.
+        let path_abs = fs_ops::contain_existing(&root, rel, "Notes")
+            .ok()
+            .map(|p| p.display().to_string());
         let r = with_conn(ctx, |conn| notes::delete_at(conn, &wd, &root, rel));
         match r {
             Ok(id) => {
+                if let Some(path_abs) = path_abs {
+                    let _ = with_conn(ctx, |conn| {
+                        undo::push_delete(conn, id, "notes", &path_abs, None, Some(rel))
+                    });
+                }
                 emit_trash_changed(ctx, Some(id));
                 Ok(ToolResult::ok(json!({ "deleted": rel, "trashId": id })))
             }

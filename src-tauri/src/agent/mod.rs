@@ -27,6 +27,7 @@ pub mod screenshot_tool;
 pub mod send_file;
 pub mod ssh_tools;
 pub mod tool;
+pub mod undo_tools;
 
 #[path = "loop.rs"]
 pub mod r#loop;

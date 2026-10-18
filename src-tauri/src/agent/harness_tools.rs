@@ -11,14 +11,14 @@
 // the system /tmp. The CDP browser tool lives in browser_tool.rs.
 use super::catalog::Catalog;
 use super::project_tools::{
-    emit_tasks_changed, emit_trash_changed, envelope, parse_checklist_arg, read_datas,
-    require_wd, state_of, upsert_section, with_conn, write_datas,
+    emit_tasks_changed, emit_trash_changed, emit_versions_changed, envelope, parse_checklist_arg,
+    read_datas, require_wd, state_of, upsert_section, with_conn, write_datas,
 };
 use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
 use crate::scheduler::{self, CreateIn};
-use crate::{extract, fs_ops, paths, projects, search, tasks};
+use crate::{extract, fs_ops, paths, projects, search, tasks, undo};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::fs;
@@ -149,6 +149,8 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(ScheduleListTool),
         Arc::new(SchedulePauseTool),
         Arc::new(ScheduleDeleteTool),
+        Arc::new(crate::agent::undo_tools::UndoLastTool),
+        Arc::new(crate::agent::undo_tools::UndoListTool),
     ];
     for tool in core {
         catalog.register(tool, true).expect("unique tool names");
@@ -446,16 +448,57 @@ impl Tool for FsWriteTool {
                 return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, format!("{} is a directory", path.display())));
             }
         }
+        let existed = path.exists();
+        let previous = if existed {
+            fs::read_to_string(&path).ok()
+        } else {
+            None
+        };
         if let Some(parent) = path.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
                 return Ok(io_fail(parent, &e));
             }
         }
         match fs::write(&path, content) {
-            Ok(()) => Ok(ToolResult::ok(json!({
-                "path": path.display().to_string(),
-                "bytesWritten": content.len(),
-            }))),
+            Ok(()) => {
+                let abs = path.display().to_string();
+                if let Some(prev) = previous {
+                    let version_id = with_conn(ctx, |conn| {
+                        crate::reliability::version_save(conn, &wd, "harness", &abs, &prev)
+                    })
+                    .ok();
+                    if version_id.is_some() {
+                        emit_versions_changed(ctx, "harness", &abs);
+                        let _ = with_conn(ctx, |conn| {
+                            crate::undo::push_file_write(
+                                conn,
+                                "harness",
+                                &abs,
+                                version_id,
+                                false,
+                                None,
+                                None,
+                            )
+                        });
+                    }
+                } else if !existed {
+                    let _ = with_conn(ctx, |conn| {
+                        crate::undo::push_file_write(
+                            conn,
+                            "harness",
+                            &abs,
+                            None,
+                            true,
+                            None,
+                            None,
+                        )
+                    });
+                }
+                Ok(ToolResult::ok(json!({
+                    "path": path.display().to_string(),
+                    "bytesWritten": content.len(),
+                })))
+            }
             Err(e) => Ok(io_fail(&path, &e)),
         }
     }
@@ -508,6 +551,9 @@ impl Tool for FsDeleteTool {
         });
         match r {
             Ok(id) => {
+                let _ = with_conn(ctx, |conn| {
+                    crate::undo::push_delete(conn, id, "harness", &path.display().to_string(), None, None)
+                });
                 emit_trash_changed(ctx, Some(id));
                 Ok(ToolResult::ok(json!({
                     "deleted": path.display().to_string(),
@@ -704,6 +750,12 @@ fn fs_transfer(args: &Value, ctx: &ToolCtx, move_it: bool, max_len: usize) -> Re
             ));
         }
     }
+    let target_existed = fs::symlink_metadata(&target).is_ok();
+    let target_previous = if target_existed && !is_dir {
+        fs::read_to_string(&target).ok()
+    } else {
+        None
+    };
     if let Some(parent) = target.parent() {
         if let Err(e) = fs::create_dir_all(parent) {
             return Ok(io_fail(parent, &e));
@@ -754,6 +806,42 @@ fn fs_transfer(args: &Value, ctx: &ToolCtx, move_it: bool, max_len: usize) -> Re
             Err(e) => return Ok(io_fail(&target, &e)),
         }
     };
+    if move_it {
+        let _ = with_conn(ctx, |conn| {
+            undo::push_rename(
+                conn,
+                "harness",
+                &from.display().to_string(),
+                &target.display().to_string(),
+                None,
+                None,
+            )
+        });
+    } else if let Some(prev) = target_previous {
+        let abs = target.display().to_string();
+        let version_id = with_conn(ctx, |conn| {
+            crate::reliability::version_save(conn, &wd, "harness", &abs, &prev)
+        })
+        .ok();
+        if version_id.is_some() {
+            emit_versions_changed(ctx, "harness", &abs);
+            let _ = with_conn(ctx, |conn| {
+                undo::push_file_write(conn, "harness", &abs, version_id, false, None, None)
+            });
+        }
+    } else if !target_existed {
+        let _ = with_conn(ctx, |conn| {
+            undo::push_file_write(
+                conn,
+                "harness",
+                &target.display().to_string(),
+                None,
+                true,
+                None,
+                None,
+            )
+        });
+    }
     Ok(ToolResult::ok(json!({
         "from": from.display().to_string(),
         "to": target.display().to_string(),
@@ -888,10 +976,22 @@ impl Tool for FsRenameTool {
             ));
         }
         match fs::rename(&path, &target) {
-            Ok(()) => Ok(ToolResult::ok(json!({
-                "from": path.display().to_string(),
-                "to": target.display().to_string(),
-            }))),
+            Ok(()) => {
+                let _ = with_conn(ctx, |conn| {
+                    undo::push_rename(
+                        conn,
+                        "harness",
+                        &path.display().to_string(),
+                        &target.display().to_string(),
+                        None,
+                        None,
+                    )
+                });
+                Ok(ToolResult::ok(json!({
+                    "from": path.display().to_string(),
+                    "to": target.display().to_string(),
+                })))
+            }
             Err(e) => Ok(io_fail(&path, &e)),
         }
     }
@@ -1380,7 +1480,9 @@ impl Tool for CrmTaskCreateTool {
         };
         let r = with_conn(ctx, |conn| {
             let pid = resolve_project_id(conn, args)?;
-            tasks::task_create_with(conn, pid, &title, status, priority, checklist, recurrence)
+            let dto = tasks::task_create_with(conn, pid, &title, status, priority, checklist, recurrence)?;
+            let _ = undo::push_task_create(conn, dto.id, dto.project_id);
+            Ok(dto)
         });
         if let Ok(dto) = &r {
             emit_tasks_changed(ctx, dto.project_id);
@@ -1442,7 +1544,12 @@ impl Tool for CrmTaskUpdateTool {
         };
         let r = with_conn(ctx, |conn| {
             task_owner(conn, id)?;
-            tasks::task_update(conn, id, patch)
+            let snapshot = tasks::task_snapshot(conn, id).ok();
+            let dto = tasks::task_update(conn, id, patch)?;
+            if let Some(snapshot) = snapshot {
+                let _ = undo::push_task_snapshot(conn, "task_update", &snapshot, None);
+            }
+            Ok(dto)
         });
         if let Ok(dto) = &r {
             emit_tasks_changed(ctx, dto.project_id);
@@ -1484,6 +1591,7 @@ impl Tool for CrmTaskMoveTool {
         let position = args.get("position").and_then(Value::as_f64);
         let r = with_conn(ctx, |conn| {
             let pid = task_owner(conn, id)?;
+            let snapshot = tasks::task_snapshot(conn, id).ok();
             let position = match position {
                 Some(p) => p,
                 None => conn.query_row(
@@ -1492,7 +1600,11 @@ impl Tool for CrmTaskMoveTool {
                     |row| row.get(0),
                 )?,
             };
-            tasks::task_move(conn, id, &status, position)
+            let (dto, spawned) = tasks::task_move_capture(conn, id, &status, position)?;
+            if let Some(snapshot) = snapshot {
+                let _ = undo::push_task_snapshot(conn, "task_move", &snapshot, spawned);
+            }
+            Ok(dto)
         });
         if let Ok(dto) = &r {
             emit_tasks_changed(ctx, dto.project_id);
@@ -1531,7 +1643,9 @@ impl Tool for CrmTaskDeleteTool {
         let id = args.get("id").and_then(Value::as_i64).unwrap_or(0);
         let r = with_conn(ctx, |conn| {
             task_owner(conn, id)?;
-            tasks::task_delete(conn, id)
+            let (pid, trash_id) = tasks::task_delete_with_trash(conn, id)?;
+            let _ = undo::push_task_delete(conn, trash_id, pid);
+            Ok(pid)
         });
         if let Ok(pid) = &r {
             emit_tasks_changed(ctx, *pid);

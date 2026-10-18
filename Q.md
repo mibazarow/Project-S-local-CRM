@@ -40,7 +40,7 @@
 - [TODO] **Чат и агент**: run inspector; ревью памяти (осталось).
 
 ## android-harness (остаток)
-- [TODO] Undo + run inspector.
+- [TODO] Run inspector (undo готов).
 - [TODO] Objectives (долгоживущие цели).
 
 ## Прочее
