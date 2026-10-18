@@ -316,14 +316,17 @@ pub fn run_session_on(
         return Err(AppError::Invalid("message text is empty".into()));
     }
     let wd = state.working_dir()?;
-    let (chat_id, needs_title) = {
+    let (chat_id, needs_title, memory_records) = {
         let chat_id = session_chat_id(conn, session_id)?;
         let needs_title = session_needs_title(conn, session_id)?;
         touch_session(conn, session_id)?;
         let user_message =
             chat::append_message(conn, chat_id, Role::User, Some(text), &[], None, None)?;
         attachments::save_message_attachments(conn, user_message.id, attachments_in)?;
-        (chat_id, needs_title)
+        // Harness runs carry no project: memory records are global, matched
+        // against the fresh user turn, and ride the volatile [Context] block.
+        let memory_records = crate::memory::relevant_records(conn, None, text)?;
+        (chat_id, needs_title, memory_records)
     };
     if needs_title {
         // Auto-title from this first user turn, off the run path (own thread
@@ -337,6 +340,7 @@ pub fn run_session_on(
     chat::register_mcp_tools(&mut catalog, state.mcp.lock().unwrap().tools());
     let skills = crate::skills::short_list(&wd);
     let system_prompt = harness_system_prompt(&skills, &catalog.summary_prompt_block());
+    let volatile_block = crate::chat::context::volatile_block(&[&memory_records]);
 
     chat::spawn_run(
         app,
@@ -347,7 +351,7 @@ pub fn run_session_on(
             kind,
             chat_id,
             system_prompt,
-            user_query: text.to_string(),
+            volatile_block,
             catalog,
             notes_root: None,
         },
@@ -580,7 +584,7 @@ mod tests {
         let backend = ScriptedBackend::new(vec![]);
         let dump = |chat_id: i64| {
             let out = crate::chat::context::build_context(
-                &conn, chat_id, "sys", 100_000, 80, &backend, &params, false,
+                &conn, chat_id, "sys", "", 100_000, 80, &backend, &params, false,
             )
             .unwrap();
             serde_json::to_string(&out.messages).unwrap()
@@ -590,10 +594,10 @@ mod tests {
         assert!(ctx_a.contains("MARKER-IN-A") && !ctx_a.contains("MARKER-IN-B"), "{ctx_a}");
         assert!(ctx_b.contains("MARKER-IN-B") && !ctx_b.contains("MARKER-IN-A"), "{ctx_b}");
 
-        // The global memory block is shared by design: the same record is
+        // The global memory records are shared by design: the same record is
         // injected into both sessions' runs (harness runs carry no project).
-        let block_a = crate::memory::context_block(&conn, None, "кофе").unwrap();
-        let block_b = crate::memory::context_block(&conn, None, "кофе").unwrap();
+        let block_a = crate::memory::relevant_records(&conn, None, "кофе").unwrap();
+        let block_b = crate::memory::relevant_records(&conn, None, "кофе").unwrap();
         assert!(block_a.contains("GLOBAL-MEMORY-MARKER"), "{block_a}");
         assert!(block_b.contains("GLOBAL-MEMORY-MARKER"), "{block_b}");
         fs::remove_dir_all(&wd).unwrap();

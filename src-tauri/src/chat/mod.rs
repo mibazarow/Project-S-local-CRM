@@ -826,7 +826,7 @@ pub fn start_project_run(
         return Err(AppError::Invalid("message text is empty".into()));
     }
     let wd = state.working_dir()?;
-    let (chat_id, project, brief) = {
+    let (chat_id, project, brief, memory_records) = {
         let guard = state.db.lock().unwrap();
         let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
         let project = projects::get_project(conn, project_id)?;
@@ -835,10 +835,13 @@ pub fn start_project_run(
         // transcript (including it) when estimating and compacting.
         let user_message = append_message(conn, chat_id, Role::User, Some(text), &[], None, None)?;
         attachments::save_message_attachments(conn, user_message.id, attachments_in)?;
-        // Cached project brief for the system prompt (brief.rs): read-only
-        // here; generation/refresh happens on project open and file changes.
+        // Cached project brief (brief.rs): read-only here; generation/refresh
+        // happens on project open and file changes. The brief and the
+        // query-relevant memory records are volatile: they ride the
+        // [Context] block of the fresh user turn, never the system prompt.
         let brief = crate::brief::get_brief(conn, project_id)?;
-        (chat_id, project, brief)
+        let memory_records = memory::relevant_records(conn, Some(project_id), text)?;
+        (chat_id, project, brief, memory_records)
     };
 
     // The catalog is built BEFORE the prompt so the generated tool block
@@ -850,8 +853,14 @@ pub fn start_project_run(
     // borrows the live server clients (SPEC 6.2).
     register_mcp_tools(&mut catalog, state.mcp.lock().unwrap().tools());
     let skills = crate::skills::short_list(&wd);
-    let brief = brief.as_ref().map(|b| (b.text.as_str(), b.updated_at.as_str()));
-    let system_prompt = project_system_prompt(&project, &skills, &catalog.summary_prompt_block(), brief);
+    // Stable system prompt only: identical bytes for every turn of the
+    // project, whatever the brief or the memory query says.
+    let system_prompt = project_system_prompt(&project, &skills, &catalog.summary_prompt_block());
+    let brief_section = match brief.as_ref() {
+        Some(b) => format!("Project brief (updated {}):\n{}", b.updated_at, b.text),
+        None => "Project brief:\nNo brief yet.".to_string(),
+    };
+    let volatile_block = context::volatile_block(&[&brief_section, &memory_records]);
 
     spawn_run(
         app,
@@ -862,7 +871,7 @@ pub fn start_project_run(
             kind: "project",
             chat_id,
             system_prompt,
-            user_query: text.to_string(),
+            volatile_block,
             catalog,
             notes_root: None,
         },
@@ -891,10 +900,14 @@ pub(crate) struct RunBridge {
     // Journal run kind (SPEC 3.3): "project" | "harness" | "schedule".
     pub kind: &'static str,
     pub chat_id: i64,
+    // Stable system prompt: identical bytes across the turns of a chat, so
+    // the provider's prompt cache keeps its prefix (system + history).
     pub system_prompt: String,
-    // The fresh user turn: drives which memory records are relevant for this
-    // run's "[Memory]" block (SPEC 6.3).
-    pub user_query: String,
+    // The volatile [Context] block: project brief (with its updated
+    // timestamp), memory records relevant to the fresh user turn, and the
+    // notes vault summary. build_context prepends it to the last user
+    // message of the model-facing view only — the stored row stays plain.
+    pub volatile_block: String,
     pub catalog: Catalog,
     // Canonical Notes/ vault root for notes-agent runs (None otherwise):
     // handed to the notes tools through ToolCtx.notes_root.
@@ -961,7 +974,7 @@ fn run_agent_inner(
         kind,
         chat_id,
         mut system_prompt,
-        user_query,
+        volatile_block,
         mut catalog,
         notes_root,
     } = bridge;
@@ -988,15 +1001,15 @@ fn run_agent_inner(
     let app_cfg: AppConfig =
         serde_json::from_value(config::read_config(wd, ConfigKind::App)?).unwrap_or_default();
 
-    // Global memory injection (SPEC 6.3): the fixed identity lines + the
-    // always-injected gender line + records relevant to the fresh user turn,
-    // appended to the system prompt of every run (project chats and harness
-    // sessions alike).
+    // Global memory (SPEC 6.3): only the stable part — the fixed identity
+    // lines and the always-injected gender line — is appended to the system
+    // prompt of every run (project chats and harness sessions alike); it is
+    // the same for any query, so the cacheable prefix survives. The records
+    // relevant to the fresh user turn already ride the volatile block.
     {
         let guard = thread_state.db.lock().unwrap();
         let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
-        let block = memory::context_block(conn, run.project_id(), &user_query)?;
-        system_prompt.push_str(&format!("\n\n{block}"));
+        system_prompt.push_str(&format!("\n\n{}", memory::identity_block(conn)?));
     }
 
     // Build the model-facing transcript with checkpoint compaction (SPEC 4.6,
@@ -1008,6 +1021,7 @@ fn run_agent_inner(
             conn,
             chat_id,
             &system_prompt,
+            &volatile_block,
             llm_cfg.context_window,
             app_cfg.compaction_threshold_percent,
             &client,

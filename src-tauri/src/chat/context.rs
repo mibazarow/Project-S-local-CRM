@@ -16,14 +16,45 @@ use rusqlite::{params, Connection};
 // Header of the synthetic message that replaces a summarized range.
 pub const SUMMARY_PREFIX: &str = "[Summary of the earlier conversation]";
 
+// Hysteresis: after a compaction the kept tail is sized to this share of the
+// window, not to the leftover `window - threshold` (~20% at the 80% trigger).
+// One fold then buys many turns of headroom before the next one fires.
+pub const KEEP_TAIL_PERCENT: usize = 60;
+
+// Header of the volatile block prepended to the fresh user turn.
+pub const CONTEXT_BLOCK_PREFIX: &str = "[Context]";
+
 // Cap on what the summarizer itself receives, so the compaction call cannot
 // overflow the window it is trying to protect.
 const SUMMARIZER_MAX_CHARS: usize = 60_000;
 
-// Heuristic token estimate: ~4 chars per token plus a per-message framing
-// overhead. Deterministic and cheap; it is an estimate, not a tokenizer.
-// Image content parts are not counted by their base64 length (that would
-// wildly inflate the estimate); each image carries a fixed token allowance.
+// Cyrillic letters live in the Cyrillic block plus its supplement (А-я, Ё-ё
+// and the extended historic letters).
+fn is_cyrillic(c: char) -> bool {
+    matches!(c, '\u{0400}'..='\u{04FF}' | '\u{0500}'..='\u{052F}')
+}
+
+// Cyrillic-aware text estimate: Cyrillic tokenizes denser than Latin, at
+// roughly 2 chars per token against ~4 for everything else. Counting the two
+// classes separately keeps Russian transcripts from being underestimated.
+pub fn estimate_text_tokens(text: &str) -> usize {
+    let mut cyrillic = 0usize;
+    let mut other = 0usize;
+    for c in text.chars() {
+        if is_cyrillic(c) {
+            cyrillic += 1;
+        } else {
+            other += 1;
+        }
+    }
+    cyrillic / 2 + other / 4
+}
+
+// Heuristic token estimate: the per-text estimate above plus a per-message
+// framing overhead. Deterministic and cheap; it is an estimate, not a
+// tokenizer. Image content parts are not counted by their base64 length
+// (that would wildly inflate the estimate); each image carries a fixed
+// token allowance.
 pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
     const PER_MESSAGE: usize = 8;
     const PER_IMAGE_TOKENS: usize = 1000;
@@ -31,12 +62,12 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
         .iter()
         .map(|m| {
             let (chars, images) = match &m.content {
-                Some(MessageContent::Text(c)) => (c.chars().count(), 0),
+                Some(MessageContent::Text(c)) => (estimate_text_tokens(c), 0),
                 Some(MessageContent::Parts(parts)) => {
                     let chars = parts
                         .iter()
                         .map(|p| match p {
-                            ContentPart::Text { text } => text.chars().count(),
+                            ContentPart::Text { text } => estimate_text_tokens(text),
                             ContentPart::ImageUrl { .. } => 0,
                         })
                         .sum();
@@ -48,14 +79,62 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
                 }
                 None => (0, 0),
             };
-            chars / 4 + images * PER_IMAGE_TOKENS
+            chars + images * PER_IMAGE_TOKENS
                 + m.tool_calls
                     .iter()
-                    .map(|tc| tc.name.chars().count() + tc.raw_arguments.chars().count())
+                    .map(|tc| {
+                        estimate_text_tokens(&tc.name) + estimate_text_tokens(&tc.raw_arguments)
+                    })
                     .sum::<usize>()
                 + PER_MESSAGE
         })
         .sum()
+}
+
+// Assembles the volatile [Context] block from its sections (project brief,
+// query-relevant memory records, notes vault summary): everything that
+// changes between turns and must not sit in the stable system prompt. Empty
+// sections are dropped; an all-empty input yields the empty string, which
+// build_context then does not prepend at all.
+pub fn volatile_block(sections: &[&str]) -> String {
+    let body: Vec<&str> = sections
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if body.is_empty() {
+        return String::new();
+    }
+    format!("{CONTEXT_BLOCK_PREFIX}\n{}\n[/Context]", body.join("\n\n"))
+}
+
+// Prepends the volatile block to the last user turn of the model-facing
+// history, before the user's own text. The stored row is never touched: the
+// block exists only in this run's transcript, so the system prompt and the
+// older history stay byte-identical and the prompt cache keeps its prefix.
+fn attach_volatile_block(history: &mut [ChatMessage], block: &str) {
+    if block.is_empty() {
+        return;
+    }
+    let Some(msg) = history.iter_mut().rev().find(|m| m.role == Role::User) else {
+        return;
+    };
+    match &mut msg.content {
+        Some(MessageContent::Text(text)) => {
+            *text = format!("{block}\n\n{text}");
+        }
+        Some(MessageContent::Parts(parts)) => {
+            match parts
+                .iter_mut()
+                .find(|p| matches!(p, ContentPart::Text { .. }))
+            {
+                Some(ContentPart::Text { text }) => *text = format!("{block}\n\n{text}"),
+                // A parts turn without any text part gets a leading one.
+                _ => parts.insert(0, ContentPart::text(block)),
+            }
+        }
+        None => msg.content = Some(MessageContent::Text(block.to_string())),
+    }
 }
 
 pub struct ContextOutcome {
@@ -65,7 +144,8 @@ pub struct ContextOutcome {
 }
 
 // Builds the model-facing transcript: system prompt + checkpoint summaries +
-// the recent tail, compacting the oldest messages when the estimate crosses
+// the recent tail, with the volatile `[Context]` block prepended to the last
+// user turn, compacting the oldest messages when the estimate crosses
 // `threshold_percent` of `context_window`. `chat_id` must already contain the
 // fresh user turn: the last message is never dropped.
 #[allow(clippy::too_many_arguments)]
@@ -73,13 +153,15 @@ pub fn build_context(
     conn: &Connection,
     chat_id: i64,
     system_prompt: &str,
+    volatile_block: &str,
     context_window: u64,
     threshold_percent: u8,
     backend: &dyn ChatBackend,
     params: &ChatParams,
     vision_supported: bool,
 ) -> Result<ContextOutcome> {
-    let history = load_history(conn, chat_id, vision_supported)?;
+    let mut history = load_history(conn, chat_id, vision_supported)?;
+    attach_volatile_block(&mut history, volatile_block);
     let system = ChatMessage::system(system_prompt);
     let mut full = Vec::with_capacity(history.len() + 1);
     full.push(system.clone());
@@ -94,9 +176,11 @@ pub fn build_context(
         });
     }
 
-    // The tail keeps its own slice of the window (window - threshold, i.e.
-    // ~20% at the 80% default) so the compacted context fits back inside.
-    let tail_budget = (context_window as usize).saturating_sub(threshold_tokens);
+    // Hysteresis: the tail keeps ~60% of the window (KEEP_TAIL_PERCENT), not
+    // the leftover window - threshold (~20% at the 80% default), so after one
+    // fold the context sits well below the trigger and cannot re-fire on the
+    // very next turn.
+    let tail_budget = (context_window as usize).saturating_mul(KEEP_TAIL_PERCENT) / 100;
     let budget_boundary = pick_boundary(&history, tail_budget);
     // messages is append-only with contiguous positions 1..=N, so a message's
     // index in `history` equals its position minus one.
@@ -393,12 +477,35 @@ mod tests {
     }
 
     #[test]
+    fn cyrillic_text_estimates_at_about_two_chars_per_token() {
+        // 200 Cyrillic chars: ~100 tokens, not the ~50 a plain chars/4 rule
+        // would report for the same length.
+        let russian = estimate_text_tokens(&"ы".repeat(200));
+        assert!((95..105).contains(&russian), "got {russian}");
+        let english = estimate_text_tokens(&"x".repeat(200));
+        assert!((48..53).contains(&english), "got {english}");
+        assert!(russian > english, "Cyrillic must not be underestimated");
+
+        // Mixed text: only the Cyrillic letters get the denser rate.
+        // "Привет мир": 9 Cyrillic (9/2=4) + 1 space (1/4=0).
+        assert_eq!(estimate_text_tokens("Привет мир"), 4);
+        // "hello world": 11 ASCII -> 11/4=2. Ё counts as Cyrillic: 4/4=2.
+        assert_eq!(estimate_text_tokens("hello world"), 2);
+        assert_eq!(estimate_text_tokens("Ёлка"), 2);
+
+        // Message level: the same char count costs more in Russian.
+        let ru = estimate_tokens(&[ChatMessage::user("привет мир ".repeat(20))]);
+        let en = estimate_tokens(&[ChatMessage::user("hello world ".repeat(20))]);
+        assert!(ru > en, "ru={ru} en={en}");
+    }
+
+    #[test]
     fn below_threshold_no_summarization_and_full_history() {
         let (wd, conn, chat_id) = setup("ctx-below");
         fill(&conn, chat_id, 2);
         append_message(&conn, chat_id, Role::User, Some("latest"), &[], None, None).unwrap();
         let backend = FakeBackend::ok("unused");
-        let out = build_context(&conn, chat_id, "sys", 100_000, 80, &backend, &params(), false).unwrap();
+        let out = build_context(&conn, chat_id, "sys", "", 100_000, 80, &backend, &params(), false).unwrap();
         assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
         assert_eq!(out.new_checkpoint_up_to, None);
         assert_eq!(out.messages.len(), 1 + 5);
@@ -413,7 +520,7 @@ mod tests {
         fill(&conn, chat_id, 20);
         append_message(&conn, chat_id, Role::User, Some("latest turn"), &[], None, None).unwrap();
         let backend = FakeBackend::ok("SUMMARY BODY");
-        let out = build_context(&conn, chat_id, "sys", 1000, 80, &backend, &params(), false).unwrap();
+        let out = build_context(&conn, chat_id, "sys", "", 1000, 80, &backend, &params(), false).unwrap();
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
         assert!(!backend.tool_options.lock().unwrap()[0], "summarizer got tools");
         let rows = summary_rows(&conn, chat_id);
@@ -439,11 +546,11 @@ mod tests {
         fill(&conn, chat_id, 20);
         append_message(&conn, chat_id, Role::User, Some("latest turn"), &[], None, None).unwrap();
         let backend = FakeBackend::ok("S1");
-        let first = build_context(&conn, chat_id, "sys", 1000, 80, &backend, &params(), false).unwrap();
+        let first = build_context(&conn, chat_id, "sys", "", 1000, 80, &backend, &params(), false).unwrap();
         let up_to = first.new_checkpoint_up_to.unwrap();
 
         // Same transcript: the stored checkpoint is reused, no new call.
-        let second = build_context(&conn, chat_id, "sys", 1000, 80, &backend, &params(), false).unwrap();
+        let second = build_context(&conn, chat_id, "sys", "", 1000, 80, &backend, &params(), false).unwrap();
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
         assert_eq!(second.new_checkpoint_up_to, None);
         assert_eq!(
@@ -452,11 +559,22 @@ mod tests {
         );
 
         // Growth beyond the checkpoint triggers an incremental summary of
-        // only the newly expired range.
+        // only the newly expired range. With the 60% tail budget (and not
+        // the old 20%) two short turns do NOT move the boundary — that is
+        // the hysteresis — so the new turn carries real content.
         append_message(&conn, chat_id, Role::Assistant, Some("answer"), &[], None, None).unwrap();
-        append_message(&conn, chat_id, Role::User, Some("NEW MARKER TURN"), &[], None, None).unwrap();
+        append_message(
+            &conn,
+            chat_id,
+            Role::User,
+            Some(&format!("NEW MARKER TURN {}", big_text("n", 30))),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
         let backend2 = FakeBackend::ok("S2");
-        let third = build_context(&conn, chat_id, "sys", 1000, 80, &backend2, &params(), false).unwrap();
+        let third = build_context(&conn, chat_id, "sys", "", 1000, 80, &backend2, &params(), false).unwrap();
         assert_eq!(backend2.calls.load(Ordering::SeqCst), 1);
         let new_up_to = third.new_checkpoint_up_to.unwrap();
         assert!(new_up_to > up_to);
@@ -478,7 +596,13 @@ mod tests {
             .filter(|m| m.text_content().unwrap_or_default().starts_with(SUMMARY_PREFIX))
             .count();
         assert_eq!(summaries, 2);
-        assert_eq!(third.messages.last().unwrap().text_content(), Some("NEW MARKER TURN"));
+        assert!(third
+            .messages
+            .last()
+            .unwrap()
+            .text_content()
+            .unwrap()
+            .starts_with("NEW MARKER TURN"));
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -488,7 +612,7 @@ mod tests {
         fill(&conn, chat_id, 20);
         append_message(&conn, chat_id, Role::User, Some("latest"), &[], None, None).unwrap();
         let backend = FakeBackend::failing();
-        let out = build_context(&conn, chat_id, "sys", 1000, 80, &backend, &params(), false).unwrap();
+        let out = build_context(&conn, chat_id, "sys", "", 1000, 80, &backend, &params(), false).unwrap();
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
         assert_eq!(out.new_checkpoint_up_to, None);
         assert_eq!(out.messages.len(), 1 + 41);
@@ -522,7 +646,7 @@ mod tests {
         }
         append_message(&conn, chat_id, Role::User, Some("final"), &[], None, None).unwrap();
         let backend = FakeBackend::ok("S");
-        let out = build_context(&conn, chat_id, "sys", 1000, 80, &backend, &params(), false).unwrap();
+        let out = build_context(&conn, chat_id, "sys", "", 1000, 80, &backend, &params(), false).unwrap();
         let tail_start = out
             .messages
             .iter()
@@ -535,7 +659,7 @@ mod tests {
             + 1;
         let tail = &out.messages[tail_start..];
         assert_ne!(tail[0].role, Role::Tool, "tail starts on an orphaned tool result");
-        // Budget is window - threshold = 200 tokens; slack covers the fresh
+        // Budget is KEEP_TAIL_PERCENT = 600 tokens; slack covers the fresh
         // last message (always kept) and one assistant unit pulled back to
         // avoid an orphaned tool result.
         let last_cost = estimate_tokens(&tail[tail.len() - 1..]);
@@ -544,9 +668,139 @@ mod tests {
         } else {
             0
         };
-        assert!(estimate_tokens(tail) <= 200 + last_cost + slack);
+        assert!(estimate_tokens(tail) <= 600 + last_cost + slack);
         assert!(tail.len() < 46);
         assert_eq!(tail.last().unwrap().text_content(), Some("final"));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // Hysteresis: the kept tail is sized to ~60% of the window, not the old
+    // leftover window - threshold (~20% at the 80% trigger), so one fold
+    // leaves real headroom before the next compaction can fire.
+    #[test]
+    fn compaction_tail_is_sized_to_sixty_percent_of_the_window() {
+        let (wd, conn, chat_id) = setup("ctx-hysteresis");
+        for i in 0..15 {
+            append_message(&conn, chat_id, Role::User, Some(&big_text("q", 20)), &[], None, None)
+                .unwrap();
+            let calls = vec![ToolCall::new(
+                format!("c{i}"),
+                "read_file".into(),
+                json!({ "rel_path": big_text("f", 20) }).to_string(),
+            )];
+            append_message(&conn, chat_id, Role::Assistant, None, &calls, None, None).unwrap();
+            append_message(
+                &conn,
+                chat_id,
+                Role::Tool,
+                Some(&big_text("r", 40)),
+                &[],
+                Some(&format!("c{i}")),
+                None,
+            )
+            .unwrap();
+        }
+        append_message(&conn, chat_id, Role::User, Some("final"), &[], None, None).unwrap();
+        let backend = FakeBackend::ok("S");
+        let out = build_context(&conn, chat_id, "sys", "", 1000, 80, &backend, &params(), false).unwrap();
+        let tail_start = out
+            .messages
+            .iter()
+            .rposition(|m| {
+                m.text_content()
+                    .unwrap_or_default()
+                    .starts_with(SUMMARY_PREFIX)
+            })
+            .unwrap()
+            + 1;
+        let tail = &out.messages[tail_start..];
+        // The latest user turn survives the fold.
+        assert_eq!(tail.last().unwrap().text_content(), Some("final"));
+        // Tail fits the 60% budget (plus the always-kept last message and a
+        // pulled-back assistant unit), and it is far larger than the old 20%
+        // (window - threshold = 200) budget would have allowed.
+        let kept = &tail[..tail.len() - 1];
+        assert!(
+            estimate_tokens(kept) > 200,
+            "kept tail is only {} tokens — hysteresis budget not applied",
+            estimate_tokens(kept)
+        );
+        let last_cost = estimate_tokens(&tail[tail.len() - 1..]);
+        let slack = if tail[0].role == Role::Assistant {
+            estimate_tokens(&tail[..1])
+        } else {
+            0
+        };
+        assert!(estimate_tokens(tail) <= 600 + last_cost + slack);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn volatile_block_lands_on_the_last_user_turn_before_the_user_text() {
+        let (wd, conn, chat_id) = setup("ctx-volatile");
+        append_message(&conn, chat_id, Role::User, Some("older question"), &[], None, None).unwrap();
+        append_message(&conn, chat_id, Role::Assistant, Some("older answer"), &[], None, None).unwrap();
+        append_message(&conn, chat_id, Role::User, Some("MARKER QUESTION"), &[], None, None).unwrap();
+        let backend = FakeBackend::ok("unused");
+        let block = volatile_block(&[
+            "Project brief (updated 2026-10-17 12:00:00):\nBRIEF BODY",
+            "Relevant memory records:\n- MEMORY MARKER",
+        ]);
+        let out =
+            build_context(&conn, chat_id, "sys", &block, 100_000, 80, &backend, &params(), false)
+                .unwrap();
+        let last = out.messages.last().unwrap().text_content().unwrap();
+        assert!(last.starts_with("[Context]"), "{last}");
+        assert!(last.contains("BRIEF BODY") && last.contains("MEMORY MARKER"), "{last}");
+        let brief_at = last.find("BRIEF BODY").unwrap();
+        let memory_at = last.find("MEMORY MARKER").unwrap();
+        let user_at = last.find("MARKER QUESTION").unwrap();
+        assert!(brief_at < user_at && memory_at < user_at, "context must precede the user text");
+        // Older turns never receive the block…
+        assert_eq!(out.messages[1].text_content(), Some("older question"));
+        // …and the stored row stays plain: the block is model-facing only.
+        let raw: String = conn
+            .query_row(
+                "SELECT content FROM messages WHERE chat_id = ?1 ORDER BY position DESC LIMIT 1",
+                params![chat_id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(raw, "MARKER QUESTION");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn system_prompt_is_identical_for_different_briefs_and_memory_queries() {
+        let (wd, conn, chat_id) = setup("ctx-stable-prefix");
+        append_message(&conn, chat_id, Role::User, Some("вопрос"), &[], None, None).unwrap();
+        let backend = FakeBackend::ok("unused");
+        let block_a = volatile_block(&[
+            "Project brief (updated 2026-10-01 10:00:00):\nBRIEF A",
+            "Relevant memory records:\n- REC A",
+        ]);
+        let block_b = volatile_block(&["Project brief (updated 2026-10-17 12:00:00):\nBRIEF B"]);
+        let a =
+            build_context(&conn, chat_id, "sys", &block_a, 100_000, 80, &backend, &params(), false)
+                .unwrap();
+        let b =
+            build_context(&conn, chat_id, "sys", &block_b, 100_000, 80, &backend, &params(), false)
+                .unwrap();
+        // The cacheable prefix (system turn) is byte-identical for both runs…
+        assert_eq!(
+            serde_json::to_string(&a.messages[0]).unwrap(),
+            serde_json::to_string(&b.messages[0]).unwrap()
+        );
+        // …only the volatile tail turn differs.
+        assert_ne!(
+            a.messages.last().unwrap().text_content().unwrap(),
+            b.messages.last().unwrap().text_content().unwrap()
+        );
+        // An empty volatile block prepends nothing.
+        let plain =
+            build_context(&conn, chat_id, "sys", "", 100_000, 80, &backend, &params(), false)
+                .unwrap();
+        assert_eq!(plain.messages.last().unwrap().text_content(), Some("вопрос"));
         fs::remove_dir_all(&wd).unwrap();
     }
 }

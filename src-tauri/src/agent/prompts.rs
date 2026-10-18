@@ -25,20 +25,16 @@ const SKILLS_RULE: &str = "Before starting work, scan the Available skills list;
 
 // tools_block comes from Catalog::summary_prompt_block and is built AFTER
 // the run catalog (core + deferred + MCP bridges) is complete, so the agent
-// always sees its full tool set; schemas stay lazy. brief is the cached
-// project brief (text + updated_at) from the brief module: an English label
-// with Russian content, placed right after the identity/tools block; None
-// renders the "No brief yet." placeholder.
+// always sees its full tool set; schemas stay lazy. The prompt carries only
+// stable content: the project brief and the query-relevant memory records
+// are volatile and travel in the [Context] block of the fresh user turn
+// (chat::context), keeping this prompt byte-identical across turns so the
+// prompt-cache prefix survives.
 pub fn project_system_prompt(
     project: &ProjectDto,
     skills: &[(String, String)],
     tools_block: &str,
-    brief: Option<(&str, &str)>,
 ) -> String {
-    let brief_block = match brief {
-        Some((text, updated_at)) => format!("Project brief (updated {updated_at}):\n{text}"),
-        None => "Project brief:\nNo brief yet.".to_string(),
-    };
     let base = format!(
         "You are the agent of project \"{name}\" in the Project S CRM. The project lives in the folder {path}; \
 all paths in tools are relative to the project root.\n\
@@ -47,11 +43,11 @@ Always respond to the user in Russian (correct, natural Russian). Do not transla
 technical terms, file names, or quoted content.\n\
 \n\
 You run this project: you hold its context, retell the course of work from the chat history, \
-files and tasks, maintain the access file datas.md, and answer the user from the project materials.\n\
+files and tasks, maintain the access file datas.md, and answer the user from the project materials. \
+The current project brief and the relevant global-memory records arrive in the [Context] block \
+of each user message.\n\
 \n\
 {tools_block}\n\
-\n\
-{brief_block}\n\
 \n\
 Rules:\n\
 - do not invent file or task contents: search and read first;\n\
@@ -112,22 +108,19 @@ to the user; if the work is impossible or interrupted — action=stop with the r
 }
 
 // Notes agent (SPEC notes chat slice): one continuous chat over the personal
-// Notes/ markdown vault. vault_summary is a heuristic one-liner computed by
-// the notes module (no LLM): the agent must still read/search before quoting.
-pub fn notes_system_prompt(
-    skills: &[(String, String)],
-    tools_block: &str,
-    vault_summary: &str,
-) -> String {
+// Notes/ markdown vault. The prompt stays stable: the heuristic vault summary
+// (computed by the notes module, no LLM) is volatile and travels in the
+// [Context] block of the fresh user turn; the agent must still read/search
+// before quoting.
+pub fn notes_system_prompt(skills: &[(String, String)], tools_block: &str) -> String {
     let base = format!(
         "You are the Project-S notes agent. These are the user's PERSONAL NOTES \
 (a Markdown vault in the Notes/ folder of the working directory). Help the user \
-find, connect, summarize and write notes.\n\
+find, connect, summarize and write notes. A current vault summary arrives in the \
+[Context] block of each user message.\n\
 \n\
 Always respond to the user in Russian (correct, natural Russian). Do not translate product names, \
 technical terms, file names, or quoted content.\n\
-\n\
-{vault_summary}\n\
 \n\
 {tools_block}\n\
 \n\
@@ -182,7 +175,7 @@ mod tests {
 
     #[test]
     fn prompt_mentions_project_tools_and_finish_task() {
-        let p = project_system_prompt(&sample(), &[], &project_tools_block(), None);
+        let p = project_system_prompt(&sample(), &[], &project_tools_block());
         assert!(p.contains("example.ru"));
         assert!(p.contains("/wd/Projects/example.ru"));
         for token in ["search", "read_file", "task_create", "datas_add", "finish_task", "remember", "recall", "set_user_gender"] {
@@ -199,7 +192,7 @@ mod tests {
 
     #[test]
     fn project_prompt_carries_generated_tool_block_and_skills_rule() {
-        let p = project_system_prompt(&sample(), &[], &project_tools_block(), None);
+        let p = project_system_prompt(&sample(), &[], &project_tools_block());
         assert!(p.contains("Available tools (names and one-line descriptions"));
         assert!(p.contains("- search — Search this project's index"));
         assert!(p.contains("- create_skill —"));
@@ -238,45 +231,38 @@ mod tests {
         assert!(block.contains("- research — Investigate a question."));
         // Header plus exactly one line per skill: no bodies, no extra keys.
         assert_eq!(block.trim().lines().count(), 1 + skills.len());
-        let p = project_system_prompt(&sample(), &skills, &project_tools_block(), None);
+        let p = project_system_prompt(&sample(), &skills, &project_tools_block());
         assert!(p.contains("- ponytail — Lazy senior dev mode."));
     }
 
+    // The system prompt must be a stable cacheable prefix: no brief, no
+    // memory records — those ride in the volatile [Context] block of the
+    // fresh user turn (chat::context), so two runs with different briefs or
+    // different memory queries get the identical system prompt.
     #[test]
-    fn project_prompt_carries_brief_block_after_tools_or_placeholder() {
+    fn project_prompt_is_stable_and_carries_no_volatile_brief_or_memory() {
         let tools = project_tools_block();
-        let p = project_system_prompt(
-            &sample(),
-            &[],
-            &tools,
-            Some(("Проект example.ru: лендинг под ключ. См. datas.md.", "2026-10-17 12:00:00")),
-        );
-        assert!(p.contains("Project brief (updated 2026-10-17 12:00:00):"), "{p}");
-        assert!(p.contains("Проект example.ru: лендинг под ключ. См. datas.md."), "{p}");
-        // The brief block sits after the tools block and before the rules.
-        let tools_at = p.find("Available tools (names and one-line descriptions").unwrap();
-        let brief_at = p.find("Project brief (updated").unwrap();
-        let rules_at = p.find("\nRules:").unwrap();
-        assert!(tools_at < brief_at && brief_at < rules_at, "brief block misplaced");
-
-        let p = project_system_prompt(&sample(), &[], &tools, None);
-        assert!(p.contains("Project brief:"), "{p}");
-        assert!(p.contains("No brief yet."), "{p}");
+        let p1 = project_system_prompt(&sample(), &[], &tools);
+        let p2 = project_system_prompt(&sample(), &[], &tools);
+        assert_eq!(p1, p2, "system prompt must be byte-identical across turns");
+        assert!(!p1.contains("Project brief"), "brief leaked into the stable prompt: {p1}");
+        assert!(!p1.contains("No brief yet."), "brief placeholder leaked into the stable prompt");
+        assert!(!p1.contains("Relevant memory records"), "memory records leaked into the stable prompt");
+        // The prompt still tells the model where the volatile data lives.
+        assert!(p1.contains("[Context] block"), "{p1}");
     }
 
     #[test]
     fn notes_prompt_carries_vault_rules_tools_and_skills_rule() {
         let tools = crate::agent::notes_tools::notes_catalog().summary_prompt_block();
-        let p = notes_system_prompt(
-            &[],
-            &tools,
-            "Notes vault summary: 3 markdown notes; top-level folders: Рабочие.",
-        );
+        let p = notes_system_prompt(&[], &tools);
         assert!(p.contains("PERSONAL NOTES"), "{p}");
         assert!(p.contains("Notes/"), "{p}");
         assert!(p.contains("never invent note contents: read or search the notes first"), "{p}");
         assert!(p.contains("notes_delete is a dangerous operation"), "{p}");
-        assert!(p.contains("Notes vault summary: 3 markdown notes"), "{p}");
+        // The vault summary is volatile: it must not sit in the stable prompt.
+        assert!(!p.contains("markdown notes"), "vault summary leaked into the stable prompt: {p}");
+        assert!(p.contains("[Context] block"), "{p}");
         for token in [
             "notes_list",
             "notes_read",
@@ -297,8 +283,10 @@ mod tests {
         assert!(!p.contains("Available skills (short list"), "empty skills add no block");
 
         let skills = vec![("ponytail".to_string(), "Lazy senior dev mode.".to_string())];
-        let p = notes_system_prompt(&skills, &tools, "Notes vault: currently empty.");
+        let p = notes_system_prompt(&skills, &tools);
         assert!(p.contains("- ponytail — Lazy senior dev mode."), "{p}");
+        // Same inputs, byte-identical prompt: the notes prefix is cacheable.
+        assert_eq!(p, notes_system_prompt(&skills, &tools));
     }
 
     #[test]

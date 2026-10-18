@@ -402,7 +402,7 @@ pub fn run_notes_chat(
     ensure(&wd)?;
     // canonical root: the tools' containment compares canonical paths.
     let notes_root = vault_root(&wd)?;
-    let chat_id = {
+    let (chat_id, memory_records) = {
         let guard = state.db.lock().unwrap();
         let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
         let chat_id = ensure_notes_chat(conn)?;
@@ -417,18 +417,20 @@ pub fn run_notes_chat(
             None,
             None,
         )?;
-        chat_id
+        let memory_records = crate::memory::relevant_records(conn, None, text)?;
+        (chat_id, memory_records)
     };
 
     // Catalog first, prompt second: the generated tool block must cover the
-    // whole notes catalog (schemas stay lazy).
+    // whole notes catalog (schemas stay lazy). The vault summary changes as
+    // notes are written, so it is volatile: it rides the [Context] block of
+    // the fresh user turn, keeping the system prompt byte-identical.
     let catalog = crate::agent::notes_tools::notes_catalog();
     let skills = crate::skills::short_list(&wd);
-    let system_prompt = crate::agent::prompts::notes_system_prompt(
-        &skills,
-        &catalog.summary_prompt_block(),
-        &vault_summary(&wd),
-    );
+    let system_prompt =
+        crate::agent::prompts::notes_system_prompt(&skills, &catalog.summary_prompt_block());
+    let volatile_block =
+        crate::chat::context::volatile_block(&[&vault_summary(&wd), &memory_records]);
 
     crate::chat::spawn_run(
         app,
@@ -439,7 +441,7 @@ pub fn run_notes_chat(
             kind: "notes",
             chat_id,
             system_prompt,
-            user_query: text.to_string(),
+            volatile_block,
             catalog,
             notes_root: Some(notes_root),
         },

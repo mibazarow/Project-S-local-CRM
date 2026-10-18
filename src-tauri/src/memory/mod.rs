@@ -31,11 +31,14 @@ pub const IDENTITY_GENDER_SOURCE: &str = "identity:gender";
 pub const AGENT_NAME: &str = "Project-S";
 const GENDER_VALUES: [&str; 3] = ["male", "female", "unknown"];
 
-// Header of the block appended to every run's system prompt.
+// Header of the stable identity block kept in every run's system prompt.
 pub const MEMORY_BLOCK_PREFIX: &str = "[Memory]";
+// Header of the query-relevant records section of the volatile [Context]
+// block on the fresh user turn (chat::context::volatile_block).
+pub const RECORDS_HEADER: &str = "Relevant memory records:";
 
-// The injected block stays short: at most this many records and this many
-// characters of record lines (the identity line itself is always kept).
+// The injected sections stay short: at most this many records and this many
+// characters of record lines (the identity lines are always kept).
 const MAX_BLOCK_RECORDS: usize = 10;
 const MAX_BLOCK_CHARS: usize = 1_500;
 
@@ -227,14 +230,26 @@ fn upsert_identity(conn: &Connection, source: &str, content: &str, tags: &[Strin
     Ok(())
 }
 
-// Builds the "[Memory]" block for one run: the fixed identity lines, the
-// always-injected gender line, then records relevant to the fresh user query
-// (keyword search — works with the Noop embedder). Records attached to the
-// current project are marked for that chat (SPEC 6.3 "подсвечиваются").
-pub fn context_block(conn: &Connection, project_id: Option<i64>, query: &str) -> Result<String> {
+// The stable "[Memory]" block for the system prompt: the fixed identity lines
+// plus the always-injected gender line. Nothing here depends on the fresh
+// user turn, so the system prompt stays byte-identical across turns and the
+// prompt-cache prefix survives; query-relevant records live in the volatile
+// [Context] block instead (relevant_records).
+pub fn identity_block(conn: &Connection) -> Result<String> {
     let gender = user_gender(conn)?;
-    let mut block = format!("{MEMORY_BLOCK_PREFIX}\n{}\n{}", identity_lines(), gender_line(&gender));
+    Ok(format!(
+        "{MEMORY_BLOCK_PREFIX}\n{}\n{}",
+        identity_lines(),
+        gender_line(&gender)
+    ))
+}
 
+// The query-relevant records section for the volatile [Context] block:
+// keyword-matched records (capped by count and chars), formatted as "- …"
+// lines under RECORDS_HEADER; records attached to the current project are
+// marked for that chat (SPEC 6.3 "подсвечиваются"). Empty string when nothing
+// matches, so the section can be dropped from the block entirely.
+pub fn relevant_records(conn: &Connection, project_id: Option<i64>, query: &str) -> Result<String> {
     let mut records: Vec<MemoryDto> = Vec::new();
     for record in search_preferring(conn, query, MAX_BLOCK_RECORDS * 2, project_id)? {
         if records.len() >= MAX_BLOCK_RECORDS {
@@ -246,19 +261,23 @@ pub fn context_block(conn: &Connection, project_id: Option<i64>, query: &str) ->
         records.push(record);
     }
 
-    let mut chars = block.chars().count();
+    let mut lines = String::new();
+    let mut chars = 0usize;
     for record in records {
-        let mut line = format!("\n- {}", record.content.replace('\n', " "));
+        let mut line = format!("- {}\n", record.content.replace('\n', " "));
         if record.project_id.is_some() && record.project_id == project_id {
-            line.push_str(" [this project]");
+            line = format!("- {} [this project]\n", record.content.replace('\n', " "));
         }
         if chars + line.chars().count() > MAX_BLOCK_CHARS {
             break;
         }
         chars += line.chars().count();
-        block.push_str(&line);
+        lines.push_str(&line);
     }
-    Ok(block)
+    if lines.is_empty() {
+        return Ok(String::new());
+    }
+    Ok(format!("{RECORDS_HEADER}\n{}", lines.trim_end()))
 }
 
 // Borrows the shared app-state connection for a tool call (same pattern as
@@ -613,28 +632,37 @@ mod tests {
     }
 
     #[test]
-    fn context_block_has_fixed_identity_and_unknown_gender_by_default() {
+    fn identity_block_is_stable_and_records_are_query_specific() {
         let (wd, conn) = setup("mem-block");
         add(&conn, "Любит кофе по утрам", None, None, None).unwrap();
         add(&conn, "Совсем про другое", None, None, None).unwrap();
 
-        let block = context_block(&conn, None, "кофе").unwrap();
+        // The system-prompt block carries only the fixed identity lines and
+        // the always-injected gender line: identical for any query.
+        let block = identity_block(&conn).unwrap();
         assert!(block.starts_with(&format!(
             "{MEMORY_BLOCK_PREFIX}\nYour name is Project-S.\nAddress the user informally with «ты».\nUser gender: unknown (use gender-neutral phrasing until it is known)."
         )));
-        assert!(block.contains("Любит кофе по утрам"));
-        assert!(!block.contains("Совсем про другое"));
+        assert!(!block.contains("Любит кофе"), "query records leaked into the stable block");
+        assert_eq!(identity_block(&conn).unwrap(), block, "identity block must be byte-stable");
 
-        // a known gender lands in the next block as an agreement hint
+        // Query-relevant records live in their own section for the volatile block.
+        let records = relevant_records(&conn, None, "кофе").unwrap();
+        assert!(records.starts_with(RECORDS_HEADER), "{records}");
+        assert!(records.contains("Любит кофе по утрам"));
+        assert!(!records.contains("Совсем про другое"));
+        assert!(relevant_records(&conn, None, "нет таких слов").unwrap().is_empty());
+
+        // a known gender lands in the next identity block as an agreement hint
         set_user_gender(&conn, "female").unwrap();
-        let block = context_block(&conn, None, "кофе").unwrap();
+        let block = identity_block(&conn).unwrap();
         assert!(block.contains("User gender: female (use feminine Russian agreement)."));
         assert_eq!(block.matches("User gender").count(), 1, "gender line injected once");
         fs::remove_dir_all(&wd).unwrap();
     }
 
     #[test]
-    fn context_block_marks_current_project_and_caps_records_and_chars() {
+    fn relevant_records_marks_current_project_and_caps_records_and_chars() {
         let (wd, conn) = setup("mem-block-cap");
         let project = projects::create_project(&conn, &wd, "proj").unwrap();
         add(&conn, "факт про этот проект кофе", Some(project.id), None, None).unwrap();
@@ -642,17 +670,15 @@ mod tests {
             add(&conn, &format!("лишняя запись {i} кофе"), None, None, None).unwrap();
         }
 
-        let block = context_block(&conn, Some(project.id), "кофе").unwrap();
-        assert!(block.contains("факт про этот проект кофе [this project]"));
-        let header = format!("{MEMORY_BLOCK_PREFIX}\n{}\n{}", identity_lines(), gender_line("unknown"));
-        let lines = block.lines().count();
-        assert!(lines <= header.lines().count() + MAX_BLOCK_RECORDS, "record cap exceeded: {lines}");
-        assert!(block.chars().count() <= header.chars().count() + MAX_BLOCK_CHARS);
+        let records = relevant_records(&conn, Some(project.id), "кофе").unwrap();
+        assert!(records.contains("факт про этот проект кофе [this project]"));
+        assert!(records.lines().count() <= 1 + MAX_BLOCK_RECORDS, "record cap exceeded");
+        assert!(records.chars().count() <= RECORDS_HEADER.chars().count() + 1 + MAX_BLOCK_CHARS);
 
         // the same record is not marked for a different (or no) project
-        let block = context_block(&conn, None, "факт про этот").unwrap();
-        assert!(block.contains("факт про этот проект кофе"));
-        assert!(!block.contains("[this project]"));
+        let records = relevant_records(&conn, None, "факт про этот").unwrap();
+        assert!(records.contains("факт про этот проект кофе"));
+        assert!(!records.contains("[this project]"));
         fs::remove_dir_all(&wd).unwrap();
     }
 }
