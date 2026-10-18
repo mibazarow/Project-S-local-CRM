@@ -71,6 +71,10 @@ export interface TaskDto {
   isPriority: boolean;
   checklist: ChecklistItem[];
   recurrence: string;
+  // Wall-clock timer (SPEC 4.3): accumulated spent ms; startedAt is the
+  // active start in epoch ms, non-null exactly while status is "progress".
+  spentMs: number;
+  startedAt: number | null;
 }
 
 // todos::TodoDto — one plan item of a scope (project chat or harness session).

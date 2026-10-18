@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +20,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  vi.useRealTimers();
 });
 
 const makeTask = (overrides: Partial<TaskDto> = {}): TaskDto => ({
@@ -37,6 +39,8 @@ const makeTask = (overrides: Partial<TaskDto> = {}): TaskDto => ({
   isPriority: false,
   checklist: [],
   recurrence: "none",
+  spentMs: 0,
+  startedAt: null,
   ...overrides,
 });
 
@@ -205,5 +209,66 @@ describe("TaskCard overdue label", () => {
     expect(card.className).toContain("overdue");
     expect(card.querySelector(".t")).not.toBeNull();
     expect(card.querySelector(".m")).not.toBeNull();
+  });
+});
+
+describe("TaskCard spent timer footer", () => {
+  const footer = () => container.querySelector(".task-card .task-spent");
+
+  it("shows the static total for a stopped task with the footer text", async () => {
+    await mount(makeTask({ status: "done", spentMs: 3_661_000 }));
+    expect(footer()?.textContent).toBe("Затрачено на задачу: 01:01:01");
+  });
+
+  it("hides the footer at zero while no work has started", async () => {
+    await mount(makeTask({ status: "new", spentMs: 0, startedAt: null }));
+    expect(footer()).toBeNull();
+  });
+
+  it("shows the footer for a running task even before a second passes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 9, 18, 12, 0, 0));
+    await mount(makeTask({ status: "progress", spentMs: 0, startedAt: Date.now() }));
+    expect(footer()?.textContent).toBe("Затрачено на задачу: 00:00:00");
+  });
+
+  it("ticks once per second by wall clock while in progress", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 9, 18, 12, 0, 5));
+    await mount(makeTask({ status: "progress", spentMs: 0, startedAt: Date.now() - 5000 }));
+    expect(footer()?.textContent).toBe("Затрачено на задачу: 00:00:05");
+    await act(async () => {
+      vi.advanceTimersByTime(1000);
+    });
+    expect(footer()?.textContent).toBe("Затрачено на задачу: 00:00:06");
+  });
+
+  it("adds the live run to the banked time when resuming", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 9, 18, 12, 0, 10));
+    await mount(
+      makeTask({ status: "progress", spentMs: 3_600_000, startedAt: Date.now() - 10_000 }),
+    );
+    expect(footer()?.textContent).toBe("Затрачено на задачу: 01:00:10");
+  });
+
+  it("stays static for stopped tasks across ticks", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 9, 18, 12, 0, 0));
+    await mount(makeTask({ status: "new", spentMs: 7_261_000, startedAt: null }));
+    const before = footer()?.textContent;
+    expect(before).toBe("Затрачено на задачу: 02:01:01");
+    await act(async () => {
+      vi.advanceTimersByTime(3000);
+    });
+    expect(footer()?.textContent).toBe(before);
+  });
+
+  it("completed task titles carry no strikethrough in the stylesheet", () => {
+    const css = readFileSync("src/styles/app.css", "utf8");
+    const rule = css.match(/\.task-card\.done \.t \{[^}]*\}/);
+    expect(rule, "the done title rule must exist").not.toBeNull();
+    expect(rule![0]).not.toContain("line-through");
+    expect(rule![0]).toContain("var(--text-muted)");
   });
 });

@@ -36,6 +36,12 @@ pub struct TaskDto {
     pub is_priority: bool,
     pub checklist: Vec<ChecklistItem>,
     pub recurrence: String,
+    // Wall-clock timer (SPEC 4.3): accumulated spent ms plus the active
+    // start instant in epoch ms (UTC); started_at is set exactly while the
+    // task sits in 'progress'. The UI derives the live total as
+    // spentMs + (now - startedAt) while running.
+    pub spent_ms: i64,
+    pub started_at: Option<i64>,
 }
 
 // Distinguishes an explicit null (Some(None) -> clear) from an absent field (None -> keep).
@@ -75,7 +81,7 @@ pub fn tasks_list(conn: &Connection, project_id: i64) -> Result<Vec<TaskDto>> {
     let now = now(conn)?;
     let mut stmt = conn.prepare(&format!(
         "SELECT id, title, status, comment, due_date, due_time, remind_at, position, created_at, closed_at,
-                is_priority, checklist, recurrence
+                is_priority, checklist, recurrence, spent_ms, started_at
          FROM tasks WHERE project_id = ?1 {ORDER_SQL}"
     ))?;
     let mut rows = stmt.query(params![project_id])?;
@@ -101,6 +107,8 @@ pub fn tasks_list(conn: &Connection, project_id: i64) -> Result<Vec<TaskDto>> {
             is_priority: row.get::<_, i64>(10)? != 0,
             checklist: parse_checklist(&row.get::<_, String>(11)?)?,
             recurrence: row.get(12)?,
+            spent_ms: row.get(13)?,
+            started_at: row.get(14)?,
         });
     }
     Ok(out)
@@ -163,13 +171,16 @@ pub fn task_create_with(
         params![project_id, status],
         |r| r.get(0),
     )?;
+    // A task created straight into 'progress' starts its timer right away
+    // (same rule as a move into the column, SPEC 4.3).
+    let started_at = if status == "progress" { now_ms(conn)? } else { 0 };
     conn.execute(
         "INSERT INTO tasks (project_id, title, status, due_date, due_time, position, created_at, closed_at,
-                            is_priority, checklist, recurrence)
+                            is_priority, checklist, recurrence, started_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now','localtime'),
                  CASE WHEN ?3 = 'done' THEN datetime('now','localtime') ELSE NULL END,
-                 ?7, ?8, ?9)",
-        params![project_id, title, status, due_date, due_time, position, is_priority, checklist_json, recurrence],
+                 ?7, ?8, ?9, CASE WHEN ?3 = 'progress' THEN ?10 ELSE NULL END)",
+        params![project_id, title, status, due_date, due_time, position, is_priority, checklist_json, recurrence, started_at],
     )?;
     let id = conn.last_insert_rowid();
     fts_sync(conn, id)?;
@@ -277,6 +288,7 @@ pub(crate) fn task_move_capture(
          WHERE id = ?3",
         params![status, position, id],
     )?;
+    apply_timer_transition(conn, id, status)?;
     // A recurring task completed in the kanban queues its next occurrence in
     // the 'new' column; the tasks-changed event (per project) covers both.
     let spawned = if status == "done" && prev_status != "done" && recurrence != "none" {
@@ -390,6 +402,13 @@ pub(crate) struct TaskSnapshot {
     pub(crate) recurrence: String,
     #[serde(default)]
     pub(crate) is_priority: bool,
+    // Timer state rides along so undo/trash restore puts the task back with
+    // exactly the spent time and active-start stamp it had at snapshot time.
+    // The serde defaults keep snapshots written before v33 restorable.
+    #[serde(default)]
+    pub(crate) spent_ms: i64,
+    #[serde(default)]
+    pub(crate) started_at: Option<i64>,
 }
 
 fn default_priority() -> String {
@@ -411,7 +430,8 @@ fn default_due_time() -> String {
 pub(crate) fn task_snapshot(conn: &Connection, id: i64) -> Result<TaskSnapshot> {
     conn.query_row(
         "SELECT id, project_id, title, status, comment, due_date, due_time, remind_at,
-                tags, position, created_at, closed_at, priority, checklist, recurrence, is_priority
+                tags, position, created_at, closed_at, priority, checklist, recurrence, is_priority,
+                spent_ms, started_at
          FROM tasks WHERE id = ?1",
         params![id],
         |r| {
@@ -432,6 +452,8 @@ pub(crate) fn task_snapshot(conn: &Connection, id: i64) -> Result<TaskSnapshot> 
                 checklist: r.get(13)?,
                 recurrence: r.get(14)?,
                 is_priority: r.get::<_, i64>(15)? != 0,
+                spent_ms: r.get(16)?,
+                started_at: r.get(17)?,
             })
         },
     )
@@ -470,7 +492,7 @@ pub(crate) fn task_delete_row(conn: &Connection, id: i64) -> Result<()> {
 
 const RESTORE_COLUMNS: &str = "project_id, title, status, comment, due_date, due_time, remind_at,
                                  tags, position, created_at, closed_at, priority, checklist,
-                                 recurrence, is_priority";
+                                 recurrence, is_priority, spent_ms, started_at";
 
 fn restore_params(snapshot: &TaskSnapshot) -> Vec<&dyn rusqlite::ToSql> {
     vec![
@@ -489,6 +511,8 @@ fn restore_params(snapshot: &TaskSnapshot) -> Vec<&dyn rusqlite::ToSql> {
         &snapshot.checklist,
         &snapshot.recurrence,
         &snapshot.is_priority,
+        &snapshot.spent_ms,
+        &snapshot.started_at,
     ]
 }
 
@@ -515,8 +539,8 @@ pub(crate) fn task_restore_snapshot(conn: &Connection, snapshot: &TaskSnapshot) 
         "UPDATE tasks SET project_id = ?1, title = ?2, status = ?3, comment = ?4,
                 due_date = ?5, due_time = ?6, remind_at = ?7, tags = ?8, position = ?9,
                 created_at = ?10, closed_at = ?11, priority = ?12, checklist = ?13,
-                recurrence = ?14, is_priority = ?15
-         WHERE id = ?16",
+                recurrence = ?14, is_priority = ?15, spent_ms = ?16, started_at = ?17
+         WHERE id = ?18",
         params![
             snapshot.project_id,
             snapshot.title,
@@ -533,6 +557,8 @@ pub(crate) fn task_restore_snapshot(conn: &Connection, snapshot: &TaskSnapshot) 
             snapshot.checklist,
             snapshot.recurrence,
             snapshot.is_priority,
+            snapshot.spent_ms,
+            snapshot.started_at,
             snapshot.id
         ],
     )?;
@@ -593,7 +619,7 @@ fn dto(conn: &Connection, id: i64) -> Result<TaskDto> {
     let now = now(conn)?;
     let mut stmt = conn.prepare(&format!(
         "SELECT project_id, title, status, comment, due_date, due_time, remind_at, position, created_at, closed_at,
-                is_priority, checklist, recurrence
+                is_priority, checklist, recurrence, spent_ms, started_at
          FROM tasks WHERE id = ?1 {ORDER_SQL}"
     ))?;
     let mut rows = stmt.query(params![id])?;
@@ -621,6 +647,8 @@ fn dto(conn: &Connection, id: i64) -> Result<TaskDto> {
         is_priority: row.get::<_, i64>(10)? != 0,
         checklist: parse_checklist(&row.get::<_, String>(11)?)?,
         recurrence: row.get(12)?,
+        spent_ms: row.get(13)?,
+        started_at: row.get(14)?,
     })
 }
 
@@ -630,6 +658,33 @@ fn today(conn: &Connection) -> Result<String> {
 
 fn now(conn: &Connection) -> Result<String> {
     Ok(conn.query_row("SELECT datetime('now','localtime')", [], |r| r.get(0))?)
+}
+
+// Wall-clock epoch ms (UTC): the timer never parses date/time strings and
+// keeps running while the app is closed (SPEC 4.3).
+fn now_ms(conn: &Connection) -> Result<i64> {
+    Ok(conn.query_row("SELECT CAST(strftime('%s','now') AS INTEGER) * 1000", [], |r| r.get(0))?)
+}
+
+// The single place where a status change touches the task timer; every
+// path (board move, agent move, create-in-progress in task_create_with)
+// lands here, so none can double-count. SQLite evaluates every SET
+// right-hand side against the old row, so spent_ms banks the elapsed
+// wall-clock time from the old started_at before the marker is cleared.
+// Entering 'progress' keeps an existing started_at (a same-status move
+// adds nothing); leaving it clears the marker; other transitions are
+// no-ops.
+fn apply_timer_transition(conn: &Connection, id: i64, new_status: &str) -> Result<()> {
+    let now = now_ms(conn)?;
+    conn.execute(
+        "UPDATE tasks SET
+           spent_ms = spent_ms + CASE WHEN ?2 <> 'progress' AND started_at IS NOT NULL
+                                      THEN ?3 - started_at ELSE 0 END,
+           started_at = CASE WHEN ?2 = 'progress' THEN COALESCE(started_at, ?3) ELSE NULL END
+         WHERE id = ?1",
+        params![id, new_status, now],
+    )?;
+    Ok(())
 }
 
 // Overdue by deadline date + time (SPEC 4.3): "YYYY-MM-DD HH:MM:00" and the
@@ -1013,6 +1068,104 @@ mod tests {
     }
 
     #[test]
+    fn timer_start_stop_resume_accumulates() {
+        let (wd, conn, pid) = setup("tasks-timer-accumulate");
+        let t = task_create(&conn, pid, "t", None).unwrap();
+        assert_eq!(t.spent_ms, 0);
+        assert_eq!(t.started_at, None, "a 'new' task has no active start");
+
+        // Entering 'progress' starts the clock.
+        let started = task_move(&conn, t.id, "progress", 1.0).unwrap();
+        assert!(started.started_at.is_some());
+        assert_eq!(started.spent_ms, 0);
+
+        // Back to 'new' stops it and banks the elapsed time.
+        let stopped = task_move(&conn, t.id, "new", 1.0).unwrap();
+        assert_eq!(stopped.started_at, None);
+        assert!(stopped.spent_ms >= 0);
+
+        // Returning to 'progress' resumes: the stamp is fresh, the banked
+        // time is kept (not reset, not double-counted).
+        let resumed = task_move(&conn, t.id, "progress", 1.0).unwrap();
+        assert!(resumed.started_at.is_some());
+        assert_eq!(resumed.spent_ms, stopped.spent_ms);
+
+        // 'done' stops it too; the total survives.
+        let done = task_move(&conn, t.id, "done", 1.0).unwrap();
+        assert_eq!(done.started_at, None);
+        assert!(done.spent_ms >= stopped.spent_ms);
+
+        // A task created straight into 'progress' starts counting at once.
+        let born_running = task_create(&conn, pid, "born", Some("progress".into())).unwrap();
+        assert!(born_running.started_at.is_some());
+        assert_eq!(born_running.spent_ms, 0);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn timer_wall_clock_accumulates_across_a_simulated_gap() {
+        let (wd, conn, pid) = setup("tasks-timer-wallclock");
+        let t = task_create(&conn, pid, "t", None).unwrap();
+        task_move(&conn, t.id, "progress", 1.0).unwrap();
+        // Simulate the app having been closed for two hours: rewind the
+        // start stamp; the next stop must bank the whole wall-clock span.
+        conn.execute(
+            "UPDATE tasks SET started_at = started_at - 7200000 WHERE id = ?1",
+            params![t.id],
+        )
+        .unwrap();
+        let done = task_move(&conn, t.id, "done", 1.0).unwrap();
+        assert!(
+            done.spent_ms >= 7_200_000 && done.spent_ms < 7_205_000,
+            "two simulated hours must land in spent_ms, got {}",
+            done.spent_ms
+        );
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn timer_no_double_count_on_same_status_moves() {
+        let (wd, conn, pid) = setup("tasks-timer-no-double");
+        let t = task_create(&conn, pid, "t", None).unwrap();
+        let started = task_move(&conn, t.id, "progress", 1.0).unwrap();
+        let stamp = started.started_at.unwrap();
+
+        // Reordering inside the column (same status) must not restart or
+        // bank anything.
+        let reordered = task_move(&conn, t.id, "progress", 9.0).unwrap();
+        assert_eq!(reordered.started_at, Some(stamp), "same-status move must keep the stamp");
+        assert_eq!(reordered.spent_ms, 0);
+
+        let done = task_move(&conn, t.id, "done", 1.0).unwrap();
+        let total = done.spent_ms;
+        assert!(total >= 0);
+        // Repeating the done move must not bank anything a second time.
+        let again = task_move(&conn, t.id, "done", 2.0).unwrap();
+        assert_eq!(again.spent_ms, total);
+        assert_eq!(again.started_at, None);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn timer_state_is_carried_through_dto_json_and_trash_snapshot() {
+        let (wd, conn, pid) = setup("tasks-timer-dto");
+        let t = task_create(&conn, pid, "t", Some("progress".into())).unwrap();
+        let json = serde_json::to_value(&t).unwrap();
+        assert_eq!(json["spentMs"], 0);
+        assert!(json["startedAt"].is_i64(), "the DTO must expose the running start");
+
+        let (project_id, trash_id) = task_delete_with_trash(&conn, t.id).unwrap();
+        assert_eq!(project_id, pid);
+        let raw: String = conn
+            .query_row("SELECT meta FROM trash WHERE id = ?1", params![trash_id], |r| r.get(0))
+            .unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(meta["spentMs"], 0);
+        assert_eq!(meta["startedAt"], json["startedAt"], "the trash snapshot must keep the timer");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
     fn overdue_is_derived_in_rust() {
         let (wd, conn, pid) = setup("tasks-overdue");
         let yesterday: String = conn
@@ -1355,6 +1508,8 @@ mod tests {
         assert_eq!(next.checklist, vec![ChecklistItem { text: "prep".into(), done: false }]);
         assert!(next.closed_at.is_none());
         assert!(next.remind_at.is_none());
+        assert_eq!(next.spent_ms, 0, "the spawned copy starts with a zero timer");
+        assert_eq!(next.started_at, None, "the spawned copy is not running");
 
         // weekly advances 7 days; monthly clamps month ends like SQLite date().
         let weekly = task_create_with(&conn, pid, "w", None, None, None, None, None, Some("weekly".into())).unwrap();

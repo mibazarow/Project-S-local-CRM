@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { dueMs, formatActivity, formatDue, formatInstant, formatModified } from "./format";
+import { dueMs, formatActivity, formatDue, formatInstant, formatModified, formatSpent } from "./format";
 
 // Fix "now" to 2026-10-18 12:00 local so the «сегодня» branch is deterministic.
 beforeEach(() => {
@@ -68,5 +68,21 @@ describe("formatModified", () => {
   it("returns empty string for out-of-range timestamps", () => {
     expect(formatModified(Number.NaN)).toBe("");
     expect(formatModified(8.64e16)).toBe("");
+  });
+});
+
+describe("formatSpent", () => {
+  it("renders zero and sub-second as 00:00:00", () => {
+    expect(formatSpent(0)).toBe("00:00:00");
+    expect(formatSpent(999)).toBe("00:00:00");
+  });
+  it("renders ЧЧ:ММ:СС with zero padding", () => {
+    expect(formatSpent(1000)).toBe("00:00:01");
+    expect(formatSpent(61_000)).toBe("00:01:01");
+    expect(formatSpent(3_661_000)).toBe("01:01:01");
+    expect(formatSpent(36_000_000)).toBe("10:00:00");
+  });
+  it("clamps negative values to zero", () => {
+    expect(formatSpent(-5000)).toBe("00:00:00");
   });
 });

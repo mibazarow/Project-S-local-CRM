@@ -467,4 +467,25 @@ mod tests {
         assert!(datas_title_arg(&json!({ "title": "# h" })).is_err());
         assert!(datas_title_arg(&json!({ "title": "a\nb" })).is_err());
     }
+
+    // The agent move (task_move/crm_task_move) shares task_move_capture with
+    // the board, so the wall-clock timer must behave identically here.
+    #[test]
+    fn task_move_body_applies_the_wall_clock_timer() {
+        let wd = crate::onboarding::temp_test_dir("task-glue-timer");
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        crate::db::schema::run_migrations(&conn).unwrap();
+        let project = crate::projects::create_project(&conn, &wd, "p1").unwrap();
+        let t = crate::tasks::task_create(&conn, project.id, "agent", None).unwrap();
+
+        let started = task_move_body(&conn, t.id, "progress", None).unwrap();
+        assert!(started.started_at.is_some(), "agent move into progress starts the clock");
+        assert_eq!(started.spent_ms, 0);
+
+        let done = task_move_body(&conn, t.id, "done", None).unwrap();
+        assert_eq!(done.started_at, None, "agent move to done stops the clock");
+        assert!(done.spent_ms >= 0);
+        std::fs::remove_dir_all(&wd).unwrap();
+    }
 }

@@ -31,3 +31,10 @@ export function formatModified(ts: number): string {
   if (d.toDateString() === new Date().toDateString()) return `сегодня ${time}`;
   return `${d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" })} ${time}`;
 }
+
+// Таймер задачи (SPEC 4.3): ЧЧ:ММ:СС из накопленных миллисекунд.
+export function formatSpent(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(Math.floor(total / 3600))}:${pad(Math.floor((total % 3600) / 60))}:${pad(total % 60)}`;
+}

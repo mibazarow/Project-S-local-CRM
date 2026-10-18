@@ -47,6 +47,8 @@ const task = vi.hoisted((): TaskDto => ({
   isPriority: false,
   checklist: [],
   recurrence: "none",
+  spentMs: 0,
+  startedAt: null,
 }));
 
 const project = vi.hoisted(

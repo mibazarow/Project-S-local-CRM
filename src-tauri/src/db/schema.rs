@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::{params, Connection};
 
-pub const SCHEMA_VERSION: i64 = 32;
+pub const SCHEMA_VERSION: i64 = 33;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -577,6 +577,17 @@ const MIGRATION_31_PROJECT_TASK_COLUMNS: &str = "ALTER TABLE projects ADD COLUMN
 const MIGRATION_32_TASK_DUE_TIME: &str =
     "ALTER TABLE tasks ADD COLUMN due_time TEXT NOT NULL DEFAULT '07:00'";
 
+// Task wall-clock timer (SPEC 4.3): accumulated spent milliseconds plus the
+// active start instant. Epoch ms (UTC) keeps date/time strings out of the
+// timer: the count keeps running while the app is closed. Backfill decision
+// (documented in SPEC): tasks already in 'progress' start counting at
+// migration time, so no task claims time spent before the feature existed.
+// Guarded per column (v14 recipe); the backfill UPDATE is idempotent.
+const MIGRATION_33_TASK_SPENT_MS: &str = "ALTER TABLE tasks ADD COLUMN spent_ms INTEGER NOT NULL DEFAULT 0";
+const MIGRATION_33_TASK_STARTED_AT: &str = "ALTER TABLE tasks ADD COLUMN started_at INTEGER";
+const MIGRATION_33_TASK_STARTED_AT_BACKFILL: &str =
+    "UPDATE tasks SET started_at = CAST(strftime('%s','now') AS INTEGER) * 1000 WHERE status = 'progress' AND started_at IS NULL";
+
 fn migrate_v1(conn: &Connection) -> Result<()> {
     conn.execute_batch(MIGRATION_1)?;
     Ok(())
@@ -890,6 +901,30 @@ fn migrate_v32(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v33(conn: &Connection) -> Result<()> {
+    // Guarded per column (v14 recipe) so a re-run after an interrupted
+    // v33 does not re-ALTER; the backfill only touches rows that never
+    // got a start stamp, so it stays idempotent across re-runs.
+    let has_spent_ms: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'spent_ms'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_spent_ms == 0 {
+        conn.execute(MIGRATION_33_TASK_SPENT_MS, [])?;
+    }
+    let has_started_at: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('tasks') WHERE name = 'started_at'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_started_at == 0 {
+        conn.execute(MIGRATION_33_TASK_STARTED_AT, [])?;
+    }
+    conn.execute(MIGRATION_33_TASK_STARTED_AT_BACKFILL, [])?;
+    Ok(())
+}
+
 // Ordered (user_version target, migration body) table: each body runs when
 // the stored user_version is below its target, then the runner bumps
 // user_version to the target, exactly like the previous hand-rolled
@@ -929,7 +964,8 @@ const MIGRATIONS: &[(u32, Migration)] = &[
     (29, migrate_v29),
     (30, migrate_v30),
     (31, migrate_v31),
-    (SCHEMA_VERSION as u32, migrate_v32),
+    (32, migrate_v32),
+    (SCHEMA_VERSION as u32, migrate_v33),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
@@ -2417,6 +2453,74 @@ CREATE UNIQUE INDEX uniq_chats_one_project_chat ON chats(project_id) WHERE kind 
         // repaired without re-ALTER errors.
         conn.pragma_update(None, "user_version", 31).unwrap();
         run_migrations(&conn).unwrap();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_v33_backfills_started_at_only_for_in_progress_tasks() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        // Simulate a pre-v33 database: drop both columns, roll the version
+        // back, add one task per status.
+        conn.execute("ALTER TABLE tasks DROP COLUMN spent_ms", [])
+            .unwrap();
+        conn.execute("ALTER TABLE tasks DROP COLUMN started_at", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO projects (name, path, created_at) VALUES ('p', '/tmp/p', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        for status in ["new", "progress", "done"] {
+            conn.execute(
+                "INSERT INTO tasks (project_id, title, status, created_at) VALUES (1, ?1, ?1, '2026-01-01')",
+                params![status],
+            )
+            .unwrap();
+        }
+        conn.pragma_update(None, "user_version", 32).unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let rows: Vec<(String, i64, Option<i64>)> = {
+            let mut stmt = conn
+                .prepare("SELECT status, spent_ms, started_at FROM tasks ORDER BY id")
+                .unwrap();
+            stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        assert_eq!(rows.len(), 3);
+        for (status, spent_ms, started_at) in &rows {
+            assert_eq!(*spent_ms, 0, "accumulated time must start at zero");
+            if status == "progress" {
+                let started = started_at.unwrap();
+                let now: i64 = conn
+                    .query_row("SELECT CAST(strftime('%s','now') AS INTEGER) * 1000", [], |r| r.get(0))
+                    .unwrap();
+                assert!(
+                    started > now - 60_000 && started <= now,
+                    "in-progress tasks must start counting at migration time"
+                );
+            } else {
+                assert_eq!(*started_at, None, "{status} tasks must have no active start");
+            }
+        }
+
+        // Idempotent re-run: stamps are not moved, no re-ALTER error.
+        let first: Option<i64> = conn
+            .query_row("SELECT started_at FROM tasks WHERE status = 'progress'", [], |r| r.get(0))
+            .unwrap();
+        conn.pragma_update(None, "user_version", 32).unwrap();
+        run_migrations(&conn).unwrap();
+        let again: Option<i64> = conn
+            .query_row("SELECT started_at FROM tasks WHERE status = 'progress'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(first, again, "re-run must not re-stamp the backfill");
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
     }

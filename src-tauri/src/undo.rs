@@ -604,6 +604,34 @@ mod tests {
     }
 
     #[test]
+    fn task_move_undo_restores_the_wall_clock_timer_state() {
+        let (wd, conn) = setup("undo-task-timer");
+        let project = projects::create_project(&conn, &wd, "example-ru").unwrap();
+        let task = tasks::task_create(&conn, project.id, "t", None).unwrap();
+        // Bank an hour of wall-clock time first (progress -> new).
+        tasks::task_move(&conn, task.id, "progress", 1.0).unwrap();
+        conn.execute(
+            "UPDATE tasks SET started_at = started_at - 3600000 WHERE id = ?1",
+            params![task.id],
+        )
+        .unwrap();
+        let stopped = tasks::task_move(&conn, task.id, "new", 1.0).unwrap();
+        assert!(stopped.spent_ms >= 3_600_000);
+
+        let snapshot = tasks::task_snapshot(&conn, task.id).unwrap();
+        let running = tasks::task_move(&conn, task.id, "progress", 1.0).unwrap();
+        assert!(running.started_at.is_some());
+        push_task_snapshot(&conn, "task_move", &snapshot, None).unwrap();
+        undo_last(&conn, &wd).unwrap();
+
+        let back = tasks::tasks_list(&conn, project.id).unwrap().remove(0);
+        assert_eq!(back.status, "new");
+        assert_eq!(back.started_at, None, "undo must clear the start stamp the move set");
+        assert_eq!(back.spent_ms, snapshot.spent_ms, "undo must restore the banked time exactly");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
     fn task_delete_undo_restores_the_task_and_clears_the_trash_entry() {
         let (wd, conn) = setup("undo-task-delete");
         let project = projects::create_project(&conn, &wd, "example-ru").unwrap();

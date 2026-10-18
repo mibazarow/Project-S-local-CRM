@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import type { ChecklistItem, TaskDto, TaskPatch } from "../../api/types";
-import { formatDue } from "../../shared/format";
+import { formatDue, formatSpent } from "../../shared/format";
 import {
   IconAskAgent,
   IconCalendar,
@@ -322,6 +322,20 @@ export default function TaskCard({
   const [mode, setMode] = useState<Mode>(null);
   const cardRef = useRef<HTMLDivElement>(null);
 
+  // Wall-clock timer footer (SPEC 4.3): while the task sits in "progress"
+  // the total ticks once per second from the epoch-ms start stamp, so the
+  // count keeps running even when the app was closed. The state lives in
+  // this card only — the rest of the board is not re-rendered per tick.
+  const running = task.status === "progress" && task.startedAt !== null;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(timer);
+  }, [running]);
+  const spentMs = task.spentMs + (running ? Math.max(0, now - (task.startedAt as number)) : 0);
+
   useEffect(() => {
     if (highlight) cardRef.current?.scrollIntoView({ block: "center" });
   }, [highlight]);
@@ -426,6 +440,9 @@ export default function TaskCard({
         })()}
       {mode === "details" && (
         <TaskDetails task={task} onPatch={onPatch} onCancel={() => setMode(null)} />
+      )}
+      {(running || spentMs > 0) && (
+        <div className="task-spent">Затрачено на задачу: {formatSpent(spentMs)}</div>
       )}
       <span className="task-actions">
         {onDiscuss && (
