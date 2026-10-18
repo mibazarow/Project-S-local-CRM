@@ -11,18 +11,16 @@
 // `open <file>` when nothing applies).
 use crate::agent::ocr_tools::find_swift;
 use crate::agent::result::read_capped;
-use crate::sync_util::lock_recover;
 use crate::error::{AppError, Result};
 use crate::fs_ops;
 use crate::paths;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
@@ -149,10 +147,40 @@ struct HandlerJson {
 }
 
 // Session cache of the final ranked handler list per extension, so the Swift
-// helper runs at most once per extension while the app is up.
-fn handler_cache() -> &'static Mutex<HashMap<String, Vec<AppInfo>>> {
+// helper runs at most once per extension while the app is up. The map is
+// reachable only through this module: `get_or_populate` serves hits and
+// populates misses (the lister runs outside the lock, so racing misses may
+// each populate and the last insert wins), a lister error propagates without
+// being cached, and `invalidate` (tests only) drops one entry.
+mod app_cache {
+    use super::AppInfo;
+    use crate::error::Result;
+    use crate::sync_util::lock_recover;
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
     static CACHE: OnceLock<Mutex<HashMap<String, Vec<AppInfo>>>> = OnceLock::new();
-    CACHE.get_or_init(Default::default)
+
+    fn cache() -> &'static Mutex<HashMap<String, Vec<AppInfo>>> {
+        CACHE.get_or_init(Default::default)
+    }
+
+    pub fn get_or_populate(
+        ext: &str,
+        populate: impl FnOnce(&str) -> Result<Vec<AppInfo>>,
+    ) -> Result<Vec<AppInfo>> {
+        if let Some(cached) = lock_recover(cache()).get(ext) {
+            return Ok(cached.clone());
+        }
+        let apps = populate(ext)?;
+        lock_recover(cache()).insert(ext.to_owned(), apps.clone());
+        Ok(apps)
+    }
+
+    #[cfg(test)]
+    pub fn invalidate(ext: &str) {
+        lock_recover(cache()).remove(ext);
+    }
 }
 
 fn is_stock(name: &str) -> bool {
@@ -298,15 +326,10 @@ pub fn list_apps(ext: &str) -> Vec<AppInfo> {
     let Some(ext) = normalize_ext(ext) else {
         return Vec::new();
     };
-    if let Some(cached) = lock_recover(handler_cache()).get(&ext) {
-        return cached.clone();
-    }
-    match launch_services_handlers(&ext) {
-        Ok(handlers) => {
-            let ranked = rank_handlers(&ext, handlers);
-            lock_recover(handler_cache()).insert(ext, ranked.clone());
-            ranked
-        }
+    match app_cache::get_or_populate(&ext, |ext| {
+        launch_services_handlers(ext).map(|handlers| rank_handlers(ext, handlers))
+    }) {
+        Ok(apps) => apps,
         Err(e) => {
             eprintln!("[open-with] LaunchServices lookup for \"{ext}\" failed: {e}");
             Vec::new()
@@ -499,6 +522,8 @@ mod tests {
     use crate::onboarding::temp_test_dir;
     use crate::projects;
     use std::ffi::OsStr;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     fn make_app(dir: &Path, name: &str) -> PathBuf {
         let app = dir.join(format!("{name}.app"));
@@ -596,14 +621,137 @@ mod tests {
     fn list_apps_serves_cached_entries_per_extension() {
         let ext = "owcachedext";
         let sentinel = vec![handler("Sentinel Handler")];
-        handler_cache()
-            .lock()
-            .unwrap()
-            .insert(ext.to_owned(), sentinel.clone());
+        app_cache::get_or_populate(ext, |_| Ok(sentinel.clone())).unwrap();
         // served from the cache: a miss would run Swift and never produce the
         // sentinel app name
         assert_eq!(list_apps(ext), sentinel);
         assert_eq!(list_apps(ext), sentinel);
+    }
+
+    #[test]
+    fn fake_lister_miss_populates_once_and_hit_skips_the_lister() {
+        let calls = AtomicUsize::new(0);
+        let first = app_cache::get_or_populate("owfakemiss", |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![handler("Fake One")])
+        })
+        .unwrap();
+        assert_eq!(names(&first), ["Fake One"]);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let second = app_cache::get_or_populate("owfakemiss", |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![handler("Fake Two")])
+        })
+        .unwrap();
+        assert_eq!(second, first);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn fake_lister_cache_keys_are_independent() {
+        let calls_a = AtomicUsize::new(0);
+        let calls_b = AtomicUsize::new(0);
+        let a = app_cache::get_or_populate("owfakekeya", |_| {
+            calls_a.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![handler("Fake A")])
+        })
+        .unwrap();
+        let b = app_cache::get_or_populate("owfakekeyb", |_| {
+            calls_b.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![handler("Fake B")])
+        })
+        .unwrap();
+        assert_eq!(names(&a), ["Fake A"]);
+        assert_eq!(names(&b), ["Fake B"]);
+        let again = app_cache::get_or_populate("owfakekeya", |_| Ok(vec![handler("Fake A2")])).unwrap();
+        assert_eq!(again, a);
+        assert_eq!(calls_a.load(Ordering::SeqCst), 1);
+        assert_eq!(calls_b.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn fake_lister_invalidate_forces_a_repopulate() {
+        let calls = AtomicUsize::new(0);
+        app_cache::get_or_populate("owfakeinvalid", |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![handler("Fake First")])
+        })
+        .unwrap();
+        let cached = app_cache::get_or_populate("owfakeinvalid", |_| Ok(vec![handler("Fake Never")])).unwrap();
+        assert_eq!(names(&cached), ["Fake First"]);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        app_cache::invalidate("owfakeinvalid");
+        let again = app_cache::get_or_populate("owfakeinvalid", |_| Ok(vec![handler("Fake Second")])).unwrap();
+        assert_eq!(names(&again), ["Fake Second"]);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn fake_lister_error_propagates_and_is_not_cached() {
+        let calls = AtomicUsize::new(0);
+        let failed = app_cache::get_or_populate("owfakefail", |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(AppError::Io("fake lister failure".into()))
+        });
+        assert!(matches!(failed, Err(AppError::Io(_))));
+        let recovered = app_cache::get_or_populate("owfakefail", |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![handler("Fake Recovered")])
+        })
+        .unwrap();
+        assert_eq!(names(&recovered), ["Fake Recovered"]);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn fake_lister_empty_result_is_cached() {
+        let calls = AtomicUsize::new(0);
+        let first = app_cache::get_or_populate("owfakeempty", |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(Vec::new())
+        })
+        .unwrap();
+        assert!(first.is_empty());
+        let second = app_cache::get_or_populate("owfakeempty", |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![handler("Fake Late")])
+        })
+        .unwrap();
+        assert!(second.is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn fake_lister_concurrent_misses_populate_within_the_locking_window() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let calls = Arc::clone(&calls);
+            handles.push(std::thread::spawn(move || {
+                app_cache::get_or_populate("owfakeconcurrent", |_| {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    Ok(vec![handler("Fake Concurrent")])
+                })
+                .unwrap()
+            }));
+        }
+        let results: Vec<Vec<AppInfo>> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let populates = calls.load(Ordering::SeqCst);
+        assert!(
+            (2..=8).contains(&populates),
+            "populates {populates} outside the concurrent-miss window"
+        );
+        for apps in &results {
+            assert_eq!(names(apps), ["Fake Concurrent"]);
+        }
+        let after = app_cache::get_or_populate("owfakeconcurrent", |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![handler("Fake Late")])
+        })
+        .unwrap();
+        assert_eq!(names(&after), ["Fake Concurrent"]);
+        assert_eq!(calls.load(Ordering::SeqCst), populates);
     }
 
     #[test]
@@ -697,10 +845,7 @@ mod tests {
                 app.path = office.display().to_string();
             }
         }
-        handler_cache()
-            .lock()
-            .unwrap()
-            .insert(ext.to_owned(), ranked);
+        app_cache::get_or_populate(ext, move |_| Ok(ranked)).unwrap();
         // explicit app wins and is validated
         let chosen = resolve_choice(
             &wd,
@@ -723,16 +868,10 @@ mod tests {
         let chosen = resolve_choice(&wd2, ext, None).unwrap().unwrap();
         assert_eq!(chosen.name, "Microsoft Word");
         // nothing recommended for the extension: system default (None)
-        handler_cache()
-            .lock()
-            .unwrap()
-            .insert("ownone".to_owned(), vec![handler("GIMP")]);
+        app_cache::get_or_populate("ownone", |_| Ok(vec![handler("GIMP")])).unwrap();
         assert!(resolve_choice(&wd2, "ownone", None).unwrap().is_none());
         // empty handler list: system default (None)
-        handler_cache()
-            .lock()
-            .unwrap()
-            .insert("owempty".to_owned(), Vec::new());
+        app_cache::get_or_populate("owempty", |_| Ok(Vec::new())).unwrap();
         assert!(resolve_choice(&wd2, "owempty", None).unwrap().is_none());
         for dir in [wd, apps, wd2] {
             fs::remove_dir_all(&dir).unwrap();
