@@ -7,12 +7,12 @@
 
 ## Текущее состояние
 - Последний зелёный HEAD: `ab60b04` — `npm test` **164 passed**, `npm run build` OK, oxlint — только pre-existing `crossActions.ts`.
-- Бэкенд последний раз проверен на `b370c3b`: `cargo test` **813 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings. Контракты/DTO/схема не затронуты.
+- Бэкенд последний раз проверен на `998349e`: `cargo test` **819 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings, `npm run build` OK. Контракты/DTO/схема не затронуты.
 - Baseline-скриншоты: `/tmp/project-s-baseline/` (7 экранов).
 - Полный `npm run app:build` — только в финале.
 
 ## Фаза 5 — остаток
-- **S5.5f open-with-cache** — `CACHE` (`open_with.rs:153`): инкапсулировать кэш списка приложений по типу.
+- Рефакторинг-срезы фазы 5 закрыты; новых срезов не планируется.
 - `embed`-кэши (`EMBEDDER_CACHE`, ORT `ENV`) — осознанно процессные, не трогаем.
 
 ## Проверка среза
@@ -25,4 +25,4 @@
 - `BAG_REPORT.md`/`Q.md` — рабочие файлы задач, не менять их в рамках рефакторинга.
 
 ## Следующий шаг
-**S5.5f open-with-cache** — инкапсулировать `CACHE` (`open_with.rs:153`): кэш списка приложений по типу, покрыть тестом повторный вход того же типа.
+**Только финальная проверка** (срезов больше нет): полный `npm run app:build`, установка в `/Applications/Project-S.app` (`npm run app:install`), смоук-проверка приложения (окна, вкладки, «Открыть в…», чат/агент, CRM-разделы). Никаких новых рефакторинг-срезов.
