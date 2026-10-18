@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, type DragEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { confirmRemove } from "../../shared/confirm";
+import { usePointerDrag } from "../../hooks/usePointerDrag";
 import ContextMenu from "../shared/ContextMenu";
 import { toMessage, useFileOps } from "./fileOps";
 import { fileMenuItems, useFileMenuActions } from "./fileMenu";
@@ -40,8 +41,6 @@ export default function FileTree({
   const [creating, setCreating] = useState<{ parentRel: string; kind: "dir" | "file" } | null>(
     null,
   );
-  const [dragRel, setDragRel] = useState<string | null>(null);
-  const [dropTarget, setDropTarget] = useState<string | null>(null);
   const [menu, setMenu] = useState<{ entry: FsEntry; x: number; y: number } | null>(null);
   const openRef = useRef<Set<string>>(new Set());
   const ops = useFileOps(projectId);
@@ -173,33 +172,32 @@ export default function FileTree({
   const canDrop = (src: string | null, dest: string) =>
     !!src && dest !== src && !dest.startsWith(`${src}/`);
 
-  const endDrag = () => {
-    setDragRel(null);
-    setDropTarget(null);
-  };
-
-  const handleDirDragOver = (dirRel: string, e: DragEvent<HTMLDivElement>) => {
-    if (canDrop(dragRel, dirRel)) e.preventDefault();
-    setDropTarget(dirRel);
-  };
-
-  const handleDirDrop = (dirRel: string, e: DragEvent<HTMLDivElement>) => {
-    const rel = e.dataTransfer.getData("text/plain");
-    endDrag();
-    if (rel && canDrop(rel, dirRel)) void ops.move(rel, dirRel);
-  };
-
-  const handleRootDragOver = (e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    setDropTarget("");
-  };
-
-  const handleRootDrop = (e: DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    const rel = e.dataTransfer.getData("text/plain");
-    endDrag();
-    if (rel) void ops.move(rel, "");
-  };
+  // Pointer DnD (HTML5 DnD is unreliable in WKWebView): the drop target is the
+  // folder row under the pointer (data-drop-dir) or the tree root for "".
+  const { draggingId, dropTarget, onPointerDown, consumeSuppressedClick } = usePointerDrag<
+    string
+  >({
+    resolveTarget: (clientX, clientY, id) => {
+      const el = document
+        .elementFromPoint(clientX, clientY)
+        ?.closest<HTMLElement>("[data-drop-dir]");
+      const container = el?.dataset.dropDir;
+      if (container === undefined) return null;
+      return { container, index: 0, draggingId: id };
+    },
+    onDrop: (id, target) => {
+      const dest = target.container;
+      if (!canDrop(id, dest)) return;
+      const slash = id.lastIndexOf("/");
+      const parent = slash === -1 ? "" : id.slice(0, slash);
+      if (parent === dest) return;
+      void (async () => {
+        const moved = await ops.move(id, dest);
+        // Keep the preview/selection alive on the file's new path.
+        if (moved && selectedRelPath === id) onSelect(moved);
+      })();
+    },
+  });
 
   const createRow = () => (
     <li className="tree-node" key="__creating">
@@ -226,8 +224,11 @@ export default function FileTree({
           open={open}
           selected={selectedRelPath === entry.relPath}
           renaming={renamingPath === entry.relPath}
-          dropOver={dropTarget === entry.relPath || osHover === entry.relPath}
-          noDrop={dropTarget === entry.relPath && !canDrop(dragRel, entry.relPath)}
+          dragging={draggingId === entry.relPath}
+          dropOver={dropTarget?.container === entry.relPath || osHover === entry.relPath}
+          noDrop={
+            dropTarget?.container === entry.relPath && !canDrop(draggingId, entry.relPath)
+          }
           onToggle={toggle}
           onSelect={onSelect}
           onStartRename={(e) => {
@@ -238,10 +239,10 @@ export default function FileTree({
           onRenameCancel={() => setRenamingPath(null)}
           onCopyAs={(e) => menuActions.copyAs(e)}
           onDelete={(e) => void confirmDelete(e)}
-          onDragStart={(e) => setDragRel(e.relPath)}
-          onDragEnd={endDrag}
-          onDirDragOver={handleDirDragOver}
-          onDirDrop={handleDirDrop}
+          onPointerDown={
+            entry.kind === "file" ? (e, ev) => onPointerDown(ev, e.relPath) : undefined
+          }
+          consumeSuppressedClick={consumeSuppressedClick}
           onContextMenu={(e, ev) => setMenu({ entry: e, x: ev.clientX, y: ev.clientY })}
           onOpenExternal={(e) =>
             void (isDocument(e) ? ow.openDocument(e) : ops.openExternal(e.relPath))
@@ -260,7 +261,7 @@ export default function FileTree({
   };
 
   const root = childrenByDir[""] ?? [];
-  const rootDropOver = dropTarget === "" || osHover === "";
+  const rootDropOver = dropTarget?.container === "" || osHover === "";
   let body;
   if (loading && !childrenByDir[""]) {
     body = <div className="empty-note">Загрузка…</div>;
@@ -277,15 +278,7 @@ export default function FileTree({
     );
   } else {
     body = (
-      <div
-        className={rootDropOver ? "file-tree drop-over" : "file-tree"}
-        data-drop-dir=""
-        onDragOver={handleRootDragOver}
-        onDrop={handleRootDrop}
-        onDragLeave={(e) => {
-          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDropTarget(null);
-        }}
-      >
+      <div className={rootDropOver ? "file-tree drop-over" : "file-tree"} data-drop-dir="">
         <ul className="tree-children root">
           {root.map(renderNode)}
           {creating?.parentRel === "" && createRow()}

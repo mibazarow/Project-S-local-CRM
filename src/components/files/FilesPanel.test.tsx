@@ -61,6 +61,11 @@ vi.mock("../../api/ipc", () => ({
   onSchedulesChanged: vi.fn(async () => () => {}),
   onProjectsChanged: vi.fn(async () => () => {}),
   fsListDir: vi.fn(async () => entries),
+  fsMove: vi.fn(async () => entries[0]),
+  fsReadText: vi.fn(async () => "hello"),
+  fsWriteText: vi.fn(async () => entries[0]),
+  fsReadBinaryDataUrl: vi.fn(async () => ""),
+  projectPath: vi.fn(async () => "/p/alpha"),
   tasksList: vi.fn(async () => []),
   projectSetFilesView: vi.fn(async () => undefined),
 }));
@@ -80,6 +85,7 @@ let root: Root;
 
 beforeEach(() => {
   vi.mocked(ipc.projectSetFilesView).mockClear();
+  vi.mocked(ipc.fsMove).mockClear();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -205,5 +211,43 @@ describe("FilesPanel per-project file view mode", () => {
     expect(container.querySelector(".tree-toolbar .view-toggle[title='Вид файлов']")).not.toBeNull();
     expect(vts()).toHaveLength(2);
     expect(container.querySelector(".file-grid")).not.toBeNull();
+  });
+});
+
+describe("FilesPanel file drag (list mode)", () => {
+  const rowByLabel = (name: string) =>
+    Array.from(container.querySelectorAll(".tree-row")).find(
+      (r) => r.querySelector(".label")?.textContent === name,
+    )!;
+
+  it("clicking a file row in list mode still opens the preview", async () => {
+    await mount(projects[0]);
+    await click(rowByLabel("a.txt"));
+    expect(container.querySelector(".file-preview")).not.toBeNull();
+  });
+
+  it("tile mode does not start a pointer drag", async () => {
+    await mount(projects[1]);
+    const tile = container.querySelector(".tile")!;
+    expect(tile).not.toBeNull();
+    act(() => {
+      tile.dispatchEvent(
+        new MouseEvent("pointerdown", { bubbles: true, cancelable: true, button: 0, clientX: 10, clientY: 10 }),
+      );
+      window.dispatchEvent(
+        new MouseEvent("pointermove", { bubbles: true, cancelable: true, button: 0, clientX: 10, clientY: 80 }),
+      );
+      window.dispatchEvent(
+        new MouseEvent("pointermove", { bubbles: true, cancelable: true, button: 0, clientX: 10, clientY: 160 }),
+      );
+      window.dispatchEvent(
+        new MouseEvent("pointerup", { bubbles: true, cancelable: true, button: 0, clientX: 10, clientY: 160 }),
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(vi.mocked(ipc.fsMove)).not.toHaveBeenCalled();
+    expect(document.querySelector(".drag-ghost")).toBeNull();
   });
 });

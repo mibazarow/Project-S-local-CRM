@@ -196,7 +196,7 @@ input, textarea { font-family: inherit; }
 /* ---------- Pointer drag & drop (projects + kanban) ---------- */
 
 body.dnd-active { cursor: grabbing; -webkit-user-select: none; user-select: none; }
-body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .notes-tree .tree-row, body.dnd-active .today-card-head { cursor: grabbing; }
+body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .notes-tree .tree-row, body.dnd-active .file-tree .tree-row, body.dnd-active .today-card-head { cursor: grabbing; }
 
 .drag-ghost {
   opacity: .95;
@@ -379,6 +379,7 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
   outline: 2px dashed var(--danger);
   outline-offset: -2px;
 }
+.file-tree .tree-row.dragging { opacity: .45; }
 
 /* ---------- Задачи (канбан, портировано из design/styles.css) ---------- */
 

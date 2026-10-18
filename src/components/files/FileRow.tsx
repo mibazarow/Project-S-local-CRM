@@ -1,4 +1,4 @@
-import type { DragEvent, MouseEvent } from "react";
+import type { MouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import type { FsEntry } from "../../api/types";
 import RenameInput from "./RenameInput";
 import {
@@ -16,6 +16,7 @@ interface Props {
   open: boolean;
   selected: boolean;
   renaming: boolean;
+  dragging: boolean;
   dropOver: boolean;
   noDrop: boolean;
   onToggle: (entry: FsEntry) => void;
@@ -25,10 +26,9 @@ interface Props {
   onRenameCancel: () => void;
   onCopyAs: (entry: FsEntry) => void;
   onDelete: (entry: FsEntry) => void;
-  onDragStart: (entry: FsEntry) => void;
-  onDragEnd: () => void;
-  onDirDragOver: (dirRel: string, e: DragEvent<HTMLDivElement>) => void;
-  onDirDrop: (dirRel: string, e: DragEvent<HTMLDivElement>) => void;
+  // Pointer drag is attached only to file rows (folder drag comes later).
+  onPointerDown?: (entry: FsEntry, e: ReactPointerEvent<HTMLDivElement>) => void;
+  consumeSuppressedClick: () => boolean;
   onContextMenu: (entry: FsEntry, e: MouseEvent<HTMLDivElement>) => void;
   onOpenExternal?: (entry: FsEntry) => void;
   onOpenWith?: (entry: FsEntry) => void;
@@ -40,6 +40,7 @@ export default function FileRow({
   open,
   selected,
   renaming,
+  dragging,
   dropOver,
   noDrop,
   onToggle,
@@ -49,10 +50,8 @@ export default function FileRow({
   onRenameCancel,
   onCopyAs,
   onDelete,
-  onDragStart,
-  onDragEnd,
-  onDirDragOver,
-  onDirDrop,
+  onPointerDown,
+  consumeSuppressedClick,
   onContextMenu,
   onOpenExternal,
   onOpenWith,
@@ -63,6 +62,7 @@ export default function FileRow({
     "tree-row",
     isDir && open ? "open" : "",
     selected ? "selected" : "",
+    dragging ? "dragging" : "",
     dropOver ? "drop-over" : "",
     noDrop ? "no-drop" : "",
   ]
@@ -73,32 +73,12 @@ export default function FileRow({
     <div
       className={classes}
       data-drop-dir={isDir ? entry.relPath : undefined}
-      draggable={!renaming}
-      onDragStart={(e) => {
-        e.stopPropagation();
-        e.dataTransfer.setData("text/plain", entry.relPath);
-        e.dataTransfer.effectAllowed = "move";
-        onDragStart(entry);
-      }}
-      onDragEnd={onDragEnd}
-      onDragOver={
-        isDir
-          ? (e) => {
-              e.stopPropagation();
-              onDirDragOver(entry.relPath, e);
-            }
-          : undefined
-      }
-      onDrop={
-        isDir
-          ? (e) => {
-              e.stopPropagation();
-              e.preventDefault();
-              onDirDrop(entry.relPath, e);
-            }
-          : undefined
+      onPointerDown={
+        onPointerDown && !renaming ? (e) => onPointerDown(entry, e) : undefined
       }
       onClick={() => {
+        // A drag must not open/toggle the row it ended on.
+        if (consumeSuppressedClick()) return;
         if (isDir) onToggle(entry);
         onSelect(entry);
       }}
