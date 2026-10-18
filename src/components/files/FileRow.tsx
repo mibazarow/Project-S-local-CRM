@@ -104,7 +104,10 @@ export default function FileRow({
         onSelect(entry);
       }}
       onDoubleClick={() => {
-        if (!isDir) onOpenExternal?.(entry);
+        if (isDir) return;
+        // PDFs preview inline now: double-click opens the preview like single click.
+        if (entry.ext === "pdf") onSelect(entry);
+        else onOpenExternal?.(entry);
       }}
     >
       {isDir && (

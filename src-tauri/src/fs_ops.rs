@@ -269,6 +269,12 @@ pub fn open_external(
         .map_err(|e| AppError::Io(e.to_string()))
 }
 
+// Hard cap for inline PDF previews in the file panel: the backend clamps
+// any larger caller max_bytes to this value (fs_read_binary_data_url).
+const PDF_MAX_BYTES: u64 = 25 * 1024 * 1024;
+
+// Data URL for the file preview: images (up to max_bytes) and PDFs (up to
+// min(max_bytes, PDF_MAX_BYTES) = 25 MB); every other binary is rejected.
 pub fn read_binary_data_url(
     conn: &Connection,
     wd: &Path,
@@ -278,16 +284,42 @@ pub fn read_binary_data_url(
 ) -> Result<String> {
     let (root, path) = existing(conn, wd, project_id, rel_path)?;
     let item = entry(&root, &path)?;
-    if !item.is_image {
-        return Err(AppError::Invalid(format!("\"{rel_path}\" is not an image")));
+    if item.is_image {
+        return binary_data_url(&path, max_bytes, rel_path);
     }
-    binary_data_url(&path, max_bytes, rel_path)
+    if item.ext == "pdf" {
+        return pdf_data_url(&path, max_bytes, rel_path);
+    }
+    Err(AppError::Invalid(format!(
+        "\"{rel_path}\" is not an image or PDF"
+    )))
+}
+
+// Reads a PDF into a base64 data URL for the inline preview. The size cap is
+// min(max_bytes, PDF_MAX_BYTES); the content must start with the "%PDF-"
+// magic so a renamed binary is rejected.
+fn pdf_data_url(path: &Path, max_bytes: u64, label: &str) -> Result<String> {
+    let cap = max_bytes.min(PDF_MAX_BYTES);
+    let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    if size > cap {
+        return Err(AppError::Invalid(format!(
+            "pdf is {size} bytes, limit is {cap}",
+        )));
+    }
+    let bytes = fs::read(path)?;
+    if !bytes.starts_with(b"%PDF-") {
+        return Err(AppError::Invalid(format!("\"{label}\" is not a valid PDF")));
+    }
+    Ok(format!(
+        "data:application/pdf;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
 }
 
 // Reads an image file into a base64 data URL, rejecting non-images and files
-// over max_bytes. `label` names the file in errors. Shared by the
-// project-scoped fs command above and the chat attachment preview, which
-// resolves the path itself (attachments.rs).
+// over max_bytes. `label` names the file in errors. Shared by the chat
+// attachment previews, which resolve the path themselves (attachments.rs),
+// and the LLM image parts (llm/mod.rs).
 pub(crate) fn binary_data_url(path: &Path, max_bytes: u64, label: &str) -> Result<String> {
     let ext = path
         .extension()
@@ -741,6 +773,34 @@ mod tests {
         ));
         assert!(matches!(
             read_binary_data_url(&conn, &wd, id, "pic.png", 1),
+            Err(AppError::Invalid(_))
+        ));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn pdf_data_url_respects_kind_limit_and_magic() {
+        let (wd, conn, id) = setup("fs-pdf");
+        fs::write(root(&wd).join("doc.pdf"), b"%PDF-1.7\ncontent").unwrap();
+        fs::write(root(&wd).join("fake.pdf"), b"renamed binary").unwrap();
+        let url = read_binary_data_url(&conn, &wd, id, "doc.pdf", 1024).unwrap();
+        assert!(url.starts_with("data:application/pdf;base64,"));
+        assert!(url.contains(
+            &base64::engine::general_purpose::STANDARD.encode(b"%PDF-1.7\ncontent")
+        ));
+        assert!(matches!(
+            read_binary_data_url(&conn, &wd, id, "fake.pdf", 1024),
+            Err(AppError::Invalid(_))
+        ));
+        assert!(matches!(
+            read_binary_data_url(&conn, &wd, id, "doc.pdf", 1),
+            Err(AppError::Invalid(_))
+        ));
+        // a caller asking for more than the cap still gets the 25 MB clamp
+        let pad = vec![b'x'; PDF_MAX_BYTES as usize + 1];
+        fs::write(root(&wd).join("big.pdf"), [b"%PDF-", &pad[..]].concat()).unwrap();
+        assert!(matches!(
+            read_binary_data_url(&conn, &wd, id, "big.pdf", PDF_MAX_BYTES * 4),
             Err(AppError::Invalid(_))
         ));
         fs::remove_dir_all(&wd).unwrap();

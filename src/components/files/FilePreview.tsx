@@ -10,6 +10,15 @@ import { IconClose } from "./icons";
 import VersionHistory from "../shared/VersionHistory";
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+// Must stay in sync with PDF_MAX_BYTES in src-tauri/src/fs_ops.rs.
+const MAX_PDF_BYTES = 25 * 1024 * 1024;
+
+const dataUrlToBytes = (dataUrl: string): Uint8Array<ArrayBuffer> => {
+  const bin = atob(dataUrl.slice(dataUrl.indexOf(",") + 1));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+};
 
 interface Props {
   projectId: number;
@@ -20,6 +29,7 @@ interface Props {
 
 export default function FilePreview({ projectId, entry, onClose, onDirtyChange }: Props) {
   const isTextual = entry.isMarkdown || entry.isText;
+  const isPdf = entry.ext === "pdf";
   const ow = useOpenWith(projectId);
   const cross = useFileCrossActions(projectId);
   const [mode, setMode] = useState<"view" | "edit">("view");
@@ -28,17 +38,20 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
   const [text, setText] = useState("");
   const [saved, setSaved] = useState("");
   const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [historyAbs, setHistoryAbs] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
+    let objectUrl: string | null = null;
     setMode("view");
     setError(null);
     setText("");
     setSaved("");
     setDataUrl(null);
-    if (!isTextual && !entry.isImage) return;
+    setPdfUrl(null);
+    if (!isTextual && !entry.isImage && !isPdf) return;
     setLoading(true);
     void (async () => {
       try {
@@ -49,6 +62,18 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
           } else {
             const url = await ipc.fsReadBinaryDataUrl(projectId, entry.relPath, MAX_IMAGE_BYTES);
             if (!cancelled) setDataUrl(url);
+          }
+        } else if (isPdf) {
+          if (entry.size > MAX_PDF_BYTES) {
+            if (!cancelled)
+              setError(`Файл слишком большой для предпросмотра (лимит ${MAX_PDF_BYTES / (1024 * 1024)} МБ)`);
+          } else {
+            const pdfDataUrl = await ipc.fsReadBinaryDataUrl(projectId, entry.relPath, MAX_PDF_BYTES);
+            objectUrl = URL.createObjectURL(
+              new Blob([dataUrlToBytes(pdfDataUrl)], { type: "application/pdf" }),
+            );
+            if (cancelled) URL.revokeObjectURL(objectUrl);
+            else setPdfUrl(objectUrl);
           }
         } else {
           const content = await ipc.fsReadText(projectId, entry.relPath);
@@ -65,8 +90,9 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
     })();
     return () => {
       cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [projectId, entry.relPath, entry.isImage, entry.isMarkdown, entry.isText, entry.size, reloadTick]);
+  }, [projectId, entry.relPath, entry.isImage, entry.isMarkdown, entry.isText, entry.ext, entry.size, isPdf, reloadTick]);
 
   useEffect(() => {
     onDirtyChange(isTextual && mode === "edit" && text !== saved);
@@ -153,7 +179,20 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
       {loading ? (
         <div className="preview-body">Загрузка…</div>
       ) : shownError ? (
-        <div className="preview-body preview-error">{shownError}</div>
+        <div className="preview-body preview-error">
+          {shownError}
+          {isPdf && (
+            <div className="preview-error-actions">
+              <button className="ghost-btn small" onClick={() => void ow.openDocument(entry)}>
+                Открыть вовне
+              </button>
+            </div>
+          )}
+        </div>
+      ) : isPdf ? (
+        <div className="preview-body preview-pdf">
+          {pdfUrl && <iframe src={pdfUrl} title={entry.name} />}
+        </div>
       ) : entry.isImage ? (
         <div className="preview-body preview-image">
           {dataUrl && <img src={dataUrl} alt={entry.name} />}
