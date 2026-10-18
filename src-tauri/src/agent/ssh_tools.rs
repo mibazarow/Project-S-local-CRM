@@ -31,7 +31,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 const SSH_TIMEOUT: Duration = Duration::from_secs(120);
 // ssh_exec timeoutSec bounds: long installs need more than the default 120 s,
@@ -452,6 +452,8 @@ fn common_opts(t: &Target) -> Vec<String> {
 // SSH_ASKPASS_REQUIRE=force, DISPLAY set so non-tty ssh uses askpass).
 // The whole dir is removed when the guard drops — on success, failure or
 // error alike.
+const ASKPASS_DIR_PREFIX: &str = "ssh-askpass-";
+
 struct Askpass {
     dir: PathBuf,
     script: PathBuf,
@@ -465,7 +467,7 @@ impl Askpass {
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| AppError::Io(format!("clock unavailable: {e}")))?
             .as_nanos();
-        let dir = tmp.join(format!("ssh-askpass-{}-{nonce}", std::process::id()));
+        let dir = tmp.join(format!("{ASKPASS_DIR_PREFIX}{}-{nonce}", std::process::id()));
         fs::create_dir(&dir)?;
         use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
@@ -502,6 +504,73 @@ fn askpass_for(target: &Target, wd: &Path) -> Result<Option<Askpass>> {
         Some(pw) => Askpass::create(wd, pw).map(Some),
         None => Ok(None),
     }
+}
+
+// Startup hygiene (refactor S1.7): a crash between Askpass::create and the
+// guard's Drop leaves the private dir behind under Harness/tmp/. On startup
+// remove leftovers that cannot belong to a live run: entries directly under
+// the tmp root named exactly ssh-askpass-<pid>-<nonce> whose pid is dead
+// (kill -0, the same probe processes::reconcile uses) AND whose mtime is at
+// least ASKPASS_STALE_AGE old. The age guard keeps a concurrent run of
+// another instance safe even under pid reuse: ssh calls are capped at
+// 30 minutes, well under an hour. Symlink entries are unlinked, never
+// followed, and remove_dir_all unlinks links inside the tree without
+// following them, so nothing outside Harness/tmp is ever entered or
+// removed. Returns the number of removed entries (best-effort: failures
+// just leave the entry for the next startup).
+const ASKPASS_STALE_AGE: Duration = Duration::from_secs(3600);
+
+pub(crate) fn purge_stale_askpass_dirs(wd: &Path) -> usize {
+    let tmp = paths::harness_tmp_dir(wd);
+    let Ok(entries) = fs::read_dir(&tmp) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        let Some(rest) = name_str.strip_prefix(ASKPASS_DIR_PREFIX) else {
+            continue;
+        };
+        let path = entry.path();
+        let Ok(meta) = fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() {
+            // Askpass::create only ever makes real dirs, so a matching
+            // symlink is never an active askpass dir: unlink the link.
+            if fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+            continue;
+        }
+        if !meta.is_dir() {
+            continue;
+        }
+        // ssh-askpass-<pid>-<nonce>: anything else is not ours to touch.
+        let Some((pid, nonce)) = rest.split_once('-') else {
+            continue;
+        };
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
+        if nonce.is_empty() || pid == 0 || crate::processes::kill_alive(&pid.to_string()) {
+            continue;
+        }
+        let stale = meta
+            .modified()
+            .map(|mtime| {
+                SystemTime::now()
+                    .duration_since(mtime)
+                    .unwrap_or(Duration::ZERO)
+                    >= ASKPASS_STALE_AGE
+            })
+            .unwrap_or(false);
+        if stale && fs::remove_dir_all(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 fn ssh_argv(t: &Target) -> Vec<String> {
@@ -2294,6 +2363,92 @@ mod tests {
         let dir = a.dir.clone();
         drop(a);
         assert!(!dir.exists() && !pass.exists());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // Backdate a path's mtime (futimens through a read-only dir fd works
+    // on macOS; the ops tmp-cleanup tests use the same trick for files).
+    fn backdate(path: &Path, age: Duration) {
+        let file = fs::File::open(path).unwrap();
+        file.set_modified(SystemTime::now() - age).unwrap();
+    }
+
+    #[test]
+    fn purge_stale_askpass_dirs_removes_only_stale_leftovers() {
+        let wd = temp_test_dir("st-askpass-purge");
+        let tmp = paths::harness_tmp_dir(&wd);
+        fs::create_dir_all(&tmp).unwrap();
+        let two_hours = Duration::from_secs(7200);
+
+        // stale: dead pid + old mtime, with a nested password file
+        let stale = tmp.join("ssh-askpass-999999-1");
+        fs::create_dir(&stale).unwrap();
+        fs::write(stale.join("pass"), "hunter2").unwrap();
+        backdate(&stale, two_hours);
+
+        // live pid: our own process, even with an old mtime
+        let live = tmp.join(format!("ssh-askpass-{}-2", std::process::id()));
+        fs::create_dir(&live).unwrap();
+        backdate(&live, two_hours);
+
+        // young: dead pid but created just now (a run of another instance)
+        let young = tmp.join("ssh-askpass-999998-3");
+        fs::create_dir(&young).unwrap();
+
+        // not our naming scheme: malformed names and foreign entries survive
+        let malformed = tmp.join("ssh-askpass-notapid-4");
+        fs::create_dir(&malformed).unwrap();
+        backdate(&malformed, two_hours);
+        let no_nonce = tmp.join("ssh-askpass-999997");
+        fs::create_dir(&no_nonce).unwrap();
+        backdate(&no_nonce, two_hours);
+        fs::write(tmp.join("other.txt"), "keep").unwrap();
+
+        // a same-named stale dir outside Harness/tmp is never touched
+        let outside_tmp = paths::harness_dir(&wd).join("ssh-askpass-999996-5");
+        fs::create_dir(&outside_tmp).unwrap();
+        backdate(&outside_tmp, two_hours);
+
+        assert_eq!(purge_stale_askpass_dirs(&wd), 1);
+        assert!(!stale.exists());
+        assert!(live.exists(), "live-pid dir was purged");
+        assert!(young.exists(), "young dir was purged");
+        assert!(malformed.exists() && no_nonce.exists());
+        assert!(tmp.join("other.txt").is_file());
+        assert!(outside_tmp.is_dir(), "purge reached outside Harness/tmp");
+        // idempotent: nothing left to remove
+        assert_eq!(purge_stale_askpass_dirs(&wd), 0);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn purge_stale_askpass_dirs_never_follows_symlinks_out_of_tmp() {
+        use std::os::unix::fs::symlink;
+        let wd = temp_test_dir("st-askpass-purge-link");
+        let tmp = paths::harness_tmp_dir(&wd);
+        fs::create_dir_all(&tmp).unwrap();
+        let two_hours = Duration::from_secs(7200);
+
+        // outside Harness/tmp: must survive in both cases
+        let outside = wd.join("outside");
+        fs::create_dir_all(outside.join("secret")).unwrap();
+        let leak = outside.join("secret/leak.txt");
+        fs::write(&leak, "leak").unwrap();
+
+        // a stale dir whose inside entry is a symlink out of tmp
+        let stale = tmp.join("ssh-askpass-999999-1");
+        fs::create_dir(&stale).unwrap();
+        symlink(&outside, stale.join("link")).unwrap();
+        backdate(&stale, two_hours);
+
+        // a matching symlink entry itself: unlinked, target untouched
+        let link = tmp.join("ssh-askpass-999998-2");
+        symlink(&outside, &link).unwrap();
+
+        assert_eq!(purge_stale_askpass_dirs(&wd), 2);
+        assert!(!stale.exists() && !link.exists());
+        assert!(leak.is_file(), "the purge followed a symlink out of Harness/tmp");
         fs::remove_dir_all(&wd).unwrap();
     }
 

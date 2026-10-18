@@ -395,6 +395,9 @@ pub fn version_prune_old(conn: &Connection, wd: &Path, days: u32) -> Result<usiz
 pub fn startup_purge(conn: &Connection, wd: &Path) {
     let _ = trash_purge_old(conn, wd, TRASH_RETENTION_DAYS);
     let _ = version_prune_old(conn, wd, VERSION_RETENTION_DAYS);
+    // SSH askpass leftovers from a crashed run (S1.7): stale private dirs
+    // under Harness/tmp/, never live-pid or young ones.
+    let _ = crate::agent::ssh_tools::purge_stale_askpass_dirs(wd);
 }
 
 #[cfg(test)]

@@ -114,7 +114,7 @@ fn slug(raw: &str) -> String {
 
 // kill -0: succeeds while the target exists; a negative target addresses
 // the whole process group.
-fn kill_alive(target: &str) -> bool {
+pub(crate) fn kill_alive(target: &str) -> bool {
     Command::new("kill")
         .args(["-0", target])
         .stdout(Stdio::null())
