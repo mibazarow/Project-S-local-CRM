@@ -23,6 +23,7 @@ mod ops;
 mod paths;
 mod processes;
 mod projects;
+mod reliability;
 mod scheduler;
 mod search;
 mod skills;
@@ -89,6 +90,33 @@ struct MemoryChanged {
 
 fn emit_memory_changed(app: &AppHandle, id: Option<i64>) {
     let _ = app.emit("memory-changed", MemoryChanged { id });
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrashChanged {
+    id: Option<i64>,
+}
+
+fn emit_trash_changed(app: &AppHandle, id: Option<i64>) {
+    let _ = app.emit("trash-changed", TrashChanged { id });
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VersionsChanged {
+    scope: String,
+    path: String,
+}
+
+fn emit_versions_changed(app: &AppHandle, scope: &str, path: &str) {
+    let _ = app.emit(
+        "versions-changed",
+        VersionsChanged {
+            scope: scope.into(),
+            path: path.into(),
+        },
+    );
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -160,6 +188,10 @@ fn choose_working_dir(
     *state.working_dir.lock().unwrap() = Some(wd.clone());
     open_journal(&state, &wd)?;
     let _ = with_db(&state, processes::reconcile);
+    let _ = with_db(&state, |conn| {
+        reliability::startup_purge(conn, &wd);
+        Ok(())
+    });
     watcher::start(&app, &state, &wd);
     let _ = index::index_notes(&wd);
     *state.mcp.lock().unwrap() = mcp::McpRegistry::start(&wd);
@@ -363,6 +395,7 @@ fn task_delete(app: AppHandle, state: State<AppState>, id: i64) -> Result<()> {
         Ok(project_id)
     })?;
     emit_tasks_changed(&app, project_id);
+    emit_trash_changed(&app, None);
     Ok(())
 }
 
@@ -467,8 +500,9 @@ fn fs_delete(
     rel_path: String,
 ) -> Result<()> {
     let wd = state.working_dir()?;
-    with_db(&state, |conn| fs_ops::delete(conn, &wd, project_id, &rel_path))?;
+    let trash_id = with_db(&state, |conn| fs_ops::delete(conn, &wd, project_id, &rel_path))?;
     emit_fs_changed(&app, project_id, rel_path);
+    emit_trash_changed(&app, Some(trash_id));
     Ok(())
 }
 
@@ -593,7 +627,18 @@ fn notes_write(
     rel: String,
     content: String,
 ) -> Result<FsEntry> {
-    let item = notes::write(&state.working_dir()?, &rel, &content)?;
+    let wd = state.working_dir()?;
+    // Snapshot the previous content before an overwrite (version history);
+    // the absolute vault path is the same key the notes_write tool uses.
+    let previous = notes::vault_root(&wd)
+        .ok()
+        .and_then(|root| fs_ops::contain_existing(&root, &rel, "Notes").ok())
+        .and_then(|p| std::fs::read_to_string(&p).ok().map(|c| (p.display().to_string(), c)));
+    let item = notes::write(&wd, &rel, &content)?;
+    if let Some((abs, prev)) = &previous {
+        let _ = with_db(&state, |conn| reliability::version_save(conn, &wd, "notes", abs, prev));
+        emit_versions_changed(&app, "notes", abs);
+    }
     emit_notes_changed(&app, item.rel_path.clone());
     Ok(item)
 }
@@ -666,9 +711,64 @@ fn notes_copy(
 
 #[tauri::command]
 fn notes_delete(app: AppHandle, state: State<AppState>, rel: String) -> Result<()> {
-    notes::delete(&state.working_dir()?, &rel)?;
+    let wd = state.working_dir()?;
+    let trash_id = with_db(&state, |conn| notes::delete(conn, &wd, &rel))?;
     emit_notes_changed(&app, rel);
+    emit_trash_changed(&app, Some(trash_id));
     Ok(())
+}
+
+// Trash (SPEC trash/versions slice): every delete from the UI or the agents
+// lands in Settings/.trash; the panel lists, restores or purges entries.
+#[tauri::command]
+fn trash_list(state: State<AppState>) -> Result<Vec<reliability::TrashDto>> {
+    with_db(&state, reliability::trash_list)
+}
+
+#[tauri::command]
+fn trash_restore(
+    app: AppHandle,
+    state: State<AppState>,
+    id: i64,
+) -> Result<reliability::TrashDto> {
+    let wd = state.working_dir()?;
+    let dto = with_db(&state, |conn| reliability::trash_restore(conn, &wd, id))?;
+    emit_trash_changed(&app, Some(id));
+    if let Some(pid) = dto.project_id {
+        // A restored task: re-export the kanban files and notify the board.
+        let _ = with_db(&state, |conn| export::export_project(conn, &wd, pid));
+        emit_tasks_changed(&app, pid);
+    }
+    Ok(dto)
+}
+
+#[tauri::command]
+fn trash_purge(app: AppHandle, state: State<AppState>, id: i64) -> Result<()> {
+    let wd = state.working_dir()?;
+    with_db(&state, |conn| reliability::trash_purge(conn, &wd, id))?;
+    emit_trash_changed(&app, Some(id));
+    Ok(())
+}
+
+// Version history for one file: snapshots are keyed by (scope, absolute
+// path); restore returns the stored content, writing it back is the caller's
+// job so the normal write path (and its own snapshot) applies.
+#[tauri::command]
+fn version_list(
+    state: State<AppState>,
+    scope: String,
+    path: String,
+) -> Result<Vec<reliability::VersionDto>> {
+    with_db(&state, |conn| reliability::version_list(conn, &scope, &path))
+}
+
+#[tauri::command]
+fn version_restore(
+    state: State<AppState>,
+    id: i64,
+) -> Result<reliability::VersionRestoreDto> {
+    let wd = state.working_dir()?;
+    with_db(&state, |conn| reliability::version_restore(conn, &wd, id))
 }
 
 // Notes chat (SPEC notes chat slice): one continuous chat per working dir.
@@ -1454,6 +1554,9 @@ pub fn run() {
                     // keep running; reconcile only updates their status,
                     // it never kills them.
                     let _ = processes::reconcile(conn);
+                    // Trash/version retention (SPEC trash/versions slice):
+                    // drop entries older than 30 days, best-effort.
+                    reliability::startup_purge(conn, &wd);
                 }
                 drop(guard);
                 // Notes vault: create/seed Notes/ before the watcher attaches
@@ -1518,6 +1621,11 @@ pub fn run() {
             notes_move,
             notes_copy,
             notes_delete,
+            trash_list,
+            trash_restore,
+            trash_purge,
+            version_list,
+            version_restore,
             ensure_notes_chat,
             notes_chat_history,
             send_notes_message,

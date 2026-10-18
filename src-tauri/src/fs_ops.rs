@@ -177,14 +177,12 @@ pub fn duplicate(conn: &Connection, wd: &Path, project_id: i64, rel_path: &str) 
     entry(&root, &target)
 }
 
-pub fn delete(conn: &Connection, wd: &Path, project_id: i64, rel_path: &str) -> Result<()> {
+// Moves the entry into Settings/.trash (reversible delete); returns the
+// trash row id so callers can emit trash-changed.
+pub fn delete(conn: &Connection, wd: &Path, project_id: i64, rel_path: &str) -> Result<i64> {
     let (_, path) = existing_for_mutation(conn, wd, project_id, rel_path)?;
-    if path.is_dir() {
-        fs::remove_dir_all(&path)?;
-    } else {
-        fs::remove_file(&path)?;
-    }
-    Ok(())
+    let kind = if path.is_dir() { "dir" } else { "file" };
+    crate::reliability::trash_put(conn, wd, "project", kind, &path, None)
 }
 
 pub fn move_entry(

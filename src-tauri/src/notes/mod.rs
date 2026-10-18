@@ -33,7 +33,7 @@ pub fn ensure(wd: &Path) -> Result<PathBuf> {
 }
 
 // Canonical vault root, created on demand so reads work on a fresh dir.
-fn vault_root(wd: &Path) -> Result<PathBuf> {
+pub(crate) fn vault_root(wd: &Path) -> Result<PathBuf> {
     let dir = paths::notes_dir(wd);
     fs::create_dir_all(&dir)?;
     Ok(dir.canonicalize()?)
@@ -181,19 +181,16 @@ pub(crate) fn rename_at(root: &Path, rel: &str, new_name: &str) -> Result<FsEntr
     fs_ops::entry(root, &target)
 }
 
-// Recursive delete of a note or folder; the vault root itself is refused.
-pub fn delete(wd: &Path, rel: &str) -> Result<()> {
-    delete_at(&vault_root(wd)?, rel)
+// Recursive delete of a note or folder into Settings/.trash (reversible);
+// the vault root itself is refused. Returns the trash row id.
+pub fn delete(conn: &Connection, wd: &Path, rel: &str) -> Result<i64> {
+    delete_at(conn, wd, &vault_root(wd)?, rel)
 }
 
-pub(crate) fn delete_at(root: &Path, rel: &str) -> Result<()> {
+pub(crate) fn delete_at(conn: &Connection, wd: &Path, root: &Path, rel: &str) -> Result<i64> {
     let path = existing_for_mutation_at(root, rel)?;
-    if path.is_dir() {
-        fs::remove_dir_all(&path)?;
-    } else {
-        fs::remove_file(&path)?;
-    }
-    Ok(())
+    let kind = if path.is_dir() { "dir" } else { "file" };
+    crate::reliability::trash_put(conn, wd, "notes", kind, &path, None)
 }
 
 // Creates a folder inside the vault (empty parent = vault root). The name is
@@ -472,6 +469,8 @@ mod tests {
     #[test]
     fn path_escapes_are_rejected() {
         let wd = setup("notes-escape");
+        // Rejections happen before any DB touch, an empty conn is enough.
+        let conn = Connection::open_in_memory().unwrap();
         for bad in ["../x", "..", "/etc/passwd", "a/../../x", "./x", "a/./b"] {
             assert!(
                 matches!(list(&wd, bad), Err(AppError::Invalid(_))),
@@ -490,11 +489,11 @@ mod tests {
                 "create accepted: {bad:?}"
             );
             assert!(
-                matches!(delete(&wd, bad), Err(AppError::Invalid(_))),
+                matches!(delete(&conn, &wd, bad), Err(AppError::Invalid(_))),
                 "delete accepted: {bad:?}"
             );
         }
-        assert!(matches!(delete(&wd, ""), Err(AppError::Invalid(_))));
+        assert!(matches!(delete(&conn, &wd, ""), Err(AppError::Invalid(_))));
         assert!(matches!(create(&wd, "", None), Err(AppError::Invalid(_))));
         fs::remove_dir_all(&wd).unwrap();
     }
@@ -518,8 +517,9 @@ mod tests {
         // mutating ops refuse even an in-vault symlink
         write(&wd, WELCOME_NOTE, "x").unwrap();
         symlink(notes(&wd).join(WELCOME_NOTE), notes(&wd).join("link.md")).unwrap();
+        let conn = Connection::open_in_memory().unwrap();
         assert!(matches!(
-            delete(&wd, "link.md"),
+            delete(&conn, &wd, "link.md"),
             Err(AppError::Invalid(_))
         ));
         assert!(matches!(
@@ -581,6 +581,7 @@ mod tests {
     #[test]
     fn rename_and_recursive_delete_roundtrip() {
         let wd = setup("notes-roundtrip");
+        let conn = crate::db::open(&paths::db_path(&wd)).unwrap();
         create(&wd, "старое.md", Some("содержимое")).unwrap();
         let renamed = rename(&wd, "старое.md", "новое.md").unwrap();
         assert_eq!(renamed.rel_path, "новое.md");
@@ -590,11 +591,17 @@ mod tests {
         create(&wd, "новое.md", None).unwrap_err(); // name clash refused
 
         create(&wd, "папка/внутри.md", None).unwrap();
-        delete(&wd, "папка").unwrap();
+        delete(&conn, &wd, "папка").unwrap();
         assert!(!notes(&wd).join("папка").exists());
-        delete(&wd, "новое.md").unwrap();
+        delete(&conn, &wd, "новое.md").unwrap();
         assert!(!notes(&wd).join("новое.md").exists());
-        assert!(matches!(delete(&wd, "нет-такого.md"), Err(AppError::Invalid(_))));
+        assert!(matches!(delete(&conn, &wd, "нет-такого.md"), Err(AppError::Invalid(_))));
+        // The deleted notes landed in the trash and can be put back.
+        let trashed = crate::reliability::trash_list(&conn).unwrap();
+        assert_eq!(trashed.len(), 2);
+        crate::reliability::trash_restore(&conn, &wd, trashed[1].id).unwrap();
+        assert!(notes(&wd).join("папка/внутри.md").is_file());
+        assert_eq!(crate::reliability::trash_list(&conn).unwrap().len(), 1);
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -807,7 +814,8 @@ mod tests {
         *state.working_dir.lock().unwrap() = Some(wd.clone());
         let hits = crate::search::search_notes(&state, "вторая", 10).unwrap();
         assert_eq!(hits[0].rel_path, "идеи.md");
-        delete(&wd, "идеи.md").unwrap();
+        let conn = crate::db::open(&paths::db_path(&wd)).unwrap();
+        delete(&conn, &wd, "идеи.md").unwrap();
         let stats = index::index_notes(&wd).unwrap();
         assert_eq!(stats.files_removed, 1);
         fs::remove_dir_all(&wd).unwrap();

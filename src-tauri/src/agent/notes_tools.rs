@@ -5,11 +5,13 @@
 // tools refuse to work without it, so a project or harness run can never reach
 // the vault through this catalog.
 use super::catalog::Catalog;
-use super::project_tools::state_of;
+use super::project_tools::{
+    emit_trash_changed, emit_versions_changed, require_wd, state_of, with_conn,
+};
 use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
-use crate::{notes, search};
+use crate::{fs_ops, notes, search};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -183,9 +185,25 @@ impl Tool for NotesWriteTool {
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let root = require_root(ctx)?;
+        let wd = require_wd(ctx)?;
         let rel = args["relPath"].as_str().unwrap_or_default();
         let content = args["content"].as_str().unwrap_or_default();
-        Ok(match notes::write_at(&root, rel, content) {
+        // Snapshot the previous content before the overwrite (version
+        // history); binary/unreadable notes just skip the snapshot.
+        let previous = fs_ops::contain_existing(&root, rel, "Notes")
+            .ok()
+            .and_then(|p| std::fs::read_to_string(&p).ok().map(|c| (p, c)));
+        let result = notes::write_at(&root, rel, content);
+        if result.is_ok() {
+            if let Some((path, prev)) = &previous {
+                let abs = path.display().to_string();
+                let _ = with_conn(ctx, |conn| {
+                    crate::reliability::version_save(conn, &wd, "notes", &abs, prev)
+                });
+                emit_versions_changed(ctx, "notes", &abs);
+            }
+        }
+        Ok(match result {
             Ok(item) => ToolResult::ok(json!({ "relPath": item.rel_path, "size": item.size })),
             Err(e) => fail(e),
         })
@@ -409,11 +427,17 @@ impl Tool for NotesDeleteTool {
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let root = require_root(ctx)?;
+        let wd = require_wd(ctx)?;
         let rel = args["relPath"].as_str().unwrap_or_default();
-        Ok(match notes::delete_at(&root, rel) {
-            Ok(()) => ToolResult::ok(json!({ "deleted": rel })),
-            Err(e) => fail(e),
-        })
+        // Reversible delete: the note moves into Settings/.trash.
+        let r = with_conn(ctx, |conn| notes::delete_at(conn, &wd, &root, rel));
+        match r {
+            Ok(id) => {
+                emit_trash_changed(ctx, Some(id));
+                Ok(ToolResult::ok(json!({ "deleted": rel, "trashId": id })))
+            }
+            Err(e) => Ok(fail(e)),
+        }
     }
 }
 

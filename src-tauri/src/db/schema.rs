@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::{params, Connection};
 
-pub const SCHEMA_VERSION: i64 = 23;
+pub const SCHEMA_VERSION: i64 = 24;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -457,6 +457,33 @@ const MIGRATION_23: &str = "
 ALTER TABLE schedules ADD COLUMN title TEXT;
 ";
 
+// Trash and version history (SPEC trash/versions slice): every delete moves
+// the item into Settings/.trash/<id>/<name> and keeps a row here; every
+// overwrite of an existing file snapshots the previous content into
+// Settings/.versions/<id>. kind 'task' rows carry the whole task as JSON in
+// meta with an empty stored_path (no file on disk). No indexes: both tables
+// stay small under the 30-day retention and the per-path version cap.
+const MIGRATION_24: &str = "
+CREATE TABLE IF NOT EXISTS trash (
+    id INTEGER PRIMARY KEY,
+    scope TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    original_path TEXT NOT NULL,
+    stored_path TEXT NOT NULL,
+    name TEXT NOT NULL,
+    deleted_at TEXT NOT NULL,
+    meta TEXT
+);
+CREATE TABLE IF NOT EXISTS versions (
+    id INTEGER PRIMARY KEY,
+    scope TEXT NOT NULL,
+    path TEXT NOT NULL,
+    stored_path TEXT NOT NULL,
+    bytes INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+";
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -613,6 +640,19 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
                 "UPDATE schedules SET title = ?1 WHERE id = ?2",
                 params![title, id],
             )?;
+        }
+        conn.pragma_update(None, "user_version", 23)?;
+    }
+    if version < 24 {
+        // Guarded per table (v14 recipe) so a re-run after an interrupted
+        // v24 does not re-create; CREATE IF NOT EXISTS is idempotent anyway.
+        let has_trash: i64 = conn.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name = 'trash'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_trash == 0 {
+            conn.execute_batch(MIGRATION_24)?;
         }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
@@ -1650,6 +1690,34 @@ CREATE UNIQUE INDEX uniq_chats_one_project_chat ON chats(project_id) WHERE kind 
         assert_eq!(titles[1].as_deref().unwrap().chars().count(), 80);
         assert_eq!(titles[2].as_deref(), Some("2026-01-03T10:00:00Z"));
 
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_v24_creates_trash_and_versions_tables() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+        let tables: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('trash','versions')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 2);
+        conn.execute(
+            "INSERT INTO trash (scope, kind, original_path, stored_path, name, deleted_at) VALUES ('project', 'file', '/p/a.txt', '/w/Settings/.trash/u/a.txt', 'a.txt', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO versions (scope, path, stored_path, bytes, created_at) VALUES ('project', '/p/a.txt', '/w/Settings/.versions/u', 3, '2026-01-01')",
+            [],
+        )
+        .unwrap();
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
     }

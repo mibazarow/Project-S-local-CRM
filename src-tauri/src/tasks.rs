@@ -179,14 +179,103 @@ pub fn task_move(conn: &Connection, id: i64, status: &str, position: f64) -> Res
     dto(conn, id)
 }
 
-// Returns the owning project id so the caller can re-export it.
+// Full tasks row as JSON, snapshotted into the trash table before delete
+// (kind='task', no file on disk); re-inserted by task_restore_from_trash.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskSnapshot {
+    id: i64,
+    project_id: i64,
+    title: String,
+    status: String,
+    comment: Option<String>,
+    due_date: Option<String>,
+    remind_at: Option<String>,
+    tags: String,
+    position: f64,
+    created_at: String,
+    closed_at: Option<String>,
+}
+
+// Returns the owning project id so the caller can re-export it. The row is
+// snapshotted into the trash table first, so a deleted task stays restorable.
 pub fn task_delete(conn: &Connection, id: i64) -> Result<i64> {
-    let project_id: i64 = conn
-        .query_row("SELECT project_id FROM tasks WHERE id = ?1", params![id], |r| r.get(0))
-        .map_err(|_| AppError::Invalid(format!("task {id} not found")))?;
+    let snapshot: TaskSnapshot = conn
+        .query_row(
+            "SELECT id, project_id, title, status, comment, due_date, remind_at,
+                    tags, position, created_at, closed_at
+             FROM tasks WHERE id = ?1",
+            params![id],
+            |r| {
+                Ok(TaskSnapshot {
+                    id: r.get(0)?,
+                    project_id: r.get(1)?,
+                    title: r.get(2)?,
+                    status: r.get(3)?,
+                    comment: r.get(4)?,
+                    due_date: r.get(5)?,
+                    remind_at: r.get(6)?,
+                    tags: r.get(7)?,
+                    position: r.get(8)?,
+                    created_at: r.get(9)?,
+                    closed_at: r.get(10)?,
+                })
+            },
+        )
+        .optional()?
+        .ok_or_else(|| AppError::Invalid(format!("task {id} not found")))?;
+    let project_id = snapshot.project_id;
+    crate::reliability::trash_put_meta(
+        conn,
+        "task",
+        "task",
+        &format!("task:{id}"),
+        &snapshot.title,
+        &serde_json::to_string(&snapshot)?,
+    )?;
     conn.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
     fts_sync(conn, id)?;
     Ok(project_id)
+}
+
+// Re-inserts a trashed task snapshot (reliability::trash_restore calls this):
+// the original id is reused while the slot is free, otherwise SQLite picks
+// the next one. Returns the owning project id for the tasks-changed event.
+pub(crate) fn task_restore_from_trash(conn: &Connection, row: &crate::reliability::TrashDto) -> Result<i64> {
+    let meta = row.meta.as_deref().ok_or_else(|| {
+        AppError::Invalid(format!("trash entry {} has no task snapshot", row.id))
+    })?;
+    let snapshot: TaskSnapshot = serde_json::from_str(meta)?;
+    let taken: i64 = conn.query_row(
+        "SELECT count(*) FROM tasks WHERE id = ?1",
+        params![snapshot.id],
+        |r| r.get(0),
+    )?;
+    if taken == 0 {
+        conn.execute(
+            "INSERT INTO tasks (id, project_id, title, status, comment, due_date, remind_at,
+                                tags, position, created_at, closed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                snapshot.id, snapshot.project_id, snapshot.title, snapshot.status,
+                snapshot.comment, snapshot.due_date, snapshot.remind_at, snapshot.tags,
+                snapshot.position, snapshot.created_at, snapshot.closed_at
+            ],
+        )?;
+    } else {
+        conn.execute(
+            "INSERT INTO tasks (project_id, title, status, comment, due_date, remind_at,
+                                tags, position, created_at, closed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                snapshot.project_id, snapshot.title, snapshot.status,
+                snapshot.comment, snapshot.due_date, snapshot.remind_at, snapshot.tags,
+                snapshot.position, snapshot.created_at, snapshot.closed_at
+            ],
+        )?;
+    }
+    fts_sync(conn, conn.last_insert_rowid())?;
+    Ok(snapshot.project_id)
 }
 
 // tasks_fts mirrors title/comment/tags keyed by task id (SPEC 4.4); search

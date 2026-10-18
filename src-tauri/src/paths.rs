@@ -13,6 +13,11 @@ pub const SETTINGS_MODELS: &str = "models";
 pub const SETTINGS_DB: &str = ".db";
 pub const SETTINGS_LOGS: &str = "logs";
 pub const SETTINGS_BACKUPS: &str = "backups";
+// Hidden trash/version-history stores (SPEC trash/versions slice); created
+// on demand by reliability.rs, not scaffolded, so the working-dir layout
+// stays clean until the first delete/overwrite.
+pub const SETTINGS_TRASH: &str = ".trash";
+pub const SETTINGS_VERSIONS: &str = ".versions";
 
 pub const HARNESS_TMP: &str = "tmp";
 pub const HARNESS_INBOX: &str = "Входящие";
@@ -116,6 +121,16 @@ pub fn backups_dir(wd: &Path) -> PathBuf {
     settings_dir(wd).join(SETTINGS_BACKUPS)
 }
 
+// Recycle bin: one <id>/<name> folder per deleted item (reliability.rs).
+pub fn trash_dir(wd: &Path) -> PathBuf {
+    settings_dir(wd).join(SETTINGS_TRASH)
+}
+
+// Version snapshots: one <id> file per saved previous content (reliability.rs).
+pub fn versions_dir(wd: &Path) -> PathBuf {
+    settings_dir(wd).join(SETTINGS_VERSIONS)
+}
+
 pub fn db_path(wd: &Path) -> PathBuf {
     db_dir(wd).join(DB_FILE)
 }
@@ -156,6 +171,8 @@ mod tests {
         );
         assert_eq!(logs_dir(wd), PathBuf::from("/tmp/wd/Settings/logs"));
         assert_eq!(backups_dir(wd), PathBuf::from("/tmp/wd/Settings/backups"));
+        assert_eq!(trash_dir(wd), PathBuf::from("/tmp/wd/Settings/.trash"));
+        assert_eq!(versions_dir(wd), PathBuf::from("/tmp/wd/Settings/.versions"));
         assert_eq!(notes_dir(wd), PathBuf::from("/tmp/wd/Notes"));
         assert_eq!(db_path(wd), PathBuf::from("/tmp/wd/Settings/.db/project-s.db"));
     }

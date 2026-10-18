@@ -11,8 +11,8 @@
 // the system /tmp. The CDP browser tool lives in browser_tool.rs.
 use super::catalog::Catalog;
 use super::project_tools::{
-    emit_tasks_changed, envelope, read_datas, require_wd, state_of, upsert_section, with_conn,
-    write_datas,
+    emit_tasks_changed, emit_trash_changed, envelope, read_datas, require_wd, state_of,
+    upsert_section, with_conn, write_datas,
 };
 use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
@@ -500,14 +500,21 @@ impl Tool for FsDeleteTool {
             Ok(m) => m,
             Err(e) => return Ok(io_fail(&path, &e)),
         };
-        let r = if meta.is_dir() {
-            fs::remove_dir_all(&path)
-        } else {
-            fs::remove_file(&path)
-        };
+        // Reversible delete: the item moves into Settings/.trash and can be
+        // restored through the trash commands.
+        let kind = if meta.is_dir() { "dir" } else { "file" };
+        let r = with_conn(ctx, |conn| {
+            crate::reliability::trash_put(conn, &wd, "harness", kind, &path, None)
+        });
         match r {
-            Ok(()) => Ok(ToolResult::ok(json!({ "deleted": path.display().to_string() }))),
-            Err(e) => Ok(io_fail(&path, &e)),
+            Ok(id) => {
+                emit_trash_changed(ctx, Some(id));
+                Ok(ToolResult::ok(json!({
+                    "deleted": path.display().to_string(),
+                    "trashId": id,
+                })))
+            }
+            Err(e) => Ok(envelope_r(e)),
         }
     }
 }
@@ -1492,6 +1499,7 @@ impl Tool for CrmTaskDeleteTool {
         });
         if let Ok(pid) = &r {
             emit_tasks_changed(ctx, *pid);
+            emit_trash_changed(ctx, None);
         }
         Ok(match r {
             Ok(_) => ToolResult::ok(json!({ "deleted": id })),

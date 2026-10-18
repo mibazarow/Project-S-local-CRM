@@ -132,6 +132,27 @@ pub(crate) fn emit_tasks_changed(ctx: &ToolCtx, project_id: i64) {
     }
 }
 
+// Trash panel refresh after a reversible delete from any agent tool.
+pub(crate) fn emit_trash_changed(ctx: &ToolCtx, id: Option<i64>) {
+    if let Ok(state) = state_of(ctx) {
+        if let Some(emitter) = state.emitter.lock().unwrap().as_ref() {
+            emitter.emit_event("trash-changed", json!({ "id": id }));
+        }
+    }
+}
+
+// Version history panel refresh after a snapshot was saved.
+pub(crate) fn emit_versions_changed(ctx: &ToolCtx, scope: &str, path: &str) {
+    if let Ok(state) = state_of(ctx) {
+        if let Some(emitter) = state.emitter.lock().unwrap().as_ref() {
+            emitter.emit_event(
+                "versions-changed",
+                json!({ "scope": scope, "path": path }),
+            );
+        }
+    }
+}
+
 // Maps a domain AppError to the envelope code (SPEC 6.4): missing entities are
 // not_found, path escapes and symlink refusals are permission_denied, the rest
 // (binary files, bad names, IO/DB faults) are execution_error.
@@ -373,6 +394,16 @@ impl Tool for WriteFileTool {
             .parent()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
+        // Snapshot the previous content before an overwrite (version history);
+        // a missing file stays unversioned, a binary read just skips the save.
+        let previous: Option<(String, String)> =
+            with_conn(ctx, |conn| fs_ops::resolve_existing(conn, &wd, pid, rel))
+                .ok()
+                .and_then(|p| {
+                    std::fs::read_to_string(&p)
+                        .ok()
+                        .map(|c| (p.display().to_string(), c))
+                });
         let attempt = with_conn(ctx, |conn| fs_ops::write_text(conn, &wd, pid, rel, content));
         let result = match attempt {
             // fs_ops::write_text only overwrites; create the file first when missing.
@@ -382,6 +413,14 @@ impl Tool for WriteFileTool {
             }),
             other => other,
         };
+        if result.is_ok() {
+            if let Some((abs, prev)) = &previous {
+                let _ = with_conn(ctx, |conn| {
+                    crate::reliability::version_save(conn, &wd, "project", abs, prev)
+                });
+                emit_versions_changed(ctx, "project", abs);
+            }
+        }
         Ok(match result {
             Ok(entry) => ToolResult::ok(json!({ "entry": entry })),
             Err(e) => fail(e),
@@ -489,8 +528,11 @@ impl Tool for DeletePathTool {
         let wd = require_wd(ctx)?;
         let rel = args["rel_path"].as_str().unwrap_or_default();
         let r = with_conn(ctx, |conn| fs_ops::delete(conn, &wd, pid, rel));
+        if let Ok(id) = &r {
+            emit_trash_changed(ctx, Some(*id));
+        }
         Ok(match r {
-            Ok(()) => ToolResult::ok(json!({ "deleted": rel })),
+            Ok(id) => ToolResult::ok(json!({ "deleted": rel, "trashId": id })),
             Err(e) => fail(e),
         })
     }
@@ -711,6 +753,7 @@ impl Tool for TaskDeleteTool {
         });
         if r.is_ok() {
             emit_tasks_changed(ctx, pid);
+            emit_trash_changed(ctx, None);
         }
         Ok(match r {
             Ok(_) => ToolResult::ok(json!({ "deleted": id })),
@@ -1181,6 +1224,27 @@ mod tests {
         let r = exec("delete_path", json!({ "rel_path": "docs/renamed.md" }), &env.ctx);
         assert!(r.ok, "{:?}", r.error);
         assert!(!root(&env.wd).join("docs/renamed.md").exists());
+
+        // The overwrite snapshotted the previous content into the version
+        // store (keyed by the canonical path), the delete landed in the
+        // trash, and both panels got their change events.
+        let state = env.ctx.state.clone().unwrap();
+        let guard = state.db.lock().unwrap();
+        let conn = guard.as_ref().unwrap();
+        let abs = root(&env.wd)
+            .join("docs")
+            .canonicalize()
+            .unwrap()
+            .join("note.md")
+            .display()
+            .to_string();
+        assert_eq!(crate::reliability::version_list(conn, "project", &abs).unwrap().len(), 1);
+        assert_eq!(crate::reliability::trash_list(conn).unwrap().len(), 1);
+        drop(guard);
+        let events: Vec<String> =
+            env.events.lock().unwrap().iter().map(|(e, _)| e.clone()).collect();
+        assert!(events.iter().any(|e| e == "versions-changed"), "{events:?}");
+        assert!(events.iter().any(|e| e == "trash-changed"), "{events:?}");
 
         // missing file reads back as not_found
         let r = exec("read_file", json!({ "rel_path": "docs/renamed.md" }), &env.ctx);

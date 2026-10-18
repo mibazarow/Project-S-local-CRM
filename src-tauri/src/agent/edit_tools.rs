@@ -7,7 +7,7 @@
 // Patch files live under Harness/tmp/, the patch is capped at 1 MiB, and all
 // git output is secret-masked and capped by git_tools::run_git (30 s timeout).
 use super::git_tools::{run_git, GitOutput};
-use super::project_tools::{envelope, require_wd, with_conn};
+use super::project_tools::{emit_versions_changed, envelope, require_wd, with_conn};
 use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
@@ -186,6 +186,13 @@ impl Tool for EditFileTool {
             Ok(n) => n,
             Err(e) => return Ok(envelope::<()>(Err(e))),
         };
+        // Version history: keep the pre-edit content under the absolute path.
+        let scope = if ctx.project_id.is_some() { "project" } else { "harness" };
+        let abs = path.display().to_string();
+        let _ = with_conn(ctx, |conn| {
+            crate::reliability::version_save(conn, &wd, scope, &abs, &text)
+        });
+        emit_versions_changed(ctx, scope, &abs);
         Ok(ToolResult::ok(json!({
             "path": label,
             "replacements": replacements,
@@ -373,10 +380,28 @@ impl Tool for ApplyPatchTool {
             let _ = fs::remove_file(&patch_file);
             return Ok(git_apply_fail("git apply --check", &check));
         }
+        // Version history: capture the current content of every patched file
+        // before git apply touches it (missing/new files are skipped).
+        let scope = if ctx.project_id.is_some() { "project" } else { "harness" };
+        let mut snapshots: Vec<(String, String)> = Vec::new();
+        for p in patch_paths(patch) {
+            let file = base.join(&p);
+            if let Ok(bytes) = fs::read(&file) {
+                if let Ok(text) = String::from_utf8(bytes) {
+                    snapshots.push((file.display().to_string(), text));
+                }
+            }
+        }
         let applied = run_git(&base, &["apply", "--whitespace=nowarn", &patch_arg])?;
         let _ = fs::remove_file(&patch_file);
         if applied.code != 0 {
             return Ok(git_apply_fail("git apply", &applied));
+        }
+        for (abs, prev) in &snapshots {
+            let _ = with_conn(ctx, |conn| {
+                crate::reliability::version_save(conn, &wd, scope, abs, prev)
+            });
+            emit_versions_changed(ctx, scope, abs);
         }
         Ok(ToolResult::ok(json!({
             "dir": base.display().to_string(),
