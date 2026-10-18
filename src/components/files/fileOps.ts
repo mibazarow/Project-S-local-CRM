@@ -1,14 +1,9 @@
 import { useState } from "react";
 import * as ipc from "../../api/ipc";
 
-// The backend rejects with { code, message }; normalize to a display string.
-export function toMessage(e: unknown): string {
-  if (e && typeof e === "object" && "message" in e) {
-    const m = (e as { message?: unknown }).message;
-    if (typeof m === "string" && m) return m;
-  }
-  return typeof e === "string" ? e : "Неизвестная ошибка";
-}
+import { toMessage } from "../../shared/errors";
+
+export { toMessage } from "../../shared/errors";
 
 // Mutation calls shared by tree and grid. The backend emits fs-changed after
 // each mutation, so views refresh via treeVersion; no manual refetch here.

@@ -382,13 +382,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
   }
 }
 
-export function toMessage(e: unknown): string {
-  if (e && typeof e === "object" && "message" in e) {
-    const m = (e as { message?: unknown }).message;
-    if (typeof m === "string" && m) return m;
-  }
-  return typeof e === "string" ? e : "Неизвестная ошибка";
-}
+export { toMessage } from "../../shared/errors";
 
 export function summarizeArgs(args: unknown): string {
   let obj = args;

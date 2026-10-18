@@ -7,14 +7,9 @@ interface Props {
   onClose: () => void;
 }
 
-// The backend rejects with { code, message }; normalize to a display string.
-function toMessage(e: unknown): string {
-  if (e && typeof e === "object" && "message" in e) {
-    const m = (e as { message?: unknown }).message;
-    if (typeof m === "string" && m) return m;
-  }
-  return typeof e === "string" ? e : "Неизвестная ошибка";
-}
+import { toMessage } from "../shared/errors";
+
+export { toMessage } from "../shared/errors";
 
 export default function QuickCapture({ initialTarget, onClose }: Props) {
   const { state } = useApp();

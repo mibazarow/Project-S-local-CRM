@@ -27,6 +27,7 @@ import {
   type ChatItem,
 } from "../chat/chatShared";
 import { useChatAttachments } from "../chat/useChatAttachments";
+import { formatActivity, formatInstant } from "../../shared/format";
 import TodoPanel from "../chat/TodoPanel";
 import { renderSnippet } from "../files/SearchResults";
 import { IconClose, IconSearch } from "../files/icons";
@@ -64,21 +65,6 @@ const GROUPS: Array<{ status: ScheduleDto["status"]; title: string }> = [
   { status: "error", title: "Ошибки" },
   { status: "done", title: "Завершённые" },
 ];
-
-// sessions.last_active_at arrives as SQLite localtime "YYYY-MM-DD HH:MM:SS".
-function formatActivity(value: string): string {
-  const d = new Date(value.replace(" ", "T"));
-  if (Number.isNaN(d.getTime())) return value;
-  const time = d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-  if (d.toDateString() === new Date().toDateString()) return `сегодня ${time}`;
-  return `${d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" })} ${time}`;
-}
-
-function formatInstant(value: string): string {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-}
 
 const PencilIcon = () => (
   <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

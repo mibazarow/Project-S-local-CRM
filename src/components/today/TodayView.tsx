@@ -3,6 +3,7 @@ import * as ipc from "../../api/ipc";
 import { useApp } from "../../state/AppStore";
 import type { FsEntry, ObjectiveDto, ProjectDto, ScheduleDto, SessionDto, TaskDto } from "../../api/types";
 import { toMessage } from "../chat/chatShared";
+import { formatActivity, formatDue, formatInstant, formatModified } from "../../shared/format";
 import type { Tab } from "../TopBar";
 
 interface Props {
@@ -31,35 +32,6 @@ const OBJECTIVE_STATUS_LABEL: Record<string, string> = {
   done: "готово",
   error: "ошибка",
 };
-
-// sessions.last_active_at arrives as SQLite localtime "YYYY-MM-DD HH:MM:SS".
-function formatActivity(value: string): string {
-  const d = new Date(value.replace(" ", "T"));
-  if (Number.isNaN(d.getTime())) return value;
-  const time = d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-  if (d.toDateString() === new Date().toDateString()) return `сегодня ${time}`;
-  return `${d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" })} ${time}`;
-}
-
-function formatInstant(value: string): string {
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return value;
-  return d.toLocaleString("ru-RU", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
-}
-
-function formatDue(dueDate: string): string {
-  const d = new Date(`${dueDate}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return dueDate;
-  return d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
-}
-
-function formatModified(ts: number): string {
-  const d = new Date(ts * 1000);
-  if (Number.isNaN(d.getTime())) return "";
-  const time = d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
-  if (d.toDateString() === new Date().toDateString()) return `сегодня ${time}`;
-  return `${d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" })} ${time}`;
-}
 
 function todayLabel(): string {
   const s = new Date().toLocaleDateString("ru-RU", { weekday: "long", day: "numeric", month: "long" });

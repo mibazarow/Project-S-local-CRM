@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 import type { ChecklistItem, TaskDto, TaskPatch } from "../../api/types";
+import { formatDue } from "../../shared/format";
 import {
   IconAskAgent,
   IconCalendar,
@@ -34,12 +35,6 @@ interface Props {
   onPatch: (patch: TaskPatch) => void;
   onDelete: () => void;
   onDiscuss?: () => void;
-}
-
-function formatDue(dueDate: string): string {
-  const d = new Date(`${dueDate}T00:00:00`);
-  if (Number.isNaN(d.getTime())) return dueDate;
-  return d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" });
 }
 
 function CommentInput({
