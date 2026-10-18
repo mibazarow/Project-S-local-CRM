@@ -974,6 +974,14 @@ fn run_agent_bridge(
     }
 }
 
+// app.json for the run path: a malformed file fails the run with a typed
+// error (surfaced through the normal run error event) instead of silently
+// falling back to defaults; a missing file still yields the shipped defaults.
+fn run_app_config(wd: &Path) -> Result<AppConfig> {
+    serde_json::from_value(config::read_config(wd, ConfigKind::App)?)
+        .map_err(|e| AppError::InvalidConfig(format!("app.json: {e}")))
+}
+
 fn run_agent_inner(
     app: &AppHandle,
     registry: &Arc<AgentRegistry>,
@@ -1009,8 +1017,7 @@ fn run_agent_inner(
     // means images are not sent and the turn carries an honest note.
     let vision_supported = llm_cfg.vision_enabled();
     let client = llm::client_from_config(wd)?;
-    let app_cfg: AppConfig =
-        serde_json::from_value(config::read_config(wd, ConfigKind::App)?).unwrap_or_default();
+    let app_cfg = run_app_config(wd)?;
 
     // Global memory (SPEC 6.3): only the stable part — the fixed identity
     // lines and the always-injected gender line — is appended to the system
@@ -1222,6 +1229,50 @@ mod tests {
             let body = crate::llm::build_body(&[ChatMessage::user("hi")], None, &params, false);
             assert_eq!(body["temperature"], json!(temperature_for_kind(kind)));
         }
+    }
+
+    #[test]
+    fn run_app_config_parses_valid_app_json_exactly_as_before() {
+        let dir = temp_test_dir("chat-run-app-config-valid");
+        fs::create_dir_all(paths::config_dir(&dir)).unwrap();
+        fs::write(
+            config::file_path(&dir, ConfigKind::App),
+            r#"{ "autopilot": true, "compactionThresholdPercent": 55, "sessionTtlDays": 5, "agentName": "Вася" }"#,
+        )
+        .unwrap();
+        let cfg = run_app_config(&dir).unwrap();
+        assert!(cfg.autopilot);
+        assert_eq!(cfg.compaction_threshold_percent, 55);
+        assert_eq!(cfg.session_ttl_days, 5);
+        // Absent keys keep the same defaults the old silent path produced.
+        assert_eq!(cfg.tmp_retention_days, 7);
+        assert_eq!(cfg.log_retention_days, 14);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn run_app_config_fails_on_malformed_app_json_instead_of_defaulting() {
+        let dir = temp_test_dir("chat-run-app-config-bad");
+        fs::create_dir_all(paths::config_dir(&dir)).unwrap();
+        // Valid JSON, wrong value type: previously silently replaced by defaults.
+        fs::write(config::file_path(&dir, ConfigKind::App), r#"{ "autopilot": "yes" }"#).unwrap();
+        let err = run_app_config(&dir).unwrap_err();
+        assert!(matches!(err, AppError::InvalidConfig(_)), "{err}");
+        assert!(err.to_string().starts_with("invalid_config: app.json"), "{err}");
+
+        // Broken JSON syntax already failed the run before: behavior unchanged.
+        fs::write(config::file_path(&dir, ConfigKind::App), "{ broken").unwrap();
+        assert!(matches!(run_app_config(&dir), Err(AppError::Json(_))));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn run_app_config_missing_file_keeps_shipped_defaults() {
+        let dir = temp_test_dir("chat-run-app-config-missing");
+        let cfg = run_app_config(&dir).unwrap();
+        assert!(!cfg.autopilot);
+        assert_eq!(cfg.compaction_threshold_percent, 80);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     struct ScriptedBackend {

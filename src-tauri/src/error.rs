@@ -9,6 +9,7 @@ pub enum AppError {
     Db(String),
     Json(String),
     Invalid(String),
+    InvalidConfig(String),
     Http(String),
     NotConfigured,
 }
@@ -20,6 +21,7 @@ impl std::fmt::Display for AppError {
             AppError::Db(m) => write!(f, "database error: {m}"),
             AppError::Json(m) => write!(f, "json error: {m}"),
             AppError::Invalid(m) => write!(f, "invalid input: {m}"),
+            AppError::InvalidConfig(m) => write!(f, "invalid_config: {m}"),
             AppError::Http(m) => write!(f, "http error: {m}"),
             AppError::NotConfigured => write!(f, "working directory is not configured"),
         }
@@ -36,6 +38,7 @@ impl Serialize for AppError {
             AppError::Db(m) => ("db", m.as_str()),
             AppError::Json(m) => ("json", m.as_str()),
             AppError::Invalid(m) => ("invalid", m.as_str()),
+            AppError::InvalidConfig(m) => ("invalid-config", m.as_str()),
             AppError::Http(m) => ("http", m.as_str()),
             AppError::NotConfigured => ("not-configured", ""),
         };
