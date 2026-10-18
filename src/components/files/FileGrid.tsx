@@ -20,6 +20,7 @@ import {
   IconPencil,
   IconTrash,
 } from "./icons";
+import ViewToggle from "./ViewToggle";
 
 interface Props {
   projectId: number;
@@ -28,6 +29,8 @@ interface Props {
   selectedRelPath: string | null;
   onSelect: (entry: FsEntry) => void;
   onNavigateDir: (dirRel: string) => void;
+  view: "list" | "grid";
+  onViewChange: (view: "list" | "grid") => void;
 }
 
 export default function FileGrid({
@@ -37,6 +40,8 @@ export default function FileGrid({
   selectedRelPath,
   onSelect,
   onNavigateDir,
+  view,
+  onViewChange,
 }: Props) {
   const [entries, setEntries] = useState<FsEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -172,6 +177,7 @@ export default function FileGrid({
           <IconFilePlus />
           Новый файл
         </button>
+        <ViewToggle view={view} onChange={onViewChange} />
       </div>
       {ops.error && <div className="tree-error">{ops.error}</div>}
       {ow.error && <div className="tree-error">{ow.error}</div>}

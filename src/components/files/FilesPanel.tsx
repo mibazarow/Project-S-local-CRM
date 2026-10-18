@@ -7,7 +7,7 @@ import FileGrid from "./FileGrid";
 import FilePreview from "./FilePreview";
 import FileTree from "./FileTree";
 import SearchResults from "./SearchResults";
-import { IconClose, IconGrid, IconList, IconSearch } from "./icons";
+import { IconClose, IconSearch } from "./icons";
 import KanbanBoard from "../tasks/KanbanBoard";
 
 interface Props {
@@ -130,22 +130,6 @@ export default function FilesPanel({ project }: Props) {
         </div>
         {tab === "files" && (
           <>
-            <div className="view-toggle" title="Вид файлов">
-              <button
-                className={view === "list" ? "vt active" : "vt"}
-                title="Список"
-                onClick={() => setView("list")}
-              >
-                <IconList />
-              </button>
-              <button
-                className={view === "grid" ? "vt active" : "vt"}
-                title="Сетка"
-                onClick={() => setView("grid")}
-              >
-                <IconGrid />
-              </button>
-            </div>
             <div className="search">
               <IconSearch />
               <input
@@ -177,7 +161,6 @@ export default function FilesPanel({ project }: Props) {
       ) : (
         <>
           <Breadcrumbs
-            projectName={project.name}
             path={view === "grid" ? currentDir : (selected?.relPath ?? "")}
             onNavigate={view === "grid" ? setCurrentDir : undefined}
           />
@@ -197,6 +180,8 @@ export default function FilesPanel({ project }: Props) {
                 selectedRelPath={selected?.relPath ?? null}
                 selectedDirRel={selected && selected.kind === "dir" ? selected.relPath : ""}
                 onSelect={handleSelect}
+                view={view}
+                onViewChange={setView}
               />
             ) : (
               <FileGrid
@@ -206,6 +191,8 @@ export default function FilesPanel({ project }: Props) {
                 selectedRelPath={selected?.relPath ?? null}
                 onSelect={handleSelect}
                 onNavigateDir={setCurrentDir}
+                view={view}
+                onViewChange={setView}
               />
             )}
             {selected && selected.kind === "file" && (

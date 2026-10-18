@@ -10,6 +10,7 @@ import FileRow from "./FileRow";
 import RenameInput from "./RenameInput";
 import { useOsFileDrag } from "./useOsFileDrag";
 import { IconFile, IconFilePlus, IconFolder, IconFolderPlus } from "./icons";
+import ViewToggle from "./ViewToggle";
 
 interface Props {
   projectId: number;
@@ -17,6 +18,8 @@ interface Props {
   selectedRelPath: string | null;
   selectedDirRel: string;
   onSelect: (entry: FsEntry) => void;
+  view: "list" | "grid";
+  onViewChange: (view: "list" | "grid") => void;
 }
 
 export default function FileTree({
@@ -25,6 +28,8 @@ export default function FileTree({
   selectedRelPath,
   selectedDirRel,
   onSelect,
+  view,
+  onViewChange,
 }: Props) {
   const [childrenByDir, setChildrenByDir] = useState<Record<string, FsEntry[]>>({});
   const [openPaths, setOpenPaths] = useState<Record<string, boolean>>({});
@@ -299,6 +304,7 @@ export default function FileTree({
           <IconFilePlus />
           Новый файл
         </button>
+        <ViewToggle view={view} onChange={onViewChange} />
       </div>
       {ops.error && <div className="tree-error">{ops.error}</div>}
       {ow.error && <div className="tree-error">{ow.error}</div>}

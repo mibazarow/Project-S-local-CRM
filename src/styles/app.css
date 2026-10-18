@@ -329,8 +329,8 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 .tree-row .icon.folder-icon svg { width: 18px; height: 18px; }
 
 /* переключатель вида файлов */
-.view-toggle { display: flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
-.vt { border: none; background: var(--surface); padding: 5px 9px; color: var(--text-muted); cursor: pointer; display: flex; }
+.view-toggle { display: flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.vt { border: none; background: var(--surface); padding: 5px 9px; color: var(--text-muted); cursor: pointer; display: flex; align-items: center; }
 .vt + .vt { border-left: 1px solid var(--border); }
 .vt.active { background: var(--accent); color: #fff; }
 
@@ -360,7 +360,9 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 .tile-actions { position: absolute; top: 6px; right: 6px; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
 .tile:hover .tile-actions, .tile.selected .tile-actions { opacity: 1; }
 .tile .rename-input { font-size: 12px; width: 90%; }
-.tree-toolbar { display: flex; gap: 8px; margin-bottom: 10px; }
+.tree-toolbar { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+/* переключатель вида в тулбаре: та же высота, что у кнопок создания */
+.tree-toolbar .view-toggle { align-self: stretch; }
 .tree-error { color: var(--danger); font-size: 12px; margin-bottom: 8px; }
 
 /* перетаскивание файлов: подсветка цели дропа и запрет на себя/потомка */
