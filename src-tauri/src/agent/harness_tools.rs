@@ -23,7 +23,7 @@ use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
 use crate::scheduler::{self, CreateIn};
-use crate::{extract, fs_ops, paths, projects, search, tasks, undo};
+use crate::{db, embed, extract, fs_ops, paths, projects, search, tasks, undo};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::fs;
@@ -1444,18 +1444,21 @@ impl Tool for CrmSearchTool {
             .unwrap_or(10.0)
             .clamp(1.0, 50.0) as usize;
         let scoped = args.get("project_id").is_some() || args.get("project_name").is_some();
+        // S1.2: one connection serves the whole call (project resolution plus
+        // every project's search legs), not one per project.
+        let wd = state.working_dir()?;
+        let conn = db::open(&paths::db_path(&wd))?;
+        let embedder = embed::select_embedder(&wd);
         let pids: Vec<i64> = if scoped {
-            vec![with_conn(ctx, |conn| resolve_project_id(conn, args))?]
+            vec![resolve_project_id(&conn, args)?]
         } else {
-            with_conn(ctx, |conn| {
-                let mut stmt = conn.prepare("SELECT id FROM projects ORDER BY id")?;
-                let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
-                Ok::<Vec<i64>, AppError>(rows.collect::<rusqlite::Result<Vec<_>>>()?)
-            })?
+            let mut stmt = conn.prepare("SELECT id FROM projects ORDER BY id")?;
+            let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
         };
         let mut hits: Vec<Value> = Vec::new();
         for pid in pids {
-            for hit in search::search_project(state, pid, query, limit)? {
+            for hit in search::search_with(&conn, embedder.as_ref(), embed::NAME_WEIGHT, pid, query, limit)? {
                 let mut v = serde_json::to_value(&hit).unwrap_or(Value::Null);
                 v["projectId"] = json!(pid);
                 hits.push(v);
@@ -3254,6 +3257,58 @@ mod tests {
 
         let r = exec("crm_tasks", json!({ "project_name": "nope" }), &env.ctx);
         assert_eq!(r.error.unwrap().code, "not_found");
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn crm_search_opens_one_connection_for_the_whole_call() {
+        // S1.2: the old shape opened one connection per project (search_project
+        // per pid); now a single connection serves resolution plus all legs.
+        let env = setup("ht-crm-conn");
+        let mut pids = Vec::new();
+        for name in ["alpha", "beta", "gamma"] {
+            let dto = with_conn(&env.ctx, |conn| {
+                projects::create_project(conn, &env.wd, name)
+            })
+            .unwrap();
+            pids.push(dto.id);
+        }
+        for name in ["alpha", "beta", "gamma"] {
+            fs::write(
+                paths::projects_dir(&env.wd).join(format!("{name}/plan.md")),
+                "crossword word",
+            )
+            .unwrap();
+        }
+        let state = env.ctx.state.as_deref().unwrap();
+        for pid in &pids {
+            index::index_project(state, *pid).unwrap();
+        }
+
+        db::open_counter::arm();
+        let r = exec("crm_search", json!({ "query": "crossword" }), &env.ctx);
+        let opens = db::open_counter::stop();
+        let hits = r.data.unwrap()["hits"].as_array().unwrap().clone();
+        assert_eq!(hits.len(), 3, "cross-project hits: {hits:?}");
+        let hit_pids: Vec<i64> = hits
+            .iter()
+            .map(|h| h["projectId"].as_i64().unwrap())
+            .collect();
+        assert_eq!(hit_pids.len(), hit_pids.iter().collect::<std::collections::HashSet<_>>().len());
+        assert_eq!(opens, 1, "crm_search must open exactly one connection per call");
+
+        db::open_counter::arm();
+        let r = exec(
+            "crm_search",
+            json!({ "query": "crossword", "project_name": "beta" }),
+            &env.ctx,
+        );
+        let opens = db::open_counter::stop();
+        let hits = r.data.unwrap()["hits"].as_array().unwrap().clone();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0]["projectId"], pids[1]);
+        assert_eq!(hits[0]["relPath"], "plan.md");
+        assert_eq!(opens, 1, "scoped crm_search must open exactly one connection");
         fs::remove_dir_all(&env.wd).unwrap();
     }
 

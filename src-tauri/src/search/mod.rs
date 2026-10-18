@@ -63,7 +63,10 @@ pub fn search_notes(state: &AppState, query: &str, limit: usize) -> Result<Vec<S
     search_project(state, crate::index::NOTES_SCOPE_ID, query, limit)
 }
 
-fn search_with(
+// One connection serves the whole call: every leg below takes `&Connection`,
+// no leg opens its own (S1.2). pub(crate) so crm_search can reuse a single
+// connection across projects.
+pub(crate) fn search_with(
     conn: &Connection,
     embedder: &dyn embed::Embedder,
     name_weight: f32,
@@ -966,6 +969,129 @@ mod tests {
         let again = search_with(&conn, &FakeEmbedder, 0.3, id, "кошки", 10).unwrap();
         assert_eq!(rels(&hits), rels(&again));
         fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn search_with_runs_every_leg_on_the_passed_connection() {
+        // S1.2: one connection per call. File FTS, file semantic, task FTS,
+        // task semantic, mtime and snippet legs must all work through the
+        // passed conn without opening another one.
+        let (wd, conn, id, _state) = setup("search-one-conn");
+        fs::write(root(&wd).join("кошки.md"), "кошки кошки кошки").unwrap();
+        tasks::task_create(&conn, id, "кошки в задаче", None).unwrap();
+        index::index_root(
+            &conn,
+            id,
+            &root(&wd),
+            &IndexingConfig::default(),
+            &FakeEmbedder,
+        )
+        .unwrap();
+
+        crate::db::open_counter::arm();
+        let hits = search_with(&conn, &FakeEmbedder, 0.3, id, "кошки", 10).unwrap();
+        let opens = crate::db::open_counter::stop();
+        assert_eq!(opens, 0, "search legs must not open connections");
+
+        let file = hits.iter().find(|h| h.kind == "file").expect("file hit");
+        assert_eq!(file.match_types, ["fts", "semantic"]);
+        assert!(file.modified > 0, "mtime leg must use the passed conn");
+        let task = hits.iter().find(|h| h.kind == "task").expect("task hit");
+        assert_eq!(task.match_types, ["fts", "semantic"]);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // Representative cross-project query on the demo working dir
+    // (~/Documents/PROJECT-S, PROJECT_S_WD override; indexed demo data and a
+    // provisioned model). "Before" = crm_search's old shape: search_project
+    // per project, each opening its own connection; "after" = one connection
+    // and one embedder select for the whole call:
+    //   cargo test --release search_conn_timing -- --ignored -- --nocapture
+    #[test]
+    #[ignore]
+    fn search_conn_timing_one_connection_per_call() {
+        use std::time::Instant;
+        let wd = crate::embed::model_store::real_working_dir();
+        let db_file = paths::db_path(&wd);
+        assert!(db_file.exists(), "demo DB not found at {}", db_file.display());
+        let state = AppState::new();
+        *state.working_dir.lock().unwrap() = Some(wd.clone());
+        let pids: Vec<i64> = {
+            let conn = db::open(&db_file).unwrap();
+            let mut stmt = conn.prepare("SELECT id FROM projects ORDER BY id").unwrap();
+            stmt.query_map([], |r| r.get::<_, i64>(0))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect()
+        };
+        assert!(!pids.is_empty(), "demo DB has no projects");
+        let query = "редизайн";
+        let limit = 10usize;
+        // Warm the embedder cache so ONNX session load is not timed.
+        search_project(&state, pids[0], query, 1).unwrap();
+
+        let mut runs = Vec::new();
+        for round in 1..=3 {
+            let started = Instant::now();
+            let old_hits: usize = pids
+                .iter()
+                .map(|pid| search_project(&state, *pid, query, limit).unwrap().len())
+                .sum();
+            let old_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+            let started = Instant::now();
+            let conn = db::open(&db_file).unwrap();
+            let embedder = embed::select_embedder(&wd);
+            let new_hits: usize = pids
+                .iter()
+                .map(|pid| {
+                    search_with(&conn, embedder.as_ref(), embed::NAME_WEIGHT, *pid, query, limit)
+                        .unwrap()
+                        .len()
+                })
+                .sum();
+            let new_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+            // The slice's actual saving: N opens (one per project) vs one open
+            // for the whole call. The hybrid total is embedder-dominated, so
+            // the FTS-only path (noop embedder: offline default and the
+            // semantic-skipped case) is timed separately — there the per-call
+            // open dominates.
+            let started = Instant::now();
+            let fts_old_hits: usize = pids
+                .iter()
+                .map(|pid| {
+                    let conn = db::open(&db_file).unwrap();
+                    search_with(&conn, &embed::NoopEmbedder, embed::NAME_WEIGHT, *pid, query, limit)
+                        .unwrap()
+                        .len()
+                })
+                .sum();
+            let fts_old_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let started = Instant::now();
+            let conn = db::open(&db_file).unwrap();
+            let fts_new_hits: usize = pids
+                .iter()
+                .map(|pid| {
+                    search_with(&conn, &embed::NoopEmbedder, embed::NAME_WEIGHT, *pid, query, limit)
+                        .unwrap()
+                        .len()
+                })
+                .sum();
+            let fts_new_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+            assert_eq!(old_hits, new_hits, "round {round}: hits changed");
+            assert_eq!(fts_old_hits, fts_new_hits, "round {round}: FTS hits changed");
+            eprintln!(
+                "search conn timing #{round}/3: hybrid cross-project call \
+                 per-project-open={old_ms:.1} ms, one-open={new_ms:.1} ms \
+                 ({new_hits} hits, {} projects); FTS-only per-project-open={fts_old_ms:.2} ms, \
+                 one-open={fts_new_ms:.2} ms ({fts_new_hits} hits)",
+                pids.len(),
+            );
+            runs.push((fts_old_ms, fts_new_ms));
+        }
+        assert!(runs.iter().all(|(many, one)| many > one));
     }
 
     #[test]

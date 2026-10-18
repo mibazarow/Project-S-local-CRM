@@ -18,7 +18,40 @@ pub fn ensure_vec_extension() {
     }
 }
 
+// Test-only instrumentation: counts db::open calls on the armed thread so a
+// test can prove a call opens exactly one connection (S1.2). Thread-local, so
+// parallel test threads never interfere with each other.
+#[cfg(test)]
+pub(crate) mod open_counter {
+    use std::cell::Cell;
+
+    thread_local! {
+        static ARMED: Cell<bool> = const { Cell::new(false) };
+        static COUNT: Cell<u32> = const { Cell::new(0) };
+    }
+
+    pub(crate) fn arm() {
+        COUNT.with(|c| c.set(0));
+        ARMED.with(|a| a.set(true));
+    }
+
+    pub(crate) fn stop() -> u32 {
+        ARMED.with(|a| a.set(false));
+        COUNT.with(|c| c.take())
+    }
+
+    pub(super) fn note() {
+        ARMED.with(|a| {
+            if a.get() {
+                COUNT.with(|c| c.set(c.get() + 1));
+            }
+        });
+    }
+}
+
 pub fn open(db_path: &Path) -> Result<Connection> {
+    #[cfg(test)]
+    open_counter::note();
     if let Some(parent) = db_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
