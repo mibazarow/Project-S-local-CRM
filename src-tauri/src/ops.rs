@@ -3,12 +3,14 @@
 use crate::config::{self, AppConfig, ConfigKind};
 use crate::error::{AppError, Result};
 use crate::paths;
-use chrono::Local;
+use chrono::{DateTime, Local, Utc};
 use rusqlite::Connection;
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::fs::{self, File};
 use std::io::{copy, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 use zip::write::FileOptions;
 use zip::ZipWriter;
@@ -239,6 +241,150 @@ pub fn read_app_config(wd: &Path) -> Result<AppConfig> {
     Ok(serde_json::from_value(config::read_config(wd, ConfigKind::App)?)?)
 }
 
+// Automatic backups (SPEC 3.6): on startup and after the working dir is
+// chosen, if the newest Settings/backups/project-s-*.zip is missing or older
+// than `backupIntervalDays` (0 disables), take one via create_backup and then
+// prune to the newest `backupKeep`. The caller runs this on a background
+// thread so it never blocks startup; a per-working-dir guard makes concurrent
+// triggers (startup + choose_working_dir) collapse to a single run.
+
+// Working dirs with a backup in flight; a second trigger for the same dir
+// skips instead of racing a duplicate. A mutex (not a bare flag) so distinct
+// working dirs never block each other.
+static ACTIVE_BACKUPS: Mutex<BTreeSet<PathBuf>> = Mutex::new(BTreeSet::new());
+
+struct BackupGuard {
+    wd: PathBuf,
+}
+
+impl BackupGuard {
+    fn try_acquire(wd: &Path) -> Option<Self> {
+        let mut active = ACTIVE_BACKUPS.lock().unwrap_or_else(|e| e.into_inner());
+        if active.contains(wd) {
+            return None;
+        }
+        active.insert(wd.to_path_buf());
+        Some(BackupGuard { wd: wd.to_path_buf() })
+    }
+}
+
+impl Drop for BackupGuard {
+    fn drop(&mut self) {
+        let mut active = ACTIVE_BACKUPS.lock().unwrap_or_else(|e| e.into_inner());
+        active.remove(&self.wd);
+    }
+}
+
+// Backups named `project-s-*.zip`, oldest first by mtime (the filename
+// timestamp has only second resolution, so mtime is the reliable sort key).
+fn list_backups(wd: &Path) -> Vec<PathBuf> {
+    let mut backups = Vec::new();
+    if let Ok(entries) = fs::read_dir(paths::backups_dir(wd)) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            if let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) {
+                if name.starts_with("project-s-") && name.ends_with(".zip") {
+                    backups.push(path);
+                }
+            }
+        }
+    }
+    backups.sort_by_key(|p| mtime(p));
+    backups
+}
+
+fn mtime(path: &Path) -> SystemTime {
+    fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or(SystemTime::UNIX_EPOCH)
+}
+
+fn backup_cutoff(interval_days: u32) -> SystemTime {
+    SystemTime::now() - Duration::from_secs(u64::from(interval_days) * 86_400)
+}
+
+// A backup is due when auto-backup is enabled and there is no backup yet or
+// the newest one predates the interval. `backups` must be list_backups output.
+fn due_from_backups(backups: &[PathBuf], interval_days: u32) -> bool {
+    if interval_days == 0 {
+        return false;
+    }
+    match backups.last() {
+        None => true,
+        Some(last) => mtime(last) < backup_cutoff(interval_days),
+    }
+}
+
+// Runs one auto-backup pass for `wd`. Returns Some(info) when a fresh backup
+// was written, None when disabled/not due/another run is in flight. Errors
+// from the backup or retention are propagated for the caller to log.
+pub fn auto_backup(wd: &Path, conn: &Connection) -> Result<Option<BackupInfo>> {
+    let cfg = read_app_config(wd)?;
+    if cfg.backup_interval_days == 0 {
+        return Ok(None);
+    }
+    if !due_from_backups(&list_backups(wd), cfg.backup_interval_days) {
+        return Ok(None);
+    }
+    let _guard = match BackupGuard::try_acquire(wd) {
+        Some(g) => g,
+        None => return Ok(None),
+    };
+    let info = create_backup(wd, conn, None)?;
+    apply_retention(wd, cfg.backup_keep, &PathBuf::from(&info.path));
+    Ok(Some(info))
+}
+
+// Keep the newest `keep` backups, delete the rest. The just-created backup is
+// never removed even when `keep` is 0.
+fn apply_retention(wd: &Path, keep: u32, just_created: &Path) {
+    let keep = keep.max(1) as usize;
+    let mut backups = list_backups(wd);
+    if backups.len() <= keep {
+        return;
+    }
+    let excess = backups.len() - keep;
+    for path in backups.drain(..excess) {
+        if path == just_created {
+            continue;
+        }
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupStatus {
+    pub last_backup_at: Option<String>,
+    pub interval_days: u32,
+    pub keep: u32,
+    pub count: usize,
+    pub due: bool,
+}
+
+// Snapshot of the auto-backup state for the settings UI: when the last backup
+// was taken (RFC3339 UTC), the configured interval/keep, how many backups are
+// on disk, and whether one is due right now.
+pub fn backup_status(wd: &Path) -> Result<BackupStatus> {
+    let cfg = read_app_config(wd)?;
+    let backups = list_backups(wd);
+    let last_backup_at = backups.last().map(|p| rfc3339_utc(mtime(p)));
+    Ok(BackupStatus {
+        last_backup_at,
+        interval_days: cfg.backup_interval_days,
+        keep: cfg.backup_keep,
+        count: backups.len(),
+        due: due_from_backups(&backups, cfg.backup_interval_days),
+    })
+}
+
+fn rfc3339_utc(t: SystemTime) -> String {
+    DateTime::<Utc>::from(t).to_rfc3339()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -405,5 +551,136 @@ mod tests {
         ));
         let ok = |_enabled: bool| Ok(());
         assert!(apply_autostart(&ok, false).is_ok());
+    }
+
+    // --- automatic backups (SPEC 3.6) ---
+
+    fn set_backup_cfg(wd: &Path, interval: u32, keep: u32) {
+        config::write_config(
+            wd,
+            ConfigKind::App,
+            serde_json::json!({ "backupIntervalDays": interval, "backupKeep": keep }),
+        )
+        .unwrap();
+    }
+
+    // A placeholder archive with an mtime `age_days` in the past; auto_backup
+    // only reads names/mtimes, so the content never has to be a real zip.
+    fn seed_backup(wd: &Path, name: &str, age_days: u64) {
+        let dir = paths::backups_dir(wd);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(name);
+        fs::write(&path, "seed").unwrap();
+        let mtime = SystemTime::now() - Duration::from_secs(age_days * 86_400);
+        File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(mtime)
+            .unwrap();
+    }
+
+    fn backup_names(wd: &Path) -> Vec<String> {
+        list_backups(wd)
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn auto_backup_zero_interval_is_disabled_and_creates_nothing() {
+        let wd = scaffold("auto-backup-off");
+        set_backup_cfg(&wd, 0, 7);
+        let conn = db::open(&paths::db_path(&wd)).unwrap();
+        assert!(auto_backup(&wd, &conn).unwrap().is_none());
+        assert_eq!(list_backups(&wd).len(), 0);
+        drop(conn);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn auto_backup_first_run_creates_one() {
+        let wd = scaffold("auto-backup-first");
+        set_backup_cfg(&wd, 1, 7);
+        let conn = db::open(&paths::db_path(&wd)).unwrap();
+        let info = auto_backup(&wd, &conn).unwrap();
+        assert!(info.is_some());
+        assert_eq!(list_backups(&wd).len(), 1);
+        drop(conn);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn auto_backup_second_run_within_interval_does_not_duplicate() {
+        let wd = scaffold("auto-backup-dup");
+        set_backup_cfg(&wd, 1, 7);
+        let conn = db::open(&paths::db_path(&wd)).unwrap();
+        assert!(auto_backup(&wd, &conn).unwrap().is_some());
+        assert!(auto_backup(&wd, &conn).unwrap().is_none());
+        assert_eq!(list_backups(&wd).len(), 1);
+        drop(conn);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn auto_backup_old_backup_triggers_a_new_one() {
+        let wd = scaffold("auto-backup-old");
+        set_backup_cfg(&wd, 1, 7);
+        seed_backup(&wd, "project-s-old.zip", 10);
+        let conn = db::open(&paths::db_path(&wd)).unwrap();
+        assert!(auto_backup(&wd, &conn).unwrap().is_some());
+        // keep=7: the seeded old archive stays, a fresh one is added.
+        assert_eq!(list_backups(&wd).len(), 2);
+        drop(conn);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn auto_backup_retention_keeps_newest_and_deletes_older() {
+        let wd = scaffold("auto-backup-keep");
+        set_backup_cfg(&wd, 1, 2);
+        // Five seeded archives, oldest (10 d) to newest (6 d) by mtime.
+        for (i, age) in [10_u64, 9, 8, 7, 6].iter().enumerate() {
+            seed_backup(&wd, &format!("project-s-old{i}.zip"), *age);
+        }
+        let conn = db::open(&paths::db_path(&wd)).unwrap();
+        assert!(auto_backup(&wd, &conn).unwrap().is_some());
+        let names = backup_names(&wd);
+        // keep=2: the just-created archive plus the newest seeded (old4).
+        assert_eq!(names.len(), 2);
+        assert!(names.iter().any(|n| n == "project-s-old4.zip"));
+        for i in 0..4 {
+            assert!(!names.iter().any(|n| *n == format!("project-s-old{i}.zip")));
+        }
+        drop(conn);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn backup_status_reports_fields_and_due() {
+        let wd = scaffold("auto-backup-status");
+        set_backup_cfg(&wd, 1, 7);
+        let conn = db::open(&paths::db_path(&wd)).unwrap();
+
+        let st = backup_status(&wd).unwrap();
+        assert_eq!((st.interval_days, st.keep, st.count), (1, 7, 0));
+        assert!(st.last_backup_at.is_none());
+        assert!(st.due);
+
+        auto_backup(&wd, &conn).unwrap();
+        let st = backup_status(&wd).unwrap();
+        assert_eq!(st.count, 1);
+        assert!(st.last_backup_at.is_some());
+        assert!(!st.due);
+
+        // Disabled (interval 0): never due, existing backups still counted.
+        set_backup_cfg(&wd, 0, 7);
+        let st = backup_status(&wd).unwrap();
+        assert_eq!(st.interval_days, 0);
+        assert_eq!(st.count, 1);
+        assert!(!st.due);
+
+        drop(conn);
+        fs::remove_dir_all(&wd).unwrap();
     }
 }

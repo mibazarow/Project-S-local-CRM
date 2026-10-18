@@ -132,6 +132,10 @@ pub struct AppConfig {
     // "Start with the system" mirror for the UI (SPEC 5.3); the OS
     // LaunchAgent is the source of truth. Default off (SPEC 8).
     pub autostart: bool,
+    // Automatic backup interval in days (SPEC 3.6); 0 disables auto-backup.
+    pub backup_interval_days: u32,
+    // How many newest backups auto-backup retention keeps (SPEC 3.6).
+    pub backup_keep: u32,
 }
 
 impl Default for AppConfig {
@@ -143,6 +147,8 @@ impl Default for AppConfig {
             tmp_retention_days: 7,
             log_retention_days: 14,
             autostart: false,
+            backup_interval_days: 1,
+            backup_keep: 7,
         }
     }
 }

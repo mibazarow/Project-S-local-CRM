@@ -196,6 +196,7 @@ fn choose_working_dir(
     let _ = index::index_notes(&wd);
     *state.mcp.lock().unwrap() = mcp::McpRegistry::start(&wd);
     scheduler::start(app.clone());
+    spawn_auto_backup(&wd);
     Ok(info)
 }
 
@@ -1472,6 +1473,14 @@ fn backups_dir(state: State<AppState>) -> Result<String> {
     Ok(dir.display().to_string())
 }
 
+// Auto-backup state for the settings UI (SPEC 3.6): last backup time, the
+// configured interval/keep, how many archives are on disk, and whether one is
+// due now.
+#[tauri::command]
+fn backup_status(state: State<AppState>) -> Result<ops::BackupStatus> {
+    ops::backup_status(&state.working_dir()?)
+}
+
 // The OS plugin is the source of truth; a plugin/OS failure falls back to
 // the app.json mirror instead of breaking the UI.
 #[tauri::command]
@@ -1500,6 +1509,26 @@ fn set_autostart(app: AppHandle, state: State<AppState>, enabled: bool) -> Resul
     )?;
     ops::set_autostart_choice(&state.working_dir()?, enabled)?;
     Ok(enabled)
+}
+
+// Automatic backup (SPEC 3.6): runs on a background thread with its own DB
+// connection so it never blocks startup, and a failure is only logged. The
+// per-working-dir guard in ops::auto_backup collapses the startup and
+// choose_working_dir triggers into a single run when they overlap.
+fn spawn_auto_backup(wd: &std::path::Path) {
+    let wd = wd.to_path_buf();
+    std::thread::spawn(move || {
+        let conn = match db::open(&paths::db_path(&wd)) {
+            Ok(conn) => conn,
+            Err(e) => {
+                eprintln!("auto-backup open db failed: {e}");
+                return;
+            }
+        };
+        if let Err(e) = ops::auto_backup(&wd, &conn) {
+            eprintln!("auto-backup failed: {e}");
+        }
+    });
 }
 
 // Opens the run journal and runs startup hygiene for a working dir: tmp
@@ -1568,6 +1597,7 @@ pub fn run() {
                 let _ = index::index_notes(&wd);
                 *state.mcp.lock().unwrap() = mcp::McpRegistry::start(&wd);
                 scheduler::start(app.handle().clone());
+                spawn_auto_backup(&wd);
             }
             Ok(())
         })
@@ -1684,6 +1714,7 @@ pub fn run() {
             create_backup,
             clear_tmp,
             backups_dir,
+            backup_status,
             get_autostart,
             set_autostart
         ])
