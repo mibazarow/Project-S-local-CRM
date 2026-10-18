@@ -112,6 +112,31 @@ function toMessage(e: unknown): string {
   return typeof e === "string" ? e : "Неизвестная ошибка";
 }
 
+// Last opened project per working dir: survives restarts and tab switches,
+// separate key per workspace so project ids never leak across working dirs.
+const lastProjectKey = (workingDir: string) =>
+  `project-s:lastProject:${encodeURIComponent(workingDir)}`;
+
+function readLastProjectId(workingDir: string | null): number | null {
+  if (!workingDir) return null;
+  try {
+    const raw = localStorage.getItem(lastProjectKey(workingDir));
+    const id = raw === null ? NaN : Number(raw);
+    return Number.isInteger(id) ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastProjectId(workingDir: string | null, id: number): void {
+  if (!workingDir) return;
+  try {
+    localStorage.setItem(lastProjectKey(workingDir), String(id));
+  } catch {
+    // Storage unavailable: the selection simply won't persist across restarts.
+  }
+}
+
 interface AppActions {
   chooseWorkingDir: (path: string) => Promise<void>;
   createProject: (name: string) => Promise<void>;
@@ -177,6 +202,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const info = await ipc.chooseWorkingDir(path);
       configuredRef.current = true;
       dispatch({ type: "onboarding", status: { configured: true, workingDir: info.workingDir } });
+      // New workspace: drop the old selection and list together so stale
+      // project ids never leak into the new working dir's key.
+      dispatch({ type: "activeProject", id: null });
+      dispatch({ type: "projects", projects: [] });
       dispatch({ type: "projects", projects: await ipc.listProjects() });
     } catch (e) {
       dispatch({ type: "error", message: toMessage(e) });
@@ -245,6 +274,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void boot();
   }, [boot]);
+
+  // Keep a valid project selection: auto-select the remembered project for
+  // the current working dir, else the top of the list; clear it when no
+  // projects remain. Persists the active selection so it survives restarts.
+  // Tab switches never touch activeProjectId, so the selection is stable
+  // across Проекты/Харнес/Блокнот.
+  useEffect(() => {
+    if (!state.onboarding.configured) return;
+    const { projects, activeProjectId, onboarding } = state;
+    if (projects.length === 0) {
+      if (activeProjectId !== null) dispatch({ type: "activeProject", id: null });
+      return;
+    }
+    if (activeProjectId !== null && projects.some((p) => p.id === activeProjectId)) {
+      writeLastProjectId(onboarding.workingDir, activeProjectId);
+      return;
+    }
+    const remembered = readLastProjectId(onboarding.workingDir);
+    const next =
+      remembered !== null && projects.some((p) => p.id === remembered)
+        ? remembered
+        : projects[0].id;
+    dispatch({ type: "activeProject", id: next });
+  }, [state.projects, state.activeProjectId, state.onboarding]);
 
   // Refresh the project list when the backend reports fs/task changes.
   useEffect(() => {
