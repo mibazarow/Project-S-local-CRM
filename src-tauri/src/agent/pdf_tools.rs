@@ -12,13 +12,13 @@
 // resolvers, otherwise absolute/~/working-dir-relative.
 use super::harness_tools::{canonicalish, in_default_territory, resolve_path};
 use super::project_tools::{envelope, require_wd, with_conn};
-use super::result::{ToolErrorCode, ToolResult};
+use super::result::{read_capped, ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
 use crate::{fs_ops, paths, projects};
 use serde_json::{json, Value};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -416,13 +416,6 @@ fn fill_plan(args: &Value, input: &Path, output: &Path) -> std::result::Result<V
 // Swift helper plumbing (same shape as ocr_tools.rs)
 // ---------------------------------------------------------------------------
 
-fn read_capped(mut reader: impl Read, cap: usize) -> String {
-    let mut buf = Vec::new();
-    let _ = (&mut reader).take((cap as u64) + 1).read_to_end(&mut buf);
-    buf.truncate(cap);
-    String::from_utf8_lossy(&buf).into_owned()
-}
-
 fn prepare_script(wd: &Path) -> Result<(PathBuf, PathBuf)> {
     let tmp = paths::harness_tmp_dir(wd);
     fs::create_dir_all(&tmp)?;
@@ -466,8 +459,8 @@ fn run_pdf_swift(swift: &Path, script: &Path, config: &Value, tmp: &Path) -> std
     });
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let out_thread = std::thread::spawn(move || stdout.map(|r| read_capped(r, STDOUT_CAP)));
-    let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped(r, STDERR_CAP)));
+    let out_thread = std::thread::spawn(move || stdout.map(|r| read_capped(r, STDOUT_CAP).0));
+    let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped(r, STDERR_CAP).0));
     let deadline = Instant::now() + PDF_TIMEOUT;
     let status = loop {
         match child.try_wait() {

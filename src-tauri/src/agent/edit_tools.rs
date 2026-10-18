@@ -6,9 +6,9 @@
 // Projects/ (CheckConditional), while apply_patch is always confirmed (Check).
 // Patch files live under Harness/tmp/, the patch is capped at 1 MiB, and all
 // git output is secret-masked and capped by git_tools::run_git (30 s timeout).
-use super::git_tools::{run_git, GitOutput};
+use super::git_tools::{git_exit_fail, run_git};
 use super::project_tools::{emit_versions_changed, envelope, require_wd, with_conn};
-use super::result::{ToolErrorCode, ToolResult};
+use super::result::{io_fail, ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
 use crate::paths;
@@ -25,14 +25,6 @@ fn nanos() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0)
-}
-
-fn io_fail(path: &Path, e: &std::io::Error) -> ToolResult {
-    if e.kind() == std::io::ErrorKind::NotFound {
-        ToolResult::err(ToolErrorCode::NotFound, format!("{} not found", path.display()))
-    } else {
-        ToolResult::err(ToolErrorCode::ExecutionError, format!("{}: {e}", path.display()))
-    }
 }
 
 // (label, existing target): the project-relative path as given in project
@@ -312,18 +304,6 @@ fn resolve_base(args: &Value, ctx: &ToolCtx, wd: &Path) -> Result<(PathBuf, Path
     }
 }
 
-fn git_apply_fail(label: &str, out: &GitOutput) -> ToolResult {
-    let detail = if out.stderr.trim().is_empty() {
-        out.stdout.trim()
-    } else {
-        out.stderr.trim()
-    };
-    ToolResult::err(
-        ToolErrorCode::ExecutionError,
-        format!("{label} failed (exit {}): {detail}", out.code),
-    )
-}
-
 impl Tool for ApplyPatchTool {
     fn name(&self) -> &str {
         "apply_patch"
@@ -378,7 +358,7 @@ impl Tool for ApplyPatchTool {
         let check = run_git(&base, &["apply", "--whitespace=nowarn", "--check", &patch_arg])?;
         if check.code != 0 {
             let _ = fs::remove_file(&patch_file);
-            return Ok(git_apply_fail("git apply --check", &check));
+            return Ok(git_exit_fail("git apply --check", &check));
         }
         // Version history: capture the current content of every patched file
         // before git apply touches it (missing/new files are skipped).
@@ -401,7 +381,7 @@ impl Tool for ApplyPatchTool {
         let applied = run_git(&base, &["apply", "--whitespace=nowarn", &patch_arg])?;
         let _ = fs::remove_file(&patch_file);
         if applied.code != 0 {
-            return Ok(git_apply_fail("git apply", &applied));
+            return Ok(git_exit_fail("git apply", &applied));
         }
         for (abs, prev, rel) in &snapshots {
             let version_id = with_conn(ctx, |conn| {
@@ -449,33 +429,13 @@ impl Tool for ApplyPatchTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::git_tools::{git_available, git_ok};
     use crate::agent::tool::validate_args;
     use crate::db;
     use crate::onboarding::temp_test_dir;
     use crate::state::AppState;
     use std::path::Path;
-    use std::process::Command;
     use std::sync::Arc;
-
-    fn git_available() -> bool {
-        static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *AVAILABLE.get_or_init(|| Command::new("git").arg("--version").output().is_ok())
-    }
-
-    fn git_ok(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .output()
-            .expect("git available");
-        assert!(
-            out.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).into_owned()
-    }
 
     fn init_repo(tag: &str) -> PathBuf {
         let dir = temp_test_dir(tag);

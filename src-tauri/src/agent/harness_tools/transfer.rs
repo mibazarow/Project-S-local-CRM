@@ -5,9 +5,8 @@
 // execute_transfer performs the rename (with the cross-volume copy+delete
 // fallback) or the copy; record_transfer_undo writes the undo/version
 // bookkeeping. fs_transfer keeps the original signature and result envelope.
-use super::fs_tools::io_fail;
 use crate::agent::project_tools::{emit_versions_changed, require_wd, with_conn};
-use crate::agent::result::{ToolErrorCode, ToolResult};
+use crate::agent::result::{io_fail, ToolErrorCode, ToolResult};
 use crate::agent::tool::ToolCtx;
 use super::{canonicalish, lenient_existing, lenient_fail, resolve_path};
 use crate::error::Result;

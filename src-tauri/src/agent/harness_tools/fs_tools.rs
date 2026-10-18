@@ -6,7 +6,7 @@
 use crate::agent::project_tools::{
     emit_trash_changed, emit_versions_changed, require_wd, with_conn,
 };
-use crate::agent::result::{ToolErrorCode, ToolResult};
+use crate::agent::result::{io_fail, ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use super::transfer::fs_transfer;
 use super::{
@@ -39,14 +39,6 @@ fn is_obviously_destructive(path: &Path, wd: &Path) -> bool {
         || resolved == base
         || resolved == base.join(paths::HARNESS_DIR)
         || resolved == base.join(paths::PROJECTS_DIR)
-}
-
-pub(crate) fn io_fail(path: &Path, e: &std::io::Error) -> ToolResult {
-    if e.kind() == std::io::ErrorKind::NotFound {
-        ToolResult::err(ToolErrorCode::NotFound, format!("{} not found", path.display()))
-    } else {
-        ToolResult::err(ToolErrorCode::ExecutionError, format!("{}: {e}", path.display()))
-    }
 }
 
 // Resolves the parent folders of a create/write target leniently, keeping

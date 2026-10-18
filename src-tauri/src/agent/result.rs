@@ -1,6 +1,10 @@
-// JSON envelope every tool call returns to the model (SPEC 6.4).
+// JSON envelope every tool call returns to the model (SPEC 6.4), plus the
+// shared error-mapping and output-capping primitives that shape what tools
+// put into that envelope (S5.3).
 use serde::Serialize;
 use serde_json::Value;
+use std::io::Read;
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ToolErrorCode {
@@ -100,10 +104,78 @@ impl ToolResult {
     }
 }
 
+// Maps an IO error on a path to the envelope: a missing file is not_found,
+// any other fault is execution_error (S5.3, shared by the fs/edit tools).
+pub(crate) fn io_fail(path: &Path, e: &std::io::Error) -> ToolResult {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        ToolResult::err(ToolErrorCode::NotFound, format!("{} not found", path.display()))
+    } else {
+        ToolResult::err(ToolErrorCode::ExecutionError, format!("{}: {e}", path.display()))
+    }
+}
+
+// Reads a pipe up to the cap plus one byte so truncation stays detectable
+// while the child keeps producing (S5.3, shared by the process-spawning
+// tools); returns the raw bytes and the truncation flag.
+pub(crate) fn read_capped_bytes(mut reader: impl Read, cap: usize) -> (Vec<u8>, bool) {
+    let mut buf = Vec::new();
+    let _ = (&mut reader)
+        .take((cap as u64) + 1)
+        .read_to_end(&mut buf);
+    let truncated = buf.len() > cap;
+    buf.truncate(cap);
+    (buf, truncated)
+}
+
+// The same cap applied to text output; the flag tells whether the child
+// produced more than the cap.
+pub(crate) fn read_capped(reader: impl Read, cap: usize) -> (String, bool) {
+    let (buf, truncated) = read_capped_bytes(reader, cap);
+    (String::from_utf8_lossy(&buf).into_owned(), truncated)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn io_fail_maps_missing_file_to_not_found() {
+        let e = std::io::Error::new(std::io::ErrorKind::NotFound, "no such file or directory");
+        let r = io_fail(Path::new("/x/y.md"), &e);
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "not_found");
+        assert_eq!(err.message, "/x/y.md not found");
+    }
+
+    #[test]
+    fn io_fail_maps_other_io_faults_to_execution_error() {
+        let e = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
+        let r = io_fail(Path::new("/x/y.md"), &e);
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "execution_error");
+        assert_eq!(err.message, "/x/y.md: permission denied");
+    }
+
+    #[test]
+    fn read_capped_flags_only_output_beyond_the_cap() {
+        let (text, truncated) = read_capped(std::io::Cursor::new("x".repeat(5)), 5);
+        assert_eq!(text.len(), 5);
+        assert!(!truncated);
+        let (text, truncated) = read_capped(std::io::Cursor::new("x".repeat(6)), 5);
+        assert_eq!(text.len(), 5);
+        assert!(truncated);
+    }
+
+    #[test]
+    fn read_capped_bytes_keeps_raw_bytes_and_flag() {
+        let (bytes, truncated) = read_capped_bytes(std::io::Cursor::new([0u8, 155, 200]), 2);
+        assert_eq!(bytes, vec![0u8, 155]);
+        assert!(truncated);
+        let (bytes, truncated) = read_capped_bytes(std::io::Cursor::new([0u8, 155]), 2);
+        assert_eq!(bytes, vec![0u8, 155]);
+        assert!(!truncated);
+    }
 
     #[test]
     fn capped_keeps_small_results() {

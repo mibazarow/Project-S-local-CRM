@@ -6,13 +6,12 @@
 // 180 s timeout and capped stdout/stderr; it never touches the network.
 use super::harness_tools::resolve_path;
 use super::project_tools::{envelope, require_wd, with_conn};
-use super::result::{ToolErrorCode, ToolResult};
+use super::result::{read_capped, ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::Result;
 use crate::{fs_ops, paths};
 use serde_json::{json, Value};
 use std::fs;
-use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -124,14 +123,6 @@ fn run_locator(program: &str, args: &[&str]) -> Option<PathBuf> {
     }
     let path = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
     path.is_file().then_some(path)
-}
-
-// Reads a pipe up to the cap so a chatty helper can never balloon memory.
-pub(crate) fn read_capped(mut reader: impl Read, cap: usize) -> String {
-    let mut buf = Vec::new();
-    let _ = (&mut reader).take((cap as u64) + 1).read_to_end(&mut buf);
-    buf.truncate(cap);
-    String::from_utf8_lossy(&buf).into_owned()
 }
 
 pub struct OcrTool;
@@ -260,8 +251,8 @@ impl Tool for OcrTool {
         let stderr = child.stderr.take();
         // UTF-8 needs at most 4 bytes per char, so the byte cap cannot cut a
         // char that still fits inside maxChars.
-        let out_thread = std::thread::spawn(move || stdout.map(|r| read_capped(r, max_chars * 4)));
-        let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped(r, 8_192)));
+        let out_thread = std::thread::spawn(move || stdout.map(|r| read_capped(r, max_chars * 4).0));
+        let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped(r, 8_192).0));
         let deadline = Instant::now() + OCR_TIMEOUT;
         let status = loop {
             if let Some(status) = child.try_wait()? {

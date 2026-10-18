@@ -12,12 +12,11 @@
 // path is only honored by binaries that implement it — tests inject fake
 // pbcopy/pbpaste scripts backed by temp files and never touch the user's
 // clipboard. Production always passes None (general board, plain pbcopy flags).
-use super::result::{ToolErrorCode, ToolResult};
+use super::result::{read_capped_bytes, ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::Result;
 use crate::journal::mask_secrets;
 use serde_json::{json, Value};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -54,16 +53,6 @@ fn board_args(pasteboard: Option<&str>) -> std::result::Result<Vec<String>, Tool
             }
         }
     }
-}
-
-// Reads a pipe up to the cap plus one byte so truncation stays detectable
-// while the child keeps producing.
-fn read_capped(mut reader: impl Read, cap: usize) -> (Vec<u8>, bool) {
-    let mut buf = Vec::new();
-    let _ = (&mut reader).take((cap as u64) + 1).read_to_end(&mut buf);
-    let truncated = buf.len() > cap;
-    buf.truncate(cap);
-    (buf, truncated)
 }
 
 // Runs the clipboard helper with piped stdio, an optional stdin payload and a
@@ -106,8 +95,9 @@ fn run_pb(
     });
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let out_thread = std::thread::spawn(move || stdout.map(|r| read_capped(r, stdout_cap)));
-    let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped(r, STDERR_CAP)));
+    let out_thread =
+        std::thread::spawn(move || stdout.map(|r| read_capped_bytes(r, stdout_cap)));
+    let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped_bytes(r, STDERR_CAP)));
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {

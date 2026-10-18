@@ -3,14 +3,13 @@
 // timeout that kills the command, and capped stdout/stderr. The background
 // twin lives in process_tools.rs.
 use crate::agent::project_tools::require_wd;
-use crate::agent::result::{ToolErrorCode, ToolResult};
+use crate::agent::result::{read_capped, ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use super::resolve_path;
 use crate::error::Result;
 use crate::paths;
 use serde_json::{json, Value};
 use std::fs;
-use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -34,19 +33,6 @@ impl BashTool {
     pub fn with_timeout(timeout: Duration) -> Self {
         BashTool { timeout }
     }
-}
-
-// Reads a pipe up to the cap plus one byte so truncation is detectable even
-// if the command keeps producing (then the pipe fills and the timeout kills
-// the command — the output is capped anyway).
-fn read_capped(mut reader: impl Read) -> (String, bool) {
-    let mut buf = Vec::new();
-    let _ = (&mut reader)
-        .take((BASH_OUTPUT_CAP as u64) + 1)
-        .read_to_end(&mut buf);
-    let truncated = buf.len() > BASH_OUTPUT_CAP;
-    buf.truncate(BASH_OUTPUT_CAP);
-    (String::from_utf8_lossy(&buf).into_owned(), truncated)
 }
 
 impl Tool for BashTool {
@@ -101,8 +87,8 @@ impl Tool for BashTool {
             .spawn()?;
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        let out_thread = std::thread::spawn(move || stdout.map(read_capped));
-        let err_thread = std::thread::spawn(move || stderr.map(read_capped));
+        let out_thread = std::thread::spawn(move || stdout.map(|r| read_capped(r, BASH_OUTPUT_CAP)));
+        let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped(r, BASH_OUTPUT_CAP)));
         let deadline = Instant::now() + self.timeout;
         let status = loop {
             if let Some(status) = child.try_wait()? {

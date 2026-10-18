@@ -10,13 +10,12 @@
 // result queries the output size back with `sips -g pixelWidth -g pixelHeight`.
 use super::harness_tools::{canonicalish, in_default_territory, resolve_path};
 use super::project_tools::{envelope, require_wd, with_conn};
-use super::result::{ToolErrorCode, ToolResult};
+use super::result::{read_capped, ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
 use crate::{fs_ops, paths, projects};
 use serde_json::{json, Value};
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -169,14 +168,6 @@ fn sips_plan(
     Ok(argv)
 }
 
-// Reads a pipe up to the cap so a chatty child can never balloon memory.
-fn read_capped(mut reader: impl Read, cap: usize) -> String {
-    let mut buf = Vec::new();
-    let _ = (&mut reader).take((cap as u64) + 1).read_to_end(&mut buf);
-    buf.truncate(cap);
-    String::from_utf8_lossy(&buf).into_owned()
-}
-
 // Runs one sips invocation with the TMP vars pointed at Harness/tmp and a
 // wall-clock timeout; returns (exit code, stdout, stderr).
 fn run_sips(
@@ -203,8 +194,8 @@ fn run_sips(
     };
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let out_thread = std::thread::spawn(move || stdout.map(|r| read_capped(r, 8_192)));
-    let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped(r, 8_192)));
+    let out_thread = std::thread::spawn(move || stdout.map(|r| read_capped(r, 8_192).0));
+    let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped(r, 8_192).0));
     let deadline = Instant::now() + timeout;
     let status = loop {
         match child.try_wait() {

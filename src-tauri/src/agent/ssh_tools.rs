@@ -19,7 +19,7 @@ use crate::path_policy::join_rel;
 use super::harness_tools::{canonicalish, resolve_path};
 use super::project_tools::{envelope, require_wd, with_conn};
 use super::task_glue::{read_datas, upsert_section, write_datas};
-use super::result::{ToolErrorCode, ToolResult};
+use super::result::{read_capped, ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::config::{self, ConfigKind};
 use crate::error::{AppError, Result};
@@ -28,7 +28,6 @@ use crate::{paths, projects};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime};
@@ -665,18 +664,6 @@ struct SshOutput {
     truncated: bool,
 }
 
-// Reads a pipe up to the cap plus one byte so truncation stays detectable
-// while the process keeps producing.
-fn read_capped(mut reader: impl Read) -> (String, bool) {
-    let mut buf = Vec::new();
-    let _ = (&mut reader)
-        .take((SSH_OUTPUT_CAP as u64) + 1)
-        .read_to_end(&mut buf);
-    let truncated = buf.len() > SSH_OUTPUT_CAP;
-    buf.truncate(SSH_OUTPUT_CAP);
-    (String::from_utf8_lossy(&buf).into_owned(), truncated)
-}
-
 // `ssh`/`scp`/`ssh-keygen` with piped output, TMPDIR/TEMP/TMP pointed at
 // Harness/tmp/, a hard timeout (kill) and masked output. `extra_env` carries
 // the askpass variables for password auth (never any secret in argv).
@@ -708,8 +695,8 @@ fn run_process(
     };
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let out_thread = std::thread::spawn(move || stdout.map(read_capped));
-    let err_thread = std::thread::spawn(move || stderr.map(read_capped));
+    let out_thread = std::thread::spawn(move || stdout.map(|r| read_capped(r, SSH_OUTPUT_CAP)));
+    let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped(r, SSH_OUTPUT_CAP)));
     let deadline = Instant::now() + timeout;
     let status = loop {
         if let Some(status) = child.try_wait()? {
@@ -2033,10 +2020,10 @@ mod tests {
 
     #[test]
     fn output_cap_marks_truncation() {
-        let (text, truncated) = read_capped(Cursor::new("x".repeat(30_000)));
+        let (text, truncated) = read_capped(Cursor::new("x".repeat(30_000)), SSH_OUTPUT_CAP);
         assert_eq!(text.len(), SSH_OUTPUT_CAP);
         assert!(truncated);
-        let (text, truncated) = read_capped(Cursor::new("short"));
+        let (text, truncated) = read_capped(Cursor::new("short"), SSH_OUTPUT_CAP);
         assert_eq!(text, "short");
         assert!(!truncated);
     }

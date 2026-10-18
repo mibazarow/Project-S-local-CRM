@@ -6,14 +6,13 @@
 // missing Screen Recording permission.
 use super::harness_tools::resolve_path;
 use super::project_tools::require_wd;
-use super::result::{ToolErrorCode, ToolResult};
+use super::result::{read_capped, ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::Result;
 use crate::paths;
 use chrono::Local;
 use serde_json::{json, Value};
 use std::fs;
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -89,14 +88,6 @@ fn default_shot_path(wd: &Path) -> PathBuf {
     paths::harness_tmp_dir(wd)
         .join("screenshots")
         .join(format!("shot-{}.png", Local::now().format("%Y%m%d-%H%M%S")))
-}
-
-// Reads a pipe up to the cap so a chatty child can never balloon memory.
-fn read_capped(mut reader: impl Read, cap: usize) -> String {
-    let mut buf = Vec::new();
-    let _ = (&mut reader).take((cap as u64) + 1).read_to_end(&mut buf);
-    buf.truncate(cap);
-    String::from_utf8_lossy(&buf).into_owned()
 }
 
 pub struct ScreenshotTool {
@@ -207,8 +198,8 @@ impl Tool for ScreenshotTool {
         };
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
-        let out_thread = std::thread::spawn(move || stdout.map(|r| read_capped(r, 4_096)));
-        let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped(r, 4_096)));
+        let out_thread = std::thread::spawn(move || stdout.map(|r| read_capped(r, 4_096).0));
+        let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped(r, 4_096).0));
         let deadline = Instant::now() + self.timeout;
         let status = loop {
             if let Some(status) = child.try_wait()? {

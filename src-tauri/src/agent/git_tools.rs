@@ -7,13 +7,12 @@
 // project root; harness mode accepts absolute/~/working-dir-relative paths.
 // All output is secret-masked (journal heuristic) and capped.
 use super::project_tools::{envelope, require_wd, with_conn};
-use super::result::{ToolErrorCode, ToolResult};
+use super::result::{read_capped, ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
 use crate::journal::mask_secrets;
 use crate::projects;
 use serde_json::{json, Value};
-use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -34,18 +33,6 @@ pub(crate) struct GitOutput {
     pub(crate) truncated: bool,
 }
 
-// Reads a pipe up to the cap plus one byte so truncation stays detectable
-// while the process keeps producing.
-fn read_capped(mut reader: impl Read) -> (String, bool) {
-    let mut buf = Vec::new();
-    let _ = (&mut reader)
-        .take((GIT_OUTPUT_CAP as u64) + 1)
-        .read_to_end(&mut buf);
-    let truncated = buf.len() > GIT_OUTPUT_CAP;
-    buf.truncate(GIT_OUTPUT_CAP);
-    (String::from_utf8_lossy(&buf).into_owned(), truncated)
-}
-
 // `git -C <dir> <args>` with piped output, a hard timeout and masked output.
 pub(crate) fn run_git(dir: &Path, args: &[&str]) -> Result<GitOutput> {
     let mut child = match Command::new("git")
@@ -62,8 +49,8 @@ pub(crate) fn run_git(dir: &Path, args: &[&str]) -> Result<GitOutput> {
     };
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let out_thread = std::thread::spawn(move || stdout.map(read_capped));
-    let err_thread = std::thread::spawn(move || stderr.map(read_capped));
+    let out_thread = std::thread::spawn(move || stdout.map(|r| read_capped(r, GIT_OUTPUT_CAP)));
+    let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped(r, GIT_OUTPUT_CAP)));
     let deadline = Instant::now() + GIT_TIMEOUT;
     let status = loop {
         if let Some(status) = child.try_wait()? {
@@ -90,8 +77,10 @@ pub(crate) fn run_git(dir: &Path, args: &[&str]) -> Result<GitOutput> {
     })
 }
 
-// Non-zero git exit becomes an execution_error carrying stderr (then stdout).
-fn git_fail(action: &str, out: &GitOutput) -> ToolResult {
+// Non-zero git exit becomes an execution_error carrying stderr (then stdout);
+// the label is the exact text shown before " failed" (S5.3, shared with
+// edit_tools' apply_patch failures).
+pub(crate) fn git_exit_fail(label: &str, out: &GitOutput) -> ToolResult {
     let detail = if out.stderr.trim().is_empty() {
         out.stdout.trim()
     } else {
@@ -99,8 +88,12 @@ fn git_fail(action: &str, out: &GitOutput) -> ToolResult {
     };
     ToolResult::err(
         ToolErrorCode::ExecutionError,
-        format!("git {action} failed (exit {}): {detail}", out.code),
+        format!("{label} failed (exit {}): {detail}", out.code),
     )
+}
+
+fn git_fail(action: &str, out: &GitOutput) -> ToolResult {
+    git_exit_fail(&format!("git {action}"), out)
 }
 
 // Project mode: default is the project root, any path is project-relative and
@@ -720,6 +713,29 @@ impl Tool for GitPushTool {
     }
 }
 
+// Checked once per test run; every git test skips when git is missing.
+#[cfg(test)]
+pub(crate) fn git_available() -> bool {
+    static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *AVAILABLE.get_or_init(|| Command::new("git").arg("--version").output().is_ok())
+}
+
+#[cfg(test)]
+pub(crate) fn git_ok(dir: &Path, args: &[&str]) -> String {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .expect("git available");
+    assert!(
+        out.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::tool::validate_args;
@@ -730,27 +746,6 @@ mod tests {
     use crate::state::AppState;
     use std::fs;
     use std::sync::Arc;
-
-    // Checked once per test run; every git test skips when git is missing.
-    fn git_available() -> bool {
-        static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *AVAILABLE.get_or_init(|| Command::new("git").arg("--version").output().is_ok())
-    }
-
-    fn git_ok(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(dir)
-            .args(args)
-            .output()
-            .expect("git available");
-        assert!(
-            out.status.success(),
-            "git {args:?} failed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        String::from_utf8_lossy(&out.stdout).into_owned()
-    }
 
     // Local config keeps commits working regardless of the user's global git
     // settings (identity, gpg signing); pull.rebase=false keeps merge pulls
@@ -813,6 +808,39 @@ mod tests {
 
     fn exec(tool: &dyn Tool, args: Value, ctx: &ToolCtx) -> ToolResult {
         tool.execute(&args, ctx).unwrap()
+    }
+
+    #[test]
+    fn git_exit_fail_prefers_stderr_then_stdout_with_exact_text() {
+        let out = GitOutput {
+            code: 128,
+            stdout: "out text".into(),
+            stderr: "bad thing".into(),
+            truncated: false,
+        };
+        let err = git_exit_fail("git apply", &out).error.unwrap();
+        assert_eq!(err.code, "execution_error");
+        assert_eq!(err.message, "git apply failed (exit 128): bad thing");
+        let out = GitOutput {
+            code: 1,
+            stdout: "out text".into(),
+            stderr: "  \n".into(),
+            truncated: false,
+        };
+        let err = git_exit_fail("git apply --check", &out).error.unwrap();
+        assert_eq!(err.message, "git apply --check failed (exit 1): out text");
+    }
+
+    #[test]
+    fn git_fail_prefixes_the_action_with_git() {
+        let out = GitOutput {
+            code: 128,
+            stdout: String::new(),
+            stderr: "not a git repository".into(),
+            truncated: false,
+        };
+        let err = git_fail("rev-parse", &out).error.unwrap();
+        assert_eq!(err.message, "git rev-parse failed (exit 128): not a git repository");
     }
 
     #[test]

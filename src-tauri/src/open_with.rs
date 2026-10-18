@@ -9,7 +9,8 @@
 // is remembered in Settings/config/openWith.json, and the file is launched
 // with `open -a <app> <file>` (falling back to the system default
 // `open <file>` when nothing applies).
-use crate::agent::ocr_tools::{find_swift, read_capped};
+use crate::agent::ocr_tools::find_swift;
+use crate::agent::result::read_capped;
 use crate::sync_util::lock_recover;
 use crate::error::{AppError, Result};
 use crate::fs_ops;
@@ -196,8 +197,9 @@ fn probe_handlers(swift: &Path, ext: &str) -> Result<Vec<AppInfo>> {
         .spawn()?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let out_thread = std::thread::spawn(move || stdout.map(|r| read_capped(r, HANDLER_STDOUT_CAP)));
-    let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped(r, 8_192)));
+    let out_thread =
+        std::thread::spawn(move || stdout.map(|r| read_capped(r, HANDLER_STDOUT_CAP).0));
+    let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped(r, 8_192).0));
     let deadline = Instant::now() + HANDLER_TIMEOUT;
     let status = loop {
         if let Some(status) = child.try_wait()? {
