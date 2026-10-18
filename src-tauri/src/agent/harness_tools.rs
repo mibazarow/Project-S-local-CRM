@@ -57,6 +57,8 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(crate::memory::SetUserGenderTool),
         Arc::new(ListChatsTool),
         Arc::new(RenameChatTool),
+        Arc::new(NewChatTool),
+        Arc::new(DeleteChatTool),
         Arc::new(SearchChatsTool),
         // Per-conversation plan panel (SPEC: todowrite/todoread).
         Arc::new(crate::todos::TodoWriteTool),
@@ -1719,13 +1721,142 @@ impl Tool for RenameChatTool {
         };
         let r = with_conn(ctx, |conn| crate::harness::rename_session(conn, session_id, &title));
         if r.is_ok() {
-            if let Ok(state) = state_of(ctx) {
-                if let Some(emitter) = state.emitter.lock().unwrap().as_ref() {
-                    emitter.emit_event("sessions-changed", json!({}));
-                }
-            }
+            emit_sessions_changed(ctx);
         }
         Ok(envelope(r))
+    }
+}
+
+// "sessions-changed" through the run state's emitter (same seam as rename_chat
+// and todowrite): the sidebar follows session create/delete without a manual
+// reload; a missing emitter is not an error.
+pub(crate) fn emit_sessions_changed(ctx: &ToolCtx) {
+    if let Ok(state) = state_of(ctx) {
+        if let Some(emitter) = state.emitter.lock().unwrap().as_ref() {
+            emitter.emit_event("sessions-changed", json!({}));
+        }
+    }
+}
+
+// Agent-side chat management: new_chat opens a separate session (its own
+// context, the global memory stays shared) and delete_chat removes one,
+// including the session the run itself lives in (the run then finishes into a
+// deleted chat: transcript appends fail FK-safe and are dropped, never a
+// crash). Chat management is safe, so both stay Mutating/Skip; every success
+// emits "sessions-changed" so the sidebar follows immediately.
+pub struct NewChatTool;
+
+const NEW_CHAT_DEFAULT_TITLE: &str = "Новый чат";
+
+impl Tool for NewChatTool {
+    fn name(&self) -> &str {
+        "new_chat"
+    }
+    fn description(&self) -> &str {
+        "Create a new harness session: a separate chat with its own context (only the global memory is shared). Optional short single-line title, default «Новый чат». Returns the new sessionId and title."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "title": { "type": "string" }
+            },
+            "required": [],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let title = match args.get("title").and_then(Value::as_str) {
+            Some(raw) if !raw.trim().is_empty() => {
+                let title = raw.trim();
+                if title.contains('\n') {
+                    return Ok(ToolResult::err(
+                        ToolErrorCode::InvalidArgs,
+                        "title must be a single line",
+                    ));
+                }
+                if title.chars().count() > RENAME_CHAT_MAX_TITLE_CHARS {
+                    return Ok(ToolResult::err(
+                        ToolErrorCode::InvalidArgs,
+                        format!("title is over {RENAME_CHAT_MAX_TITLE_CHARS} characters"),
+                    ));
+                }
+                title.to_owned()
+            }
+            _ => NEW_CHAT_DEFAULT_TITLE.to_owned(),
+        };
+        let r = with_conn(ctx, |conn| crate::harness::create_session(conn, Some(&title)));
+        if r.is_ok() {
+            emit_sessions_changed(ctx);
+        }
+        Ok(match r {
+            Ok(s) => ToolResult::ok(json!({ "sessionId": s.id, "title": s.title })),
+            Err(e) => envelope_r(e),
+        })
+    }
+}
+
+pub struct DeleteChatTool;
+
+impl Tool for DeleteChatTool {
+    fn name(&self) -> &str {
+        "delete_chat"
+    }
+    fn description(&self) -> &str {
+        "Delete a harness session and its messages: sessionId picks it explicitly, absent means the session this run belongs to (deleting the current chat is allowed; the run then finishes without persisting more). Schedules of the deleted session survive and fire into a fresh session."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "sessionId": { "type": "number" }
+            },
+            "required": [],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let session_id = match args.get("sessionId") {
+            Some(value) => match value.as_i64() {
+                Some(id) if id > 0 => id,
+                _ => {
+                    return Ok(ToolResult::err(
+                        ToolErrorCode::InvalidArgs,
+                        "sessionId must be a positive integer",
+                    ))
+                }
+            },
+            None => match ctx.session_id {
+                Some(id) => id,
+                None => {
+                    return Ok(ToolResult::err(
+                        ToolErrorCode::InvalidArgs,
+                        "sessionId is required outside a session run",
+                    ))
+                }
+            },
+        };
+        let current = ctx.session_id == Some(session_id);
+        let r = with_conn(ctx, |conn| crate::harness::delete_session(conn, session_id));
+        if r.is_ok() {
+            emit_sessions_changed(ctx);
+        }
+        Ok(match r {
+            Ok(()) => ToolResult::ok(json!({ "deleted": true, "current": current })),
+            Err(e) => envelope_r(e),
+        })
     }
 }
 
@@ -1897,7 +2028,7 @@ mod tests {
     fn catalog_registers_everything_without_duplicate_names() {
         let mut catalog = harness_catalog();
         let active: Vec<String> = catalog.to_specs().into_iter().map(|s| s.name).collect();
-        for expected in ["finish_task", "skill", "remember", "recall", "set_user_gender", "list_chats", "rename_chat", "search_chats", LIST_TOOLS, ENABLE_TOOLS] {
+        for expected in ["finish_task", "skill", "remember", "recall", "set_user_gender", "list_chats", "rename_chat", "new_chat", "delete_chat", "search_chats", LIST_TOOLS, ENABLE_TOOLS] {
             assert!(active.iter().any(|n| n == expected), "missing active {expected}");
         }
         let summary = catalog.list_summary();
@@ -1955,6 +2086,11 @@ mod tests {
         assert_eq!(tool("list_chats").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("rename_chat").class(), ToolClass::Mutating);
         assert_eq!(tool("rename_chat").policy(), PermissionPolicy::Skip);
+        // Chat management is safe: create/delete never enter the confirmation queue.
+        assert_eq!(tool("new_chat").class(), ToolClass::Mutating);
+        assert_eq!(tool("new_chat").policy(), PermissionPolicy::Skip);
+        assert_eq!(tool("delete_chat").class(), ToolClass::Mutating);
+        assert_eq!(tool("delete_chat").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("search_chats").class(), ToolClass::ReadOnly);
         assert_eq!(tool("search_chats").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("todowrite").class(), ToolClass::Mutating);
@@ -2155,6 +2291,88 @@ mod tests {
         .unwrap();
         assert!(titles.contains(&Some("Переименована".to_string())));
         assert!(titles.contains(&Some("Текущая".to_string())));
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn new_and_delete_chat_tools_round_trip_with_events() {
+        let env = setup("ht-chat-mgmt");
+
+        // new_chat without a title: the default «Новый чат» is stored, the id
+        // and title come back, and the session really exists with its chat row.
+        let r = exec("new_chat", json!({}), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let created = r.data.unwrap();
+        let new_id = created["sessionId"].as_i64().unwrap();
+        assert_eq!(created["title"], "Новый чат");
+        assert!(with_conn(&env.ctx, |conn| crate::harness::session_chat_id(conn, new_id)).is_ok());
+
+        // Explicit title is trimmed and stored; empty/blank falls back to the default.
+        let r = exec("new_chat", json!({ "title": "  Витрина  " }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let titled_id = r.data.unwrap()["sessionId"].as_i64().unwrap();
+        let titled = with_conn(&env.ctx, crate::harness::list_sessions)
+            .unwrap()
+            .into_iter()
+            .find(|s| s.id == titled_id)
+            .unwrap();
+        assert_eq!(titled.title.as_deref(), Some("Витрина"));
+        let r = exec("new_chat", json!({ "title": "   " }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let blank_out = r.data.unwrap();
+        assert_eq!(blank_out["title"], "Новый чат");
+        let blank_id = blank_out["sessionId"].as_i64().unwrap();
+
+        // Multiline / overlong titles are rejected before touching DB.
+        for bad in [json!({ "title": "a\nb" }), json!({ "title": "я".repeat(121) })] {
+            let r = exec("new_chat", bad, &env.ctx);
+            assert_eq!(r.error.unwrap().code, "invalid_args");
+        }
+
+        // delete_chat with an explicit id: deleted:true, current:false.
+        let r = exec("delete_chat", json!({ "sessionId": new_id }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let out = r.data.unwrap();
+        assert_eq!(out["deleted"], true);
+        assert_eq!(out["current"], false);
+        assert!(matches!(
+            with_conn(&env.ctx, |conn| crate::harness::session_chat_id(conn, new_id)),
+            Err(AppError::Invalid(_))
+        ));
+
+        // Deleting the current session (ToolCtx session_id, no sessionId arg)
+        // is allowed and reports current:true.
+        let ctx = ToolCtx {
+            session_id: Some(titled_id),
+            ..env.ctx.clone()
+        };
+        let r = exec("delete_chat", json!({}), &ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let out = r.data.unwrap();
+        assert_eq!(out["deleted"], true);
+        assert_eq!(out["current"], true);
+
+        // Unknown id maps to not_found; non-positive ids and the missing
+        // default outside a session run are argument errors.
+        let r = exec("delete_chat", json!({ "sessionId": 999 }), &env.ctx);
+        assert_eq!(r.error.unwrap().code, "not_found");
+        for bad in [json!({ "sessionId": 0 }), json!({ "sessionId": -3 }), json!({ "sessionId": "x" })] {
+            let r = exec("delete_chat", bad, &env.ctx);
+            assert_eq!(r.error.unwrap().code, "invalid_args");
+        }
+        let r = exec("delete_chat", json!({}), &ToolCtx::default());
+        assert_eq!(r.error.unwrap().code, "invalid_args");
+
+        // Every successful create/delete notified the UI; failures did not:
+        // 3 creates + 3 deletes succeeded.
+        let r = exec("delete_chat", json!({ "sessionId": blank_id }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let events = env.events.lock().unwrap().clone();
+        let notified = events
+            .iter()
+            .filter(|(name, _)| name == "sessions-changed")
+            .count();
+        assert_eq!(notified, 6, "3 creates + 3 deletes must notify: {events:?}");
         fs::remove_dir_all(&env.wd).unwrap();
     }
 

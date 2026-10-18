@@ -545,10 +545,58 @@ mod tests {
             "set_user_gender",
             "list_chats",
             "rename_chat",
+            "new_chat",
+            "delete_chat",
             "search_chats",
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }
+    }
+
+    // Session isolation (SPEC 5.1): a run's model context is built by
+    // build_context strictly from the session's own chat (every read is
+    // keyed by chat_id) plus the global memory block appended to the system
+    // prompt. A message of one session must never appear in another
+    // session's built context, while a global memory record is injected
+    // into every session's run.
+    #[test]
+    fn session_context_is_isolated_and_global_memory_reaches_both() {
+        let (wd, conn) = setup("harness-isolation");
+        let a = create_session(&conn, Some("a")).unwrap();
+        let b = create_session(&conn, Some("b")).unwrap();
+        let chat_a = session_chat_id(&conn, a.id).unwrap();
+        let chat_b = session_chat_id(&conn, b.id).unwrap();
+        append_message(&conn, chat_a, Role::User, Some("MARKER-IN-A кофе"), &[], None, None).unwrap();
+        append_message(&conn, chat_b, Role::User, Some("MARKER-IN-B кофе"), &[], None, None).unwrap();
+        crate::memory::add(&conn, "GLOBAL-MEMORY-MARKER кофе", None, None, None).unwrap();
+
+        let params = ChatParams {
+            model: "test-model".into(),
+            temperature: None,
+            max_tokens: None,
+            reasoning_effort: None,
+        };
+        // Window far above the estimate: no compaction, no summarizer call.
+        let backend = ScriptedBackend::new(vec![]);
+        let dump = |chat_id: i64| {
+            let out = crate::chat::context::build_context(
+                &conn, chat_id, "sys", 100_000, 80, &backend, &params, false,
+            )
+            .unwrap();
+            serde_json::to_string(&out.messages).unwrap()
+        };
+        let ctx_a = dump(chat_a);
+        let ctx_b = dump(chat_b);
+        assert!(ctx_a.contains("MARKER-IN-A") && !ctx_a.contains("MARKER-IN-B"), "{ctx_a}");
+        assert!(ctx_b.contains("MARKER-IN-B") && !ctx_b.contains("MARKER-IN-A"), "{ctx_b}");
+
+        // The global memory block is shared by design: the same record is
+        // injected into both sessions' runs (harness runs carry no project).
+        let block_a = crate::memory::context_block(&conn, None, "кофе").unwrap();
+        let block_b = crate::memory::context_block(&conn, None, "кофе").unwrap();
+        assert!(block_a.contains("GLOBAL-MEMORY-MARKER"), "{block_a}");
+        assert!(block_b.contains("GLOBAL-MEMORY-MARKER"), "{block_b}");
+        fs::remove_dir_all(&wd).unwrap();
     }
 
     #[test]

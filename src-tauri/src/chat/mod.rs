@@ -877,7 +877,22 @@ fn run_agent_inner(
     let result = result?;
     let guard = thread_state.db.lock().unwrap();
     if let Some(conn) = guard.as_ref() {
-        persist_final_answer(conn, chat_id, &result)?;
+        // The chat may be gone by the end of the run: the agent deleted its
+        // own session (delete_chat) or the user removed it mid-run. The
+        // transcript appends above already failed FK-safe and were dropped;
+        // skip the final answer the same way instead of surfacing a run
+        // error for a chat nobody can open anymore.
+        let chat_exists = conn
+            .query_row(
+                "SELECT count(*) FROM chats WHERE id = ?1",
+                params![chat_id],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|rows| rows > 0)
+            .unwrap_or(false);
+        if chat_exists {
+            persist_final_answer(conn, chat_id, &result)?;
+        }
     }
     Ok(())
 }

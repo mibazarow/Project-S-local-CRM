@@ -525,16 +525,31 @@ export default function HarnessView() {
   };
 
   const send = () => {
-    if (activeId == null || running) return;
+    if (running) return;
     const trimmed = text.trim();
     if (!trimmed) return;
     void (async () => {
+      // Auto-create on send: with no active session (empty list or the agent
+      // deleted the current one) the first typed message starts a session;
+      // the «+» button keeps creating one up front.
+      let sessionId = activeId;
+      if (sessionId == null) {
+        try {
+          const dto = await ipc.harnessCreateSession();
+          sessionId = dto.id;
+          setActiveId(dto.id);
+          await loadSessions();
+        } catch (e) {
+          setSessionsError(toMessage(e));
+          return;
+        }
+      }
       let refs: MessageAttachmentDto[] = [];
       if (att.pending.length > 0) {
         try {
           const saved = await ipc.attachFiles(
             null,
-            activeId,
+            sessionId,
             att.pending.map((a) => a.path),
           );
           refs = saved.map((a) => ({
@@ -544,14 +559,14 @@ export default function HarnessView() {
             isImage: a.isImage,
           }));
         } catch (e) {
-          dispatch({ type: "sendFailed", key: activeId, message: toMessage(e) });
+          dispatch({ type: "sendFailed", key: sessionId, message: toMessage(e) });
           return;
         }
       }
       setText("");
       grow();
       att.clear();
-      dispatch({ type: "send", key: activeId, text: trimmed, attachments: refs });
+      dispatch({ type: "send", key: sessionId, text: trimmed, attachments: refs });
       // send_session_message touches the session before it returns: reload
       // the list right after the command lands so the active chat visibly
       // rises to the top immediately, not only when the answer completes.
@@ -559,12 +574,12 @@ export default function HarnessView() {
       // The command returns the session chat id: remember it for agent-file
       // routing and agent attachment reads before any send_file event lands.
       void ipc
-        .sendSessionMessage(activeId, trimmed, refs)
+        .sendSessionMessage(sessionId, trimmed, refs)
         .then((chatId) => {
-          rememberChatId(activeId, chatId);
+          rememberChatId(sessionId, chatId);
           return loadSessions();
         })
-        .catch((e) => dispatch({ type: "sendFailed", key: activeId, message: toMessage(e) }));
+        .catch((e) => dispatch({ type: "sendFailed", key: sessionId, message: toMessage(e) }));
     })();
   };
 
@@ -697,7 +712,9 @@ export default function HarnessView() {
               />
             ))}
             {sessions.length === 0 && (
-              <div className="empty-note">Сессий пока нет. Нажмите «+», чтобы создать первую.</div>
+              <div className="empty-note">
+                Сессий пока нет. Напишите сообщение или нажмите «+», чтобы создать первую.
+              </div>
             )}
           </div>
         )}
@@ -728,7 +745,7 @@ export default function HarnessView() {
               <>
                 Сессий пока нет.
                 <br />
-                Нажмите «+» слева, чтобы создать первую.
+                Напишите сообщение — сессия создастся автоматически, или нажмите «+» слева.
               </>
             ) : (
               "Начните диалог — общий агент ответит здесь."
@@ -774,7 +791,6 @@ export default function HarnessView() {
             rows={3}
             placeholder="Поручение общему агенту…"
             value={text}
-            disabled={activeId == null}
             onChange={(e) => {
               setText(e.target.value);
               grow();
@@ -791,7 +807,6 @@ export default function HarnessView() {
               className="icon-btn attach-btn"
               type="button"
               title="Приложить файл или картинку"
-              disabled={activeId == null}
               onClick={() => void att.pick().catch(() => {})}
             >
               <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="m21.4 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l9.2-9.19a4 4 0 0 1 5.65 5.66l-9.2 9.19a2 2 0 0 1-2.82-2.83l8.49-8.48" /></svg>
