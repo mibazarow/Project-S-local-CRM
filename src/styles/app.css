@@ -644,6 +644,58 @@ body.dnd-active .project-item, body.dnd-active .task-card { cursor: grabbing; }
   .msg .msg-copy, .md-code-copy { opacity: 1; }
 }
 
+/* Message-level chat UX: hover actions, pinned bar, in-chat search */
+.msg { position: relative; }
+.msg-actions {
+  position: absolute;
+  top: -3px;
+  right: 0;
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity .15s;
+}
+.msg:hover .msg-actions, .msg-actions:focus-within { opacity: 1; }
+@media (hover: none) {
+  .msg-actions { opacity: 1; }
+}
+.msg-actions .mini-btn.on { color: var(--accent); }
+.msg .who .pin-mark { display: inline-flex; margin-left: 4px; color: var(--accent); }
+.pinned-bar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 5px 9px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: 11.5px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.pinned-bar .txt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pinned-bar .cnt { flex-shrink: 0; }
+.chat-head-tools { margin-left: auto; display: flex; align-items: center; gap: 6px; }
+.chat-search {
+  width: 140px;
+  font-size: 12px;
+  padding: 4px 9px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  outline: none;
+  background: #ececf0;
+  color: var(--text);
+}
+.chat-search:focus { background: #fff; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(55, 106, 159, .22); }
+.chat-search-count { font-size: 11px; color: var(--text-muted); }
+mark { background: rgba(55, 106, 159, .25); border-radius: 2px; }
+.harness-branch-note { margin: 6px 18px 0; }
+
 .tool-steps { border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); background: var(--surface-2); }
 .tool-steps summary {
   cursor: pointer;

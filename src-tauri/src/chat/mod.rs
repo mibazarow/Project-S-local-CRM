@@ -59,6 +59,9 @@ pub struct MessageDto {
     // sent with send_file. The raw content stays the plain text; the UI renders
     // the attachments as chips/thumbnails next to it.
     pub attachments: Vec<AttachmentRef>,
+    // Pinned messages (SPEC chat UX slice) show in the compact bar above the
+    // transcript; the flag lives on the message row itself.
+    pub pinned: bool,
 }
 
 // Payload for the "agent-event" stream: one AgentEvent wrapped with its chat
@@ -392,7 +395,7 @@ pub(crate) fn index_chat_messages_with(
 fn message_dto(conn: &Connection, id: i64) -> Result<MessageDto> {
     let mut dto = conn
         .query_row(
-            "SELECT chat_id, role, content, reasoning, tool_calls, tool_call_id, name, created_at, position
+            "SELECT chat_id, role, content, reasoning, tool_calls, tool_call_id, name, created_at, position, pinned
              FROM messages WHERE id = ?1",
             params![id],
             |r| {
@@ -408,6 +411,7 @@ fn message_dto(conn: &Connection, id: i64) -> Result<MessageDto> {
                     created_at: r.get(7)?,
                     position: r.get(8)?,
                     attachments: Vec::new(),
+                    pinned: r.get::<_, i64>(9)? != 0,
                 })
             },
         )
@@ -537,6 +541,240 @@ pub fn chat_history(conn: &Connection, project_id: i64) -> Result<Vec<MessageDto
         return Ok(Vec::new());
     };
     history_by_chat(conn, chat_id)
+}
+
+// ---------- Message-level chat UX (pin / truncate / branch / export / search)
+
+// Pin or unpin one message of a chat; the UI shows pinned messages in a
+// compact bar above the transcript.
+pub fn set_pinned(conn: &Connection, chat_id: i64, message_id: i64, pinned: bool) -> Result<()> {
+    let updated = conn.execute(
+        "UPDATE messages SET pinned = ?1 WHERE id = ?2 AND chat_id = ?3",
+        params![pinned as i64, message_id, chat_id],
+    )?;
+    if updated != 1 {
+        return Err(AppError::Invalid(format!(
+            "message {message_id} not found in chat {chat_id}"
+        )));
+    }
+    Ok(())
+}
+
+// Delete every message after `message_id` in the chat (regenerate flow):
+// attachment links cascade via the FK, and the stale search mirrors (FTS +
+// vectors) plus checkpoint summaries of the removed rows are dropped
+// alongside so no deleted text stays searchable.
+pub fn truncate_after(conn: &Connection, chat_id: i64, message_id: i64) -> Result<usize> {
+    let boundary: Option<(i64, i64)> = conn
+        .query_row(
+            "SELECT id, position FROM messages WHERE id = ?1 AND chat_id = ?2",
+            params![message_id, chat_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?;
+    let (boundary_id, boundary_position) = boundary
+        .ok_or_else(|| AppError::Invalid(format!("message {message_id} not found in chat {chat_id}")))?;
+    let removed_ids: Vec<i64> = {
+        let mut stmt = conn.prepare("SELECT id FROM messages WHERE chat_id = ?1 AND id > ?2")?;
+        let rows = stmt.query_map(params![chat_id, boundary_id], |r| r.get(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    for id in &removed_ids {
+        // Best-effort mirrors: a missing row is fine — project and notes
+        // chats were never in the harness search index.
+        let _ = conn.execute("DELETE FROM messages_fts WHERE message_id = ?1", params![id]);
+        let _ = conn.execute("DELETE FROM vec_messages WHERE rowid = ?1", params![id]);
+        let _ = conn.execute("DELETE FROM message_vectors WHERE message_id = ?1", params![id]);
+    }
+    let deleted = conn.execute(
+        "DELETE FROM messages WHERE chat_id = ?1 AND id > ?2",
+        params![chat_id, boundary_id],
+    )?;
+    // Summaries folded past the cut describe messages that no longer exist.
+    conn.execute(
+        "DELETE FROM summaries WHERE chat_id = ?1 AND up_to_position > ?2",
+        params![chat_id, boundary_position],
+    )?;
+    Ok(deleted)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatBranchDto {
+    pub chat_id: i64,
+    pub session_id: i64,
+}
+
+// Fork a harness session at a message: a fresh session titled «Ветка · …»
+// receives a copy of everything up to and including that message, so the
+// conversation can take a new direction without losing the original. Project
+// and notes chats have no session identity to fork — refused.
+pub fn branch_chat(conn: &Connection, chat_id: i64, message_id: i64) -> Result<ChatBranchDto> {
+    let kind: Option<String> = conn
+        .query_row("SELECT kind FROM chats WHERE id = ?1", params![chat_id], |r| r.get(0))
+        .optional()?;
+    if kind.as_deref() != Some("harness") {
+        return Err(AppError::Invalid(
+            "branching is supported for harness chats only".into(),
+        ));
+    }
+    let belongs: i64 = conn.query_row(
+        "SELECT count(*) FROM messages WHERE id = ?1 AND chat_id = ?2",
+        params![message_id, chat_id],
+        |r| r.get(0),
+    )?;
+    if belongs != 1 {
+        return Err(AppError::Invalid(format!(
+            "message {message_id} not found in chat {chat_id}"
+        )));
+    }
+    let source_title: Option<String> = conn
+        .query_row(
+            "SELECT s.title FROM chats c JOIN sessions s ON s.id = c.session_id WHERE c.id = ?1",
+            params![chat_id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .optional()?
+        .flatten();
+    let base = source_title
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .unwrap_or("Новая сессия");
+    let session = crate::harness::create_session(conn, Some(&format!("Ветка · {base}")))?;
+    let new_chat = crate::harness::session_chat_id(conn, session.id)?;
+    conn.execute(
+        "INSERT INTO messages (chat_id, role, content, reasoning, tool_calls, tool_call_id, name, created_at, position, pinned)
+         SELECT ?1, role, content, reasoning, tool_calls, tool_call_id, name, created_at, position, pinned
+         FROM messages WHERE chat_id = ?2 AND id <= ?3 ORDER BY position",
+        params![new_chat, chat_id, message_id],
+    )?;
+    // Keep the harness search index consistent with the copied transcript
+    // (same rules as sync_harness_message_index); vectors stay backfill-only.
+    conn.execute(
+        "INSERT INTO messages_fts (message_id, session_id, content)
+         SELECT m.id, ?1, m.content FROM messages m
+         WHERE m.chat_id = ?2 AND m.role IN ('user','assistant')
+           AND m.content IS NOT NULL AND trim(m.content) <> ''",
+        params![session.id, new_chat],
+    )?;
+    Ok(ChatBranchDto {
+        chat_id: new_chat,
+        session_id: session.id,
+    })
+}
+
+// Readable Markdown transcript of a chat for export: role headers with
+// timestamps, reasoning in a collapsible block, a compact one-line note per
+// tool round; tool results and system turns are skipped as noise.
+pub fn export_markdown(conn: &Connection, chat_id: i64) -> Result<String> {
+    let exists: i64 = conn
+        .query_row("SELECT count(*) FROM chats WHERE id = ?1", params![chat_id], |r| r.get(0))?;
+    if exists != 1 {
+        return Err(AppError::Invalid(format!("chat {chat_id} not found")));
+    }
+    let mut out = format!("# Чат #{chat_id}\n");
+    for m in history_by_chat(conn, chat_id)? {
+        if m.role != "user" && m.role != "assistant" {
+            continue;
+        }
+        let who = if m.role == "user" { "Вы" } else { "Агент" };
+        out.push_str(&format!("\n## {who} · {}\n\n", m.created_at));
+        if let Some(reasoning) = m.reasoning.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            out.push_str(&format!(
+                "<details><summary>Размышления</summary>\n\n{reasoning}\n\n</details>\n\n"
+            ));
+        }
+        if let Some(content) = m.content.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+            out.push_str(content);
+            out.push('\n');
+        }
+        let tools: Vec<String> = m
+            .tool_calls
+            .iter()
+            .filter_map(|tc| tc["name"].as_str().map(str::to_string))
+            .collect();
+        if !tools.is_empty() {
+            out.push_str(&format!("\n> Инструменты: {}\n", tools.join(", ")));
+        }
+        if !m.attachments.is_empty() {
+            let names: Vec<&str> = m.attachments.iter().map(|a| a.name.as_str()).collect();
+            out.push_str(&format!("\n> Файлы: {}\n", names.join(", ")));
+        }
+    }
+    Ok(out)
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSearchHitDto {
+    pub message_id: i64,
+    pub role: String,
+    pub snippet: String,
+    pub created_at: String,
+}
+
+// LIKE search inside one chat (the UI also filters client-side; this command
+// covers long transcripts). SQLite LIKE folds case only for ASCII, but the
+// snippet window is cut around the first case-insensitive match found in Rust,
+// which does fold Cyrillic.
+pub fn search_messages(
+    conn: &Connection,
+    chat_id: i64,
+    query: &str,
+    limit: usize,
+) -> Result<Vec<ChatSearchHitDto>> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let escaped = query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    let mut stmt = conn.prepare(
+        "SELECT id, role, content, created_at FROM messages
+         WHERE chat_id = ?1 AND content IS NOT NULL
+           AND content LIKE '%' || ?2 || '%' ESCAPE '\\'
+         ORDER BY position LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(params![chat_id, escaped, limit as i64], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    })?;
+    let needle = query.to_lowercase();
+    let mut out = Vec::new();
+    for row in rows {
+        let (message_id, role, content, created_at) = row?;
+        out.push(ChatSearchHitDto {
+            message_id,
+            role,
+            snippet: make_snippet(&content, &needle),
+            created_at,
+        });
+    }
+    Ok(out)
+}
+
+// ±60 chars around the first case-insensitive match, ellipsised at the cuts;
+// cuts snap to char boundaries so a multibyte letter is never split.
+fn make_snippet(content: &str, needle_lower: &str) -> String {
+    const WINDOW: usize = 60;
+    let lower = content.to_lowercase();
+    let at = lower.find(needle_lower).unwrap_or(0);
+    let match_end = at + needle_lower.len();
+    let mut start = at.saturating_sub(WINDOW);
+    while start > 0 && !content.is_char_boundary(start) {
+        start -= 1;
+    }
+    let mut end = match_end.saturating_add(WINDOW).min(content.len());
+    while end < content.len() && !content.is_char_boundary(end) {
+        end += 1;
+    }
+    let prefix = if start > 0 { "…" } else { "" };
+    let suffix = if end < content.len() { "…" } else { "" };
+    format!("{prefix}{}{suffix}", &content[start..end])
 }
 
 // Confirmer that blocks the agent thread on a channel until the UI resolves
@@ -1736,6 +1974,176 @@ mod tests {
         assert_eq!(rowid, message_id, "vector rowid must equal the message id");
         // Idempotent: a second pass stores nothing new.
         assert_eq!(index_chat_messages_with(&conn, &FakeEmbedder).unwrap(), 0);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn pin_round_trip_marks_the_dto() {
+        let (wd, conn, pid) = setup("chat-pin");
+        let chat_id = ensure_project_chat(&conn, pid).unwrap();
+        let user = append_message(&conn, chat_id, Role::User, Some("важный вопрос"), &[], None, None).unwrap();
+        assert!(!user.pinned);
+
+        set_pinned(&conn, chat_id, user.id, true).unwrap();
+        let dtos = chat_history(&conn, pid).unwrap();
+        assert!(dtos[0].pinned);
+        set_pinned(&conn, chat_id, user.id, false).unwrap();
+        assert!(!chat_history(&conn, pid).unwrap()[0].pinned);
+
+        // A message of another chat is refused, not silently ignored.
+        assert!(matches!(set_pinned(&conn, 999, user.id, true), Err(AppError::Invalid(_))));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn truncate_after_removes_trailing_messages_with_links_and_summaries() {
+        let (wd, conn, pid) = setup("chat-truncate");
+        let chat_id = ensure_project_chat(&conn, pid).unwrap();
+        let user = append_message(&conn, chat_id, Role::User, Some("вопрос"), &[], None, None).unwrap();
+        let asst1 = append_message(&conn, chat_id, Role::Assistant, Some("первый"), &[], None, None).unwrap();
+        attachments::save_message_attachments(
+            &conn,
+            asst1.id,
+            &[AttachmentRef {
+                name: "a.md".into(),
+                saved_path: "Входящие/a.md".into(),
+                kind: "document".into(),
+                is_image: false,
+            }],
+        )
+        .unwrap();
+        append_message(&conn, chat_id, Role::Assistant, Some("второй"), &[], None, None).unwrap();
+        conn.execute(
+            "INSERT INTO summaries (chat_id, up_to_position, summary, created_at) VALUES (?1, ?2, 'складка', '2026-01-01')",
+            params![chat_id, asst1.position],
+        )
+        .unwrap();
+
+        assert_eq!(truncate_after(&conn, chat_id, user.id).unwrap(), 2);
+        let hist = chat_history(&conn, pid).unwrap();
+        assert_eq!(hist.len(), 1);
+        assert_eq!(hist[0].content.as_deref(), Some("вопрос"));
+
+        // The deleted message's attachment link cascaded via the FK, and the
+        // summary folded past the cut is gone.
+        let links: i64 = conn
+            .query_row("SELECT count(*) FROM message_attachments WHERE message_id = ?1", params![asst1.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(links, 0);
+        let summaries: i64 = conn
+            .query_row("SELECT count(*) FROM summaries WHERE chat_id = ?1", params![chat_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(summaries, 0);
+
+        assert!(matches!(truncate_after(&conn, chat_id, 9999), Err(AppError::Invalid(_))));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn truncate_after_drops_harness_search_mirrors() {
+        let (wd, conn, _pid) = setup("chat-truncate-fts");
+        let session = crate::harness::create_session(&conn, Some("сессия")).unwrap();
+        let chat_id = crate::harness::session_chat_id(&conn, session.id).unwrap();
+        let keep = append_message(&conn, chat_id, Role::User, Some("сохранить"), &[], None, None).unwrap();
+        append_message(&conn, chat_id, Role::Assistant, Some("удалить"), &[], None, None).unwrap();
+
+        assert_eq!(truncate_after(&conn, chat_id, keep.id).unwrap(), 1);
+        let fts: i64 = conn.query_row("SELECT count(*) FROM messages_fts", [], |r| r.get(0)).unwrap();
+        assert_eq!(fts, 1, "the removed turn must not stay searchable");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn branch_copies_transcript_into_a_new_harness_session() {
+        let (wd, conn, pid) = setup("chat-branch");
+        let session = crate::harness::create_session(&conn, Some("исходная")).unwrap();
+        let chat_id = crate::harness::session_chat_id(&conn, session.id).unwrap();
+        let m1 = append_message(&conn, chat_id, Role::User, Some("раз"), &[], None, None).unwrap();
+        let m2 = append_message(&conn, chat_id, Role::Assistant, Some("два"), &[], None, None).unwrap();
+        append_message(&conn, chat_id, Role::User, Some("три"), &[], None, None).unwrap();
+
+        let branch = branch_chat(&conn, chat_id, m2.id).unwrap();
+        assert_ne!(branch.chat_id, chat_id);
+        assert_ne!(branch.session_id, session.id);
+        let title: String = conn
+            .query_row("SELECT title FROM sessions WHERE id = ?1", params![branch.session_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title, "Ветка · исходная");
+
+        // Only everything up to and including the chosen message is copied.
+        let hist = crate::harness::session_history(&conn, branch.session_id).unwrap();
+        assert_eq!(hist.len(), 2);
+        assert_ne!(hist[0].id, m1.id, "the branch holds copies, not shared rows");
+        assert_eq!(hist[0].content.as_deref(), Some("раз"));
+        assert_eq!(hist[1].content.as_deref(), Some("два"));
+        let fts: i64 = conn
+            .query_row("SELECT count(*) FROM messages_fts WHERE session_id = ?1", params![branch.session_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fts, 2, "the branch must be searchable right away");
+
+        // The original transcript is untouched.
+        assert_eq!(crate::harness::session_history(&conn, session.id).unwrap().len(), 3);
+
+        // Project and notes chats have no session to fork — refused.
+        let project_chat = ensure_project_chat(&conn, pid).unwrap();
+        let pm = append_message(&conn, project_chat, Role::User, Some("x"), &[], None, None).unwrap();
+        assert!(matches!(branch_chat(&conn, project_chat, pm.id), Err(AppError::Invalid(_))));
+        let notes_chat = crate::notes::ensure_notes_chat(&conn).unwrap();
+        let nm = append_message(&conn, notes_chat, Role::User, Some("y"), &[], None, None).unwrap();
+        assert!(matches!(branch_chat(&conn, notes_chat, nm.id), Err(AppError::Invalid(_))));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn export_markdown_keeps_roles_and_skips_tool_noise() {
+        let (wd, conn, pid) = setup("chat-export");
+        let chat_id = ensure_project_chat(&conn, pid).unwrap();
+        append_message(&conn, chat_id, Role::User, Some("сделай отчёт"), &[], None, None).unwrap();
+        let calls = vec![call("c1", "read_file", json!({ "rel_path": "a.md" }))];
+        append_message(&conn, chat_id, Role::Assistant, None, &calls, None, None).unwrap();
+        append_message(&conn, chat_id, Role::Tool, Some("{\"ok\":true}"), &[], Some("c1"), None).unwrap();
+        let asst = ChatMessage::assistant("готово").with_reasoning(Some("думал".into()));
+        append_chat_message(&conn, chat_id, &asst).unwrap();
+
+        let md = export_markdown(&conn, chat_id).unwrap();
+        assert!(md.contains("## Вы ·"));
+        assert!(md.contains("сделай отчёт"));
+        assert!(md.contains("## Агент ·"));
+        assert!(md.contains("готово"));
+        assert!(md.contains("<details><summary>Размышления</summary>"));
+        assert!(md.contains("думал"));
+        assert!(md.contains("> Инструменты: read_file"));
+        assert!(!md.contains("{\"ok\":true}"), "tool result noise must not leak into the export");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn search_messages_finds_cyrillic_inside_one_chat() {
+        let (wd, conn, pid) = setup("chat-search");
+        let chat_id = ensure_project_chat(&conn, pid).unwrap();
+        append_message(
+            &conn,
+            chat_id,
+            Role::User,
+            Some("подготовь коммерческое предложение для example.ru"),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        append_message(&conn, chat_id, Role::Assistant, Some("собрал предложение, файл во вложениях"), &[], None, None).unwrap();
+
+        let hits = search_messages(&conn, chat_id, "предлож", 10).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].role, "user");
+        assert!(hits[0].snippet.contains("предлож"));
+
+        // Blank queries search nothing; the scope stays inside the chat.
+        assert!(search_messages(&conn, chat_id, "   ", 10).unwrap().is_empty());
+        let session = crate::harness::create_session(&conn, Some("s")).unwrap();
+        let other_chat = crate::harness::session_chat_id(&conn, session.id).unwrap();
+        append_message(&conn, other_chat, Role::User, Some("предложение в другом чате"), &[], None, None).unwrap();
+        assert_eq!(search_messages(&conn, chat_id, "предлож", 10).unwrap().len(), 2);
         fs::remove_dir_all(&wd).unwrap();
     }
 }

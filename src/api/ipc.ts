@@ -6,7 +6,9 @@ import type {
   AttachmentDto,
   BackupInfo,
   BackupStatus,
+  ChatBranchResult,
   ChatHit,
+  ChatSearchHit,
   ConfigChanged,
   ConfigKind,
   ConnectionTest,
@@ -331,6 +333,23 @@ export const harnessDeleteSession = (id: number) => invoke<void>("harness_delete
 
 export const harnessSessionHistory = (id: number) =>
   invoke<MessageDto[]>("harness_session_history", { id });
+
+// Message-level chat UX: pin, truncate (regenerate), branch (harness only),
+// Markdown export, in-chat LIKE search.
+export const chatPin = (chatId: number, messageId: number, pinned: boolean) =>
+  invoke<void>("chat_pin", { chatId, messageId, pinned });
+
+export const chatTruncateAfter = (chatId: number, messageId: number) =>
+  invoke<number>("chat_truncate_after", { chatId, messageId });
+
+export const chatBranch = (chatId: number, messageId: number) =>
+  invoke<ChatBranchResult>("chat_branch", { chatId, messageId });
+
+export const chatExport = (chatId: number) =>
+  invoke<{ markdown: string }>("chat_export", { chatId });
+
+export const chatSearch = (chatId: number, query: string, limit?: number) =>
+  invoke<ChatSearchHit[]>("chat_search", { chatId, query, limit: limit ?? null });
 
 export const sendSessionMessage = (
   sessionId: number,

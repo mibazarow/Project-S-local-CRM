@@ -8,10 +8,16 @@ import {
   summarizeArgs,
   toMessage,
   ChatTranscript,
+  ChatHeaderTools,
   ConfirmCard,
   AttachFileIcon,
   AttachXIcon,
+  countMatches,
+  downloadMarkdown,
+  freshIdsForItem,
+  freshUserBefore,
   useVisionSupport,
+  type ChatItem,
 } from "./chatShared";
 import { useChatAttachments } from "./useChatAttachments";
 import TodoPanel from "./TodoPanel";
@@ -35,6 +41,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
   const rememberChatId = (project: number, chat: number) =>
     setChatIds((prev) => (prev[project] === chat ? prev : { ...prev, [project]: chat }));
   const [text, setText] = useState("");
+  const [chatQuery, setChatQuery] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const chatRootRef = useRef<HTMLElement | null>(null);
@@ -182,6 +189,55 @@ export default function ProjectChat({ projectId, projectName }: Props) {
     if (projectId != null) void ipc.cancelRun(projectId).catch(() => {});
   };
 
+  // Message-level UX: live items carry no DB ids, so both handlers refetch
+  // the history and map the item by position before touching the transcript.
+  const pinItem = async (item: ChatItem, pinned: boolean) => {
+    if (projectId == null) return;
+    const chatId = chatIds[projectId];
+    if (chatId == null) return;
+    const fresh = historyToItems(await ipc.projectChatHistory(projectId).catch(() => []));
+    const ids = freshIdsForItem(fresh, slice?.items ?? [], item.key);
+    const messageId = ids[ids.length - 1];
+    if (!messageId) return;
+    try {
+      await ipc.chatPin(chatId, messageId, pinned);
+      dispatch({ type: "pin", key: projectId, itemKey: item.key, pinned });
+    } catch {
+      // The pin flag simply stays as it was.
+    }
+  };
+
+  const regenerateItem = async (item: ChatItem) => {
+    if (projectId == null || running) return;
+    const chatId = chatIds[projectId];
+    if (chatId == null) return;
+    const fresh = historyToItems(await ipc.projectChatHistory(projectId).catch(() => []));
+    const user = freshUserBefore(fresh, slice?.items ?? [], item.key);
+    const messageId = user?.messageIds[0];
+    const userText = user?.text ?? "";
+    if (!messageId || !userText) return;
+    try {
+      await ipc.chatTruncateAfter(chatId, messageId);
+      dispatch({ type: "regenerate", key: projectId, itemKey: item.key });
+      await ipc
+        .sendProjectMessage(projectId, userText)
+        .then((chat) => rememberChatId(projectId, chat))
+        .catch((e) => dispatch({ type: "sendFailed", key: projectId, message: toMessage(e) }));
+    } catch (e) {
+      dispatch({ type: "sendFailed", key: projectId, message: toMessage(e) });
+    }
+  };
+
+  const exportChat = () => {
+    if (projectId == null) return;
+    const chatId = chatIds[projectId];
+    if (chatId == null) return;
+    void ipc
+      .chatExport(chatId)
+      .then((r) => downloadMarkdown(r.markdown, `chat-${chatId}.md`))
+      .catch(() => {});
+  };
+
   return (
     <aside
       className={att.dragOver ? "chat drag-over" : "chat"}
@@ -191,6 +247,13 @@ export default function ProjectChat({ projectId, projectName }: Props) {
       <div className="chat-head">
         <span className="chat-title">Чат проекта «{projectName ?? "—"}»</span>
         {running && <span className="chat-sub">агент работает…</span>}
+        <ChatHeaderTools
+          query={chatQuery}
+          onQuery={setChatQuery}
+          matchCount={countMatches(slice?.items ?? [], chatQuery)}
+          onExport={exportChat}
+          exportDisabled={projectId == null || chatIds[projectId] == null}
+        />
       </div>
 
       <TodoPanel scopeKind="project" scopeId={projectId} />
@@ -201,6 +264,8 @@ export default function ProjectChat({ projectId, projectName }: Props) {
         empty="Начните диалог — агент проекта ответит здесь."
         projectId={projectId}
         chatId={projectId != null ? (chatIds[projectId] ?? null) : null}
+        actions={{ onPin: pinItem, onRegenerate: regenerateItem }}
+        search={chatQuery}
       />
 
       {att.pending.length > 0 && (

@@ -14,10 +14,16 @@ import {
   summarizeArgs,
   toMessage,
   ChatTranscript,
+  ChatHeaderTools,
   ConfirmCard,
   AttachFileIcon,
   AttachXIcon,
+  countMatches,
+  downloadMarkdown,
+  freshIdsForItem,
+  freshUserBefore,
   useVisionSupport,
+  type ChatItem,
 } from "../chat/chatShared";
 import { useChatAttachments } from "../chat/useChatAttachments";
 import TodoPanel from "../chat/TodoPanel";
@@ -282,6 +288,8 @@ export default function HarnessView() {
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
   const [text, setText] = useState("");
+  const [chatQuery, setChatQuery] = useState("");
+  const [branchNote, setBranchNote] = useState<string | null>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const chatRootRef = useRef<HTMLElement | null>(null);
@@ -629,6 +637,79 @@ export default function HarnessView() {
     if (activeId != null) void ipc.cancelSessionRun(activeId).catch(() => {});
   };
 
+  // Message-level UX: live items carry no DB ids, so the handlers refetch the
+  // history and map the item by position before touching the transcript.
+  const pinItem = async (item: ChatItem, pinned: boolean) => {
+    if (activeId == null) return;
+    const chatId = sessionChatIds[activeId];
+    if (chatId == null) return;
+    const fresh = historyToItems(await ipc.harnessSessionHistory(activeId).catch(() => []));
+    const ids = freshIdsForItem(fresh, slice?.items ?? [], item.key);
+    const messageId = ids[ids.length - 1];
+    if (!messageId) return;
+    try {
+      await ipc.chatPin(chatId, messageId, pinned);
+      dispatch({ type: "pin", key: activeId, itemKey: item.key, pinned });
+    } catch {
+      // The pin flag simply stays as it was.
+    }
+  };
+
+  const regenerateItem = async (item: ChatItem) => {
+    if (activeId == null || running) return;
+    const chatId = sessionChatIds[activeId];
+    if (chatId == null) return;
+    const fresh = historyToItems(await ipc.harnessSessionHistory(activeId).catch(() => []));
+    const user = freshUserBefore(fresh, slice?.items ?? [], item.key);
+    const messageId = user?.messageIds[0];
+    const userText = user?.text ?? "";
+    if (!messageId || !userText) return;
+    try {
+      await ipc.chatTruncateAfter(chatId, messageId);
+      dispatch({ type: "regenerate", key: activeId, itemKey: item.key });
+      await ipc
+        .sendSessionMessage(activeId, userText)
+        .then((chat) => {
+          rememberChatId(activeId, chat);
+          return loadSessions();
+        })
+        .catch((e) => dispatch({ type: "sendFailed", key: activeId, message: toMessage(e) }));
+    } catch (e) {
+      dispatch({ type: "sendFailed", key: activeId, message: toMessage(e) });
+    }
+  };
+
+  // Branching forks the session at a message: the fresh session opens through
+  // the pendingSessionId intent, and chat_branch's "sessions-changed" event
+  // refreshes the sidebar list.
+  const branchItem = async (item: ChatItem) => {
+    if (activeId == null) return;
+    const chatId = sessionChatIds[activeId];
+    if (chatId == null) return;
+    const fresh = historyToItems(await ipc.harnessSessionHistory(activeId).catch(() => []));
+    const ids = freshIdsForItem(fresh, slice?.items ?? [], item.key);
+    const messageId = ids[ids.length - 1];
+    if (!messageId) return;
+    try {
+      const res = await ipc.chatBranch(chatId, messageId);
+      rememberChatId(res.sessionId, res.chatId);
+      actions.requestSession(res.sessionId);
+      setBranchNote("Ветка создана — открыта новая сессия.");
+    } catch (e) {
+      setBranchNote(toMessage(e));
+    }
+  };
+
+  const exportChat = () => {
+    if (activeId == null) return;
+    const chatId = sessionChatIds[activeId];
+    if (chatId == null) return;
+    void ipc
+      .chatExport(chatId)
+      .then((r) => downloadMarkdown(r.markdown, `session-chat-${chatId}.md`))
+      .catch(() => {});
+  };
+
   const toggleSchedule = async (s: ScheduleDto) => {
     try {
       if (s.status === "active") await ipc.schedulePause(s.id);
@@ -790,7 +871,16 @@ export default function HarnessView() {
         <div className="center-head">
           <h2>{activeSession ? activeSession.title ?? UNTITLED : "Харнес"}</h2>
           {running && <span className="chat-sub">агент работает…</span>}
+          <ChatHeaderTools
+            query={chatQuery}
+            onQuery={setChatQuery}
+            matchCount={countMatches(slice?.items ?? [], chatQuery)}
+            onExport={exportChat}
+            exportDisabled={activeId == null || (activeId != null && sessionChatIds[activeId] == null)}
+          />
         </div>
+
+        {branchNote && <div className="set-hint harness-branch-note">{branchNote}</div>}
 
         <TodoPanel scopeKind="session" scopeId={activeId} />
 
@@ -812,6 +902,8 @@ export default function HarnessView() {
           }
           projectId={null}
           chatId={activeId != null ? (sessionChatIds[activeId] ?? null) : null}
+          actions={{ onPin: pinItem, onRegenerate: regenerateItem, onBranch: branchItem }}
+          search={chatQuery}
         />
 
         {att.pending.length > 0 && (

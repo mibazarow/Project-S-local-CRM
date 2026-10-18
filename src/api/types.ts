@@ -360,6 +360,22 @@ export interface MessageDto {
   createdAt: string;
   position: number;
   attachments: MessageAttachmentDto[];
+  // Pinned messages show in the compact bar above the transcript.
+  pinned: boolean;
+}
+
+// chat::ChatBranchDto — result of chat_branch (harness chats only).
+export interface ChatBranchResult {
+  chatId: number;
+  sessionId: number;
+}
+
+// chat::ChatSearchHitDto — one LIKE hit inside a chat.
+export interface ChatSearchHit {
+  messageId: number;
+  role: string;
+  snippet: string;
+  createdAt: string;
 }
 
 // agent::loop AgentEvent (serde tag = "type", rename_all = "camelCase").

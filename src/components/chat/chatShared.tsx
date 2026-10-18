@@ -70,6 +70,12 @@ export interface ChatItem {
   // Ids of the DB messages this item was built from; live agent-file items
   // carry the send_file message id so a later history reload can dedupe.
   messageIds: number[];
+  // Pinned messages show in the compact bar above the transcript.
+  pinned: boolean;
+  // Live agent-file item (send_file): one DB message rendered as its own
+  // bubble, so it has no counterpart group in a history reload — the id
+  // mapping for pin/regenerate skips these.
+  synthetic?: boolean;
   steps: Step[];
   note: string | null;
   error: string | null;
@@ -109,7 +115,9 @@ export type ChatAction =
   | { type: "done"; key: number; answer: string; reason: string; reasoning: string | null }
   | { type: "confirm"; key: number; payload: ConfirmationRequestPayload }
   | { type: "confirmResolved"; key: number; id: number }
-  | { type: "agentFile"; key: number; payload: AgentFileEvent };
+  | { type: "agentFile"; key: number; payload: AgentFileEvent }
+  | { type: "pin"; key: number; itemKey: number; pinned: boolean }
+  | { type: "regenerate"; key: number; itemKey: number };
 
 let nextKey = 1;
 
@@ -148,6 +156,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             reasoning: "",
             attachments: action.attachments,
             messageIds: [],
+            pinned: false,
             steps: [],
             note: null,
             error: null,
@@ -210,6 +219,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           reasoning: s.run.reasoning.trim(),
           attachments: [],
           messageIds: [],
+          pinned: false,
           steps: s.run.steps,
           note: null,
           error: action.message,
@@ -241,6 +251,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           reasoning: (action.reasoning ?? s.run.reasoning).trim(),
           attachments: [],
           messageIds: [],
+          pinned: false,
           steps: s.run.steps,
           note,
           error: s.run.error,
@@ -287,6 +298,8 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
                     },
                   ],
                   messageIds: [p.messageId],
+                  pinned: false,
+                  synthetic: true,
                   steps: [],
                   note: null,
                   error: null,
@@ -295,6 +308,33 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
             },
       );
     }
+    case "pin":
+      return withSlice(state, action.key, (s) => ({
+        ...s,
+        items: s.items.map((it) =>
+          it.key === action.itemKey ? { ...it, pinned: action.pinned } : it,
+        ),
+      }));
+    case "regenerate":
+      // The view already truncated the DB side; drop everything after the
+      // user turn that produced this answer and reopen the live run bubble.
+      return withSlice(state, action.key, (s) => {
+        const idx = s.items.findIndex((it) => it.key === action.itemKey);
+        if (idx < 0) return s;
+        let userIdx = -1;
+        for (let i = idx - 1; i >= 0; i--) {
+          if (s.items[i].role === "user") {
+            userIdx = i;
+            break;
+          }
+        }
+        if (userIdx < 0) return s;
+        return {
+          ...s,
+          items: s.items.slice(0, userIdx + 1),
+          run: { text: "", reasoning: "", steps: [], error: null, local: true },
+        };
+      });
   }
 }
 
@@ -362,6 +402,7 @@ export function historyToItems(dtos: MessageDto[]): ChatItem[] {
         reasoning: "",
         attachments: m.attachments ?? [],
         messageIds: [m.id],
+        pinned: m.pinned,
         steps: [],
         note: null,
         error: null,
@@ -375,11 +416,14 @@ export function historyToItems(dtos: MessageDto[]): ChatItem[] {
           reasoning: "",
           attachments: [],
           messageIds: [],
+          pinned: false,
           steps: [],
           note: null,
           error: null,
         };
       agent.messageIds.push(m.id);
+      // The last assistant message of the group owns the pin flag.
+      agent.pinned = m.pinned;
       if (m.content) agent.text += (agent.text ? "\n\n" : "") + m.content;
       if (m.reasoning) agent.reasoning += (agent.reasoning ? "\n\n" : "") + m.reasoning;
       for (const a of m.attachments ?? []) {
@@ -400,6 +444,162 @@ export function historyToItems(dtos: MessageDto[]): ChatItem[] {
   }
   flush();
   return items;
+}
+
+// ---------- Message-level chat UX helpers
+
+// Pin/regenerate need DB message ids; a live item (a finished run) carries
+// none, so the view refetches the history and maps by position: the nth
+// non-synthetic item of the same role corresponds to the nth group in the
+// fresh transcript (agent-file items own their id and are skipped).
+export function freshIdsForItem(fresh: ChatItem[], items: ChatItem[], itemKey: number): number[] {
+  const idx = items.findIndex((it) => it.key === itemKey);
+  if (idx < 0) return [];
+  const item = items[idx];
+  if (item.messageIds.length > 0) return item.messageIds;
+  const rank = items.slice(0, idx).filter((it) => it.role === item.role && !it.synthetic).length;
+  let seen = -1;
+  for (const it of fresh) {
+    if (it.role !== item.role || it.synthetic) continue;
+    seen++;
+    if (seen === rank) return it.messageIds;
+  }
+  return [];
+}
+
+// The user turn that precedes the target item, resolved in the fresh
+// transcript: its DB id is the truncate boundary for regenerate.
+export function freshUserBefore(
+  fresh: ChatItem[],
+  items: ChatItem[],
+  itemKey: number,
+): ChatItem | null {
+  const idx = items.findIndex((it) => it.key === itemKey);
+  if (idx < 0) return null;
+  const before = items.slice(0, idx).filter((it) => it.role === "user").length;
+  if (before === 0) return null;
+  let seen = 0;
+  for (const it of fresh) {
+    if (it.role !== "user") continue;
+    seen++;
+    if (seen === before) return it;
+  }
+  return null;
+}
+
+// Case-insensitive occurrence count of the query across item texts (the
+// header shows the total; the transcript filters by it).
+export function countMatches(items: ChatItem[], query: string): number {
+  const q = query.trim().toLowerCase();
+  if (!q) return 0;
+  let n = 0;
+  for (const it of items) {
+    const lower = it.text.toLowerCase();
+    let i = 0;
+    while ((i = lower.indexOf(q, i)) >= 0) {
+      n++;
+      i += q.length;
+    }
+  }
+  return n;
+}
+
+// Wraps every occurrence of the (already lowercased) query in <mark>.
+function highlight(text: string, q: string): ReactNode {
+  if (!q) return text;
+  const lower = text.toLowerCase();
+  const parts: ReactNode[] = [];
+  let i = 0;
+  let mark = 0;
+  while (i < text.length) {
+    const j = lower.indexOf(q, i);
+    if (j < 0) break;
+    if (j > i) parts.push(text.slice(i, j));
+    parts.push(<mark key={mark++}>{text.slice(j, j + q.length)}</mark>);
+    i = j + q.length;
+  }
+  parts.push(text.slice(i));
+  return parts;
+}
+
+// Export saves the Markdown transcript as a local download; the app itself
+// never writes to disk from the UI.
+export function downloadMarkdown(markdown: string, filename: string) {
+  const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+export const PinIcon = () => (
+  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M12 16.5V22" />
+    <path d="M8.5 3h7l-1 6.5 2.5 3v1.5H7V12.5l2.5-3-1-6.5z" />
+  </svg>
+);
+
+export const RegenerateIcon = () => (
+  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M3 12a9 9 0 1 0 3-6.7L3 8" />
+    <path d="M3 3v5h5" />
+  </svg>
+);
+
+export const BranchIcon = () => (
+  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M6 3v12" />
+    <circle cx="18" cy="6" r="3" />
+    <circle cx="6" cy="18" r="3" />
+    <path d="M18 9a9 9 0 0 1-9 9" />
+  </svg>
+);
+
+// Export + search controls shared by the headers of all three chats.
+export function ChatHeaderTools({
+  query,
+  onQuery,
+  matchCount,
+  onExport,
+  exportDisabled,
+}: {
+  query: string;
+  onQuery: (q: string) => void;
+  matchCount: number;
+  onExport: () => void;
+  exportDisabled?: boolean;
+}) {
+  return (
+    <span className="chat-head-tools">
+      {query.trim() !== "" && <span className="chat-search-count">{matchCount}</span>}
+      <input
+        className="chat-search"
+        type="text"
+        placeholder="Поиск в чате…"
+        value={query}
+        onChange={(e) => onQuery(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") {
+            e.stopPropagation();
+            onQuery("");
+          }
+        }}
+      />
+      <button
+        className="ghost-btn small"
+        type="button"
+        title="Скачать чат в Markdown"
+        onClick={onExport}
+        disabled={exportDisabled}
+      >
+        Экспорт
+      </button>
+    </span>
+  );
 }
 
 function StepRow({ step }: { step: Step }) {
@@ -584,6 +784,15 @@ export function MessageAttachments({
 // Transcript column shared by all three chats (project, harness, notes):
 // the persisted items plus the live run bubble, with the caller-provided
 // empty state and an optional header block (e.g. a list-load error).
+// Optional per-message actions (pin / regenerate / branch) appear on hover,
+// a compact bar keeps pinned messages reachable, and `search` filters the
+// transcript client-side with <mark> highlights.
+export interface TranscriptActions {
+  onPin?: (item: ChatItem, pinned: boolean) => void;
+  onRegenerate?: (item: ChatItem) => void;
+  onBranch?: (item: ChatItem) => void;
+}
+
 export function ChatTranscript({
   slice,
   listRef,
@@ -592,6 +801,8 @@ export function ChatTranscript({
   header,
   projectId,
   chatId,
+  actions,
+  search,
 }: {
   slice: Slice | null;
   listRef: RefObject<HTMLDivElement | null>;
@@ -602,40 +813,124 @@ export function ChatTranscript({
   // Id of the chat this transcript shows (null until known): agent-sent file
   // attachments are read/opened through the chat-scoped commands.
   chatId: number | null;
+  actions?: TranscriptActions;
+  search?: string;
 }) {
+  const q = (search ?? "").trim().toLowerCase();
+  const items = slice?.items ?? [];
+  const visible = q ? items.filter((it) => countMatches([it], q) > 0) : items;
+  const pinned = items.filter((it) => it.pinned);
+  const scrollToKey = (key: number) => {
+    listRef.current
+      ?.querySelector(`[data-msg-key="${key}"]`)
+      ?.scrollIntoView({ block: "center", behavior: "smooth" });
+  };
   return (
     <div className={className ?? "chat-messages"} ref={listRef}>
       {header}
-      {!slice || (slice.items.length === 0 && !slice.run) ? (
+      {pinned.length > 0 && (
+        <div
+          className="pinned-bar"
+          role="button"
+          tabIndex={0}
+          title="Показать в переписке"
+          onClick={() => scrollToKey(pinned[0].key)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") scrollToKey(pinned[0].key);
+          }}
+        >
+          <PinIcon />
+          <span className="txt">{pinned[0].text.trim() || "(сообщение без текста)"}</span>
+          {pinned.length > 1 && <span className="cnt">{pinned.length}</span>}
+        </div>
+      )}
+      {!slice || (items.length === 0 && !slice.run) ? (
         <div className="chat-empty">{empty}</div>
+      ) : q && visible.length === 0 ? (
+        <div className="chat-empty">Ничего не найдено</div>
       ) : (
         <>
-          {slice.items.map((item) => (
-            <div key={item.key} className={`msg ${item.role}`}>
-              <span className="who">{item.role === "user" ? "Вы" : "Агент"}</span>
-              <ReasoningBlock text={item.reasoning} />
-              {item.text &&
-                (item.role === "agent" ? (
-                  <MarkdownMessage text={item.text} />
-                ) : (
-                  <div className="bubble">{item.text}</div>
-                ))}
-              <MessageAttachments
-                attachments={item.attachments}
-                projectId={projectId}
-                chatId={chatId}
-              />
-              <StepsList steps={item.steps} />
-              {item.note && <span className="note">{item.note}</span>}
-              {item.error && (
-                <div className="error">
-                  {item.error}
-                  <br />
-                  Проверьте Настройки → Модель.
-                </div>
-              )}
-            </div>
-          ))}
+          {visible.map((item) => {
+            const isLast = items[items.length - 1]?.key === item.key;
+            const canRegenerate =
+              !!actions?.onRegenerate && item.role === "agent" && isLast && !slice.run;
+            const onPin = actions?.onPin;
+            const onRegenerate = canRegenerate ? actions?.onRegenerate : undefined;
+            const onBranch = actions?.onBranch;
+            return (
+              <div
+                key={item.key}
+                className={`msg ${item.role}${item.pinned ? " pinned" : ""}`}
+                data-msg-key={item.key}
+              >
+                <span className="who">
+                  {item.role === "user" ? "Вы" : "Агент"}
+                  {item.pinned && (
+                    <span className="pin-mark" title="Закреплено">
+                      <PinIcon />
+                    </span>
+                  )}
+                </span>
+                {(onPin || onRegenerate || onBranch) && (
+                  <span className="msg-actions">
+                    {onPin && (
+                      <button
+                        className={`mini-btn${item.pinned ? " on" : ""}`}
+                        type="button"
+                        title={item.pinned ? "Открепить" : "Закрепить"}
+                        onClick={() => onPin(item, !item.pinned)}
+                      >
+                        <PinIcon />
+                      </button>
+                    )}
+                    {onRegenerate && (
+                      <button
+                        className="mini-btn"
+                        type="button"
+                        title="Перегенерировать ответ"
+                        onClick={() => onRegenerate(item)}
+                      >
+                        <RegenerateIcon />
+                      </button>
+                    )}
+                    {onBranch && (
+                      <button
+                        className="mini-btn"
+                        type="button"
+                        title="Создать ветку сессии"
+                        onClick={() => onBranch(item)}
+                      >
+                        <BranchIcon />
+                      </button>
+                    )}
+                  </span>
+                )}
+                <ReasoningBlock text={item.reasoning} />
+                {item.text &&
+                  (q ? (
+                    <div className="bubble">{highlight(item.text, q)}</div>
+                  ) : item.role === "agent" ? (
+                    <MarkdownMessage text={item.text} />
+                  ) : (
+                    <div className="bubble">{item.text}</div>
+                  ))}
+                <MessageAttachments
+                  attachments={item.attachments}
+                  projectId={projectId}
+                  chatId={chatId}
+                />
+                <StepsList steps={item.steps} />
+                {item.note && <span className="note">{item.note}</span>}
+                {item.error && (
+                  <div className="error">
+                    {item.error}
+                    <br />
+                    Проверьте Настройки → Модель.
+                  </div>
+                )}
+              </div>
+            );
+          })}
           {slice.run && (
             <div className="msg agent">
               <span className="who">Агент</span>

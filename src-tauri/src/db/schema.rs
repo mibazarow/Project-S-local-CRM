@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::{params, Connection};
 
-pub const SCHEMA_VERSION: i64 = 25;
+pub const SCHEMA_VERSION: i64 = 26;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -494,6 +494,11 @@ const MIGRATION_25_CHECKLIST: &str = "ALTER TABLE tasks ADD COLUMN checklist TEX
 const MIGRATION_25_RECURRENCE: &str =
     "ALTER TABLE tasks ADD COLUMN recurrence TEXT NOT NULL DEFAULT 'none' CHECK(recurrence IN ('none','daily','weekly','monthly'))";
 
+// Message-level chat UX (SPEC chat slice): a pinned message shows in the
+// compact bar above the transcript. Guarded per column (v14/v22 recipe) so a
+// re-run after an interrupted v26 does not re-ALTER.
+const MIGRATION_26_PINNED: &str = "ALTER TABLE messages ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0";
+
 pub fn run_migrations(conn: &Connection) -> Result<()> {
     crate::db::ensure_vec_extension();
     let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
@@ -682,6 +687,17 @@ pub fn run_migrations(conn: &Connection) -> Result<()> {
             if has == 0 {
                 conn.execute(ddl, [])?;
             }
+        }
+        conn.pragma_update(None, "user_version", 25)?;
+    }
+    if version < 26 {
+        let has_pinned: i64 = conn.query_row(
+            "SELECT count(*) FROM pragma_table_info('messages') WHERE name = 'pinned'",
+            [],
+            |r| r.get(0),
+        )?;
+        if has_pinned == 0 {
+            conn.execute(MIGRATION_26_PINNED, [])?;
         }
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
     }
@@ -1803,6 +1819,55 @@ CREATE UNIQUE INDEX uniq_chats_one_project_chat ON chats(project_id) WHERE kind 
             )
             .unwrap();
         assert_eq!(has_checklist, 1);
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_v26_adds_message_pinned_default_zero() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+        run_migrations(&conn).unwrap();
+
+        let has_pinned: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('messages') WHERE name = 'pinned'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_pinned, 1);
+
+        conn.execute(
+            "INSERT INTO chats (id, kind, created_at, updated_at) VALUES (1, 'project', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO messages (chat_id, role, content, created_at, position) VALUES (1, 'user', 'hi', '2026-01-01', 1)",
+            [],
+        )
+        .unwrap();
+        // NOT NULL DEFAULT backfills every existing row with 0.
+        let pinned: i64 = conn
+            .query_row("SELECT pinned FROM messages WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(pinned, 0);
+
+        // Guarded ALTER: a v25 database missing the column is repaired.
+        conn.execute("ALTER TABLE messages DROP COLUMN pinned", [])
+            .unwrap();
+        conn.pragma_update(None, "user_version", 25).unwrap();
+        run_migrations(&conn).unwrap();
+        let has_pinned: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('messages') WHERE name = 'pinned'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_pinned, 1);
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
     }

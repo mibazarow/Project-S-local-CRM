@@ -1260,6 +1260,55 @@ fn harness_session_history(
     with_db(&state, |conn| harness::session_history(conn, id))
 }
 
+// Message-level chat UX (SPEC chat UX slice): pin, truncate (regenerate),
+// branch (harness only), Markdown export and in-chat LIKE search.
+#[tauri::command]
+fn chat_pin(state: State<AppState>, chat_id: i64, message_id: i64, pinned: bool) -> Result<()> {
+    with_db(&state, |conn| chat::set_pinned(conn, chat_id, message_id, pinned))
+}
+
+#[tauri::command]
+fn chat_truncate_after(state: State<AppState>, chat_id: i64, message_id: i64) -> Result<usize> {
+    with_db(&state, |conn| chat::truncate_after(conn, chat_id, message_id))
+}
+
+// Forks a harness session at a message; "sessions-changed" makes the fresh
+// session appear in the sidebar right away (same as schedule_open).
+#[tauri::command]
+fn chat_branch(
+    app: AppHandle,
+    state: State<AppState>,
+    chat_id: i64,
+    message_id: i64,
+) -> Result<chat::ChatBranchDto> {
+    let dto = with_db(&state, |conn| chat::branch_chat(conn, chat_id, message_id))?;
+    let _ = app.emit("sessions-changed", serde_json::json!({}));
+    Ok(dto)
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatExportResult {
+    markdown: String,
+}
+
+#[tauri::command]
+fn chat_export(state: State<AppState>, chat_id: i64) -> Result<ChatExportResult> {
+    let markdown = with_db(&state, |conn| chat::export_markdown(conn, chat_id))?;
+    Ok(ChatExportResult { markdown })
+}
+
+#[tauri::command]
+fn chat_search(
+    state: State<AppState>,
+    chat_id: i64,
+    query: String,
+    limit: Option<usize>,
+) -> Result<Vec<chat::ChatSearchHitDto>> {
+    let limit = limit.unwrap_or(50).clamp(1, 200);
+    with_db(&state, |conn| chat::search_messages(conn, chat_id, &query, limit))
+}
+
 // Persists the user turn into the session's chat (with links to attachment
 // copies already saved by attach_files) and starts the shared agent loop on
 // a background thread; progress arrives as "agent-event" /
@@ -1772,6 +1821,11 @@ pub fn run() {
             harness_rename_session,
             harness_delete_session,
             harness_session_history,
+            chat_pin,
+            chat_truncate_after,
+            chat_branch,
+            chat_export,
+            chat_search,
             send_session_message,
             cancel_session_run,
             purge_sessions,

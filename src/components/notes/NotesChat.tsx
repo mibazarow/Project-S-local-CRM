@@ -8,7 +8,13 @@ import {
   summarizeArgs,
   toMessage,
   ChatTranscript,
+  ChatHeaderTools,
   ConfirmCard,
+  countMatches,
+  downloadMarkdown,
+  freshIdsForItem,
+  freshUserBefore,
+  type ChatItem,
 } from "../chat/chatShared";
 
 // One continuous notes chat per working dir (SPEC notes chat slice): the
@@ -22,6 +28,7 @@ export default function NotesChat() {
   const [chatId, setChatId] = useState<number | null>(null);
   const chatIdRef = useRef<number | null>(null);
   const [text, setText] = useState("");
+  const [chatQuery, setChatQuery] = useState("");
   const taRef = useRef<HTMLTextAreaElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -168,11 +175,60 @@ export default function NotesChat() {
     void ipc.cancelNotesRun().catch(() => {});
   };
 
+  // Message-level UX: live items carry no DB ids, so both handlers refetch
+  // the history and map the item by position before touching the transcript.
+  const pinItem = async (item: ChatItem, pinned: boolean) => {
+    if (chatId == null) return;
+    const fresh = historyToItems(await ipc.notesChatHistory().catch(() => []));
+    const ids = freshIdsForItem(fresh, slice?.items ?? [], item.key);
+    const messageId = ids[ids.length - 1];
+    if (!messageId) return;
+    try {
+      await ipc.chatPin(chatId, messageId, pinned);
+      dispatch({ type: "pin", key: chatId, itemKey: item.key, pinned });
+    } catch {
+      // The pin flag simply stays as it was.
+    }
+  };
+
+  const regenerateItem = async (item: ChatItem) => {
+    if (chatId == null || running) return;
+    const fresh = historyToItems(await ipc.notesChatHistory().catch(() => []));
+    const user = freshUserBefore(fresh, slice?.items ?? [], item.key);
+    const messageId = user?.messageIds[0];
+    const userText = user?.text ?? "";
+    if (!messageId || !userText) return;
+    try {
+      await ipc.chatTruncateAfter(chatId, messageId);
+      dispatch({ type: "regenerate", key: chatId, itemKey: item.key });
+      await ipc
+        .sendNotesMessage(userText)
+        .catch((e) => dispatch({ type: "sendFailed", key: chatId, message: toMessage(e) }));
+    } catch (e) {
+      dispatch({ type: "sendFailed", key: chatId, message: toMessage(e) });
+    }
+  };
+
+  const exportChat = () => {
+    if (chatId == null) return;
+    void ipc
+      .chatExport(chatId)
+      .then((r) => downloadMarkdown(r.markdown, `notes-chat-${chatId}.md`))
+      .catch(() => {});
+  };
+
   return (
     <aside className="chat">
       <div className="chat-head">
         <span className="chat-title">Чат с заметками</span>
         {running && <span className="chat-sub">агент работает…</span>}
+        <ChatHeaderTools
+          query={chatQuery}
+          onQuery={setChatQuery}
+          matchCount={countMatches(slice?.items ?? [], chatQuery)}
+          onExport={exportChat}
+          exportDisabled={chatId == null}
+        />
       </div>
 
       <ChatTranscript
@@ -181,6 +237,8 @@ export default function NotesChat() {
         empty="Спросите агента о заметках…"
         projectId={null}
         chatId={chatId}
+        actions={{ onPin: pinItem, onRegenerate: regenerateItem }}
+        search={chatQuery}
       />
 
       {slice?.sendError && (
