@@ -12,6 +12,7 @@ import FilesPanel from "./components/files/FilesPanel";
 import ProjectChat from "./components/chat/ProjectChat";
 import HarnessView from "./components/harness/HarnessView";
 import NotesView from "./components/notes/NotesView";
+import Toasts from "./components/shared/toast";
 
 export default function App() {
   const { state, actions } = useApp();
@@ -58,6 +59,12 @@ export default function App() {
     setSettingsOpen(true);
     actions.clearSettingsRequested();
   }, [state.settingsRequested, actions]);
+
+  // Cross-entity quick actions target the project chat: bring the projects
+  // view on screen while ProjectChat consumes the pending question.
+  useEffect(() => {
+    if (state.pendingAsk) setTab("projects");
+  }, [state.pendingAsk]);
 
   if (state.loading) {
     return (
@@ -112,6 +119,7 @@ export default function App() {
       {captureTarget && (
         <QuickCapture initialTarget={captureTarget} onClose={() => setCaptureTarget(null)} />
       )}
+      <Toasts />
     </div>
   );
 }

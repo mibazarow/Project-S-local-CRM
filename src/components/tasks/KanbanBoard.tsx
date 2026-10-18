@@ -6,6 +6,7 @@ import RenameInput from "../files/RenameInput";
 import { IconClose, IconPlus, IconSearch, IconTrash } from "../files/icons";
 import TaskCard from "./TaskCard";
 import { usePointerDrag } from "../../hooks/usePointerDrag";
+import { useApp } from "../../state/AppStore";
 
 const COLUMNS = [
   { status: "new", label: "Новые" },
@@ -88,6 +89,16 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
   const [activeView, setActiveView] = useState("");
   const [taskTemplates, setTaskTemplates] = useState<TemplateSummary[]>([]);
   const boardRef = useRef<HTMLDivElement>(null);
+  const { actions } = useApp();
+
+  // «Обсудить»: a prebuilt question about the task for the project chat.
+  const discussTask = (task: TaskDto) => {
+    const detail = task.comment?.trim() || (task.dueDate ? `срок ${task.dueDate}` : "");
+    actions.requestAskAgent(
+      projectId,
+      `Задача #${task.id} «${task.title}»${detail ? `: ${detail}` : ""}. Кратко: текущий статус и следующий шаг.`,
+    );
+  };
 
   // Task templates for the «Задача из шаблона» picker; a failed load hides it.
   useEffect(() => {
@@ -307,6 +318,7 @@ export default function KanbanBoard({ projectId, tasksVersion, highlightTaskId }
       onPointerDown={(e) => onPointerDown(e, t.id)}
       onPatch={(patch) => handlePatch(t.id, patch)}
       onDelete={() => handleDelete(t)}
+      onDiscuss={() => discussTask(t)}
     />
   );
 

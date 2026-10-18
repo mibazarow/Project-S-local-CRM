@@ -4,6 +4,7 @@ import DOMPurify from "dompurify";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { toMessage } from "./fileOps";
+import { useFileCrossActions } from "../shared/crossActions";
 import { useOpenWith } from "./useOpenWith";
 import { IconClose } from "./icons";
 import VersionHistory from "../shared/VersionHistory";
@@ -20,6 +21,7 @@ interface Props {
 export default function FilePreview({ projectId, entry, onClose, onDirtyChange }: Props) {
   const isTextual = entry.isMarkdown || entry.isText;
   const ow = useOpenWith(projectId);
+  const cross = useFileCrossActions(projectId);
   const [mode, setMode] = useState<"view" | "edit">("view");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -112,6 +114,14 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
       <div className="preview-head">
         <span>{entry.relPath}</span>
         <div className="preview-actions">
+          <button className="ghost-btn small" title="Спросить агента о файле" onClick={() => cross.askAgent(entry)}>
+            Спросить агента
+          </button>
+          {!entry.isImage && (
+            <button className="ghost-btn small" title="Создать заметку из файла" onClick={() => cross.toNote(entry)}>
+              В заметку
+            </button>
+          )}
           {isTextual && (
             <button
               className="ghost-btn small"

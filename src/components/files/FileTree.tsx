@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type DragEvent } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { toMessage, useFileOps } from "./fileOps";
+import { useFileCrossActions } from "../shared/crossActions";
 import { isDocument, useOpenWith } from "./useOpenWith";
 import FileRow from "./FileRow";
 import RenameInput from "./RenameInput";
@@ -36,6 +37,7 @@ export default function FileTree({
   const openRef = useRef<Set<string>>(new Set());
   const ops = useFileOps(projectId);
   const ow = useOpenWith(projectId);
+  const cross = useFileCrossActions(projectId);
   const osHover = useOsFileDrag(
     () => selectedDirRel,
     (dest, paths) => void ops.importFiles(dest, paths),
@@ -234,6 +236,8 @@ export default function FileTree({
             void (isDocument(e) ? ow.openDocument(e) : ops.openExternal(e.relPath))
           }
           onOpenWith={isDocument(entry) ? (e) => void ow.showChooser(e) : undefined}
+          onAskAgent={entry.kind === "file" ? cross.askAgent : undefined}
+          onToNote={entry.kind === "file" && !entry.isImage ? cross.toNote : undefined}
         />
         {entry.kind === "dir" && open && (
           <ul className="tree-children nested">

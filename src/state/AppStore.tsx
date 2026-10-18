@@ -31,6 +31,9 @@ interface AppState {
   // (select/preview the file; switch to «Задачи» and highlight the task).
   pendingFilePath: string | null;
   pendingTaskId: number | null;
+  // Cross-entity quick action: a prebuilt question for the project chat,
+  // consumed and cleared by ProjectChat for the matching project.
+  pendingAsk: { projectId: number; text: string } | null;
   settingsRequested: boolean;
   newProjectRequested: boolean;
   newNoteRequested: boolean;
@@ -50,6 +53,7 @@ type Action =
   | { type: "pendingSession"; id: number | null }
   | { type: "pendingFile"; path: string | null }
   | { type: "pendingTask"; id: number | null }
+  | { type: "pendingAsk"; ask: { projectId: number; text: string } | null }
   | { type: "settingsRequested"; value: boolean }
   | { type: "newProjectRequested"; value: boolean }
   | { type: "newNoteRequested"; value: boolean };
@@ -67,6 +71,7 @@ const initialState: AppState = {
   pendingSessionId: null,
   pendingFilePath: null,
   pendingTaskId: null,
+  pendingAsk: null,
   settingsRequested: false,
   newProjectRequested: false,
   newNoteRequested: false,
@@ -106,6 +111,8 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, pendingFilePath: action.path };
     case "pendingTask":
       return { ...state, pendingTaskId: action.id };
+    case "pendingAsk":
+      return { ...state, pendingAsk: action.ask };
     case "settingsRequested":
       return { ...state, settingsRequested: action.value };
     case "newProjectRequested":
@@ -165,6 +172,8 @@ interface AppActions {
   requestSession: (id: number) => void;
   requestFile: (relPath: string) => void;
   requestTask: (id: number) => void;
+  // Cross-entity quick action: ask the project chat a prebuilt question.
+  requestAskAgent: (projectId: number, text: string) => void;
   requestSettings: () => void;
   requestNewProject: () => void;
   requestNewNote: () => void;
@@ -172,6 +181,7 @@ interface AppActions {
   clearPendingSession: () => void;
   clearPendingFile: () => void;
   clearPendingTask: () => void;
+  clearPendingAsk: () => void;
   clearSettingsRequested: () => void;
   clearNewProject: () => void;
   clearNewNote: () => void;
@@ -297,6 +307,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const requestSession = useCallback((id: number) => dispatch({ type: "pendingSession", id }), []);
   const requestFile = useCallback((relPath: string) => dispatch({ type: "pendingFile", path: relPath }), []);
   const requestTask = useCallback((id: number) => dispatch({ type: "pendingTask", id }), []);
+  const requestAskAgent = useCallback(
+    (projectId: number, text: string) => dispatch({ type: "pendingAsk", ask: { projectId, text } }),
+    [],
+  );
   const requestSettings = useCallback(() => dispatch({ type: "settingsRequested", value: true }), []);
   const requestNewProject = useCallback(() => dispatch({ type: "newProjectRequested", value: true }), []);
   const requestNewNote = useCallback(() => dispatch({ type: "newNoteRequested", value: true }), []);
@@ -304,6 +318,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const clearPendingSession = useCallback(() => dispatch({ type: "pendingSession", id: null }), []);
   const clearPendingFile = useCallback(() => dispatch({ type: "pendingFile", path: null }), []);
   const clearPendingTask = useCallback(() => dispatch({ type: "pendingTask", id: null }), []);
+  const clearPendingAsk = useCallback(() => dispatch({ type: "pendingAsk", ask: null }), []);
   const clearSettingsRequested = useCallback(() => dispatch({ type: "settingsRequested", value: false }), []);
   const clearNewProject = useCallback(() => dispatch({ type: "newProjectRequested", value: false }), []);
   const clearNewNote = useCallback(() => dispatch({ type: "newNoteRequested", value: false }), []);
@@ -383,6 +398,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       requestSession,
       requestFile,
       requestTask,
+      requestAskAgent,
       requestSettings,
       requestNewProject,
       requestNewNote,
@@ -390,6 +406,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       clearPendingSession,
       clearPendingFile,
       clearPendingTask,
+      clearPendingAsk,
       clearSettingsRequested,
       clearNewProject,
       clearNewNote,
@@ -407,6 +424,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       requestSession,
       requestFile,
       requestTask,
+      requestAskAgent,
       requestSettings,
       requestNewProject,
       requestNewNote,
@@ -414,6 +432,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       clearPendingSession,
       clearPendingFile,
       clearPendingTask,
+      clearPendingAsk,
       clearSettingsRequested,
       clearNewProject,
       clearNewNote,

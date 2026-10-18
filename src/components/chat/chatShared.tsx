@@ -559,6 +559,20 @@ export const BranchIcon = () => (
   </svg>
 );
 
+export const NoteIcon = () => (
+  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-5z" />
+    <path d="M14 3v5h5M9 13h6M9 17h4" />
+  </svg>
+);
+
+export const TaskIcon = () => (
+  <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="4" y="4" width="16" height="16" rx="3" />
+    <path d="m8.5 12 2.5 2.5 5-5" />
+  </svg>
+);
+
 // Export + search controls shared by the headers of all three chats.
 export function ChatHeaderTools({
   query,
@@ -791,6 +805,9 @@ export interface TranscriptActions {
   onPin?: (item: ChatItem, pinned: boolean) => void;
   onRegenerate?: (item: ChatItem) => void;
   onBranch?: (item: ChatItem) => void;
+  // Cross-entity quick actions: turn a message into a Notes/ note or a task.
+  onToNote?: (item: ChatItem) => void;
+  onToTask?: (item: ChatItem) => void;
 }
 
 export function ChatTranscript({
@@ -857,6 +874,9 @@ export function ChatTranscript({
             const onPin = actions?.onPin;
             const onRegenerate = canRegenerate ? actions?.onRegenerate : undefined;
             const onBranch = actions?.onBranch;
+            const hasText = item.text.trim() !== "";
+            const onToNote = hasText ? actions?.onToNote : undefined;
+            const onToTask = hasText ? actions?.onToTask : undefined;
             return (
               <div
                 key={item.key}
@@ -871,7 +891,7 @@ export function ChatTranscript({
                     </span>
                   )}
                 </span>
-                {(onPin || onRegenerate || onBranch) && (
+                {(onPin || onRegenerate || onBranch || onToNote || onToTask) && (
                   <span className="msg-actions">
                     {onPin && (
                       <button
@@ -901,6 +921,26 @@ export function ChatTranscript({
                         onClick={() => onBranch(item)}
                       >
                         <BranchIcon />
+                      </button>
+                    )}
+                    {onToNote && (
+                      <button
+                        className="mini-btn"
+                        type="button"
+                        title="В заметку"
+                        onClick={() => onToNote(item)}
+                      >
+                        <NoteIcon />
+                      </button>
+                    )}
+                    {onToTask && (
+                      <button
+                        className="mini-btn"
+                        type="button"
+                        title="В задачу"
+                        onClick={() => onToTask(item)}
+                      >
+                        <TaskIcon />
                       </button>
                     )}
                   </span>

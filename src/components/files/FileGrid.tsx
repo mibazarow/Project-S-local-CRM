@@ -2,11 +2,13 @@ import { useEffect, useState, type DragEvent } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { toMessage, useFileOps } from "./fileOps";
+import { useFileCrossActions } from "../shared/crossActions";
 import { isDocument, useOpenWith } from "./useOpenWith";
 import RenameInput from "./RenameInput";
 import { useOsFileDrag } from "./useOsFileDrag";
 import {
   EntryIcon,
+  IconAskAgent,
   IconCopy,
   IconFile,
   IconFilePlus,
@@ -14,6 +16,7 @@ import {
   IconFolderPlus,
   IconOpenWith,
   IconPencil,
+  IconToNote,
   IconTrash,
 } from "./icons";
 
@@ -45,6 +48,7 @@ export default function FileGrid({
   const [dropTarget, setDropTarget] = useState<string | null>(null);
   const ops = useFileOps(projectId);
   const ow = useOpenWith(projectId);
+  const cross = useFileCrossActions(projectId);
   const osHover = useOsFileDrag(
     () => currentDir,
     (dest, paths) => void ops.importFiles(dest, paths),
@@ -227,6 +231,30 @@ export default function FileGrid({
               onDoubleClick={() => handleDoubleClick(entry)}
             >
               <span className="tile-actions" onDoubleClick={(e) => e.stopPropagation()}>
+                {entry.kind === "file" && (
+                  <button
+                    className="mini-btn"
+                    title="Спросить агента"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      cross.askAgent(entry);
+                    }}
+                  >
+                    <IconAskAgent />
+                  </button>
+                )}
+                {entry.kind === "file" && !entry.isImage && (
+                  <button
+                    className="mini-btn"
+                    title="В заметку"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      cross.toNote(entry);
+                    }}
+                  >
+                    <IconToNote />
+                  </button>
+                )}
                 {isDocument(entry) && (
                   <button
                     className="mini-btn"

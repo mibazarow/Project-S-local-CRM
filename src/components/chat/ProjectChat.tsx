@@ -21,6 +21,8 @@ import {
 } from "./chatShared";
 import { useChatAttachments } from "./useChatAttachments";
 import TodoPanel from "./TodoPanel";
+import { createNote, noteNameFromText } from "../shared/crossActions";
+import { toast } from "../shared/toast";
 
 interface Props {
   projectId: number | null;
@@ -28,7 +30,7 @@ interface Props {
 }
 
 export default function ProjectChat({ projectId, projectName }: Props) {
-  const { actions } = useApp();
+  const { state: appState, actions } = useApp();
   const [state, dispatch] = useReducer(chatReducer, {});
   const stateRef = useRef(state);
   stateRef.current = state;
@@ -144,9 +146,9 @@ export default function ProjectChat({ projectId, projectName }: Props) {
     ta.style.height = Math.min(ta.scrollHeight, 10 * lh + 16) + "px";
   };
 
-  const send = () => {
+  const sendText = (value: string) => {
     if (projectId == null || running) return;
-    const trimmed = text.trim();
+    const trimmed = value.trim();
     if (!trimmed) return;
     void (async () => {
       let refs: MessageAttachmentDto[] = [];
@@ -176,6 +178,43 @@ export default function ProjectChat({ projectId, projectName }: Props) {
         .sendProjectMessage(projectId, trimmed, refs)
         .then((chat) => rememberChatId(projectId, chat))
         .catch((e) => dispatch({ type: "sendFailed", key: projectId, message: toMessage(e) }));
+    })();
+  };
+
+  const send = () => sendText(text);
+
+  // Cross-entity quick action: deliver a prebuilt question through the normal
+  // send flow once this project's chat is idle (a live run defers delivery).
+  useEffect(() => {
+    const ask = appState.pendingAsk;
+    if (!ask || ask.projectId !== projectId || running) return;
+    actions.clearPendingAsk();
+    sendText(ask.text);
+  }, [appState.pendingAsk, projectId, running, actions, sendText]);
+
+  // Message quick actions: the text becomes a Notes/ note (name from its first
+  // line) or a task in this project (first line as title, full text as comment).
+  const messageToNote = (item: ChatItem) => {
+    const full = item.text.trim();
+    if (!full) return;
+    void createNote(noteNameFromText(full), full)
+      .then((rel) => toast("ok", `Заметка «${rel}» создана`))
+      .catch((e) => toast("err", toMessage(e)));
+  };
+
+  const messageToTask = (item: ChatItem) => {
+    if (projectId == null) return;
+    const full = item.text.trim();
+    if (!full) return;
+    const title = (full.split(/\r?\n/)[0] ?? "").trim().slice(0, 120) || full.slice(0, 120);
+    void (async () => {
+      try {
+        const dto = await ipc.taskCreate(projectId, title);
+        if (full !== title) await ipc.taskUpdate(dto.id, { comment: full });
+        toast("ok", `Задача «${title}» создана`);
+      } catch (e) {
+        toast("err", toMessage(e));
+      }
     })();
   };
 
@@ -264,7 +303,12 @@ export default function ProjectChat({ projectId, projectName }: Props) {
         empty="Начните диалог — агент проекта ответит здесь."
         projectId={projectId}
         chatId={projectId != null ? (chatIds[projectId] ?? null) : null}
-        actions={{ onPin: pinItem, onRegenerate: regenerateItem }}
+        actions={{
+          onPin: pinItem,
+          onRegenerate: regenerateItem,
+          onToNote: messageToNote,
+          onToTask: messageToTask,
+        }}
         search={chatQuery}
       />
 

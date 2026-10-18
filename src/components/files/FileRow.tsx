@@ -1,7 +1,16 @@
 import type { DragEvent } from "react";
 import type { FsEntry } from "../../api/types";
 import RenameInput from "./RenameInput";
-import { EntryIcon, IconChevron, IconCopy, IconOpenWith, IconPencil, IconTrash } from "./icons";
+import {
+  EntryIcon,
+  IconAskAgent,
+  IconChevron,
+  IconCopy,
+  IconOpenWith,
+  IconPencil,
+  IconToNote,
+  IconTrash,
+} from "./icons";
 
 interface Props {
   entry: FsEntry;
@@ -23,6 +32,8 @@ interface Props {
   onDirDrop: (dirRel: string, e: DragEvent<HTMLDivElement>) => void;
   onOpenExternal?: (entry: FsEntry) => void;
   onOpenWith?: (entry: FsEntry) => void;
+  onAskAgent?: (entry: FsEntry) => void;
+  onToNote?: (entry: FsEntry) => void;
 }
 
 export default function FileRow({
@@ -45,6 +56,8 @@ export default function FileRow({
   onDirDrop,
   onOpenExternal,
   onOpenWith,
+  onAskAgent,
+  onToNote,
 }: Props) {
   const isDir = entry.kind === "dir";
   const classes = [
@@ -113,6 +126,30 @@ export default function FileRow({
         <span className={isDir ? "label folder-label" : "label"}>{entry.name}</span>
       )}
       <span className="row-actions">
+        {onAskAgent && (
+          <button
+            className="mini-btn"
+            title="Спросить агента"
+            onClick={(e) => {
+              e.stopPropagation();
+              onAskAgent(entry);
+            }}
+          >
+            <IconAskAgent />
+          </button>
+        )}
+        {onToNote && (
+          <button
+            className="mini-btn"
+            title="В заметку"
+            onClick={(e) => {
+              e.stopPropagation();
+              onToNote(entry);
+            }}
+          >
+            <IconToNote />
+          </button>
+        )}
         {onOpenWith && (
           <button
             className="mini-btn"

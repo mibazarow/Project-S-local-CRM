@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } fr
 import type { ChecklistItem, TaskDto, TaskPatch } from "../../api/types";
 import RenameInput from "../files/RenameInput";
 import {
+  IconAskAgent,
   IconCalendar,
   IconCheck,
   IconClose,
@@ -40,6 +41,7 @@ interface Props {
   onPointerDown: (e: PointerEvent<HTMLDivElement>) => void;
   onPatch: (patch: TaskPatch) => void;
   onDelete: () => void;
+  onDiscuss?: () => void;
 }
 
 function formatDue(dueDate: string): string {
@@ -276,6 +278,7 @@ export default function TaskCard({
   onPointerDown,
   onPatch,
   onDelete,
+  onDiscuss,
 }: Props) {
   const [mode, setMode] = useState<Mode>(null);
   const cardRef = useRef<HTMLDivElement>(null);
@@ -390,6 +393,18 @@ export default function TaskCard({
         </div>
       )}
       <span className="task-actions">
+        {onDiscuss && (
+          <button
+            className="mini-btn"
+            title="Обсудить с агентом"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDiscuss();
+            }}
+          >
+            <IconAskAgent />
+          </button>
+        )}
         <button
           className="mini-btn"
           title="Переименовать"
