@@ -476,8 +476,6 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 .tf-search { display: flex; align-items: center; gap: 6px; background: #fff; border: 1px solid var(--border-strong); border-radius: 7px; padding: 0 8px; height: 28px; color: var(--text-muted); }
 .tf-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(55, 106, 159, .18); }
 .tf-search input { border: none; outline: none; background: transparent; font-size: 12px; width: 170px; color: var(--text); }
-.tf-select { border: 1px solid var(--border-strong); border-radius: 7px; padding: 4px 8px; font-size: 12px; background: #fff; color: var(--text); max-width: 180px; }
-.tf-select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(55, 106, 159, .18); }
 .tf-check { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; user-select: none; }
 .tf-check input { accent-color: var(--accent); }
 
@@ -1495,7 +1493,6 @@ details.set-card code {
 
 .notes-toolbar { padding: 0 10px; margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 4px; }
 .notes-toolbar .ghost-btn { padding: 4px 8px; font-size: 11.5px; white-space: nowrap; }
-.notes-toolbar .tf-select { font-size: 11.5px; padding: 5px 8px; }
 
 .notes-tree { flex: 1; overflow-y: auto; min-height: 0; padding: 0 8px 8px; }
 .notes-tree .tree-row .label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }

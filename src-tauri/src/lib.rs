@@ -278,7 +278,6 @@ pub fn run() {
             commands::templates::templates_list,
             commands::templates::template_create_project,
             commands::templates::template_create_task,
-            commands::templates::template_create_note,
             commands::templates::template_document,
             commands::trash::trash_list,
             commands::trash::trash_restore,

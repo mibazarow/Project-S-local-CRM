@@ -1,16 +1,15 @@
 use crate::{export, templates, watcher};
 use crate::error::{Result};
-use crate::fs_ops::FsEntry;
 use crate::projects::ProjectDto;
 use crate::tasks::TaskDto;
 use crate::state::{AppState};
-use super::{with_db, emit_fs_changed, emit_tasks_changed, emit_projects_changed, emit_notes_changed};
+use super::{with_db, emit_fs_changed, emit_tasks_changed, emit_projects_changed};
 use tauri::{AppHandle, State};
 
 // Reusable templates (Settings/config/templates.json, seeded on first use):
-// pickers list name + short description; the create commands instantiate one
-// template as a project / task / note. template_document only returns the
-// markdown, which the agent or UI fills in and creates via create_document.
+// the create commands instantiate one template as a project / task.
+// template_document only returns the markdown, which the agent or UI fills in
+// and creates via create_document. Note templates were removed (Q-15).
 #[tauri::command]
 pub(crate) fn templates_list(state: State<AppState>) -> Result<templates::TemplatesSummary> {
     templates::summary(&state.working_dir()?)
@@ -48,22 +47,6 @@ pub(crate) fn template_create_task(
     })?;
     emit_tasks_changed(&app, dto.project_id);
     Ok(dto)
-}
-
-#[tauri::command]
-pub(crate) fn template_create_note(
-    app: AppHandle,
-    state: State<AppState>,
-    template_name: String,
-    note_name: Option<String>,
-) -> Result<FsEntry> {
-    let item = templates::create_note(
-        &state.working_dir()?,
-        &template_name,
-        note_name.as_deref(),
-    )?;
-    emit_notes_changed(&app, item.rel_path.clone());
-    Ok(item)
 }
 
 #[tauri::command]

@@ -167,20 +167,6 @@ export interface TaskPatch {
 
 export type ConfigKind = "llm" | "app" | "indexing" | "mcp";
 
-// templates::TemplateSummary — one picker row (name + short description).
-export interface TemplateSummary {
-  name: string;
-  description: string;
-}
-
-// templates::TemplatesSummary — result of templates_list.
-export interface TemplatesSummary {
-  projects: TemplateSummary[];
-  tasks: TemplateSummary[];
-  notes: TemplateSummary[];
-  documents: TemplateSummary[];
-}
-
 export interface FsChanged {
   projectId: number;
   relPath: string;

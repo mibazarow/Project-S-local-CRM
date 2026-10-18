@@ -36,6 +36,7 @@ const entries = vi.hoisted((): FsEntry[] => []);
 
 const notesTree = vi.hoisted(() => vi.fn(async () => entries.slice()));
 const notesImport = vi.hoisted(() => vi.fn(async (_destRel: string, _paths: string[]) => []));
+const notesCreate = vi.hoisted(() => vi.fn(async (_rel: string, _content: string) => undefined));
 
 vi.mock("../../api/ipc", () => ({
   notesTree,
@@ -43,9 +44,7 @@ vi.mock("../../api/ipc", () => ({
   notesMove: vi.fn(async () => undefined),
   notesRename: vi.fn(async () => undefined),
   notesDelete: vi.fn(async () => undefined),
-  notesCreate: vi.fn(async () => undefined),
-  templatesList: vi.fn(async () => ({ notes: [] })),
-  templateCreateNote: vi.fn(async () => undefined),
+  notesCreate,
 }));
 
 // Captures the webview drag-drop callback so tests can fire OS (Finder)
@@ -78,6 +77,7 @@ beforeEach(() => {
   hoverEl = null;
   notesTree.mockClear();
   notesImport.mockClear();
+  notesCreate.mockClear();
   entries.length = 0;
   entries.push(dir("docs", "docs"), file("a.md", "a.md"), file("inner.md", "docs/inner.md"));
   container = document.createElement("div");
@@ -220,5 +220,48 @@ describe("NotesTree non-md files and labels", () => {
     expect(container.querySelector(".empty-note")?.textContent).toBe(
       "Заметок и файлов пока нет",
     );
+  });
+});
+
+describe("NotesTree create actions (no note templates)", () => {
+  const toolbarButton = (label: string) =>
+    Array.from(container.querySelectorAll<HTMLButtonElement>(".notes-toolbar .ghost-btn")).find(
+      (b) => b.textContent?.includes(label),
+    )!;
+
+  const commitCreate = async (name: string) => {
+    await act(async () => {
+      const input = container.querySelector<HTMLInputElement>(".rename-input")!;
+      input.value = name;
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      await Promise.resolve();
+    });
+  };
+
+  it("toolbar has only «Новая заметка» and «Новая папка», no template picker", async () => {
+    await mount();
+    const labels = Array.from(container.querySelectorAll(".notes-toolbar .ghost-btn")).map(
+      (b) => b.textContent?.trim(),
+    );
+    expect(labels).toEqual(["Новая заметка", "Новая папка"]);
+    expect(container.querySelector(".tf-select")).toBeNull();
+  });
+
+  it("«Новая заметка» creates a .md via notesCreate", async () => {
+    await mount();
+    await act(async () => {
+      toolbarButton("Новая заметка").click();
+    });
+    await commitCreate("Отчёт");
+    expect(notesCreate).toHaveBeenCalledWith("Отчёт.md", "");
+  });
+
+  it("«Новая папка» seeds the folder with a note", async () => {
+    await mount();
+    await act(async () => {
+      toolbarButton("Новая папка").click();
+    });
+    await commitCreate("Docs");
+    expect(notesCreate).toHaveBeenCalledWith("Docs/Новая заметка.md", "");
   });
 });

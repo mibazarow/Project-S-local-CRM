@@ -4,11 +4,9 @@
 // survive app rewrites (same flatten-extra pattern as mcp.json).
 use crate::error::{AppError, Result};
 use crate::fs_ops;
-use crate::notes;
 use crate::paths;
 use crate::projects::{self, ProjectDto};
 use crate::tasks::{self, ChecklistItem, TaskDto};
-use fs_ops::FsEntry;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -40,13 +38,6 @@ pub struct TaskTemplate {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
-pub struct NoteTemplate {
-    pub name: String,
-    pub content: String,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", default)]
 pub struct DocumentTemplate {
     pub name: String,
     pub markdown: String,
@@ -57,7 +48,6 @@ pub struct DocumentTemplate {
 pub struct TemplatesConfig {
     pub projects: Vec<ProjectTemplate>,
     pub tasks: Vec<TaskTemplate>,
-    pub notes: Vec<NoteTemplate>,
     pub documents: Vec<DocumentTemplate>,
     // Unknown top-level keys survive app rewrites (SPEC 3.4 hand-editable configs).
     #[serde(flatten)]
@@ -77,7 +67,6 @@ pub struct TemplateSummary {
 pub struct TemplatesSummary {
     pub projects: Vec<TemplateSummary>,
     pub tasks: Vec<TemplateSummary>,
-    pub notes: Vec<TemplateSummary>,
     pub documents: Vec<TemplateSummary>,
 }
 
@@ -117,10 +106,6 @@ pub fn defaults() -> TemplatesConfig {
                     done: false,
                 },
             ]),
-        }],
-        notes: vec![NoteTemplate {
-            name: "Заметка о встрече".into(),
-            content: "# Встреча\n\nДата: \nУчастники: \n\n## Обсудили\n\n- \n\n## Договорились\n\n- \n\n## Следующий шаг\n\n- \n".into(),
         }],
         documents: vec![DocumentTemplate {
             name: "Коммерческое предложение".into(),
@@ -196,14 +181,6 @@ pub fn summary(wd: &Path) -> Result<TemplatesSummary> {
             .map(|t| TemplateSummary {
                 name: t.name.clone(),
                 description: t.title.clone(),
-            })
-            .collect(),
-        notes: cfg
-            .notes
-            .iter()
-            .map(|t| TemplateSummary {
-                name: t.name.clone(),
-                description: preview(&t.content),
             })
             .collect(),
         documents: cfg
@@ -292,26 +269,6 @@ pub fn create_task(
     )
 }
 
-// Creates the note under Notes/ with the template content; a bare name gets
-// ".md", and a name clash gets the " copy" / " copy N" suffix like notes_copy.
-pub fn create_note(wd: &Path, template_name: &str, note_name: Option<&str>) -> Result<FsEntry> {
-    let cfg = load(wd)?;
-    let tpl = find(&cfg.notes, template_name, "note", |t| &t.name)?;
-    let base = note_name
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .unwrap_or(&tpl.name);
-    let name = fs_ops::check_name(base)?;
-    let name = if name.contains('.') {
-        name
-    } else {
-        format!("{name}.md")
-    };
-    let root = notes::vault_root(wd)?;
-    let rel = fs_ops::unique_name(&root, &name, false);
-    notes::create(wd, &rel, Some(&tpl.content))
-}
-
 pub fn document(wd: &Path, template_name: &str) -> Result<DocumentDto> {
     let cfg = load(wd)?;
     let tpl = find(&cfg.documents, template_name, "document", |t| &t.name)?;
@@ -354,7 +311,6 @@ mod tests {
         assert!(config_file(&wd).exists(), "first use must create the file");
         assert!(!s.projects.is_empty());
         assert!(!s.tasks.is_empty());
-        assert!(!s.notes.is_empty());
         assert!(!s.documents.is_empty());
         assert_eq!(s.tasks[0].name, "Позвонить клиенту");
         assert!(!s.projects[0].description.is_empty());
@@ -479,27 +435,6 @@ mod tests {
     }
 
     #[test]
-    fn create_note_writes_content_and_keeps_names_unique() {
-        let wd = setup("tpl-note");
-        write_templates(
-            &wd,
-            json!({ "notes": [{ "name": "Встреча", "content": "текст ноты" }] }),
-        );
-        let created = create_note(&wd, "Встреча", None).unwrap();
-        assert_eq!(created.rel_path, "Встреча.md");
-        assert_eq!(notes::read(&wd, "Встреча.md").unwrap(), "текст ноты");
-        // A clash gets the copy suffix instead of an error.
-        let again = create_note(&wd, "Встреча", None).unwrap();
-        assert_eq!(again.rel_path, "Встреча copy.md");
-        // A custom name keeps its own extension and gets ".md" without one.
-        let custom = create_note(&wd, "Встреча", Some(" Итоги 2026 ")).unwrap();
-        assert_eq!(custom.rel_path, "Итоги 2026.md");
-        let keep_ext = create_note(&wd, "Встреча", Some("план.txt")).unwrap();
-        assert_eq!(keep_ext.rel_path, "план.txt");
-        fs::remove_dir_all(&wd).unwrap();
-    }
-
-    #[test]
     fn document_returns_the_template_markdown() {
         let wd = setup("tpl-document");
         write_templates(
@@ -520,7 +455,6 @@ mod tests {
         for message in [
             create_project(&conn, &wd, "нет", None).unwrap_err().to_string(),
             create_task(&conn, &wd, project.id, "нет").unwrap_err().to_string(),
-            create_note(&wd, "нет", None).unwrap_err().to_string(),
             document(&wd, "нет").unwrap_err().to_string(),
         ] {
             assert!(message.contains("not found"), "{message}");

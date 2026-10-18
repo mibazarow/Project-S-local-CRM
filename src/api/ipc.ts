@@ -44,7 +44,6 @@ import type {
   TaskDto,
   TaskPatch,
   TasksChanged,
-  TemplatesSummary,
   TodoDto,
    TodosChanged,
    TrayAction,
@@ -348,18 +347,13 @@ export const searchNotes = (query: string, limit?: number) =>
   invoke<SearchHit[]>("search_notes", { query, limit: limit ?? null });
 
 // Reusable templates (Settings/config/templates.json, seeded on first use):
-// the pickers list name + short description; create commands instantiate one
-// template as a project / note.
-export const templatesList = () => invoke<TemplatesSummary>("templates_list");
-
+// the create command instantiates one template as a project. Note templates
+// were removed (Q-15); project/task/document templates stay.
 export const templateCreateProject = (templateName: string, projectName?: string) =>
   invoke<ProjectDto>("template_create_project", {
     templateName,
     projectName: projectName ?? null,
   });
-
-export const templateCreateNote = (templateName: string, noteName?: string) =>
-  invoke<FsEntry>("template_create_note", { templateName, noteName: noteName ?? null });
 
 // Notes chat: one continuous chat per working dir; events route by
 // "notes: true" on agent-event / agent-confirmation.

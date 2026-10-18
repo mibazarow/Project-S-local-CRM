@@ -1,6 +1,6 @@
 import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
 import * as ipc from "../../api/ipc";
-import type { FsEntry, TemplateSummary } from "../../api/types";
+import type { FsEntry } from "../../api/types";
 import { confirmRemove } from "../../shared/confirm";
 import { usePointerDrag } from "../../hooks/usePointerDrag";
 import { toMessage } from "../chat/chatShared";
@@ -162,7 +162,6 @@ export default function NotesTree({
   const [creating, setCreating] = useState<{ parentRel: string; kind: "dir" | "file" } | null>(
     null,
   );
-  const [noteTemplates, setNoteTemplates] = useState<TemplateSummary[]>([]);
 
   // Finder drag-and-drop (SPEC 4.2): drops copy files/folders into the vault
   // via notes_import; the tree refreshes through the notes-changed bump of
@@ -178,34 +177,6 @@ export default function NotesTree({
     () => selectedDirRel,
     (dest, paths) => void importFiles(dest, paths),
   );
-
-  // Note templates for the «Из шаблона» picker; a failed load just hides it.
-  useEffect(() => {
-    let cancelled = false;
-    void ipc
-      .templatesList()
-      .then((t) => !cancelled && setNoteTemplates(t.notes))
-      .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const handleTemplate = async (templateName: string) => {
-    if (!templateName) return;
-    const custom = window.prompt("Имя новой заметки (можно оставить имя шаблона):", templateName);
-    if (custom === null) return;
-    const name = custom.trim();
-    try {
-      const created = await ipc.templateCreateNote(
-        templateName,
-        name && name !== templateName ? name : undefined,
-      );
-      onSelect(created);
-    } catch (e) {
-      setError(toMessage(e));
-    }
-  };
 
   // notes_tree returns the whole vault as one flat list; group it by parent
   // dir (backend order is already dirs-first case-insensitive).
@@ -412,21 +383,6 @@ export default function NotesTree({
           <IconFolderPlus />
           Новая папка
         </button>
-        {noteTemplates.length > 0 && (
-          <select
-            className="tf-select"
-            value=""
-            title="Создать заметку из шаблона"
-            onChange={(e) => void handleTemplate(e.target.value)}
-          >
-            <option value="">Из шаблона…</option>
-            {noteTemplates.map((t) => (
-              <option key={t.name} value={t.name}>
-                {t.name}
-              </option>
-            ))}
-          </select>
-        )}
       </div>
       {error && <div className="tree-error">{error}</div>}
       <div
