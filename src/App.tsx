@@ -1,8 +1,10 @@
 import { useEffect, useState } from "react";
+import * as ipc from "./api/ipc";
 import { useApp } from "./state/AppStore";
 import Onboarding from "./components/onboarding/Onboarding";
 import TopBar, { type Tab } from "./components/TopBar";
 import CommandPalette from "./components/CommandPalette";
+import QuickCapture from "./components/QuickCapture";
 import SettingsModal from "./components/SettingsModal";
 import TodayView from "./components/today/TodayView";
 import ProjectList from "./components/projects/ProjectList";
@@ -16,6 +18,29 @@ export default function App() {
   const [tab, setTab] = useState<Tab>("projects");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
+  const [captureTarget, setCaptureTarget] = useState<"note" | "task" | null>(null);
+
+  // Quick capture entry points: the global shortcut opens note mode; the
+  // tray menu routes «Быстрая заметка» / «Новая задача» to the matching mode.
+  useEffect(() => {
+    let cancelled = false;
+    let unQuick: (() => void) | undefined;
+    let unTray: (() => void) | undefined;
+    void ipc
+      .onQuickCapture(() => setCaptureTarget("note"))
+      .then((u) => (cancelled ? u() : (unQuick = u)));
+    void ipc
+      .onTrayAction(({ action }) => {
+        if (action === "quick-note") setCaptureTarget("note");
+        else if (action === "new-task") setCaptureTarget("task");
+      })
+      .then((u) => (cancelled ? u() : (unTray = u)));
+    return () => {
+      cancelled = true;
+      unQuick?.();
+      unTray?.();
+    };
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -84,6 +109,9 @@ export default function App() {
 
       {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
       {paletteOpen && <CommandPalette onTab={setTab} onClose={() => setPaletteOpen(false)} />}
+      {captureTarget && (
+        <QuickCapture initialTarget={captureTarget} onClose={() => setCaptureTarget(null)} />
+      )}
     </div>
   );
 }

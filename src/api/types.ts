@@ -445,6 +445,19 @@ export interface NotesChanged {
   relPath: string;
 }
 
+// lib.rs TrayAction — payload of the "tray-action" event emitted by the
+// menu-bar menu after the window was shown; "quit" is handled natively.
+export interface TrayAction {
+  action: "open" | "quick-note" | "new-task";
+}
+
+// lib.rs QuickCaptureResult — result of the quick_capture command.
+export interface QuickCaptureResult {
+  kind: "note" | "task";
+  path: string | null;
+  taskId: number | null;
+}
+
 // harness::SessionDto
 export interface SessionDto {
   id: number;

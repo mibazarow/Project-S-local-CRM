@@ -1575,6 +1575,67 @@ mark { background: rgba(55, 106, 159, .25); border-radius: 2px; }
   color: var(--text-muted);
 }
 
+/* ---------- Быстрая заметка (quick capture) ---------- */
+
+.capture-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .35);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  z-index: 80;
+  padding: 14vh 16px 16px;
+}
+.capture {
+  width: 560px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .35);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.capture-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.capture-project {
+  border: 1px solid var(--border-strong);
+  border-radius: 7px;
+  padding: 4px 8px;
+  font-size: 12px;
+  background: #fff;
+  color: var(--text);
+  max-width: 220px;
+}
+.capture-project:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(55, 106, 159, .18); }
+.capture-text {
+  min-height: 120px;
+  resize: vertical;
+  box-sizing: border-box;
+  font-size: 13.5px;
+  line-height: 1.45;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: #fff;
+  color: var(--text);
+}
+.capture-text:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(55, 106, 159, .22); }
+.capture-foot {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+.capture-foot .primary-btn { margin-left: auto; }
+.capture-ok { font-size: 12px; color: var(--ok); }
+.capture-error { font-size: 12px; color: var(--danger); }
+
 /* ---------- «Сегодня» (дашборд) ---------- */
 
 .today-view { grid-template-columns: 1fr; }

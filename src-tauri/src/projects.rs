@@ -1,6 +1,6 @@
 use crate::error::{AppError, Result};
 use crate::paths;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -136,8 +136,19 @@ pub fn move_project(conn: &Connection, id: i64, position: f64) -> Result<()> {
     Ok(())
 }
 
-pub fn get_project(conn: &Connection, id: i64) -> Result<ProjectDto> {
-    let exists: i64 = conn.query_row("SELECT count(*) FROM projects WHERE id = ?1", params![id], |r| r.get(0))?;
+// First project in list order: the quick-capture task fallback when the
+// capture modal has no explicit project selected.
+pub fn first_project_id(conn: &Connection) -> Result<Option<i64>> {
+    Ok(conn
+        .query_row(
+            "SELECT id FROM projects ORDER BY position, id LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .optional()?)
+}
+
+pub fn get_project(conn: &Connection, id: i64) -> Result<ProjectDto> {    let exists: i64 = conn.query_row("SELECT count(*) FROM projects WHERE id = ?1", params![id], |r| r.get(0))?;
     if exists == 0 {
         return Err(AppError::Invalid(format!("project {id} not found")));
     }
@@ -329,6 +340,18 @@ mod tests {
         let p3 = create_project(&conn, &wd, "p3").unwrap();
         assert_eq!(p3.position, 3.0);
         assert_eq!(list_ids(&conn), vec![p1.id, p2.id, p3.id]);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn first_project_id_follows_list_order() {
+        let (wd, conn) = setup("proj-first");
+        assert_eq!(first_project_id(&conn).unwrap(), None);
+        let p1 = create_project(&conn, &wd, "p1").unwrap();
+        let p2 = create_project(&conn, &wd, "p2").unwrap();
+        assert_eq!(first_project_id(&conn).unwrap(), Some(p1.id));
+        move_project(&conn, p2.id, p1.position - 1.0).unwrap();
+        assert_eq!(first_project_id(&conn).unwrap(), Some(p2.id));
         fs::remove_dir_all(&wd).unwrap();
     }
 

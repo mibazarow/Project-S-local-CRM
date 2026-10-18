@@ -283,6 +283,32 @@ pub(crate) fn copy_at(root: &Path, from_rel: &str, to_dir_rel: &str) -> Result<F
     fs_ops::entry(root, &target)
 }
 
+// Quick capture (SPEC quick capture slice): append a timestamped bullet to
+// the daily note Входящие/<YYYY-MM-DD>.md, creating the folder and the note
+// (with its «# Входящие · <date>» header) on first use. Returns the
+// vault-relative path of the daily note.
+pub fn append_inbox(wd: &Path, text: &str) -> Result<String> {
+    let text = text.trim().replace('\n', " ");
+    if text.is_empty() {
+        return Err(AppError::Invalid("capture text is empty".into()));
+    }
+    let root = vault_root(wd)?;
+    let now = chrono::Local::now();
+    let date = now.format("%Y-%m-%d").to_string();
+    let rel = format!("Входящие/{date}.md");
+    let path = fs_ops::join_rel(&root, &rel)?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let line = format!("- {} — {text}", now.format("%H:%M"));
+    let content = match fs::read_to_string(&path) {
+        Ok(existing) => format!("{}\n{line}\n", existing.trim_end()),
+        Err(_) => format!("# Входящие · {date}\n\n{line}\n"),
+    };
+    fs::write(&path, content)?;
+    Ok(rel)
+}
+
 // Notes chat (SPEC notes chat slice): one continuous chat per working dir,
 // a chats row with kind='notes' and no project/session. The partial unique
 // index uniq_chats_one_notes_chat enforces the singleton, so ensure is
@@ -741,6 +767,30 @@ mod tests {
                 "to accepted: {bad:?}"
             );
         }
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn append_inbox_creates_daily_note_and_appends() {
+        let wd = setup("notes-inbox");
+        let rel = append_inbox(&wd, "первая мысль").unwrap();
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        assert_eq!(rel, format!("Входящие/{today}.md"));
+        let content = read(&wd, &rel).unwrap();
+        assert!(content.starts_with(&format!("# Входящие · {today}\n\n- ")), "{content}");
+        assert!(content.ends_with(" — первая мысль\n"), "{content}");
+
+        // second capture appends to the same daily note, header stays once
+        append_inbox(&wd, "вторая мысль").unwrap();
+        let content = read(&wd, &rel).unwrap();
+        assert_eq!(content.lines().filter(|l| l.starts_with("- ")).count(), 2);
+        assert_eq!(content.matches("# Входящие").count(), 1);
+
+        // empty text is rejected, multiline collapses to one bullet
+        assert!(matches!(append_inbox(&wd, "   "), Err(AppError::Invalid(_))));
+        append_inbox(&wd, "две\nстроки").unwrap();
+        let content = read(&wd, &rel).unwrap();
+        assert!(content.contains("— две строки\n"), "{content}");
         fs::remove_dir_all(&wd).unwrap();
     }
 

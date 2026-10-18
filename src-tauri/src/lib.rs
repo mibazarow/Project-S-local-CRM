@@ -733,6 +733,81 @@ fn notes_delete(app: AppHandle, state: State<AppState>, rel: String) -> Result<(
     Ok(())
 }
 
+// Quick capture (SPEC quick capture slice): the capture modal (global
+// shortcut / tray menu) persists one entry either as a timestamped bullet in
+// the daily Notes/Входящие note or as a new task in the chosen project
+// (falling back to the first project when none is selected).
+#[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum CaptureTarget {
+    Note,
+    Task,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct QuickCaptureResult {
+    kind: &'static str,
+    path: Option<String>,
+    task_id: Option<i64>,
+}
+
+#[tauri::command]
+fn quick_capture(
+    app: AppHandle,
+    state: State<AppState>,
+    text: String,
+    target: CaptureTarget,
+    project_id: Option<i64>,
+) -> Result<QuickCaptureResult> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(AppError::Invalid("capture text is empty".into()));
+    }
+    let wd = state.working_dir()?;
+    match target {
+        CaptureTarget::Note => {
+            let rel = notes::append_inbox(&wd, text)?;
+            // Best-effort: make the new bullet searchable right away.
+            let _ = index::index_notes(&wd);
+            emit_notes_changed(&app, rel.clone());
+            Ok(QuickCaptureResult {
+                kind: "note",
+                path: Some(rel),
+                task_id: None,
+            })
+        }
+        CaptureTarget::Task => {
+            let title: String = text.chars().take(200).collect();
+            let dto = with_db(&state, |conn| {
+                let pid = match project_id {
+                    Some(id) => id,
+                    None => projects::first_project_id(conn)?.ok_or_else(|| {
+                        AppError::Invalid("no projects: create a project first".into())
+                    })?,
+                };
+                let dto = tasks::task_create_with(
+                    conn,
+                    pid,
+                    &title,
+                    Some("new".into()),
+                    Some("normal".into()),
+                    None,
+                    None,
+                )?;
+                export::export_project(conn, &wd, pid)?;
+                Ok(dto)
+            })?;
+            emit_tasks_changed(&app, dto.project_id);
+            Ok(QuickCaptureResult {
+                kind: "task",
+                path: None,
+                task_id: Some(dto.id),
+            })
+        }
+    }
+}
+
 // Reusable templates (Settings/config/templates.json, seeded on first use):
 // pickers list name + short description; the create commands instantiate one
 // template as a project / task / note. template_document only returns the
@@ -1781,6 +1856,103 @@ fn open_journal(state: &AppState, wd: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+// Menu-bar (tray) entry point (SPEC quick capture slice): a left click on the
+// tray icon shows/focuses the main window; the menu routes «Быстрая заметка»
+// and «Новая задача» to the frontend as "tray-action" events (the window is
+// shown first), «Выход» exits natively.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrayAction {
+    action: String,
+}
+
+fn show_main_window(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let open = MenuItem::with_id(app, "open", "Открыть Project S", true, None::<&str>)?;
+    let note = MenuItem::with_id(app, "quick-note", "Быстрая заметка", true, None::<&str>)?;
+    let task = MenuItem::with_id(app, "new-task", "Новая задача", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
+    let menu = Menu::with_items(
+        app,
+        &[
+            &open,
+            &note,
+            &task,
+            &PredefinedMenuItem::separator(app)?,
+            &quit,
+        ],
+    )?;
+
+    let mut builder = TrayIconBuilder::new()
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| {
+            match event.id.as_ref() {
+                "quit" => app.exit(0),
+                action @ ("open" | "quick-note" | "new-task") => {
+                    show_main_window(app);
+                    let _ = app.emit(
+                        "tray-action",
+                        TrayAction {
+                            action: action.into(),
+                        },
+                    );
+                }
+                _ => {}
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                show_main_window(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder.build(app)?;
+    Ok(())
+}
+
+// Global CmdOrCtrl+Shift+Space (SUPER on macOS, CTRL elsewhere): shows the
+// window and asks the frontend to open the capture modal. A registration
+// failure (the shortcut is already taken) is logged, never fatal.
+fn setup_global_shortcut(app: &AppHandle) {
+    use tauri_plugin_global_shortcut::{
+        Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState,
+    };
+
+    for modifiers in [
+        Modifiers::SUPER | Modifiers::SHIFT,
+        Modifiers::CONTROL | Modifiers::SHIFT,
+    ] {
+        let shortcut = Shortcut::new(Some(modifiers), Code::Space);
+        let result = app.global_shortcut().on_shortcut(shortcut, |app, _gs, event| {
+            if event.state == ShortcutState::Pressed {
+                show_main_window(app);
+                let _ = app.emit("quick-capture", serde_json::json!({}));
+            }
+        });
+        if let Err(e) = result {
+            eprintln!("global shortcut {shortcut:?} registration failed: {e}");
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -1792,6 +1964,8 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        // Quick capture global shortcut (registered in setup below).
+        .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(AppState::new())
         .manage(Arc::new(AgentRegistry::new()))
         .setup(|app| {
@@ -1837,6 +2011,9 @@ pub fn run() {
                 scheduler::start(app.handle().clone());
                 spawn_auto_backup(&wd);
             }
+            // Quick capture entry points: menu-bar item + global shortcut.
+            setup_tray(app.handle())?;
+            setup_global_shortcut(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -1889,6 +2066,7 @@ pub fn run() {
             notes_move,
             notes_copy,
             notes_delete,
+            quick_capture,
             templates_list,
             template_create_project,
             template_create_task,

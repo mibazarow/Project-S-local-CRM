@@ -31,9 +31,10 @@ import type {
   OpenWithApp,
   OpenWithResult,
   ConfirmationRequestPayload,
-  ProjectDto,
-  ProjectIndexStats,
-  ScheduleDto,
+   ProjectDto,
+   ProjectIndexStats,
+   QuickCaptureResult,
+   ScheduleDto,
   SearchHit,
   SessionDto,
   SkillInfo,
@@ -42,8 +43,9 @@ import type {
   TasksChanged,
   TemplatesSummary,
   TodoDto,
-  TodosChanged,
-  TrashChanged,
+   TodosChanged,
+   TrayAction,
+   TrashChanged,
   TrashDto,
   TmpStats,
   VersionDto,
@@ -254,6 +256,16 @@ export const notesRename = (rel: string, newName: string) =>
   invoke<FsEntry>("notes_rename", { rel, newName });
 
 export const notesDelete = (rel: string) => invoke<void>("notes_delete", { rel });
+
+// Quick capture (SPEC quick capture slice): one entry from the capture modal
+// (global shortcut / tray menu). target "note" appends to the daily
+// Notes/Входящие note; target "task" creates a task, projectId null falls
+// back to the first project.
+export const quickCapture = (
+  text: string,
+  target: "note" | "task",
+  projectId?: number | null,
+) => invoke<QuickCaptureResult>("quick_capture", { text, target, projectId: projectId ?? null });
 
 export const searchNotes = (query: string, limit?: number) =>
   invoke<SearchHit[]>("search_notes", { query, limit: limit ?? null });
@@ -556,3 +568,13 @@ export const onTrashChanged = (handler: (payload: TrashChanged) => void) =>
 // version-history panel reloads when its own key matches.
 export const onVersionsChanged = (handler: (payload: VersionsChanged) => void) =>
   listen<VersionsChanged>("versions-changed", (e) => handler(e.payload));
+
+// Emitted by the tray menu after showing the window: routes «Быстрая
+// заметка» / «Новая задача» to the capture modal.
+export const onTrayAction = (handler: (payload: TrayAction) => void) =>
+  listen<TrayAction>("tray-action", (e) => handler(e.payload));
+
+// Emitted by the global CmdOrCtrl+Shift+Space shortcut after showing the
+// window: open the capture modal.
+export const onQuickCapture = (handler: () => void) =>
+  listen<unknown>("quick-capture", () => handler());
