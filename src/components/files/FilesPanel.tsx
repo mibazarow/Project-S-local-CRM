@@ -11,6 +11,7 @@ import FileTree from "./FileTree";
 import SearchResults from "./SearchResults";
 import { IconClose, IconSearch } from "./icons";
 import KanbanBoard from "../tasks/KanbanBoard";
+import Segmented from "../shared/Segmented";
 
 interface Props {
   project: ProjectDto;
@@ -108,20 +109,14 @@ export default function FilesPanel({ project }: Props) {
         {project.overdueCount > 0 && (
           <span className="badge st-overdue">{project.overdueCount} просрочено</span>
         )}
-        <div className="segmented">
-          <button
-            className={tab === "files" ? "seg active" : "seg"}
-            onClick={() => switchTab("files")}
-          >
-            Файлы
-          </button>
-          <button
-            className={tab === "tasks" ? "seg active" : "seg"}
-            onClick={() => switchTab("tasks")}
-          >
-            Задачи
-          </button>
-        </div>
+        <Segmented
+          value={tab}
+          options={[
+            { value: "files", label: "Файлы" },
+            { value: "tasks", label: "Задачи" },
+          ]}
+          onChange={switchTab}
+        />
         {tab === "files" && (
           <>
             <div className="search">

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import * as ipc from "../api/ipc";
 import { useAppState } from "../state/AppStore";
+import Segmented from "./shared/Segmented";
 
 interface Props {
   initialTarget: "note" | "task";
@@ -71,20 +72,14 @@ export default function QuickCapture({ initialTarget, onClose }: Props) {
     >
       <div className="capture" onKeyDown={onKeyDown}>
         <div className="capture-head">
-          <div className="segmented">
-            <button
-              className={target === "note" ? "seg active" : "seg"}
-              onClick={() => setTarget("note")}
-            >
-              Заметка
-            </button>
-            <button
-              className={target === "task" ? "seg active" : "seg"}
-              onClick={() => setTarget("task")}
-            >
-              Задача
-            </button>
-          </div>
+          <Segmented
+            value={target}
+            options={[
+              { value: "note", label: "Заметка" },
+              { value: "task", label: "Задача" },
+            ]}
+            onChange={setTarget}
+          />
           {target === "task" && (
             <select
               className="capture-project"

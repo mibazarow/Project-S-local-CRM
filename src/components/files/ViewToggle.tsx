@@ -1,4 +1,5 @@
 import { IconGrid, IconList } from "./icons";
+import Segmented from "../shared/Segmented";
 
 interface Props {
   view: "list" | "grid";
@@ -7,21 +8,16 @@ interface Props {
 
 export default function ViewToggle({ view, onChange }: Props) {
   return (
-    <div className="view-toggle" title="Вид файлов">
-      <button
-        className={view === "list" ? "vt active" : "vt"}
-        title="Список"
-        onClick={() => onChange("list")}
-      >
-        <IconList />
-      </button>
-      <button
-        className={view === "grid" ? "vt active" : "vt"}
-        title="Сетка"
-        onClick={() => onChange("grid")}
-      >
-        <IconGrid />
-      </button>
-    </div>
+    <Segmented
+      value={view}
+      options={[
+        { value: "list", icon: <IconList />, title: "Список" },
+        { value: "grid", icon: <IconGrid />, title: "Сетка" },
+      ]}
+      onChange={onChange}
+      wrapperClassName="view-toggle"
+      buttonClassName="vt"
+      title="Вид файлов"
+    />
   );
 }
