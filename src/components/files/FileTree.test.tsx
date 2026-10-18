@@ -85,6 +85,8 @@ const fsMove = vi.hoisted(
     }),
 );
 
+const fsImport = vi.hoisted(() => vi.fn(async () => [] as FsEntry[]));
+
 const fsCreateFolder = vi.hoisted(
   () =>
     vi.fn(async (_projectId: number, parentRel: string, name: string): Promise<FsEntry> => {
@@ -110,13 +112,26 @@ vi.mock("../../api/ipc", () => ({
   fsDelete: vi.fn(async () => undefined),
   fsCreateFolder,
   fsCreateFile: vi.fn(async () => undefined),
-  fsImport: vi.fn(async () => []),
+  fsImport,
   fsOpenExternal: vi.fn(async () => undefined),
 }));
 
+// Captures the webview drag-drop callback so tests can fire OS (Finder)
+// enter/over/drop events like useOsFileDrag receives them in Tauri.
+const osDragHandler = vi.hoisted(
+  () => ({
+    current: null as null | ((event: { payload: Record<string, unknown> }) => void),
+  }),
+);
+
 vi.mock("@tauri-apps/api/webview", () => ({
   getCurrentWebview: () => ({
-    onDragDropEvent: vi.fn(async () => () => {}),
+    onDragDropEvent: vi.fn(async (cb: (event: { payload: Record<string, unknown> }) => void) => {
+      osDragHandler.current = cb;
+      return () => {
+        osDragHandler.current = null;
+      };
+    }),
   }),
 }));
 
@@ -135,6 +150,7 @@ beforeEach(() => {
   fsMove.mockClear();
   fsListDir.mockClear();
   fsCreateFolder.mockClear();
+  fsImport.mockClear();
   for (const key of Object.keys(tree)) delete tree[key];
   Object.assign(tree, initialTree());
   container = document.createElement("div");
@@ -459,5 +475,57 @@ describe("FileTree subfolder creation (list mode)", () => {
     expect(container.querySelector(".rename-input")).not.toBeNull();
     await commitCreateInput("sub2");
     expect(fsCreateFolder).toHaveBeenCalledWith(1, "docs", "sub2");
+  });
+});
+
+describe("FileTree Finder drag import (OS drag-drop)", () => {
+  const osDrag = (type: string, paths: string[] = []) =>
+    act(async () => {
+      osDragHandler.current?.({ payload: { type, position: { x: 5, y: 5 }, paths } });
+    });
+
+  it("OS drag over a folder row highlights it; drop imports into that folder", async () => {
+    await mount();
+    hoverEl = row("docs");
+    await osDrag("over");
+    expect(row("docs").className).toContain("drop-over");
+    await osDrag("drop", ["/tmp/photo.png"]);
+    expect(fsImport).toHaveBeenCalledWith(1, "docs", ["/tmp/photo.png"]);
+    expect(row("docs").className).not.toContain("drop-over");
+  });
+
+  it("OS drag over the tree root imports into the project root", async () => {
+    await mount();
+    hoverEl = container.querySelector(".file-tree");
+    await osDrag("over");
+    expect(container.querySelector(".file-tree")?.className).toContain("drop-over");
+    await osDrag("drop", ["/tmp/a.txt"]);
+    expect(fsImport).toHaveBeenCalledWith(1, "", ["/tmp/a.txt"]);
+  });
+
+  it("drop over the chat attachment zone is ignored by the tree", async () => {
+    await mount();
+    const chatZone = document.createElement("div");
+    chatZone.setAttribute("data-chat-drop", "");
+    container.appendChild(chatZone);
+    hoverEl = chatZone;
+    await osDrag("over");
+    await osDrag("drop", ["/tmp/a.txt"]);
+    expect(fsImport).not.toHaveBeenCalled();
+  });
+
+  it("drop outside any drop zone falls back to the selected folder", async () => {
+    await mount(null, "docs");
+    hoverEl = null;
+    await osDrag("drop", ["/tmp/a.txt"]);
+    expect(fsImport).toHaveBeenCalledWith(1, "docs", ["/tmp/a.txt"]);
+  });
+
+  it("a failed import shows the existing error style", async () => {
+    fsImport.mockRejectedValueOnce(new Error('"x" is not a folder'));
+    await mount();
+    hoverEl = row("a.txt");
+    await osDrag("drop", ["/tmp/a.txt"]);
+    expect(container.querySelector(".tree-error")?.textContent).toContain("is not a folder");
   });
 });

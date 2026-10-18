@@ -286,6 +286,20 @@ pub(crate) fn copy_at(root: &Path, from_rel: &str, to_dir_rel: &str) -> Result<F
     fs_ops::entry(root, &target)
 }
 
+// Copies Finder-dragged files and folders into the vault (SPEC 4.2 Finder
+// DnD): copy only (the source stays put), folders recursively with their
+// structure, collisions get the " copy" / " copy N" suffix. dest_rel "" is
+// the vault root; escapes and symlinked target folders are rejected by the
+// shared path policy, and the vault can never be imported into itself.
+pub fn import(wd: &Path, dest_rel: &str, source_paths: Vec<String>) -> Result<Vec<FsEntry>> {
+    let root = vault_root(wd)?;
+    let dest = existing_at(&root, dest_rel)?;
+    if !dest.is_dir() {
+        return Err(AppError::Invalid(format!("\"{dest_rel}\" is not a folder")));
+    }
+    fs_ops::import_into(&root, &dest, source_paths)
+}
+
 // Quick capture (SPEC quick capture slice): append a timestamped bullet to
 // the daily note Входящие/<YYYY-MM-DD>.md, creating the folder and the note
 // (with its «# Входящие · <date>» header) on first use. Returns the
@@ -788,6 +802,83 @@ mod tests {
             );
         }
         fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn import_copies_files_and_folder_trees_into_the_vault() {
+        let wd = setup("notes-import");
+        let src = temp_test_dir("notes-import-src");
+        fs::write(src.join("photo.png"), [1u8, 2, 3]).unwrap();
+        fs::create_dir_all(src.join("docs/sub")).unwrap();
+        fs::write(src.join("docs/sub/x.txt"), "y").unwrap();
+        let photo = src.join("photo.png").display().to_string();
+        let docs = src.join("docs").display().to_string();
+
+        // into the vault root: files and whole folder trees land as copies
+        let items = import(&wd, "", vec![photo.clone(), docs.clone()]).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].rel_path, "photo.png");
+        assert!(items[0].is_image);
+        assert_eq!(items[1].rel_path, "docs");
+        assert!(notes(&wd).join("photo.png").is_file());
+        assert!(notes(&wd).join("docs/sub/x.txt").is_file());
+        // copy only: the dragged-from sources stay untouched
+        assert!(src.join("photo.png").is_file());
+        assert_eq!(fs::read_to_string(src.join("docs/sub/x.txt")).unwrap(), "y");
+
+        // into an existing subfolder
+        mkdir(&wd, "", "папка").unwrap();
+        let into = import(&wd, "папка", vec![photo.clone()]).unwrap();
+        assert_eq!(into[0].rel_path, "папка/photo.png");
+        assert!(notes(&wd).join("папка/photo.png").is_file());
+
+        // collision → unique suffix, the first copy stays intact
+        let again = import(&wd, "", vec![photo.clone()]).unwrap();
+        assert_eq!(again[0].rel_path, "photo copy.png");
+        assert_eq!(import(&wd, "", vec![docs]).unwrap()[0].rel_path, "docs copy");
+
+        // rejections: relative source paths, the vault itself, escaping and
+        // non-folder destinations
+        assert!(matches!(import(&wd, "", vec!["photo.png".into()]), Err(AppError::Invalid(_))));
+        assert!(matches!(
+            import(&wd, "", vec![notes(&wd).display().to_string()]),
+            Err(AppError::Invalid(_))
+        ));
+        assert!(matches!(
+            import(&wd, "папка", vec![notes(&wd).join("папка").display().to_string()]),
+            Err(AppError::Invalid(_))
+        ));
+        for bad in ["../x", "/etc", "папка/../../x", "нет-такого"] {
+            assert!(
+                matches!(import(&wd, bad, vec![photo.clone()]), Err(AppError::Invalid(_))),
+                "dest accepted: {bad:?}"
+            );
+        }
+        create(&wd, "нота.md", None).unwrap();
+        assert!(matches!(import(&wd, "нота.md", vec![photo]), Err(AppError::Invalid(_))));
+        fs::remove_dir_all(&wd).unwrap();
+        fs::remove_dir_all(&src).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_rejects_symlinked_vault_dest() {
+        use std::os::unix::fs::symlink;
+        let wd = setup("notes-import-symlink");
+        let src = temp_test_dir("notes-import-symlink-src");
+        fs::write(src.join("f.txt"), "x").unwrap();
+        let outside = temp_test_dir("notes-import-symlink-outside");
+        fs::create_dir_all(outside.join("target")).unwrap();
+        symlink(outside.join("target"), notes(&wd).join("dirlink")).unwrap();
+        assert!(matches!(
+            import(&wd, "dirlink", vec![src.join("f.txt").display().to_string()]),
+            Err(AppError::Invalid(_))
+        ));
+        // nothing landed through the symlinked folder outside the vault
+        assert!(!outside.join("target/f.txt").exists());
+        fs::remove_dir_all(&wd).unwrap();
+        fs::remove_dir_all(&src).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
     }
 
     #[test]

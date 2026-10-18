@@ -201,6 +201,23 @@ pub(crate) fn notes_copy(
     Ok(item)
 }
 
+// Finder drag-and-drop (SPEC 4.2): copies files/folders from outside into the
+// vault (source untouched, collisions uniquified, escapes refused). The tree
+// refreshes through "notes-changed"; the watcher reindexes the copied files.
+#[tauri::command]
+pub(crate) fn notes_import(
+    app: AppHandle,
+    state: State<AppState>,
+    dest_rel: String,
+    source_paths: Vec<String>,
+) -> Result<Vec<FsEntry>> {
+    let items = notes::import(&state.working_dir()?, &dest_rel, source_paths)?;
+    for item in &items {
+        emit_notes_changed(&app, item.rel_path.clone());
+    }
+    Ok(items)
+}
+
 #[tauri::command]
 pub(crate) fn notes_delete(app: AppHandle, state: State<AppState>, rel: String) -> Result<()> {
     let wd = state.working_dir()?;

@@ -415,6 +415,19 @@ pub fn import(
     if !dest.is_dir() {
         return Err(AppError::Invalid(format!("\"{dest_rel}\" is not a folder")));
     }
+    import_into(&root, &dest, source_paths)
+}
+
+// Copies Finder-dragged sources into an existing folder `dest` below `root`
+// (Finder DnD, SPEC 4.2): absolute sources only, canonicalized, importing a
+// folder into itself or its own subtree rejected, name collisions uniquified,
+// folders copied recursively. Copy only: sources are never moved or touched.
+// Shared by the project import and the Notes vault import.
+pub(crate) fn import_into(
+    root: &Path,
+    dest: &Path,
+    source_paths: Vec<String>,
+) -> Result<Vec<FsEntry>> {
     let mut out = Vec::new();
     for src in source_paths {
         let src_path = PathBuf::from(&src);
@@ -426,22 +439,22 @@ pub fn import(
         let canon = src_path
             .canonicalize()
             .map_err(|_| AppError::Invalid(format!("source \"{src}\" not found")))?;
-        if canon == root || root.starts_with(&canon) {
+        if canon == dest || dest.starts_with(&canon) {
             return Err(AppError::Invalid(
-                "cannot import a project folder into itself".into(),
+                "cannot import a folder into itself or its own subfolder".into(),
             ));
         }
         let name = canon
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .ok_or_else(|| AppError::Invalid(format!("source \"{src}\" has no name")))?;
-        let target = dest.join(unique_name(&dest, &name, canon.is_dir()));
+        let target = dest.join(unique_name(dest, &name, canon.is_dir()));
         if canon.is_dir() {
             copy_tree(&canon, &target)?;
         } else {
             fs::copy(&canon, &target)?;
         }
-        out.push(entry(&root, &target)?);
+        out.push(entry(root, &target)?);
     }
     Ok(out)
 }
@@ -1177,6 +1190,9 @@ mod tests {
         assert!(items[0].is_image);
         assert!(root(&wd).join("photo.png").is_file());
         assert!(root(&wd).join("docs/sub/x.txt").is_file());
+        // copy only: the dragged-from sources stay untouched
+        assert!(outside.join("photo.png").is_file());
+        assert_eq!(fs::read_to_string(outside.join("docs/sub/x.txt")).unwrap(), "y");
 
         let again = import(
             &conn,
@@ -1199,6 +1215,31 @@ mod tests {
         ));
         fs::remove_dir_all(&wd).unwrap();
         fs::remove_dir_all(&outside).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_rejects_escaping_missing_and_symlinked_dests() {
+        let (wd, conn, id) = setup("fs-import-dest");
+        let outside = temp_test_dir("fs-import-dest-src");
+        fs::write(outside.join("f.txt"), "x").unwrap();
+        let escape = temp_test_dir("fs-import-dest-outside");
+        fs::create_dir_all(escape.join("target")).unwrap();
+        std::os::unix::fs::symlink(escape.join("target"), root(&wd).join("dirlink")).unwrap();
+        for bad in ["../x", "dirlink", "нет-такого"] {
+            assert!(
+                matches!(
+                    import(&conn, &wd, id, bad, vec![outside.join("f.txt").display().to_string()]),
+                    Err(AppError::Invalid(_))
+                ),
+                "dest accepted: {bad:?}"
+            );
+        }
+        // nothing landed through the symlinked folder
+        assert!(!escape.join("target/f.txt").exists());
+        fs::remove_dir_all(&wd).unwrap();
+        fs::remove_dir_all(&outside).unwrap();
+        fs::remove_dir_all(&escape).unwrap();
     }
 
     #[test]

@@ -322,6 +322,11 @@ export const notesRename = (rel: string, newName: string) =>
 export const notesMove = (fromRel: string, toDirRel: string) =>
   invoke<FsEntry>("notes_move", { fromRel, toDirRel });
 
+// Finder drag-and-drop copy into the vault (SPEC 4.2): sources are copied,
+// never moved; destRel "" is the vault root. Emits "notes-changed" per item.
+export const notesImport = (destRel: string, sourcePaths: string[]) =>
+  invoke<FsEntry[]>("notes_import", { destRel, sourcePaths });
+
 export const notesDelete = (rel: string) => invoke<void>("notes_delete", { rel });
 
 // Quick capture (SPEC quick capture slice): one entry from the capture modal

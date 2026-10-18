@@ -5,6 +5,7 @@ import { confirmRemove } from "../../shared/confirm";
 import { usePointerDrag } from "../../hooks/usePointerDrag";
 import { toMessage } from "../chat/chatShared";
 import RenameInput from "../files/RenameInput";
+import { useOsFileDrag } from "../files/useOsFileDrag";
 import {
   EntryIcon,
   IconChevron,
@@ -162,6 +163,21 @@ export default function NotesTree({
     null,
   );
   const [noteTemplates, setNoteTemplates] = useState<TemplateSummary[]>([]);
+
+  // Finder drag-and-drop (SPEC 4.2): drops copy files/folders into the vault
+  // via notes_import; the tree refreshes through the notes-changed bump of
+  // treeVersion. The hovered target is the folder row or the tree root.
+  const importFiles = async (destRel: string, sourcePaths: string[]) => {
+    try {
+      await ipc.notesImport(destRel, sourcePaths);
+    } catch (e) {
+      setError(toMessage(e));
+    }
+  };
+  const osHover = useOsFileDrag(
+    () => selectedDirRel,
+    (dest, paths) => void importFiles(dest, paths),
+  );
 
   // Note templates for the «Из шаблона» picker; a failed load just hides it.
   useEffect(() => {
@@ -343,7 +359,7 @@ export default function NotesTree({
           selected={selectedRelPath === entry.relPath}
           renaming={renamingPath === entry.relPath}
           dragging={draggingId === entry.relPath}
-          dropOver={!!dropTarget && dropTarget.container === entry.relPath}
+          dropOver={dropTarget?.container === entry.relPath || osHover === entry.relPath}
           noDrop={
             !!dropTarget && dropTarget.container === entry.relPath && !canDrop(draggingId ?? "", entry.relPath)
           }
@@ -412,7 +428,9 @@ export default function NotesTree({
       </div>
       {error && <div className="tree-error">{error}</div>}
       <div
-        className={dropTarget?.container === "" ? "notes-tree drop-over" : "notes-tree"}
+        className={
+          dropTarget?.container === "" || osHover === "" ? "notes-tree drop-over" : "notes-tree"
+        }
         data-drop-dir=""
       >
         {body}
