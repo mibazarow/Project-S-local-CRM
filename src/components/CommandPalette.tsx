@@ -28,7 +28,7 @@ const KIND_LABELS: Record<GlobalHit["kind"], string> = {
 
 // Case-insensitive scoring: prefix beats substring, substring beats a fuzzy
 // subsequence; null means no match.
-function score(text: string, query: string): number | null {
+export function score(text: string, query: string): number | null {
   const t = text.toLowerCase();
   const at = t.indexOf(query);
   if (at === 0) return 100;
