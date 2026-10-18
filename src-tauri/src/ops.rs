@@ -715,4 +715,93 @@ mod tests {
         drop(conn);
         fs::remove_dir_all(&wd).unwrap();
     }
+
+    // --- backup dedupe guard (S5.5e): the per-working-dir set behind
+    // BackupGuard, exercised directly with fake keys (no disk, no real zip). ---
+
+    fn guard_key(tag: &str) -> PathBuf {
+        PathBuf::from(format!("/project-s-test/backup-guard/{tag}"))
+    }
+
+    #[test]
+    fn backup_guard_first_acquire_succeeds() {
+        let wd = guard_key("first");
+        assert!(BackupGuard::try_acquire(&wd).is_some());
+    }
+
+    #[test]
+    fn backup_guard_second_acquire_same_target_is_rejected() {
+        let wd = guard_key("dup");
+        let first = BackupGuard::try_acquire(&wd);
+        assert!(first.is_some());
+        // While the first guard is held a second trigger for the same dir skips.
+        assert!(BackupGuard::try_acquire(&wd).is_none());
+        drop(first);
+    }
+
+    #[test]
+    fn backup_guard_distinct_targets_are_independent() {
+        let a = guard_key("distinct-a");
+        let b = guard_key("distinct-b");
+        let ga = BackupGuard::try_acquire(&a);
+        let gb = BackupGuard::try_acquire(&b);
+        assert!(ga.is_some() && gb.is_some());
+    }
+
+    #[test]
+    fn backup_guard_drop_releases_the_target() {
+        let wd = guard_key("drop");
+        let g = BackupGuard::try_acquire(&wd);
+        assert!(g.is_some());
+        drop(g);
+        assert!(BackupGuard::try_acquire(&wd).is_some());
+    }
+
+    #[test]
+    fn backup_guard_releases_on_early_return() {
+        fn attempt(wd: &Path) -> std::result::Result<(), ()> {
+            let _guard = BackupGuard::try_acquire(wd).ok_or(())?;
+            // Mirrors auto_backup's `create_backup(...)?` failing right after the
+            // guard is taken: the `?` returns early and drops the guard.
+            Err(())
+        }
+        let wd = guard_key("early-return");
+        assert!(attempt(&wd).is_err());
+        assert!(BackupGuard::try_acquire(&wd).is_some());
+    }
+
+    #[test]
+    fn backup_guard_concurrent_acquires_allow_exactly_one_winner() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Barrier};
+
+        let wd = guard_key("concurrent");
+        let winners = Arc::new(AtomicUsize::new(0));
+        let start = Arc::new(Barrier::new(4));
+        let hold = Arc::new(Barrier::new(4));
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let wd = wd.clone();
+                let winners = Arc::clone(&winners);
+                let start = Arc::clone(&start);
+                let hold = Arc::clone(&hold);
+                std::thread::spawn(move || {
+                    start.wait();
+                    let guard = BackupGuard::try_acquire(&wd);
+                    if guard.is_some() {
+                        winners.fetch_add(1, Ordering::SeqCst);
+                    }
+                    // Everyone parks here while the winner still holds the guard,
+                    // so a loser cannot slip in and re-acquire before the round ends.
+                    hold.wait();
+                    drop(guard);
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap();
+        }
+        assert_eq!(winners.load(Ordering::SeqCst), 1);
+        assert!(BackupGuard::try_acquire(&wd).is_some());
+    }
 }
