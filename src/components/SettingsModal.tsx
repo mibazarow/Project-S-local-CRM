@@ -6,7 +6,7 @@ import {
   type FormEvent,
   type KeyboardEvent,
 } from "react";
-import { open } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import * as ipc from "../api/ipc";
 import type {
   AppConfig,
@@ -17,6 +17,7 @@ import type {
   IndexingConfig,
   LlmConfig,
   McpServerStatus,
+  ProjectDto,
   SkillInfo,
   TrashDto,
   VisionStatus,
@@ -81,6 +82,16 @@ function fmtRfc(s: string): string {
 // SQLite "YYYY-MM-DD HH:MM:SS" (localtime, trash deleted_at) → drop seconds.
 function fmtLocal(s: string): string {
   return s.length >= 16 ? s.slice(0, 16) : s;
+}
+
+// Local timestamp for a suggested export filename (YYYYMMDD-HHMMSS), matching
+// the backend's default export name format.
+function exportStamp(): string {
+  const d = new Date();
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(
+    d.getMinutes(),
+  )}${p(d.getSeconds())}`;
 }
 
 function visionLabel(v: VisionStatus | null): string {
@@ -339,6 +350,19 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   const [trash, setTrash] = useState<TrashDto[] | null>(null);
   const [trashError, setTrashError] = useState<string | null>(null);
   const [trashBusyId, setTrashBusyId] = useState<number | null>(null);
+
+  // Import/export (Прочее tab): folder/.zip/Obsidian imports into a project or
+  // the Notes vault, and project/vault → .zip exports.
+  const [projects, setProjects] = useState<ProjectDto[]>([]);
+  const [importTarget, setImportTarget] = useState<"project" | "notes">("project");
+  const [importProjectId, setImportProjectId] = useState<number | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importNote, setImportNote] = useState<string | null>(null);
+  const [importError, setImportError] = useState<string | null>(null);
+  const [exportProjectId, setExportProjectId] = useState<number | null>(null);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [exportNote, setExportNote] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const [skills, setSkills] = useState<SkillInfo[] | null>(null);
   const [skillsError, setSkillsError] = useState<string | null>(null);
@@ -658,6 +682,13 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
       .catch((e) => setTrashError(errMsg(e)));
   }, []);
 
+  const loadProjects = useCallback(() => {
+    void ipc
+      .listProjects()
+      .then(setProjects)
+      .catch(() => setProjects([]));
+  }, []);
+
   useEffect(() => {
     void ipc.getWorkingDir().then(setWorkingDir).catch(() => setWorkingDir(null));
     void ipc.configDirPath().then(setConfigDir).catch(() => setConfigDir(""));
@@ -672,6 +703,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     loadMcp();
     loadBackupStatus();
     loadTrash();
+    loadProjects();
 
     let cancelled = false;
     const unlisteners: (() => void)[] = [];
@@ -698,6 +730,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
       ),
     );
     track(ipc.onSkillsChanged(() => loadSkills()));
+    track(ipc.onProjectsChanged(() => loadProjects()));
     return () => {
       cancelled = true;
       unlisteners.forEach((u) => u());
@@ -720,6 +753,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
     loadMcp,
     loadBackupStatus,
     loadTrash,
+    loadProjects,
   ]);
 
   const reindex = () => {
@@ -766,6 +800,77 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
       })
       .catch((e) => setError(errMsg(e)))
       .finally(() => setBackupBusy(false));
+  };
+
+  // Import a folder / .zip / Obsidian vault. folder and archive go into the
+  // selected target (project needs a chosen project); Obsidian always lands in
+  // the Notes vault. The picker is a directory chooser except for the archive.
+  const runImport = async (kind: "folder" | "archive" | "obsidian") => {
+    setImportBusy(true);
+    setImportNote(null);
+    setImportError(null);
+    try {
+      const picked = await open(
+        kind === "archive"
+          ? {
+              multiple: false,
+              title: "Импорт архива .zip",
+              filters: [{ name: "Zip-архив", extensions: ["zip"] }],
+            }
+          : {
+              directory: true,
+              title: kind === "obsidian" ? "Импорт Obsidian vault" : "Импорт папки",
+            },
+      );
+      if (typeof picked !== "string" || !picked) return;
+      if (kind !== "obsidian" && importTarget === "project" && importProjectId == null) {
+        setImportError("Выбери проект для импорта");
+        return;
+      }
+      const s =
+        kind === "obsidian"
+          ? await ipc.importObsidian(picked)
+          : kind === "folder"
+            ? await ipc.importFolder(importTarget, importProjectId, picked)
+            : await ipc.importArchive(importTarget, importProjectId, picked);
+      const skipped = s.skipped > 0 ? ` · пропущено папок: ${s.skipped}` : "";
+      setImportNote(`Импортировано файлов: ${s.importedFiles}${skipped} → ${s.dest}`);
+    } catch (e) {
+      setImportError(errMsg(e));
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
+  // Export a project or the whole Notes vault to a .zip. The save dialog
+  // suggests "<name>-<timestamp>.zip"; the user picks the destination folder.
+  const doExport = async (kind: "project" | "notes") => {
+    setExportBusy(true);
+    setExportNote(null);
+    setExportError(null);
+    try {
+      if (kind === "project" && exportProjectId == null) {
+        setExportError("Выбери проект для экспорта");
+        return;
+      }
+      const proj = kind === "project" ? projects.find((p) => p.id === exportProjectId) : null;
+      const suggested = `${kind === "project" ? (proj?.name ?? "project") : "notes"}-${exportStamp()}.zip`;
+      const dest = await save({
+        title: kind === "project" ? "Экспорт проекта в .zip" : "Экспорт заметок в .zip",
+        defaultPath: suggested,
+        filters: [{ name: "Zip-архив", extensions: ["zip"] }],
+      });
+      if (typeof dest !== "string" || !dest) return;
+      const r =
+        kind === "project"
+          ? await ipc.exportProject(exportProjectId as number, dest)
+          : await ipc.exportNotes(dest);
+      setExportNote(`Готово: ${r.path} · файлов ${r.files}`);
+    } catch (e) {
+      setExportError(errMsg(e));
+    } finally {
+      setExportBusy(false);
+    }
   };
 
   // Trash restore/purge emit trash-changed, which reloads the list; the busy id
@@ -1824,6 +1929,82 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
                 macOS LaunchAgent, чтобы расписания работали без открытого окна. По умолчанию
                 выключено.
               </div>
+              <div className="schedule-group-title">Импорт/Экспорт</div>
+              <div className="set-row">
+                <label>Куда импортировать</label>
+                <select
+                  value={importTarget}
+                  onChange={(e) => setImportTarget(e.target.value as "project" | "notes")}
+                >
+                  <option value="project">Проект</option>
+                  <option value="notes">Заметки</option>
+                </select>
+              </div>
+              {importTarget === "project" && (
+                <div className="set-row">
+                  <label>Проект для импорта</label>
+                  <select
+                    value={importProjectId ?? ""}
+                    onChange={(e) =>
+                      setImportProjectId(e.target.value ? Number(e.target.value) : null)
+                    }
+                  >
+                    <option value="">— выбери проект —</option>
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div className="llm-actions">
+                <button className="ghost-btn" disabled={importBusy} onClick={() => void runImport("folder")}>
+                  Папка
+                </button>
+                <button className="ghost-btn" disabled={importBusy} onClick={() => void runImport("archive")}>
+                  Архив .zip
+                </button>
+                <button className="ghost-btn" disabled={importBusy} onClick={() => void runImport("obsidian")}>
+                  Obsidian vault
+                </button>
+              </div>
+              <div className="set-hint">
+                Папка и архив идут в выбранную цель, Obsidian vault — в заметки без служебных папок
+                (.obsidian, .trash, .git). При совпадении имени добавляется суффикс « copy», файлы не
+                перезаписываются.
+              </div>
+              {importNote && <div className="set-hint">{importNote}</div>}
+              {importError && <div className="set-error">{importError}</div>}
+              <div className="set-row">
+                <label>Проект для экспорта</label>
+                <select
+                  value={exportProjectId ?? ""}
+                  onChange={(e) =>
+                    setExportProjectId(e.target.value ? Number(e.target.value) : null)
+                  }
+                >
+                  <option value="">— выбери проект —</option>
+                  {projects.map((p) => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="llm-actions">
+                <button className="ghost-btn" disabled={exportBusy} onClick={() => void doExport("project")}>
+                  Экспорт проекта
+                </button>
+                <button className="ghost-btn" disabled={exportBusy} onClick={() => void doExport("notes")}>
+                  Экспорт заметок
+                </button>
+              </div>
+              <div className="set-hint">
+                Проект и заметки упаковываются в .zip: диалог предлагает имя, папку выбираешь сам.
+              </div>
+              {exportNote && <div className="set-hint">{exportNote}</div>}
+              {exportError && <div className="set-error">{exportError}</div>}
               <div className="schedule-group-title">Корзина</div>
               <div className="set-hint">
                 Удалённые файлы, папки и задачи попадают в корзину и хранятся 30 дней.

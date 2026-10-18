@@ -13,11 +13,13 @@ import type {
   ConfigKind,
   ConnectionTest,
   EmbedStatus,
+  ExportSummary,
   FsChanged,
   FsEntry,
   GlobalHit,
   IndexChanged,
   ImportResult,
+  ImportSummary,
   McpServerStatus,
   MemoryChanged,
   MemoryDto,
@@ -82,6 +84,46 @@ export const getAutostart = () => invoke<boolean>("get_autostart");
 export const setAutostart = (enabled: boolean) => invoke<boolean>("set_autostart", { enabled });
 
 export const backupStatus = () => invoke<BackupStatus>("backup_status");
+
+// Import/export (SPEC import/export slice). target selects the landing spot:
+// "project" (needs projectId) or "notes". destRel is an optional existing
+// subfolder inside the target; "" / null means the target root. Exports take
+// an optional explicit destination .zip; null uses the backend default under
+// Settings/backups/exports/.
+export const importFolder = (
+  target: "project" | "notes",
+  projectId: number | null,
+  sourcePath: string,
+  destRel?: string,
+) =>
+  invoke<ImportSummary>("import_folder", {
+    target,
+    projectId,
+    sourcePath,
+    destRel: destRel ?? null,
+  });
+
+export const importArchive = (
+  target: "project" | "notes",
+  projectId: number | null,
+  sourcePath: string,
+  destRel?: string,
+) =>
+  invoke<ImportSummary>("import_archive", {
+    target,
+    projectId,
+    sourcePath,
+    destRel: destRel ?? null,
+  });
+
+export const importObsidian = (sourcePath: string, destRel?: string) =>
+  invoke<ImportSummary>("import_obsidian", { sourcePath, destRel: destRel ?? null });
+
+export const exportProject = (projectId: number, destPath?: string) =>
+  invoke<ExportSummary>("export_project", { projectId, destPath: destPath ?? null });
+
+export const exportNotes = (destPath?: string) =>
+  invoke<ExportSummary>("export_notes", { destPath: destPath ?? null });
 
 // Trash and version history (SPEC trash/versions slice). version_list/restore
 // are keyed by (scope, absolute path); restore returns the stored content and

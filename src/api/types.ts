@@ -177,6 +177,21 @@ export interface BackupInfo {
   bytes: number;
 }
 
+// importer::ImportSummary — result of import_folder / import_archive /
+// import_obsidian. skipped counts folders the importer deliberately ignored
+// (Obsidian internals, symlinks); dest is where the import landed.
+export interface ImportSummary {
+  importedFiles: number;
+  skipped: number;
+  dest: string;
+}
+
+// importer::ExportSummary — result of export_project / export_notes.
+export interface ExportSummary {
+  path: string;
+  files: number;
+}
+
 // ops::BackupStatus — snapshot of the auto-backup state (backup_status).
 // lastBackupAt is RFC3339 UTC; due means a backup is overdue right now.
 export interface BackupStatus {

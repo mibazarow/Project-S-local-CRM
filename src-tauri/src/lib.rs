@@ -12,6 +12,7 @@ mod export;
 mod fs_ops;
 mod harness;
 mod index;
+mod importer;
 mod journal;
 mod llm;
 mod mcp;
@@ -1607,6 +1608,117 @@ fn backup_status(state: State<AppState>) -> Result<ops::BackupStatus> {
     ops::backup_status(&state.working_dir()?)
 }
 
+// Import/export (SPEC import/export slice): folders, .zip archives and
+// Obsidian vaults into a project or the Notes vault; a project or the whole
+// vault out to a .zip. Imports reindex the target best-effort and notify the
+// UI (fs-changed / notes-changed / projects-changed).
+
+// Best-effort reindex + UI notify after a project/notes import.
+fn notify_import(
+    app: &AppHandle,
+    state: &AppState,
+    wd: &std::path::Path,
+    target: &str,
+    project_id: Option<i64>,
+    dest_rel: &str,
+) {
+    match target {
+        "project" => {
+            if let Some(pid) = project_id {
+                let _ = index::index_project(state, pid);
+                emit_fs_changed(app, pid, dest_rel);
+                emit_projects_changed(app);
+            }
+        }
+        "notes" => {
+            let _ = index::index_notes(wd);
+            emit_notes_changed(app, dest_rel);
+        }
+        _ => {}
+    }
+}
+
+#[tauri::command]
+fn import_folder(
+    app: AppHandle,
+    state: State<AppState>,
+    target: String,
+    project_id: Option<i64>,
+    source_path: String,
+    dest_rel: Option<String>,
+) -> Result<importer::ImportSummary> {
+    let wd = state.working_dir()?;
+    let dest_rel = dest_rel.unwrap_or_default();
+    let summary = with_db(&state, |conn| {
+        importer::import_folder(conn, &wd, &target, project_id, &source_path, &dest_rel)
+    })?;
+    notify_import(&app, &state, &wd, &target, project_id, &dest_rel);
+    Ok(summary)
+}
+
+#[tauri::command]
+fn import_archive(
+    app: AppHandle,
+    state: State<AppState>,
+    target: String,
+    project_id: Option<i64>,
+    source_path: String,
+    dest_rel: Option<String>,
+) -> Result<importer::ImportSummary> {
+    let wd = state.working_dir()?;
+    let dest_rel = dest_rel.unwrap_or_default();
+    let summary = with_db(&state, |conn| {
+        importer::import_archive(conn, &wd, &target, project_id, &source_path, &dest_rel)
+    })?;
+    notify_import(&app, &state, &wd, &target, project_id, &dest_rel);
+    Ok(summary)
+}
+
+#[tauri::command]
+fn import_obsidian(
+    app: AppHandle,
+    state: State<AppState>,
+    source_path: String,
+    dest_rel: Option<String>,
+) -> Result<importer::ImportSummary> {
+    let wd = state.working_dir()?;
+    let dest_rel = dest_rel.unwrap_or_default();
+    let summary = importer::import_obsidian(&wd, &source_path, &dest_rel)?;
+    let _ = index::index_notes(&wd);
+    emit_notes_changed(&app, dest_rel);
+    Ok(summary)
+}
+
+// Blocking zip work runs on the blocking pool with its own DB connection
+// (same pattern as create_backup).
+#[tauri::command]
+async fn export_project(
+    state: State<'_, AppState>,
+    project_id: i64,
+    dest_path: Option<String>,
+) -> Result<importer::ExportSummary> {
+    let wd = state.working_dir()?;
+    let dest = dest_path.map(PathBuf::from);
+    tauri::async_runtime::spawn_blocking(move || {
+        let conn = db::open(&paths::db_path(&wd))?;
+        importer::export_project(&conn, &wd, project_id, dest.as_deref())
+    })
+    .await
+    .map_err(|e| AppError::Io(format!("export task: {e}")))?
+}
+
+#[tauri::command]
+async fn export_notes(
+    state: State<'_, AppState>,
+    dest_path: Option<String>,
+) -> Result<importer::ExportSummary> {
+    let wd = state.working_dir()?;
+    let dest = dest_path.map(PathBuf::from);
+    tauri::async_runtime::spawn_blocking(move || importer::export_notes(&wd, dest.as_deref()))
+        .await
+        .map_err(|e| AppError::Io(format!("export task: {e}")))?
+}
+
 // The OS plugin is the source of truth; a plugin/OS failure falls back to
 // the app.json mirror instead of breaking the UI.
 #[tauri::command]
@@ -1851,6 +1963,11 @@ pub fn run() {
             clear_tmp,
             backups_dir,
             backup_status,
+            import_folder,
+            import_archive,
+            import_obsidian,
+            export_project,
+            export_notes,
             get_autostart,
             set_autostart
         ])
