@@ -533,6 +533,27 @@ mod tests {
     }
 
     #[test]
+    fn task_delete_does_not_touch_task_links() {
+        let conn = conn();
+        conn.execute(
+            "INSERT INTO projects (name, path, created_at) VALUES ('example', '/tmp/example', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO tasks (project_id, title, created_at) VALUES (1, 'связанная', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let task_id: i64 = conn.query_row("SELECT id FROM tasks LIMIT 1", [], |r| r.get(0)).unwrap();
+        create(&conn, "chat", "7", "task", &task_id.to_string()).unwrap();
+        create(&conn, "task", &task_id.to_string(), "chat", "7").unwrap();
+        assert_eq!(link_count(&conn), 2);
+        crate::tasks::task_delete(&conn, task_id).unwrap();
+        assert_eq!(link_count(&conn), 2, "task links are soft ids and survive the delete");
+    }
+
+    #[test]
     fn related_tool_is_read_only_and_lists_linked_entities() {
         let conn = conn();
         create(&conn, "chat", "7", "task", "1").unwrap();

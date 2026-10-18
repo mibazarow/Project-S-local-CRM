@@ -441,6 +441,47 @@ pub(crate) fn task_delete_row(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+const RESTORE_COLUMNS: &str = "project_id, title, status, comment, due_date, remind_at,
+                                tags, position, created_at, closed_at, priority, checklist,
+                                recurrence, is_priority";
+
+fn restore_params(snapshot: &TaskSnapshot) -> Vec<&dyn rusqlite::ToSql> {
+    vec![
+        &snapshot.project_id,
+        &snapshot.title,
+        &snapshot.status,
+        &snapshot.comment,
+        &snapshot.due_date,
+        &snapshot.remind_at,
+        &snapshot.tags,
+        &snapshot.position,
+        &snapshot.created_at,
+        &snapshot.closed_at,
+        &snapshot.priority,
+        &snapshot.checklist,
+        &snapshot.recurrence,
+        &snapshot.is_priority,
+    ]
+}
+
+fn insert_task_row(conn: &Connection, snapshot: &TaskSnapshot, with_id: bool) -> Result<()> {
+    let mut params = restore_params(snapshot);
+    let columns = if with_id {
+        params.insert(0, &snapshot.id);
+        "id, "
+    } else {
+        ""
+    };
+    let placeholders = vec!["?"; params.len()].join(", ");
+    conn.execute(
+        &format!(
+            "INSERT INTO tasks ({columns}{RESTORE_COLUMNS}) VALUES ({placeholders})"
+        ),
+        params.as_slice(),
+    )?;
+    Ok(())
+}
+
 pub(crate) fn task_restore_snapshot(conn: &Connection, snapshot: &TaskSnapshot) -> Result<()> {
     let updated = conn.execute(
         "UPDATE tasks SET project_id = ?1, title = ?2, status = ?3, comment = ?4,
@@ -466,28 +507,7 @@ pub(crate) fn task_restore_snapshot(conn: &Connection, snapshot: &TaskSnapshot) 
         ],
     )?;
     if updated == 0 {
-        conn.execute(
-            "INSERT INTO tasks (id, project_id, title, status, comment, due_date, remind_at,
-                                tags, position, created_at, closed_at, priority, checklist, recurrence, is_priority)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-            params![
-                snapshot.id,
-                snapshot.project_id,
-                snapshot.title,
-                snapshot.status,
-                snapshot.comment,
-                snapshot.due_date,
-                snapshot.remind_at,
-                snapshot.tags,
-                snapshot.position,
-                snapshot.created_at,
-                snapshot.closed_at,
-                snapshot.priority,
-                snapshot.checklist,
-                snapshot.recurrence,
-                snapshot.is_priority
-            ],
-        )?;
+        insert_task_row(conn, snapshot, true)?;
     }
     fts_sync(conn, snapshot.id)?;
     Ok(())
@@ -507,31 +527,11 @@ pub(crate) fn task_restore_from_trash(conn: &Connection, row: &crate::reliabilit
         |r| r.get(0),
     )?;
     if taken == 0 {
-        conn.execute(
-            "INSERT INTO tasks (id, project_id, title, status, comment, due_date, remind_at,
-                                tags, position, created_at, closed_at, priority, checklist, recurrence, is_priority)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
-            params![
-                snapshot.id, snapshot.project_id, snapshot.title, snapshot.status,
-                snapshot.comment, snapshot.due_date, snapshot.remind_at, snapshot.tags,
-                snapshot.position, snapshot.created_at, snapshot.closed_at,
-                snapshot.priority, snapshot.checklist, snapshot.recurrence, snapshot.is_priority
-            ],
-        )?;
+        task_restore_snapshot(conn, &snapshot)?;
     } else {
-        conn.execute(
-            "INSERT INTO tasks (project_id, title, status, comment, due_date, remind_at,
-                                tags, position, created_at, closed_at, priority, checklist, recurrence, is_priority)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-            params![
-                snapshot.project_id, snapshot.title, snapshot.status,
-                snapshot.comment, snapshot.due_date, snapshot.remind_at, snapshot.tags,
-                snapshot.position, snapshot.created_at, snapshot.closed_at,
-                snapshot.priority, snapshot.checklist, snapshot.recurrence, snapshot.is_priority
-            ],
-        )?;
+        insert_task_row(conn, &snapshot, false)?;
+        fts_sync(conn, conn.last_insert_rowid())?;
     }
-    fts_sync(conn, conn.last_insert_rowid())?;
     Ok(snapshot.project_id)
 }
 
@@ -698,6 +698,7 @@ mod tests {
     use crate::db::schema;
     use crate::onboarding::temp_test_dir;
     use crate::projects;
+    use crate::reliability;
     use std::fs;
     use std::path::PathBuf;
 
@@ -758,6 +759,109 @@ mod tests {
             task_create(&conn, 999, "x", None),
             Err(AppError::Invalid(_))
         ));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn delete_leaves_a_task_trash_row_with_the_full_snapshot() {
+        let (wd, conn, pid) = setup("tasks-trash-shape");
+        let t = task_create_with(
+            &conn,
+            pid,
+            "отчёт",
+            Some("progress".into()),
+            Some("2099-01-02".into()),
+            Some(true),
+            Some(vec![ChecklistItem { text: "send".into(), done: false }]),
+            Some("weekly".into()),
+        )
+        .unwrap();
+        let (project_id, trash_id) = task_delete_with_trash(&conn, t.id).unwrap();
+        assert_eq!(project_id, pid);
+        let row: (String, String, String, String, String, String, i64) = conn
+            .query_row(
+                "SELECT scope, kind, original_path, stored_path, name, meta, id
+                 FROM trash WHERE id = ?1",
+                params![trash_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "task");
+        assert_eq!(row.1, "task");
+        assert_eq!(row.2, format!("task:{}", t.id));
+        assert_eq!(row.3, "", "a task trash row keeps no file on disk");
+        assert_eq!(row.4, "отчёт");
+        assert_eq!(row.6, trash_id);
+        let meta: serde_json::Value = serde_json::from_str(&row.5).unwrap();
+        assert_eq!(meta["id"], t.id);
+        assert_eq!(meta["projectId"], pid);
+        assert_eq!(meta["status"], "progress");
+        assert_eq!(meta["dueDate"], "2099-01-02");
+        assert_eq!(meta["isPriority"], true);
+        assert_eq!(meta["recurrence"], "weekly");
+        assert_eq!(meta["checklist"], "[{\"text\":\"send\",\"done\":false}]");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn delete_of_a_missing_task_errors_without_touching_rows_or_trash() {
+        let (wd, conn, pid) = setup("tasks-delete-rollback");
+        let t = task_create(&conn, pid, "keep", None).unwrap();
+        assert!(matches!(task_delete_with_trash(&conn, 9999), Err(AppError::Invalid(_))));
+        assert_eq!(tasks_list(&conn, pid).unwrap().len(), 1);
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM trash", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "a failed delete must not leave a trash row"
+        );
+        assert_eq!(task_snapshot(&conn, t.id).unwrap().title, "keep");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn trash_restore_reinserts_the_same_id_and_reindexes_fts() {
+        let (wd, conn, pid) = setup("tasks-trash-restore");
+        let t = task_create(&conn, pid, "восстановить", None).unwrap();
+        let (_, trash_id) = task_delete_with_trash(&conn, t.id).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM tasks_fts WHERE tasks_fts MATCH ?1",
+                params!["восстановить"],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0,
+            "delete must clear the fts mirror"
+        );
+        let row = reliability::TrashDto {
+            id: trash_id,
+            scope: "task".into(),
+            kind: "task".into(),
+            original_path: format!("task:{}", t.id),
+            stored_path: String::new(),
+            name: "восстановить".into(),
+            deleted_at: String::new(),
+            meta: conn
+                .query_row("SELECT meta FROM trash WHERE id = ?1", params![trash_id], |r| r.get(0))
+                .unwrap(),
+            project_id: None,
+        };
+        let restored_pid = task_restore_from_trash(&conn, &row).unwrap();
+        assert_eq!(restored_pid, pid);
+        let list = tasks_list(&conn, pid).unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, t.id, "restore must reuse the original id");
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM tasks_fts WHERE tasks_fts MATCH ?1",
+                params!["восстановить"],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "restore must reindex the fts mirror"
+        );
         fs::remove_dir_all(&wd).unwrap();
     }
 

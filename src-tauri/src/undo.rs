@@ -604,6 +604,38 @@ mod tests {
     }
 
     #[test]
+    fn task_delete_undo_restores_the_task_and_clears_the_trash_entry() {
+        let (wd, conn) = setup("undo-task-delete");
+        let project = projects::create_project(&conn, &wd, "example-ru").unwrap();
+        let task = tasks::task_create(&conn, project.id, "удалить меня", None).unwrap();
+        let (pid, trash_id) = tasks::task_delete_with_trash(&conn, task.id).unwrap();
+        push_task_delete(&conn, trash_id, pid).unwrap();
+        assert!(tasks::tasks_list(&conn, project.id).unwrap().is_empty());
+        assert_eq!(reliability::trash_list(&conn).unwrap().len(), 1);
+        let out = undo_last(&conn, &wd).unwrap();
+        assert_eq!(out.undone_kind, "task_delete");
+        assert_eq!(out.task_project_id, Some(project.id));
+        assert_eq!(out.trash_id, Some(trash_id));
+        let rest = tasks::tasks_list(&conn, project.id).unwrap();
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].id, task.id, "undo must reuse the original id");
+        assert_eq!(rest[0].title, "удалить меня");
+        assert!(reliability::trash_list(&conn).unwrap().is_empty());
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM tasks_fts WHERE tasks_fts MATCH ?1",
+                params!["удалить"],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "undo must reindex the fts mirror"
+        );
+        assert!(list(&conn, None).unwrap().is_empty(), "the undo entry must be popped");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
     fn undo_list_orders_newest_first_and_prunes() {
         let (wd, conn) = setup("undo-list");
         for i in 0..(UNDO_LIMIT + 1) {
