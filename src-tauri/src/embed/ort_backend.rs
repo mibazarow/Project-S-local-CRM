@@ -17,8 +17,8 @@ struct Inner {
 }
 
 // ONNX Runtime allows exactly one environment per process, and ort never
-// releases it, so the app's per-operation OrtEmbedder instances must share
-// one lazily created environment kept alive for the process lifetime.
+// releases it, so the process-wide cached OrtEmbedder instances share one
+// lazily created environment kept alive for the process lifetime.
 fn environment() -> std::result::Result<&'static ort::environment::Environment, String> {
     static ENV: OnceLock<std::result::Result<ort::environment::Environment, String>> = OnceLock::new();
     ENV.get_or_init(|| ort::init().build().map_err(|e| format!("ort env: {e}")))
@@ -319,8 +319,9 @@ mod tests {
             related > unrelated,
             "related {related:.4} !> unrelated {unrelated:.4}"
         );
-        // The app creates a fresh embedder per operation: a second instance
-        // must reuse the process-wide ort environment and stay deterministic.
+        // select_embedder now hands out one cached instance per model dir;
+        // a manually built second instance must still reuse the process-wide
+        // ort environment and stay deterministic.
         let second = OrtEmbedder::new(crate::embed::model_store::model_dir(&wd), EMBED_DIM);
         let again = second
             .embed_texts(std::slice::from_ref(&texts[0]))

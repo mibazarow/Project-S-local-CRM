@@ -3,6 +3,13 @@ use serde::Serialize;
 use std::path::Path;
 use std::sync::Arc;
 
+#[cfg(feature = "ort-backend")]
+use std::collections::HashMap;
+#[cfg(feature = "ort-backend")]
+use std::path::PathBuf;
+#[cfg(feature = "ort-backend")]
+use std::sync::{Mutex, OnceLock};
+
 pub mod model_store;
 
 #[cfg(feature = "ort-backend")]
@@ -40,14 +47,48 @@ impl Embedder for NoopEmbedder {
 // is the only backend. Noop stays as the internal fallback for when the
 // model files are physically missing (or the ort-backend feature is not
 // compiled), so the app keeps working on FTS alone.
+
+// Process-wide embedder cache: the ONNX session + tokenizer load once per
+// model directory and are shared by every search/index call (SPEC <300 ms).
+// Keyed by the model dir, which is unique per working dir and backend.
+#[cfg(feature = "ort-backend")]
+static EMBEDDER_CACHE: OnceLock<Mutex<HashMap<PathBuf, Arc<dyn Embedder>>>> = OnceLock::new();
+
+#[cfg(feature = "ort-backend")]
+fn embedder_cache() -> &'static Mutex<HashMap<PathBuf, Arc<dyn Embedder>>> {
+    EMBEDDER_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+// Look up by key; construct once on a miss, share the instance afterwards.
+#[cfg(feature = "ort-backend")]
+fn cached_embedder<F>(key: PathBuf, factory: F) -> Arc<dyn Embedder>
+where
+    F: FnOnce() -> Arc<dyn Embedder>,
+{
+    let mut cache = embedder_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(existing) = cache.get(&key) {
+        return Arc::clone(existing);
+    }
+    let embedder = factory();
+    cache.insert(key, Arc::clone(&embedder));
+    embedder
+}
+
 #[cfg(feature = "ort-backend")]
 pub fn select_embedder(wd: &Path) -> Arc<dyn Embedder> {
+    let dir = model_store::model_dir(wd);
     if model_store::model_present(wd) {
-        Arc::new(ort_backend::OrtEmbedder::new(model_store::model_dir(wd), EMBED_DIM))
+        cached_embedder(dir.clone(), move || {
+            Arc::new(ort_backend::OrtEmbedder::new(dir, EMBED_DIM))
+        })
     } else {
+        // Noop is cheap to construct, so it stays uncached: the model files
+        // can appear between two calls and the next one must pick them up.
         eprintln!(
             "embedding: model files are missing in {}; falling back to noop (FTS only). Provision them with `cargo test provision_real_working_dir -- --ignored`.",
-            model_store::model_dir(wd).display()
+            dir.display()
         );
         Arc::new(NoopEmbedder)
     }
@@ -187,6 +228,120 @@ mod tests {
         #[cfg(feature = "ort-backend")]
         assert_eq!(select_embedder(&wd).backend_id(), "ort");
         std::fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[cfg(feature = "ort-backend")]
+    static FAKE_CONSTRUCTIONS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    #[cfg(feature = "ort-backend")]
+    struct CountingEmbedder;
+
+    #[cfg(feature = "ort-backend")]
+    impl Embedder for CountingEmbedder {
+        fn embed_texts(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+            Ok(texts
+                .iter()
+                .map(|t| vec![t.chars().count() as f32; EMBED_DIM])
+                .collect())
+        }
+        fn dim(&self) -> usize {
+            EMBED_DIM
+        }
+        fn backend_id(&self) -> &'static str {
+            "counting"
+        }
+    }
+
+    #[cfg(feature = "ort-backend")]
+    #[test]
+    fn embedder_cache_constructs_once_per_key_and_reuses_the_same_instance() {
+        use std::sync::atomic::Ordering;
+        let key_a = crate::onboarding::temp_test_dir("embed-cache-a").join("model");
+        let key_b = crate::onboarding::temp_test_dir("embed-cache-b").join("model");
+        let factory = || {
+            FAKE_CONSTRUCTIONS.fetch_add(1, Ordering::SeqCst);
+            Arc::new(CountingEmbedder) as Arc<dyn Embedder>
+        };
+        let first = cached_embedder(key_a.clone(), factory);
+        let second = cached_embedder(key_a.clone(), factory);
+        assert_eq!(FAKE_CONSTRUCTIONS.load(Ordering::SeqCst), 1, "built twice for one key");
+        assert!(Arc::ptr_eq(&first, &second), "second call returned a new instance");
+        assert_eq!(
+            first.embed_texts(&["привет".into()]).unwrap(),
+            second.embed_texts(&["привет".into()]).unwrap(),
+            "vectors differ across cached calls"
+        );
+        let other = cached_embedder(key_b, factory);
+        assert_eq!(FAKE_CONSTRUCTIONS.load(Ordering::SeqCst), 2, "different key must build");
+        assert!(!Arc::ptr_eq(&first, &other));
+    }
+
+    #[cfg(feature = "ort-backend")]
+    #[test]
+    fn select_embedder_reuses_the_cached_instance_for_the_same_model_dir() {
+        let wd = crate::onboarding::temp_test_dir("embed-select-cache");
+        stub_model_files(&wd);
+        let first = select_embedder(&wd);
+        let second = select_embedder(&wd);
+        assert_eq!(first.backend_id(), "ort");
+        assert_eq!(first.dim(), EMBED_DIM);
+        assert!(Arc::ptr_eq(&first, &second), "select_embedder rebuilt the embedder");
+        std::fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // Needs the provisioned model in the real working dir
+    // (~/Documents/PROJECT-S, PROJECT_S_WD override; provision with
+    // `cargo test provision_real_working_dir -- --ignored`):
+    //   cargo test embed_cache_timing -- --ignored
+    #[cfg(feature = "ort-backend")]
+    #[test]
+    #[ignore]
+    fn embed_cache_timing_second_call_skips_session_reload() {
+        use std::time::Instant;
+        let wd = model_store::real_working_dir();
+        assert!(
+            model_store::model_present(&wd),
+            "model not provisioned in {}; run `cargo test provision_real_working_dir -- --ignored` first",
+            model_store::model_dir(&wd).display()
+        );
+        let text = [query_prefix("редизайн сайта")];
+
+        // "Before": a fresh embedder per call pays tokenizer+session load on
+        // its first embed (the old per-operation select_embedder behavior).
+        let started = Instant::now();
+        let fresh = Arc::new(ort_backend::OrtEmbedder::new(model_store::model_dir(&wd), EMBED_DIM));
+        let cold_vector = fresh.embed_texts(&text).unwrap().remove(0);
+        let cold_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+        // "After": cached select_embedder — the load happens once, every
+        // later select+embed pair stays warm.
+        let started = Instant::now();
+        let first = select_embedder(&wd);
+        let select1_us = started.elapsed().as_secs_f64() * 1e6;
+        let started = Instant::now();
+        let warm1_vector = first.embed_texts(&text).unwrap().remove(0);
+        let warm1_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let started = Instant::now();
+        let second = select_embedder(&wd);
+        let select2_us = started.elapsed().as_secs_f64() * 1e6;
+        let started = Instant::now();
+        let warm2_vector = second.embed_texts(&text).unwrap().remove(0);
+        let warm2_ms = started.elapsed().as_secs_f64() * 1000.0;
+
+        assert!(Arc::ptr_eq(&first, &second), "second select rebuilt the embedder");
+        assert_eq!(warm1_vector, warm2_vector, "cached instance vectors differ");
+        // Same model, deterministic run: cached vectors match the fresh ones.
+        let dot: f32 = cold_vector.iter().zip(&warm2_vector).map(|(a, b)| a * b).sum();
+        assert!((dot - 1.0).abs() < 1e-3, "cached vectors drifted from fresh: {dot}");
+        eprintln!(
+            "embed cache timing: fresh-per-call load+embed={cold_ms:.0} ms; \
+             cached: select#1={select1_us:.0} us + embed={warm1_ms:.0} ms; \
+             select#2={select2_us:.0} us + embed={warm2_ms:.0} ms"
+        );
+        assert!(
+            warm2_ms * 4.0 < cold_ms,
+            "second cached call not much faster: warm={warm2_ms:.1} ms, cold={cold_ms:.1} ms"
+        );
     }
 
     #[test]
