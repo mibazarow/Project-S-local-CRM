@@ -23,19 +23,86 @@ const WAIT_TIMEOUT_MAX_MS: i64 = 60_000;
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 const DOWNLOAD_POLL: Duration = Duration::from_millis(500);
 
-struct Session {
-    browser: Browser,
+struct Session<B = Browser> {
+    browser: B,
     wd: PathBuf,
     headless: bool,
     last_used: Instant,
 }
 
 // Single-user desktop app: one shared browser session for the whole process.
-static SESSION: Mutex<Option<Session>> = Mutex::new(None);
+struct BrowserRuntime<B = Browser> {
+    slot: Mutex<Option<Session<B>>>,
+}
 
-#[cfg(test)]
-fn end_session() {
-    *SESSION.lock().unwrap_or_else(|e| e.into_inner()) = None;
+impl<B> BrowserRuntime<B> {
+    const fn new() -> Self {
+        Self { slot: Mutex::new(None) }
+    }
+
+    fn with_session<R>(
+        &self,
+        wd: &Path,
+        headless: bool,
+        launch: impl FnOnce() -> std::result::Result<B, String>,
+        action: impl FnOnce(&mut Session<B>) -> crate::error::Result<R>,
+    ) -> std::result::Result<R, String> {
+        let mut guard = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(session) = guard.as_ref() {
+            let stale = session.wd != wd
+                || session.headless != headless
+                || session.last_used.elapsed() > Duration::from_secs(IDLE_SECS);
+            if stale {
+                *guard = None; // Drop kills the old Chrome
+            }
+        }
+        if guard.is_none() {
+            match launch() {
+                Ok(browser) => {
+                    *guard = Some(Session {
+                        browser,
+                        wd: wd.to_path_buf(),
+                        headless,
+                        last_used: Instant::now(),
+                    });
+                }
+                Err(message) => {
+                    *guard = None;
+                    return Err(message);
+                }
+            }
+        }
+        let session = guard.as_mut().expect("session set before action");
+        match action(session) {
+            Ok(value) => Ok(value),
+            Err(e) => {
+                *guard = None; // any CDP failure drops (kills) the browser
+                Err(e.to_string())
+            }
+        }
+    }
+
+    fn kill(&self) {
+        *self.slot.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
+
+    #[allow(dead_code)] // runtime exit hook; exercised by cfg(test), not wired to app exit yet
+    fn shutdown(&self) {
+        self.kill();
+    }
+}
+
+static RUNTIME: BrowserRuntime = BrowserRuntime::new();
+
+fn launch_browser(tmp: &Path, headless: bool) -> std::result::Result<Browser, String> {
+    let chrome = match cdp::find_chrome() {
+        Ok(chrome) => chrome,
+        Err(e) => return Err(e.to_string()),
+    };
+    if let Err(e) = std::fs::create_dir_all(tmp) {
+        return Err(e.to_string());
+    }
+    Browser::launch(&chrome, tmp, headless).map_err(|e| e.to_string())
 }
 
 fn allowed_url(url: &str) -> bool {
@@ -206,19 +273,6 @@ impl Tool for BrowserTool {
                 return Ok(ToolResult::err(ToolErrorCode::ExecutionError, e.to_string()));
             }
         }
-        let mut guard = SESSION.lock().unwrap_or_else(|e| e.into_inner());
-        let mut fresh = match guard.as_mut() {
-            None => true,
-            Some(session) => {
-                let stale = session.wd != wd
-                    || session.headless != headless
-                    || session.last_used.elapsed() > Duration::from_secs(IDLE_SECS);
-                if stale {
-                    *guard = None; // Drop kills the old Chrome
-                }
-                stale
-            }
-        };
         // Raw bytes never travel through serde_json strings (lossy UTF-8).
         enum Outcome {
             Text(String),
@@ -313,42 +367,20 @@ impl Tool for BrowserTool {
             }
         };
 
-        let outcome: Result<Outcome, AppError> = loop {
-            if fresh {
-                let chrome = match cdp::find_chrome() {
-                    Ok(chrome) => chrome,
-                    Err(e) => return Ok(ToolResult::err(ToolErrorCode::ExecutionError, e.to_string())),
-                };
-                if let Err(e) = std::fs::create_dir_all(&tmp) {
-                    return Ok(ToolResult::err(ToolErrorCode::ExecutionError, e.to_string()));
-                }
-                match Browser::launch(&chrome, &tmp, headless) {
-                    Ok(browser) => {
-                        *guard = Some(Session {
-                            browser,
-                            wd: wd.clone(),
-                            headless,
-                            last_used: Instant::now(),
-                        });
-                        fresh = false;
-                        continue;
-                    }
-                    Err(e) => {
-                        *guard = None;
-                        break Err(e);
-                    }
-                }
-            }
-            let session = guard.as_mut().expect("session set before fresh=false");
-            session.last_used = Instant::now();
-            break run(&mut session.browser);
-        };
+        let outcome = RUNTIME.with_session(
+            &wd,
+            headless,
+            || launch_browser(&tmp, headless),
+            |session| {
+                session.last_used = Instant::now();
+                run(&mut session.browser)
+            },
+        );
 
         let outcome = match outcome {
             Ok(value) => value,
-            Err(e) => {
-                *guard = None; // any CDP failure drops (kills) the browser
-                return Ok(ToolResult::err(ToolErrorCode::ExecutionError, e.to_string()));
+            Err(message) => {
+                return Ok(ToolResult::err(ToolErrorCode::ExecutionError, message));
             }
         };
 
@@ -738,7 +770,7 @@ mod tests {
         // Browser::drop kills the child; the tool session holds a second
         // Chrome that must be dropped before the temp dir can go away.
         drop(browser);
-        end_session();
+        RUNTIME.shutdown();
         // Chrome helper processes flush the profile a moment after the main
         // process dies, so the removal gets a few retries.
         for attempt in 0..10 {
@@ -776,7 +808,7 @@ mod tests {
         browser.press_key("a").expect("press char failed");
         assert!(browser.press_key("F13").is_err());
         drop(browser);
-        end_session();
+        RUNTIME.shutdown();
         for attempt in 0..10 {
             match std::fs::remove_dir_all(&wd) {
                 Ok(()) => break,
@@ -841,7 +873,7 @@ mod tests {
         let downloaded = downloaded.expect("download never landed");
         assert_eq!(downloaded, "dl.txt");
         drop(browser);
-        end_session();
+        RUNTIME.shutdown();
         for attempt in 0..10 {
             match std::fs::remove_dir_all(&wd) {
                 Ok(()) => break,
@@ -849,5 +881,185 @@ mod tests {
                 Err(_) => std::thread::sleep(Duration::from_millis(300)),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct FakeBrowser {
+        id: usize,
+        kills: Arc<AtomicUsize>,
+    }
+
+    impl Drop for FakeBrowser {
+        fn drop(&mut self) {
+            self.kills.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    struct FakeLauncher {
+        launches: AtomicUsize,
+        kills: Arc<AtomicUsize>,
+        fail: AtomicBool,
+        delay: Duration,
+    }
+
+    impl FakeLauncher {
+        fn new() -> Self {
+            Self {
+                launches: AtomicUsize::new(0),
+                kills: Arc::new(AtomicUsize::new(0)),
+                fail: AtomicBool::new(false),
+                delay: Duration::ZERO,
+            }
+        }
+
+        fn launch(&self) -> std::result::Result<FakeBrowser, String> {
+            if !self.delay.is_zero() {
+                std::thread::sleep(self.delay);
+            }
+            let id = self.launches.fetch_add(1, Ordering::SeqCst);
+            if self.fail.load(Ordering::SeqCst) {
+                return Err("fake launch failed".to_string());
+            }
+            Ok(FakeBrowser {
+                id,
+                kills: self.kills.clone(),
+            })
+        }
+    }
+
+    #[test]
+    fn with_session_reuses_the_live_session() {
+        let rt = BrowserRuntime::<FakeBrowser>::new();
+        let launcher = FakeLauncher::new();
+        let mut ids = Vec::new();
+        for _ in 0..3 {
+            ids.push(
+                rt.with_session(Path::new("/wd"), true, || launcher.launch(), |s| {
+                    Ok(s.browser.id)
+                })
+                .unwrap(),
+            );
+        }
+        assert_eq!(ids, vec![0, 0, 0]);
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
+        assert_eq!(launcher.kills.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn kill_clears_the_slot_and_the_next_call_relaunches() {
+        let rt = BrowserRuntime::<FakeBrowser>::new();
+        let launcher = FakeLauncher::new();
+        let first = rt
+            .with_session(Path::new("/wd"), true, || launcher.launch(), |s| {
+                Ok(s.browser.id)
+            })
+            .unwrap();
+        rt.kill();
+        assert_eq!(launcher.kills.load(Ordering::SeqCst), 1);
+        let second = rt
+            .with_session(Path::new("/wd"), true, || launcher.launch(), |s| {
+                Ok(s.browser.id)
+            })
+            .unwrap();
+        assert_ne!(first, second);
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn shutdown_kills_once_and_is_idempotent() {
+        let rt = BrowserRuntime::<FakeBrowser>::new();
+        let launcher = FakeLauncher::new();
+        rt.with_session(Path::new("/wd"), true, || launcher.launch(), |_| Ok(()))
+            .unwrap();
+        rt.shutdown();
+        rt.shutdown();
+        assert_eq!(launcher.kills.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn concurrent_with_session_launches_exactly_once() {
+        let rt = Arc::new(BrowserRuntime::<FakeBrowser>::new());
+        let launcher = Arc::new(FakeLauncher {
+            launches: AtomicUsize::new(0),
+            kills: Arc::new(AtomicUsize::new(0)),
+            fail: AtomicBool::new(false),
+            delay: Duration::from_millis(30),
+        });
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let rt = rt.clone();
+                let launcher = launcher.clone();
+                std::thread::spawn(move || {
+                    rt.with_session(Path::new("/wd"), true, move || launcher.launch(), |s| {
+                        Ok(s.browser.id)
+                    })
+                    .unwrap()
+                })
+            })
+            .collect();
+        let ids: Vec<usize> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
+        assert!(ids.windows(2).all(|w| w[0] == w[1]), "{ids:?}");
+    }
+
+    #[test]
+    fn failed_launch_leaves_no_half_session() {
+        let rt = BrowserRuntime::<FakeBrowser>::new();
+        let launcher = FakeLauncher::new();
+        launcher.fail.store(true, Ordering::SeqCst);
+        let err = rt
+            .with_session(Path::new("/wd"), true, || launcher.launch(), |_| Ok(()))
+            .unwrap_err();
+        assert_eq!(err, "fake launch failed");
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
+        assert_eq!(launcher.kills.load(Ordering::SeqCst), 0);
+        launcher.fail.store(false, Ordering::SeqCst);
+        let id = rt
+            .with_session(Path::new("/wd"), true, || launcher.launch(), |s| {
+                Ok(s.browser.id)
+            })
+            .unwrap();
+        assert_eq!(id, 1);
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn action_failure_drops_the_session_and_the_next_call_relaunches() {
+        let rt = BrowserRuntime::<FakeBrowser>::new();
+        let launcher = FakeLauncher::new();
+        let err = rt
+            .with_session(Path::new("/wd"), true, || launcher.launch(), |_| -> crate::error::Result<()> {
+                Err(AppError::Http("cdp died".into()))
+            })
+            .unwrap_err();
+        assert_eq!(err, "http error: cdp died");
+        assert_eq!(launcher.kills.load(Ordering::SeqCst), 1);
+        let id = rt
+            .with_session(Path::new("/wd"), true, || launcher.launch(), |s| {
+                Ok(s.browser.id)
+            })
+            .unwrap();
+        assert_eq!(id, 1);
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn changed_wd_or_headless_replaces_the_session() {
+        let rt = BrowserRuntime::<FakeBrowser>::new();
+        let launcher = FakeLauncher::new();
+        rt.with_session(Path::new("/a"), true, || launcher.launch(), |_| Ok(()))
+            .unwrap();
+        rt.with_session(Path::new("/b"), true, || launcher.launch(), |_| Ok(()))
+            .unwrap();
+        rt.with_session(Path::new("/b"), false, || launcher.launch(), |_| Ok(()))
+            .unwrap();
+        assert_eq!(launcher.launches.load(Ordering::SeqCst), 3);
+        assert_eq!(launcher.kills.load(Ordering::SeqCst), 2);
     }
 }
