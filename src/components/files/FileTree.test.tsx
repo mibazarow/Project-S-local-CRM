@@ -5,61 +5,94 @@ import type { FsEntry } from "../../api/types";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
-const tree = vi.hoisted((): Record<string, FsEntry[]> => ({
-  "": [
-    {
-      name: "docs",
-      relPath: "docs",
-      kind: "dir",
-      ext: "",
-      size: 0,
-      modified: 0,
-      isMarkdown: false,
-      isText: false,
-      isImage: false,
-    },
-    {
-      name: "a.txt",
-      relPath: "a.txt",
-      kind: "file",
-      ext: "txt",
-      size: 1,
-      modified: 0,
-      isMarkdown: false,
-      isText: true,
-      isImage: false,
-    },
-  ],
-  docs: [
-    {
-      name: "inner.md",
-      relPath: "docs/inner.md",
-      kind: "file",
-      ext: "md",
-      size: 1,
-      modified: 0,
-      isMarkdown: true,
-      isText: true,
-      isImage: false,
-    },
-  ],
-}));
+const dir = (name: string, relPath: string): FsEntry => ({
+  name,
+  relPath,
+  kind: "dir",
+  ext: "",
+  size: 0,
+  modified: 0,
+  isMarkdown: false,
+  isText: false,
+  isImage: false,
+});
 
+const file = (name: string, relPath: string, ext: string, isMarkdown = false): FsEntry => ({
+  name,
+  relPath,
+  kind: "file",
+  ext,
+  size: 1,
+  modified: 0,
+  isMarkdown,
+  isText: true,
+  isImage: false,
+});
+
+// Fresh fixture per test: the fsMove/fsCreateFolder mocks mutate `tree`, so
+// tests must not leak listings into each other.
+const initialTree = vi.hoisted(
+  () =>
+    (): Record<string, FsEntry[]> => ({
+      "": [dir("docs", "docs"), dir("src", "src"), file("a.txt", "a.txt", "txt")],
+      docs: [file("inner.md", "docs/inner.md", "md", true), dir("sub", "docs/sub")],
+      "docs/sub": [],
+      src: [],
+    }),
+);
+
+const tree = vi.hoisted((): Record<string, FsEntry[]> => ({}));
+
+const fsListDir = vi.hoisted(
+  () => vi.fn(async (_projectId: number, relPath: string) => tree[relPath] ?? []),
+);
+
+// Mirrors fs_move: relocates the entry in the fixture, renumbering the whole
+// subtree, and returns the moved entry like the backend does.
 const fsMove = vi.hoisted(
   () =>
     vi.fn(async (_projectId: number, fromRel: string, toDirRel: string): Promise<FsEntry> => {
       const name = fromRel.slice(fromRel.lastIndexOf("/") + 1);
-      return {
-        name,
-        relPath: toDirRel ? `${toDirRel}/${name}` : name,
-        kind: "file",
-        ext: name.includes(".") ? name.slice(name.lastIndexOf(".") + 1) : "",
-        size: 1,
-        modified: 0,
-        isMarkdown: false,
-        isText: true,
-        isImage: false,
-      };
+      const newRel = toDirRel ? `${toDirRel}/${name}` : name;
+      let moved: FsEntry | undefined;
+      for (const kids of Object.values(tree)) {
+        moved = kids.find((e) => e.relPath === fromRel);
+        if (moved) break;
+      }
+      if (!moved) throw new Error(`no such entry: ${fromRel}`);
+      for (const kids of Object.values(tree)) {
+        for (let i = kids.length - 1; i >= 0; i--) {
+          if (kids[i].relPath === fromRel) kids.splice(i, 1);
+        }
+      }
+      if (tree[fromRel]) {
+        tree[newRel] = tree[fromRel];
+        delete tree[fromRel];
+      }
+      const prefix = `${fromRel}/`;
+      const remap = (e: FsEntry): FsEntry =>
+        e.relPath === fromRel
+          ? { ...e, relPath: newRel }
+          : e.relPath.startsWith(prefix)
+            ? { ...e, relPath: newRel + e.relPath.slice(fromRel.length) }
+            : e;
+      for (const kids of Object.values(tree)) {
+        for (let i = 0; i < kids.length; i++) kids[i] = remap(kids[i]);
+      }
+      const movedEntry = remap(moved);
+      (tree[toDirRel] ??= []).push(movedEntry);
+      return movedEntry;
+    }),
+);
+
+const fsCreateFolder = vi.hoisted(
+  () =>
+    vi.fn(async (_projectId: number, parentRel: string, name: string): Promise<FsEntry> => {
+      const relPath = parentRel ? `${parentRel}/${name}` : name;
+      const entry = dir(name, relPath);
+      (tree[parentRel] ??= []).push(entry);
+      tree[relPath] ??= [];
+      return entry;
     }),
 );
 
@@ -71,11 +104,11 @@ vi.mock("../../api/ipc", () => ({
   onTasksChanged: vi.fn(async () => () => {}),
   onSchedulesChanged: vi.fn(async () => () => {}),
   onProjectsChanged: vi.fn(async () => () => {}),
-  fsListDir: vi.fn(async (_projectId: number, relPath: string) => tree[relPath] ?? []),
+  fsListDir,
   fsMove,
   fsRename: vi.fn(async () => undefined),
   fsDelete: vi.fn(async () => undefined),
-  fsCreateFolder: vi.fn(async () => undefined),
+  fsCreateFolder,
   fsCreateFile: vi.fn(async () => undefined),
   fsImport: vi.fn(async () => []),
   fsOpenExternal: vi.fn(async () => undefined),
@@ -100,6 +133,10 @@ beforeEach(() => {
   onSelect = vi.fn<(entry: FsEntry) => void>();
   hoverEl = null;
   fsMove.mockClear();
+  fsListDir.mockClear();
+  fsCreateFolder.mockClear();
+  for (const key of Object.keys(tree)) delete tree[key];
+  Object.assign(tree, initialTree());
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -110,7 +147,7 @@ afterEach(() => {
   container.remove();
 });
 
-async function mount(selectedRelPath: string | null = null) {
+async function mount(selectedRelPath: string | null = null, selectedDirRel = "") {
   document.elementFromPoint = vi.fn(() => hoverEl) as unknown as typeof document.elementFromPoint;
   await act(async () => {
     root.render(
@@ -119,7 +156,7 @@ async function mount(selectedRelPath: string | null = null) {
           projectId={1}
           treeVersion={0}
           selectedRelPath={selectedRelPath}
-          selectedDirRel=""
+          selectedDirRel={selectedDirRel}
           onSelect={onSelect}
           view="list"
           onViewChange={() => {}}
@@ -154,6 +191,13 @@ const row = (name: string) =>
     (r) => r.querySelector(".label")?.textContent === name,
   )!;
 
+async function openRow(name: string) {
+  await act(async () => {
+    row(name).dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  await settle();
+}
+
 // Drag `srcName`'s row and release while elementFromPoint reports `destEl`.
 async function dragTo(srcName: string, destEl: Element | null) {
   hoverEl = destEl;
@@ -161,6 +205,27 @@ async function dragTo(srcName: string, destEl: Element | null) {
   fire(window, "pointermove", 10, 60);
   fire(window, "pointermove", 10, 100);
   fire(window, "pointerup", 10, 100);
+  await settle();
+}
+
+const toolbarBtn = (label: string) =>
+  Array.from(container.querySelectorAll<HTMLButtonElement>(".tree-toolbar button")).find(
+    (b) => b.textContent?.includes(label),
+  )!;
+
+async function clickToolbar(label: string) {
+  await act(async () => {
+    toolbarBtn(label).click();
+  });
+  await settle();
+}
+
+async function commitCreateInput(name: string) {
+  const input = container.querySelector<HTMLInputElement>(".rename-input")!;
+  await act(async () => {
+    input.value = name;
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  });
   await settle();
 }
 
@@ -173,10 +238,7 @@ describe("FileTree pointer drag (list mode)", () => {
 
   it("dragging a file from an open folder to the tree root moves it to the project root", async () => {
     await mount();
-    await act(async () => {
-      row("docs").dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await settle();
+    await openRow("docs");
     expect(row("inner.md")).toBeDefined();
     await dragTo("inner.md", container.querySelector(".file-tree"));
     expect(fsMove).toHaveBeenCalledWith(1, "docs/inner.md", "");
@@ -198,10 +260,7 @@ describe("FileTree pointer drag (list mode)", () => {
 
   it("dropping a file into its current parent folder is a no-op", async () => {
     await mount();
-    await act(async () => {
-      row("docs").dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await settle();
+    await openRow("docs");
     await dragTo("inner.md", row("docs"));
     expect(fsMove).not.toHaveBeenCalled();
   });
@@ -234,12 +293,6 @@ describe("FileTree pointer drag (list mode)", () => {
     expect(fsMove).not.toHaveBeenCalled();
   });
 
-  it("folder rows do not start a pointer drag (files only in this slice)", async () => {
-    await mount();
-    await dragTo("docs", container.querySelector(".file-tree"));
-    expect(fsMove).not.toHaveBeenCalled();
-  });
-
   it("a plain click still selects the file row", async () => {
     await mount();
     fire(row("a.txt"), "pointerdown", 10, 10);
@@ -267,5 +320,144 @@ describe("FileTree pointer drag (list mode)", () => {
     await dragTo("a.txt", row("docs"));
     expect(fsMove).toHaveBeenCalledWith(1, "a.txt", "docs");
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ relPath: "docs/a.txt" }));
+  });
+});
+
+describe("FileTree folder drag (list mode)", () => {
+  it("dragging a folder row into another folder moves it via fs_move", async () => {
+    await mount();
+    await dragTo("docs", row("src"));
+    expect(fsMove).toHaveBeenCalledWith(1, "docs", "src");
+  });
+
+  it("dragging an open subfolder to the tree root moves it to the project root", async () => {
+    await mount();
+    await openRow("docs");
+    await dragTo("sub", container.querySelector(".file-tree"));
+    expect(fsMove).toHaveBeenCalledWith(1, "docs/sub", "");
+  });
+
+  it("dropping a folder on itself or its own subfolder is rejected", async () => {
+    await mount();
+    await openRow("docs");
+    await dragTo("docs", row("docs"));
+    await dragTo("docs", row("sub"));
+    expect(fsMove).not.toHaveBeenCalled();
+  });
+
+  it("dropping a folder into its current parent is a no-op", async () => {
+    await mount();
+    await openRow("docs");
+    await dragTo("sub", row("docs"));
+    expect(fsMove).not.toHaveBeenCalled();
+  });
+
+  it("an open subtree stays expanded under the moved folder's new path", async () => {
+    await mount();
+    await openRow("src");
+    await openRow("docs");
+    await openRow("sub");
+    await dragTo("docs", row("src"));
+    expect(fsMove).toHaveBeenCalledWith(1, "docs", "src");
+    // The remapped open paths are relisted at their new locations.
+    expect(fsListDir).toHaveBeenCalledWith(1, "src/docs");
+    expect(fsListDir).toHaveBeenCalledWith(1, "src/docs/sub");
+    expect(row("sub")).toBeDefined();
+  });
+
+  it("selection follows the moved folder to its new path", async () => {
+    await mount("docs");
+    await dragTo("docs", row("src"));
+    expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ relPath: "src/docs" }));
+  });
+
+  it("selection follows a file inside the moved subtree", async () => {
+    await mount("docs/inner.md");
+    await dragTo("docs", row("src"));
+    expect(onSelect).toHaveBeenCalledWith(
+      expect.objectContaining({ relPath: "src/docs/inner.md" }),
+    );
+  });
+
+  it("Escape cancels a folder drag: no move", async () => {
+    await mount();
+    hoverEl = row("src");
+    fire(row("docs"), "pointerdown", 10, 10);
+    fire(window, "pointermove", 10, 60);
+    fire(window, "pointermove", 10, 100);
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    fire(window, "pointerup", 10, 100);
+    await settle();
+    expect(fsMove).not.toHaveBeenCalled();
+  });
+});
+
+describe("FileTree subfolder creation (list mode)", () => {
+  it("creates a subfolder in the selected folder, opens it and lists it", async () => {
+    await mount(null, "docs");
+    await clickToolbar("Новая папка");
+    expect(container.querySelector(".rename-input")).not.toBeNull();
+    await commitCreateInput("new");
+    expect(fsCreateFolder).toHaveBeenCalledWith(1, "docs", "new");
+    expect(fsListDir).toHaveBeenCalledWith(1, "docs/new");
+    expect(row("new")).toBeDefined();
+  });
+
+  it("creates in the project root when no folder is selected", async () => {
+    await mount();
+    await clickToolbar("Новая папка");
+    await commitCreateInput("rootdir");
+    expect(fsCreateFolder).toHaveBeenCalledWith(1, "", "rootdir");
+    expect(row("rootdir")).toBeDefined();
+  });
+
+  it("an invalid name shows the existing error style", async () => {
+    fsCreateFolder.mockRejectedValueOnce(new Error('invalid name "a/b"'));
+    await mount();
+    await clickToolbar("Новая папка");
+    await commitCreateInput("a/b");
+    expect(container.querySelector(".tree-error")?.textContent).toContain("invalid name");
+  });
+
+  it("a duplicate name shows the existing error style", async () => {
+    fsCreateFolder.mockRejectedValueOnce(new Error('"docs" already exists'));
+    await mount();
+    await clickToolbar("Новая папка");
+    await commitCreateInput("docs");
+    expect(container.querySelector(".tree-error")?.textContent).toContain("already exists");
+  });
+
+  it("Escape in the name prompt cancels creation", async () => {
+    await mount();
+    await clickToolbar("Новая папка");
+    const input = container.querySelector<HTMLInputElement>(".rename-input")!;
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await settle();
+    expect(fsCreateFolder).not.toHaveBeenCalled();
+    expect(container.querySelector(".rename-input")).toBeNull();
+  });
+
+  it("the folder context menu creates a subfolder inside that folder", async () => {
+    await mount();
+    await act(async () => {
+      row("docs").dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+      );
+    });
+    const item = Array.from(
+      document.querySelectorAll<HTMLButtonElement>(".context-menu-item"),
+    ).find((b) => b.textContent?.includes("Новая папка"))!;
+    expect(item).toBeDefined();
+    await act(async () => {
+      item.click();
+    });
+    await settle();
+    expect(container.querySelector(".rename-input")).not.toBeNull();
+    await commitCreateInput("sub2");
+    expect(fsCreateFolder).toHaveBeenCalledWith(1, "docs", "sub2");
   });
 });

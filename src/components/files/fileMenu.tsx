@@ -3,7 +3,7 @@ import type { FsEntry } from "../../api/types";
 import type { MenuItem } from "../shared/ContextMenu";
 import { toast } from "../shared/toast";
 import { toMessage } from "./fileOps";
-import { IconArchive, IconCopy, IconEye, IconLink, IconPencil } from "./icons";
+import { IconArchive, IconCopy, IconEye, IconFolderPlus, IconLink, IconPencil } from "./icons";
 
 // Archive extensions fs_extract_archive can unpack (backend ARCHIVE_SUFFIXES).
 const ARCHIVE_EXTS = ["zip", "tar", "gz", "tgz", "bz2", "xz"];
@@ -50,11 +50,13 @@ export function useFileMenuActions(projectId: number) {
 export type FileMenuActions = ReturnType<typeof useFileMenuActions>;
 
 // The one file/folder menu, identical in both views; «Распаковать здесь» only
-// for archive files, «Переименовать» triggers the view's inline rename.
+// for archive files, «Переименовать» triggers the view's inline rename, and
+// «Новая папка» (tree only) creates a subfolder inside the right-clicked folder.
 export function fileMenuItems(
   entry: FsEntry,
   actions: FileMenuActions,
   startRename: () => void,
+  newFolderIn?: (entry: FsEntry) => void,
 ): MenuItem[] {
   const items: MenuItem[] = [
     { label: "Переименовать", icon: <IconPencil />, onSelect: startRename },
@@ -62,6 +64,13 @@ export function fileMenuItems(
     { label: "Скопировать путь", icon: <IconLink />, onSelect: () => actions.copyPath(entry) },
     { label: "Скопировать", icon: <IconCopy />, onSelect: () => actions.copyAs(entry) },
   ];
+  if (entry.kind === "dir" && newFolderIn) {
+    items.push({
+      label: "Новая папка",
+      icon: <IconFolderPlus />,
+      onSelect: () => newFolderIn(entry),
+    });
+  }
   if (isArchive(entry)) {
     items.push({
       label: "Распаковать здесь",

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { confirmRemove } from "../../shared/confirm";
+import { resolveEntry } from "../../shared/resolveEntry";
 import { usePointerDrag } from "../../hooks/usePointerDrag";
 import ContextMenu from "../shared/ContextMenu";
 import { toMessage, useFileOps } from "./fileOps";
@@ -42,6 +43,8 @@ export default function FileTree({
     null,
   );
   const [menu, setMenu] = useState<{ entry: FsEntry; x: number; y: number } | null>(null);
+  // Local refetch trigger for open-path remaps that race the fs-changed bump.
+  const [refresh, setRefresh] = useState(0);
   const openRef = useRef<Set<string>>(new Set());
   const ops = useFileOps(projectId);
   const menuActions = useFileMenuActions(projectId);
@@ -81,7 +84,7 @@ export default function FileTree({
     return () => {
       cancelled = true;
     };
-  }, [projectId, treeVersion]);
+  }, [projectId, treeVersion, refresh]);
 
   const toggle = async (entry: FsEntry) => {
     const path = entry.relPath;
@@ -143,9 +146,9 @@ export default function FileTree({
     await ops.remove(entry.relPath);
   };
 
-  const startCreate = async (kind: "dir" | "file") => {
+  const startCreate = async (kind: "dir" | "file", parentRel = selectedDirRel) => {
     setRenamingPath(null);
-    const parent = selectedDirRel;
+    const parent = parentRel;
     if (parent && !openPaths[parent]) {
       if (!childrenByDir[parent]) {
         try {
@@ -164,8 +167,17 @@ export default function FileTree({
 
   const commitCreate = async (kind: "dir" | "file", parentRel: string, name: string) => {
     setCreating(null);
-    if (kind === "dir") await ops.createFolder(parentRel, name);
-    else await ops.createFile(parentRel, name);
+    if (kind === "file") {
+      await ops.createFile(parentRel, name);
+      return;
+    }
+    const created = await ops.createFolder(parentRel, name);
+    if (!created) return;
+    // Open the new folder and make sure its listing is fetched even if the
+    // fs-changed refetch started before it existed.
+    openRef.current.add(created.relPath);
+    setOpenPaths((prev) => ({ ...prev, [created.relPath]: true }));
+    setRefresh((r) => r + 1);
   };
 
   // Backend also rejects these moves; the UI guard only prevents the attempt.
@@ -193,8 +205,33 @@ export default function FileTree({
       if (parent === dest) return;
       void (async () => {
         const moved = await ops.move(id, dest);
-        // Keep the preview/selection alive on the file's new path.
-        if (moved && selectedRelPath === id) onSelect(moved);
+        if (!moved) return;
+        // Renumber the moved subtree: open folders and cached children keep
+        // their expansion under the new path; selection follows too.
+        const prefix = `${id}/`;
+        const remap = (p: string) =>
+          p === id
+            ? moved.relPath
+            : p.startsWith(prefix)
+              ? moved.relPath + p.slice(id.length)
+              : p;
+        openRef.current = new Set([...openRef.current].map(remap));
+        setOpenPaths((prev) =>
+          Object.fromEntries(Object.entries(prev).map(([p, v]) => [remap(p), v])),
+        );
+        setChildrenByDir((prev) =>
+          Object.fromEntries(Object.entries(prev).map(([p, kids]) => [remap(p), kids])),
+        );
+        // The fs-changed refetch may have listed the old paths: relist.
+        setRefresh((r) => r + 1);
+        if (selectedRelPath === id) {
+          onSelect(moved);
+        } else if (selectedRelPath?.startsWith(prefix)) {
+          const entry = await resolveEntry(remap(selectedRelPath), (dir) =>
+            ipc.fsListDir(projectId, dir),
+          );
+          if (entry) onSelect(entry);
+        }
       })();
     },
   });
@@ -239,9 +276,7 @@ export default function FileTree({
           onRenameCancel={() => setRenamingPath(null)}
           onCopyAs={(e) => menuActions.copyAs(e)}
           onDelete={(e) => void confirmDelete(e)}
-          onPointerDown={
-            entry.kind === "file" ? (e, ev) => onPointerDown(ev, e.relPath) : undefined
-          }
+          onPointerDown={(e, ev) => onPointerDown(ev, e.relPath)}
           consumeSuppressedClick={consumeSuppressedClick}
           onContextMenu={(e, ev) => setMenu({ entry: e, x: ev.clientX, y: ev.clientY })}
           onOpenExternal={(e) =>
@@ -307,10 +342,15 @@ export default function FileTree({
         <ContextMenu
           x={menu.x}
           y={menu.y}
-          items={fileMenuItems(menu.entry, menuActions, () => {
-            setCreating(null);
-            setRenamingPath(menu.entry.relPath);
-          })}
+          items={fileMenuItems(
+            menu.entry,
+            menuActions,
+            () => {
+              setCreating(null);
+              setRenamingPath(menu.entry.relPath);
+            },
+            (e) => void startCreate("dir", e.relPath),
+          )}
           onClose={() => setMenu(null)}
         />
       )}

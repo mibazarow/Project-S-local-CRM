@@ -26,7 +26,8 @@ interface Props {
   onRenameCancel: () => void;
   onCopyAs: (entry: FsEntry) => void;
   onDelete: (entry: FsEntry) => void;
-  // Pointer drag is attached only to file rows (folder drag comes later).
+  // Pointer drag on every row: files move between folders, folders move
+  // into folders/root (self/descendant drops are rejected by the tree).
   onPointerDown?: (entry: FsEntry, e: ReactPointerEvent<HTMLDivElement>) => void;
   consumeSuppressedClick: () => boolean;
   onContextMenu: (entry: FsEntry, e: MouseEvent<HTMLDivElement>) => void;
