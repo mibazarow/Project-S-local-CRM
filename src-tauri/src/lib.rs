@@ -2103,7 +2103,7 @@ fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
-    let open = MenuItem::with_id(app, "open", "Открыть Project S", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Открыть Project-S", true, None::<&str>)?;
     let note = MenuItem::with_id(app, "quick-note", "Быстрая заметка", true, None::<&str>)?;
     let task = MenuItem::with_id(app, "new-task", "Новая задача", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;

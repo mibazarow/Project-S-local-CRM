@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Project S",
+  "productName": "Project-S",
   "version": "0.1.0",
   "identifier": "app.project-s.ru",
   "build": {
@@ -13,7 +13,7 @@
   "app": {
     "windows": [
       {
-        "title": "Project S",
+        "title": "Project-S",
         "width": 1200,
         "height": 760,
         "minWidth": 1000,

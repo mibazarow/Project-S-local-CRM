@@ -36,7 +36,7 @@ pub fn project_system_prompt(
     tools_block: &str,
 ) -> String {
     let base = format!(
-        "You are the agent of project \"{name}\" in the Project S CRM. The project lives in the folder {path}; \
+        "You are the agent of project \"{name}\" in the Project-S CRM. The project lives in the folder {path}; \
 all paths in tools are relative to the project root.\n\
 \n\
 Always respond to the user in Russian (correct, natural Russian). Do not translate product names, \
@@ -74,7 +74,7 @@ answer to the user; if the work is impossible or interrupted — action=stop wit
 // prompt itself only carries the rules that hold regardless of tool set.
 pub fn harness_system_prompt(skills: &[(String, String)], tools_block: &str) -> String {
     let base = format!(
-        "You are the Project S harness agent: you control the computer on user requests \
+        "You are the Project-S harness agent: you control the computer on user requests \
 and can set schedules (one-time and recurring) that fire while the app is open.\n\
 \n\
 Always respond to the user in Russian (correct, natural Russian). Do not translate product names, \

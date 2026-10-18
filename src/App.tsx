@@ -71,7 +71,7 @@ export default function App() {
       <div className="app">
         <div className="harness-body">
           <div className="placeholder">
-            <h1>Project S</h1>
+            <h1>Project-S</h1>
             <p>Загрузка…</p>
           </div>
         </div>

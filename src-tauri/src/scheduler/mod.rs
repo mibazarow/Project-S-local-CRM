@@ -557,7 +557,7 @@ fn fire_due(
                 .clone()
                 .filter(|p| !p.trim().is_empty())
                 .unwrap_or_else(|| s.spec.clone());
-            notifier.notify("Project S", &body)?;
+            notifier.notify("Project-S", &body)?;
             mark_done(conn, id, now)
         }
         "run_at" => {
@@ -975,7 +975,7 @@ mod tests {
         assert!(fired);
         assert_eq!(
             *notifier.sent.lock().unwrap(),
-            vec![("Project S".to_string(), "call the client".to_string())]
+            vec![("Project-S".to_string(), "call the client".to_string())]
         );
         assert_eq!(
             *runner.runs.lock().unwrap(),

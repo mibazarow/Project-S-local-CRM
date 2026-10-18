@@ -15,7 +15,7 @@ export default function TopBar({ tab, onTab, onSettings, onSearch }: Props) {
     <header className="topbar">
       <div className="topbar-left">
         <img className="app-logo" src={logo} alt="" />
-        <span className="app-title">Project S</span>
+        <span className="app-title">Project-S</span>
       </div>
       <nav className="tabs">
         <button

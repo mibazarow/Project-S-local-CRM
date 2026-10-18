@@ -38,7 +38,7 @@ export default function Onboarding() {
   return (
     <div className="onboarding">
       <div className="onboarding-card">
-        <h1>Добро пожаловать в Project S</h1>
+        <h1>Добро пожаловать в Project-S</h1>
         <p>
           Выбери папку, где приложение будет хранить всё своё. В ней будут созданы три папки:
           <span className="onboarding-tree">Projects/</span>
@@ -58,7 +58,7 @@ export default function Onboarding() {
         )}
 
         <div className="set-row switch-row">
-          <label>Запускать Project S при входе в систему</label>
+          <label>Запускать Project-S при входе в систему</label>
           <label className="switch">
             <input
               type="checkbox"
