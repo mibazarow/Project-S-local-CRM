@@ -131,8 +131,9 @@ pub(crate) fn update_schema() -> Value {
     props.insert("title".to_owned(), json!({ "type": "string" }));
     props.insert("comment".to_owned(), json!({ "type": ["string", "null"] }));
     props.insert("dueDate".to_owned(), json!({ "type": ["string", "null"] }));
-    // due_time is NOT NULL: null/absent keeps the current value.
-    props.insert("dueTime".to_owned(), json!({ "type": "string" }));
+    // due_time is NOT NULL: null/absent keeps the current value, so the
+    // schema must accept null exactly like the description promises.
+    props.insert("dueTime".to_owned(), json!({ "type": ["string", "null"] }));
     props.insert("remindAt".to_owned(), json!({ "type": ["string", "null"] }));
     props.insert("isPriority".to_owned(), json!({ "type": "boolean" }));
     props.insert(
@@ -396,7 +397,7 @@ mod tests {
                     "title": { "type": "string" },
                     "comment": { "type": ["string", "null"] },
                     "dueDate": { "type": ["string", "null"] },
-                    "dueTime": { "type": "string" },
+                    "dueTime": { "type": ["string", "null"] },
                     "remindAt": { "type": ["string", "null"] },
                     "isPriority": { "type": "boolean" },
                     "recurrence": { "type": "string", "enum": ["none", "daily", "weekly", "monthly"] },

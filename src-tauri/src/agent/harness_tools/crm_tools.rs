@@ -387,7 +387,9 @@ impl Tool for DatasAddTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::harness_tools::test_support::{exec, setup};
+    use crate::agent::harness_tools::test_support::{exec, setup, tool};
+    use crate::agent::harness_tools::harness_catalog;
+    use crate::agent::tool::validate_args;
     use crate::index;
     use std::fs;
 
@@ -580,5 +582,118 @@ mod tests {
         assert_eq!(next["isPriority"], true, "the flag must be copied to the next occurrence");
         assert_eq!(next["checklist"], json!([{ "text": "draft", "done": false }]));
         fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn crm_task_update_edits_in_place_and_round_trips_every_editable_field() {
+        let env = setup("ht-crm-task-edit");
+        with_conn(&env.ctx, |conn| {
+            projects::create_project(conn, &env.wd, "alpha")?;
+            Ok::<(), AppError>(())
+        })
+        .unwrap();
+        let r = exec(
+            "crm_task_create",
+            json!({ "project_name": "alpha", "title": "call client", "dueDate": "2099-01-02", "dueTime": "09:00" }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        let id = r.data.unwrap()["id"].as_i64().unwrap();
+
+        let r = exec(
+            "crm_task_update",
+            json!({
+                "id": id,
+                "title": "call client again",
+                "dueDate": "2099-02-03",
+                "dueTime": "14:30",
+                "comment": "call after 14:00",
+                "remindAt": "2099-02-03T14:00",
+                "isPriority": true,
+                "recurrence": "weekly",
+                "checklist": [{ "text": "prep", "done": false }]
+            }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["id"], id, "the same task is edited in place");
+        assert_eq!(data["title"], "call client again");
+        assert_eq!(data["dueDate"], "2099-02-03");
+        assert_eq!(data["dueTime"], "14:30");
+        assert_eq!(data["comment"], "call after 14:00");
+        assert_eq!(data["remindAt"], "2099-02-03T14:00");
+        assert_eq!(data["isPriority"], true);
+        assert_eq!(data["recurrence"], "weekly");
+        assert_eq!(data["checklist"], json!([{ "text": "prep", "done": false }]));
+
+        // editing must not create or delete tasks: same id, still exactly one
+        let r = exec("crm_tasks", json!({ "project_name": "alpha" }), &env.ctx);
+        let tasks = r.data.unwrap()["tasks"].as_array().unwrap().clone();
+        assert_eq!(tasks.len(), 1, "no create/delete side effects");
+        assert_eq!(tasks[0]["id"], id);
+        assert_eq!(tasks[0]["title"], "call client again");
+
+        // explicit null dueTime keeps the current value (schema accepts null)
+        let r = exec("crm_task_update", json!({ "id": id, "dueTime": null }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["dueTime"], "14:30");
+
+        // missing id is rejected by the schema validator
+        let err = validate_args(
+            &tool("crm_task_update").parameters(),
+            &json!({ "title": "no id" }),
+        )
+        .unwrap_err();
+        assert!(err.contains("id"), "{err}");
+        // an unknown id errors without touching the board
+        let r = exec("crm_task_update", json!({ "id": 9999, "title": "ghost" }), &env.ctx);
+        assert_eq!(r.error.unwrap().code, "not_found");
+        let r = exec("crm_tasks", json!({ "project_name": "alpha" }), &env.ctx);
+        assert_eq!(r.data.unwrap()["tasks"].as_array().unwrap().len(), 1);
+
+        // both updates are undoable: popping the snapshots restores the pre-edit values
+        let r = exec("undo_last", json!({}), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["undoneKind"], "task_update");
+        let r = exec("undo_last", json!({}), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["undoneKind"], "task_update");
+        let r = exec("crm_tasks", json!({ "project_name": "alpha" }), &env.ctx);
+        let tasks = r.data.unwrap()["tasks"].as_array().unwrap().clone();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0]["id"], id);
+        assert_eq!(tasks[0]["title"], "call client");
+        assert_eq!(tasks[0]["dueDate"], "2099-01-02");
+        assert_eq!(tasks[0]["dueTime"], "09:00");
+        assert_eq!(tasks[0]["isPriority"], false);
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn crm_task_update_is_registered_with_all_editable_fields_in_its_schema() {
+        // crm_task_update is a deferred harness tool: the model sees it in
+        // the catalog summary and reaches it through resolve/enable.
+        let catalog = harness_catalog();
+        let tool = match catalog.resolve("crm_task_update") {
+            crate::agent::catalog::Resolution::Found(t) => t.clone(),
+            _ => panic!("crm_task_update must be registered for the harness agent"),
+        };
+        let params = tool.parameters();
+        let props = params["properties"].as_object().unwrap();
+        for field in [
+            "id",
+            "title",
+            "comment",
+            "dueDate",
+            "dueTime",
+            "remindAt",
+            "isPriority",
+            "recurrence",
+            "checklist",
+        ] {
+            assert!(props.contains_key(field), "crm_task_update schema must expose {field}");
+        }
+        assert_eq!(params["required"], json!(["id"]));
     }
 }
