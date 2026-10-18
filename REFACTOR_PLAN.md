@@ -4,16 +4,15 @@
 Поведение, внешний вид и контракты — без изменений. Один срез = один концерн = один коммит.
 
 ## Текущее состояние
-- Закрыто: **Фазы 0–2** (тесты, бэкенд-перф/безопасность, zero-risk фронтенд) и **S3.1–S3.2** (split `lib.rs`, split `harness_tools`).
-- Последний зелёный HEAD: `aae1aa4` — `cargo test` **771 passed / 19 ignored**, `npm test` **82 passed**, build OK.
-- S3.3 прерван: извлечение `chat/run.rs` сделано, но старый `mod tests` в `chat/mod.rs` не убран → тестовая сборка красная. Восстанавливаем первым делом.
+- Закрыто: **Фазы 0–2** (тесты, бэкенд-перф/безопасность, zero-risk фронтенд) и **S3.1–S3.3** (split `lib.rs`, split `harness_tools`, chat-run extract).
+- Последний зелёный HEAD: `1dc0630` — `cargo test` **772 passed / 19 ignored**, `npm test` **82 passed**, build OK.
 - Baseline-скриншоты: `/tmp/project-s-baseline/` (7 экранов).
 - Полный `npm run app:build` — только в финале.
 
-## Осталось (19 срезов)
+### S3.3 chat-run-extract — `done` (коммит `1dc0630`)
+`chat/mod.rs` (2326 строк) → `mod.rs` (1332 — CRUD, история, message-UX, индексы) + `run.rs` (1088 — запуск: `start_project_run`, `spawn_run`, `run_agent_inner`, journal, подтверждения). Тела байт-в-байт идентичны HEAD (diff — только пустые строки и видимость): контракт `spawn_run`/`RunBridge`, порядок событий, thread-owned DB-соединение, persistence, confirmations — те же. Re-export'ы урезаны до нужного call sites: `start_project_run` (pub), `register_mcp_tools`/`RunBridge`/`spawn_run` (pub(crate)); `persist_final_answer` — `#[cfg(test)]` (зовёт только harness/notes в тестах); `ChannelConfirmer`/`ConfirmationRequestPayload`/`MAX_STEPS`/`temperature_for_kind` не ре-экспортируются (внешних call sites нет). Тесты: 17 mod-специфичных в `mod.rs`, 15 в `run.rs` (14 перенесены байт-в-байт + 1 новый `register_mcp_tools_hides_collisions_and_registers_the_rest_as_core` — отклонение: прерванная попытка добавила его с неверным ожиданием «lazy», исправлено на «core» по фактическому контракту `register(tool, true)`); общий `test_support` (`setup`/`call`) — `pub(crate)` в `mod.rs`. Проверки: `cargo test` 772 passed / 0 failed / 19 ignored (baseline 771/19, +1 новый тест), `cargo check` и `cargo clippy --all-targets` — 0 warnings (обе unused-re-export правки убраны), `npm run build` OK.
 
-### S3.3 chat-run-extract — `in_progress` (восстановить)
-Вынести запуск чата в `chat/run.rs`; убрать дубли тестов из `chat/mod.rs`, починить re-export'ы, зелёные гейты; контракт `spawn_run` и порядок событий — те же.
+## Осталось (18 срезов)
 
 ### S3.4 loop-round-extract — `pending`
 Разложить `run_inner` (`agent/loop.rs`) на именованные шаги; порядок событий/латч/guards — те же.
@@ -54,4 +53,4 @@
 - `BAG_REPORT.md` — приватный рабочий файл, не трогаем логику рефакторинга.
 
 ## Следующий шаг
-Восстановить и закрыть **S3.3**, затем S3.4.
+**S3.4 loop-round-extract** — разложить `run_inner` (`agent/loop.rs`) на именованные шаги; порядок событий/латч/guards — те же.
