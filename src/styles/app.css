@@ -522,6 +522,19 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
   background: var(--surface-2);
 }
 .preview-error-actions { margin-top: 10px; }
+
+/* карточка файла без предпросмотра в «Заметках и файлах» */
+.notes-file-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 36px 16px;
+  color: var(--text-muted);
+}
+.notes-file-card .file-card-icon svg { width: 48px; height: 48px; }
+.notes-file-card .file-card-name { font-weight: 600; font-size: 13px; color: var(--text); }
+.notes-file-card .file-card-meta { font-size: 12px; }
 .preview-textarea {
   display: block;
   width: 100%;
@@ -1474,7 +1487,7 @@ details.set-card code {
 .center-body > .placeholder { margin: 12vh auto 0; }
 .placeholder h1 { font-size: 17px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
 
-/* ---------- Блокнот (заметки Notes/) ---------- */
+/* ---------- Заметки и файлы (хранилище Notes/) ---------- */
 
 .notes-view { grid-template-columns: 260px 1fr 450px; }
 

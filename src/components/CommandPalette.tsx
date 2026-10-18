@@ -148,7 +148,7 @@ export default function CommandPalette({ onTab, onClose }: Props) {
     const nav: PaletteItem[] = [
       { key: "nav-projects", label: "Проекты", run: () => { onTab("projects"); onClose(); } },
       { key: "nav-harness", label: "Харнес", run: () => { onTab("harness"); onClose(); } },
-      { key: "nav-notes", label: "Блокнот", run: () => { onTab("notes"); onClose(); } },
+      { key: "nav-notes", label: "Заметки и файлы", run: () => { onTab("notes"); onClose(); } },
       { key: "nav-settings", label: "Настройки", run: () => { actions.requestSettings(); onClose(); } },
     ];
     const projectItems: PaletteItem[] = state.projects
@@ -200,7 +200,7 @@ export default function CommandPalette({ onTab, onClose }: Props) {
       {
         key: "act-new-note",
         label: "Новая заметка",
-        hint: "форма в «Блокноте»",
+        hint: "форма в «Заметках и файлах»",
         run: () => {
           actions.requestNewNote();
           onTab("notes");

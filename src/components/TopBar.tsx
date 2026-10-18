@@ -191,7 +191,7 @@ export default function TopBar({ tab, onTab, onSettings, onSearch }: Props) {
           className={tab === "notes" ? "tab active" : "tab"}
           onClick={() => onTab("notes")}
         >
-          Блокнот
+          Заметки и файлы
         </button>
       </nav>
       <div className="topbar-right" data-tauri-drag-region onMouseDown={onDragMouseDown}>

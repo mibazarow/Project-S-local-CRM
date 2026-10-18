@@ -127,3 +127,12 @@ describe("TopBar event-driven reindex status", () => {
     expect(ipc.reindexStatus).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("TopBar section labels", () => {
+  it("the notes tab is labeled «Заметки и файлы»", async () => {
+    await mount();
+    const labels = [...container.querySelectorAll(".tab")].map((b) => b.textContent);
+    expect(labels).toContain("Заметки и файлы");
+    expect(labels).not.toContain("Блокнот");
+  });
+});

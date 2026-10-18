@@ -811,7 +811,7 @@ pub(crate) fn global_search_with(
                 kind: "note".into(),
                 id: rowid,
                 title: name,
-                subtitle: "Блокнот".into(),
+                subtitle: "Заметки и файлы".into(),
                 snippet,
                 score: 1.0 / (RRF_K + rank as f64 + 1.0),
                 project_id: None,

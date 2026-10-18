@@ -310,6 +310,11 @@ export const notesList = (rel?: string) => invoke<FsEntry[]>("notes_list", { rel
 
 export const notesRead = (rel: string) => invoke<string>("notes_read", { rel });
 
+// Binary preview read for non-md vault files (images/PDF as base64 data
+// URLs); text files keep notesRead. Same caps as fsReadBinaryDataUrl.
+export const notesReadBinaryDataUrl = (rel: string, maxBytes: number) =>
+  invoke<string>("notes_read_binary_data_url", { rel, maxBytes });
+
 export const notesWrite = (rel: string, content: string) =>
   invoke<FsEntry>("notes_write", { rel, content });
 

@@ -116,13 +116,13 @@ export default function NotesView() {
     <main className="view active notes-view">
       <aside className="sidebar">
         <div className="sidebar-head">
-          <span className="sidebar-title">Заметки</span>
+          <span className="sidebar-title">Заметки и файлы</span>
         </div>
         <div className="search notes-search">
           <IconSearch />
           <input
             type="text"
-            placeholder="Поиск по заметкам…"
+            placeholder="Поиск по заметкам и файлам…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />

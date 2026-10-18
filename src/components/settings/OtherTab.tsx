@@ -336,7 +336,7 @@ export default function OtherTab({
             onChange={(e) => setImportTarget(e.target.value as "project" | "notes")}
           >
             <option value="project">Проект</option>
-            <option value="notes">Заметки</option>
+            <option value="notes">Заметки и файлы</option>
           </select>
         </Field>
         {importTarget === "project" && (

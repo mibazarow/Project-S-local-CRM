@@ -115,6 +115,19 @@ pub(crate) fn read_at(root: &Path, rel: &str) -> Result<String> {
     fs_ops::read_text_at(&path, rel)
 }
 
+// Data URL preview for vault files the text reader cannot show (images and
+// PDFs), same caps and magic checks as the project file panel; text files
+// (including non-md) keep notes_read. Paths go through the vault policy, so
+// escapes and symlink hops out of Notes/ are rejected.
+pub fn read_binary_data_url(wd: &Path, rel: &str, max_bytes: u64) -> Result<String> {
+    let root = vault_root(wd)?;
+    let path = existing_at(&root, rel)?;
+    if path.is_dir() {
+        return Err(AppError::Invalid(format!("\"{rel}\" is a folder")));
+    }
+    fs_ops::binary_data_url_at(&root, &path, rel, max_bytes)
+}
+
 pub fn write(wd: &Path, rel: &str, content: &str) -> Result<FsEntry> {
     write_at(&vault_root(wd)?, rel, content)
 }
@@ -555,6 +568,58 @@ mod tests {
         }
         assert!(matches!(delete(&conn, &wd, ""), Err(AppError::Invalid(_))));
         assert!(matches!(create(&wd, "", None), Err(AppError::Invalid(_))));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn binary_data_url_reads_images_and_pdfs_rejects_other_types() {
+        let wd = setup("notes-binary");
+        fs::write(notes(&wd).join("pic.png"), [0x89, b'P', b'N', b'G', 1, 2]).unwrap();
+        fs::write(notes(&wd).join("doc.pdf"), b"%PDF-1.7\ncontent").unwrap();
+        fs::write(notes(&wd).join("archive.zip"), b"PK\x03\x04junk").unwrap();
+        fs::write(notes(&wd).join("fake.pdf"), b"not a pdf").unwrap();
+        fs::write(notes(&wd).join("notes.txt"), "plain text").unwrap();
+
+        let url = read_binary_data_url(&wd, "pic.png", 1024).unwrap();
+        assert!(url.starts_with("data:image/png;base64,"));
+        let pdf = read_binary_data_url(&wd, "doc.pdf", 1024).unwrap();
+        assert!(pdf.starts_with("data:application/pdf;base64,"));
+        for bad in ["archive.zip", "fake.pdf"] {
+            assert!(
+                matches!(read_binary_data_url(&wd, bad, 1024), Err(AppError::Invalid(_))),
+                "accepted: {bad}"
+            );
+        }
+        // Size caps are enforced like in the project panel.
+        assert!(matches!(read_binary_data_url(&wd, "pic.png", 1), Err(AppError::Invalid(_))));
+        assert!(matches!(read_binary_data_url(&wd, "doc.pdf", 1), Err(AppError::Invalid(_))));
+        // Text files of any extension keep reading through notes_read, and
+        // .md behavior is unchanged.
+        assert_eq!(read(&wd, "notes.txt").unwrap(), "plain text");
+        assert_eq!(read(&wd, WELCOME_NOTE).unwrap(), WELCOME_TEXT);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn binary_data_url_rejects_escapes_and_symlink_exits() {
+        let wd = setup("notes-binary-escape");
+        for bad in ["../x", "/etc/passwd", "a/../../x", "./x"] {
+            assert!(
+                matches!(read_binary_data_url(&wd, bad, 1024), Err(AppError::Invalid(_))),
+                "accepted: {bad:?}"
+            );
+        }
+        // A symlink inside the vault pointing outside it is rejected (the
+        // canonicalized target leaves Notes/).
+        use std::os::unix::fs::symlink;
+        let outside = temp_test_dir("notes-binary-outside");
+        fs::write(outside.join("secret.png"), [0x89, b'P', b'N', b'G']).unwrap();
+        symlink(outside.join("secret.png"), notes(&wd).join("link.png")).unwrap();
+        assert!(matches!(
+            read_binary_data_url(&wd, "link.png", 1024),
+            Err(AppError::Invalid(_))
+        ));
+        fs::remove_dir_all(&outside).unwrap();
         fs::remove_dir_all(&wd).unwrap();
     }
 

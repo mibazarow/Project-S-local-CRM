@@ -14,6 +14,7 @@ import {
 } from "../shared/markdown";
 import VersionHistory from "../shared/VersionHistory";
 import { toMessage } from "../chat/chatShared";
+import { EntryIcon } from "../files/icons";
 
 interface Props {
   entry: FsEntry | null;
@@ -21,12 +22,31 @@ interface Props {
 }
 
 // "blocks" = live block editor (markdown default), "source" = raw markdown
-// textarea, "edit" = plain-text textarea for non-markdown files.
-type Mode = "blocks" | "source" | "edit";
+// textarea. Non-md files are preview-only: text read-only, images/PDF inline,
+// everything else a card with an "open in system" action.
+type Mode = "blocks" | "source";
 
 type Format = "h1" | "h2" | "h3" | "bold" | "italic" | "underline" | "strike";
 
 const AUTOSAVE_MS = 800;
+
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+// Must stay in sync with PDF_MAX_BYTES in src-tauri/src/fs_ops.rs.
+const MAX_PDF_BYTES = 25 * 1024 * 1024;
+
+const dataUrlToBytes = (dataUrl: string): Uint8Array<ArrayBuffer> => {
+  const bin = atob(dataUrl.slice(dataUrl.indexOf(",") + 1));
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+};
+
+const formatSize = (bytes: number): string => {
+  if (bytes < 1024) return `${bytes} Б`;
+  const kb = bytes / 1024;
+  if (kb < 1024) return `${kb.toFixed(1)} КБ`;
+  return `${(kb / 1024).toFixed(1)} МБ`;
+};
 
 const WRAP: Partial<Record<Format, [string, string]>> = {
   bold: ["**", "**"],
@@ -52,6 +72,7 @@ const TOOLBAR: { fmt: Format; label: string; cls: string; title: string }[] = [
 ];
 
 export default function NoteEditor({ entry, onDirtyChange }: Props) {
+  const isPdf = entry != null && entry.kind === "file" && entry.ext === "pdf";
   const [mode, setMode] = useState<Mode>("blocks");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -62,6 +83,8 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
   const [draft, setDraft] = useState("");
   const [historyAbs, setHistoryAbs] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
+  const [dataUrl, setDataUrl] = useState<string | null>(null);
+  const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const blockTaRef = useRef<HTMLTextAreaElement | null>(null);
   const sourceTaRef = useRef<HTMLTextAreaElement | null>(null);
   const pendingCaret = useRef<number | null>(null);
@@ -75,25 +98,77 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
     setSavedFlash(false);
     setActive(null);
     setDraft("");
+    setDataUrl(null);
+    setPdfUrl(null);
     relRef.current = entry?.relPath ?? null;
     if (!entry) return;
     let cancelled = false;
-    setLoading(true);
-    void (async () => {
-      try {
-        const content = await ipc.notesRead(entry.relPath);
-        if (!cancelled) {
-          setText(content);
-          setSaved(content);
+    let objectUrl: string | null = null;
+    const isPdfEntry = entry.kind === "file" && entry.ext === "pdf";
+    if (entry.isMarkdown || entry.isText) {
+      setLoading(true);
+      void (async () => {
+        try {
+          const content = await ipc.notesRead(entry.relPath);
+          if (!cancelled) {
+            setText(content);
+            setSaved(content);
+          }
+        } catch (e) {
+          if (!cancelled) setError(toMessage(e));
+        } finally {
+          if (!cancelled) setLoading(false);
         }
-      } catch (e) {
-        if (!cancelled) setError(toMessage(e));
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
+      })();
+    } else if (entry.isImage) {
+      setLoading(true);
+      void (async () => {
+        try {
+          if (entry.size > MAX_IMAGE_BYTES) {
+            if (!cancelled)
+              setError(
+                `Файл слишком большой для предпросмотра (лимит ${MAX_IMAGE_BYTES / (1024 * 1024)} МБ)`,
+              );
+          } else {
+            const url = await ipc.notesReadBinaryDataUrl(entry.relPath, MAX_IMAGE_BYTES);
+            if (!cancelled) setDataUrl(url);
+          }
+        } catch (e) {
+          if (!cancelled) setError(toMessage(e));
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+      })();
+    } else if (isPdfEntry) {
+      setLoading(true);
+      void (async () => {
+        try {
+          if (entry.size > MAX_PDF_BYTES) {
+            if (!cancelled)
+              setError(
+                `Файл слишком большой для предпросмотра (лимит ${MAX_PDF_BYTES / (1024 * 1024)} МБ)`,
+              );
+          } else {
+            const pdfDataUrl = await ipc.notesReadBinaryDataUrl(
+              entry.relPath,
+              MAX_PDF_BYTES,
+            );
+            objectUrl = URL.createObjectURL(
+              new Blob([dataUrlToBytes(pdfDataUrl)], { type: "application/pdf" }),
+            );
+            if (cancelled) URL.revokeObjectURL(objectUrl);
+            else setPdfUrl(objectUrl);
+          }
+        } catch (e) {
+          if (!cancelled) setError(toMessage(e));
+        } finally {
+          if (!cancelled) setLoading(false);
+        }
+      })();
+    }
     return () => {
       cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [entry?.relPath, reloadTick]);
 
@@ -138,6 +213,16 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
     if (!entry) return;
     await ipc.notesWrite(entry.relPath, content);
     setReloadTick((t) => t + 1);
+  };
+
+  // Existing open-with flow (scope "notes"): remembered app or system default.
+  const openInSystem = async () => {
+    if (!entry) return;
+    try {
+      await ipc.openWith("notes", entry.relPath);
+    } catch (e) {
+      setError(toMessage(e));
+    }
   };
 
   const blocks = useMemo(
@@ -279,34 +364,34 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
     />
   );
 
+  const textual = entry != null && (entry.isMarkdown || entry.isText);
+
   return (
     <section className="center">
       <div className="center-head">
-        <h2>{entry ? entry.relPath : "Блокнот"}</h2>
+        <h2>{entry ? entry.relPath : "Заметки и файлы"}</h2>
         {entry && (
           <div className="preview-actions">
             {savedFlash && text === saved && (
               <span className="notes-save-state">Сохранено</span>
             )}
             {text !== saved && <span className="notes-save-state dirty">Не сохранено</span>}
-            {entry.isMarkdown ? (
+            {entry.isMarkdown && (
               <button
                 className="ghost-btn small"
                 onClick={() => setMode(mode === "source" ? "blocks" : "source")}
               >
                 {mode === "source" ? "Готово" : "Исходник"}
               </button>
-            ) : (
-              <button
-                className="ghost-btn small"
-                onClick={() => setMode(mode === "edit" ? "blocks" : "edit")}
-              >
-                {mode === "edit" ? "Готово" : "Редактировать"}
-              </button>
             )}
-            {(entry.isMarkdown || entry.isText) && (
+            {textual && (
               <button className="ghost-btn small" onClick={() => void openHistory()}>
                 История версий
+              </button>
+            )}
+            {!textual && (
+              <button className="ghost-btn small" onClick={() => void openInSystem()}>
+                Открыть в системе
               </button>
             )}
           </div>
@@ -332,27 +417,41 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
       {!entry ? (
         <div className="center-body">
           <div className="placeholder">
-            <h1>Блокнот</h1>
-            <p>Выберите заметку слева или создайте новую</p>
+            <h1>Заметки и файлы</h1>
+            <p>Выберите заметку или файл слева или создайте новую</p>
           </div>
         </div>
       ) : loading ? (
         <div className="center-body">Загрузка…</div>
+      ) : !entry.isMarkdown && entry.isText ? (
+        <div className="notes-editor-body">
+          <pre className="preview-body">{text}</pre>
+        </div>
+      ) : !entry.isMarkdown && entry.isImage ? (
+        <div className="notes-editor-body">
+          <div className="preview-body preview-image">
+            {dataUrl && <img src={dataUrl} alt={entry.name} />}
+          </div>
+        </div>
+      ) : !entry.isMarkdown && isPdf ? (
+        <div className="notes-editor-body">
+          <div className="preview-body preview-pdf">
+            {pdfUrl && <iframe src={pdfUrl} title={entry.name} />}
+          </div>
+        </div>
       ) : !entry.isMarkdown ? (
-        mode === "edit" ? (
-          <div className="notes-editor-body">
-            <textarea
-              className="preview-textarea"
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              autoFocus
-            />
+        <div className="notes-editor-body">
+          <div className="notes-file-card">
+            <span className="file-card-icon">
+              <EntryIcon entry={entry} />
+            </span>
+            <span className="file-card-name">{entry.name}</span>
+            <span className="file-card-meta">
+              {formatSize(entry.size)}
+              {entry.ext !== "" && ` · ${entry.ext.toUpperCase()}`}
+            </span>
           </div>
-        ) : (
-          <div className="notes-editor-body">
-            <pre className="preview-body">{text}</pre>
-          </div>
-        )
+        </div>
       ) : mode === "source" ? (
         <div className="notes-editor-body">
           <textarea

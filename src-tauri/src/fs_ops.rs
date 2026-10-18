@@ -487,12 +487,24 @@ pub fn read_binary_data_url(
     max_bytes: u64,
 ) -> Result<String> {
     let (root, path) = existing(conn, wd, project_id, rel_path)?;
-    let item = entry(&root, &path)?;
+    binary_data_url_at(&root, &path, rel_path, max_bytes)
+}
+
+// Path-based core shared by the project panel and the Notes vault preview:
+// `root` labels the containing folder for the entry, `rel_path` names the
+// file in errors.
+pub(crate) fn binary_data_url_at(
+    root: &Path,
+    path: &Path,
+    rel_path: &str,
+    max_bytes: u64,
+) -> Result<String> {
+    let item = entry(root, path)?;
     if item.is_image {
-        return binary_data_url(&path, max_bytes, rel_path);
+        return binary_data_url(path, max_bytes, rel_path);
     }
     if item.ext == "pdf" {
-        return pdf_data_url(&path, max_bytes, rel_path);
+        return pdf_data_url(path, max_bytes, rel_path);
     }
     Err(AppError::Invalid(format!(
         "\"{rel_path}\" is not an image or PDF"

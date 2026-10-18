@@ -191,3 +191,14 @@ describe("CommandPalette search groups", () => {
     expect(groups().some((g) => g.title === "Поиск")).toBe(false);
   });
 });
+
+describe("CommandPalette renamed section label", () => {
+  it("the Перейти group lists «Заметки и файлы» instead of «Блокнот»", async () => {
+    await renderPalette();
+    await typeQuery("файлы");
+    const nav = groups().find((g) => g.title === "Перейти");
+    expect(nav?.names).toContain("Заметки и файлы");
+    const allNames = groups().flatMap((g) => g.names);
+    expect(allNames).not.toContain("Блокнот");
+  });
+});

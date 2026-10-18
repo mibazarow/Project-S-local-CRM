@@ -327,7 +327,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // the current working dir, else the top of the list; clear it when no
   // projects remain. Persists the active selection so it survives restarts.
   // Tab switches never touch activeProjectId, so the selection is stable
-  // across Проекты/Харнес/Блокнот.
+  // across Проекты/Харнес/Заметки и файлы.
   useEffect(() => {
     if (!state.onboarding.configured) return;
     const { projects, activeProjectId, onboarding } = state;

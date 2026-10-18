@@ -31,6 +31,18 @@ pub(crate) fn notes_read(state: State<AppState>, rel: String) -> Result<String> 
     notes::read(&state.working_dir()?, &rel)
 }
 
+// Binary preview read (images/PDF as base64 data URLs) for the non-md files
+// the vault can hold; text files keep notes_read. Same caps and magic checks
+// as fs_read_binary_data_url, same Notes path policy.
+#[tauri::command]
+pub(crate) fn notes_read_binary_data_url(
+    state: State<AppState>,
+    rel: String,
+    max_bytes: u64,
+) -> Result<String> {
+    notes::read_binary_data_url(&state.working_dir()?, &rel, max_bytes)
+}
+
 #[tauri::command]
 pub(crate) fn notes_write(
     app: AppHandle,

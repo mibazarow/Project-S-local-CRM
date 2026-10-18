@@ -183,3 +183,42 @@ describe("NotesTree Finder drag import (OS drag-drop)", () => {
     expect(row("new.md")).toBeDefined();
   });
 });
+
+describe("NotesTree non-md files and labels", () => {
+  const anyFile = (name: string, relPath: string, over: Partial<FsEntry>): FsEntry => ({
+    name,
+    relPath,
+    kind: "file",
+    ext: "",
+    size: 10,
+    modified: 0,
+    isMarkdown: false,
+    isText: false,
+    isImage: false,
+    ...over,
+  });
+
+  it("lists images, PDFs and archives with ext tags and entry icons", async () => {
+    entries.push(
+      anyFile("pic.png", "pic.png", { ext: "png", isImage: true }),
+      anyFile("doc.pdf", "doc.pdf", { ext: "pdf" }),
+      anyFile("archive.zip", "archive.zip", { ext: "zip" }),
+    );
+    await mount();
+    for (const name of ["pic.png", "doc.pdf", "archive.zip"]) {
+      expect(row(name)).toBeDefined();
+    }
+    expect(row("pic.png").querySelector(".tag")?.textContent).toBe("png");
+    expect(row("pic.png").querySelector(".icon svg")).toBeTruthy();
+    expect(row("archive.zip").querySelector(".icon svg")).toBeTruthy();
+    expect(row("docs").querySelector(".icon.folder-icon svg")).toBeTruthy();
+  });
+
+  it("the empty state mentions files too", async () => {
+    entries.length = 0;
+    await mount();
+    expect(container.querySelector(".empty-note")?.textContent).toBe(
+      "Заметок и файлов пока нет",
+    );
+  });
+});

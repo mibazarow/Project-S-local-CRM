@@ -294,7 +294,9 @@ export default function NotesTree({
     const what =
       entry.kind === "dir"
         ? `папку «${entry.name}» со всем содержимым`
-        : `заметку «${entry.name}»`;
+        : entry.isMarkdown
+          ? `заметку «${entry.name}»`
+          : `файл «${entry.name}»`;
     if (!confirmRemove(what)) return;
     try {
       await ipc.notesDelete(entry.relPath);
@@ -390,7 +392,7 @@ export default function NotesTree({
   if (loading && Object.keys(childrenByDir).length === 0) {
     body = <div className="empty-note">Загрузка…</div>;
   } else if (root.length === 0 && !creating) {
-    body = <div className="empty-note">Заметок пока нет</div>;
+    body = <div className="empty-note">Заметок и файлов пока нет</div>;
   } else {
     body = (
       <ul className="tree-children root">

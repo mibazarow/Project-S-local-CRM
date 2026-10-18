@@ -263,6 +263,7 @@ pub fn run() {
             commands::notes::notes_tree,
             commands::notes::notes_list,
             commands::notes::notes_read,
+            commands::notes::notes_read_binary_data_url,
             commands::notes::notes_write,
             commands::notes::notes_create,
             commands::notes::notes_mkdir,
