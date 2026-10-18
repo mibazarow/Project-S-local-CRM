@@ -44,7 +44,7 @@ fn resolve_io(args: &Value, ctx: &ToolCtx, wd: &Path) -> std::result::Result<(St
             let output = match out_raw {
                 Some(o) => {
                     let root = with_conn(ctx, |conn| projects::project_root(conn, wd, pid))?;
-                    Some(fs_ops::lenient_parent(&fs_ops::join_rel(&root, o)?)?)
+                    Some(crate::path_policy::lenient_parent(&crate::path_policy::join_rel(&root, o)?)?)
                 }
                 None => None,
             };
@@ -53,7 +53,7 @@ fn resolve_io(args: &Value, ctx: &ToolCtx, wd: &Path) -> std::result::Result<(St
         None => {
             let path = super::harness_tools::lenient_existing(&resolve_path(raw, wd))?;
             let output = match out_raw {
-                Some(o) => Some(fs_ops::lenient_parent(&resolve_path(o, wd))?),
+                Some(o) => Some(crate::path_policy::lenient_parent(&resolve_path(o, wd))?),
                 None => None,
             };
             // The label stays the path as given (project scope echoes the
@@ -303,7 +303,7 @@ impl Tool for ImageTransformTool {
                 match out_raw {
                     // A new file inside the project folder: the same territory
                     // fs_write skips; an unresolvable output confirms instead.
-                    Some(o) => fs_ops::join_rel(&root, o)
+                    Some(o) => crate::path_policy::join_rel(&root, o)
                         .map(|_| None)
                         .unwrap_or_else(|e| {
                             Some(format!("image_transform: {}", e.to_string().replace("invalid input: ", "")))

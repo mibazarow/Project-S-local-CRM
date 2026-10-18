@@ -29,7 +29,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::{json, Value};
 use std::fs;
 use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -179,67 +179,11 @@ pub fn harness_catalog() -> Catalog {
 }
 
 // Expands "~", joins relative paths onto the working dir, then collapses
-// "." and ".." lexically (the target may not exist yet, e.g. fs_write).
-pub(crate) fn resolve_path(raw: &str, wd: &Path) -> PathBuf {
-    let expanded = if raw == "~" {
-        home_dir()
-    } else if let Some(rest) = raw.strip_prefix("~/") {
-        home_dir().join(rest)
-    } else if Path::new(raw).is_absolute() {
-        PathBuf::from(raw)
-    } else {
-        wd.join(raw)
-    };
-    normalize(&expanded)
-}
-
-fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"))
-}
-
-fn normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for c in path.components() {
-        match c {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other),
-        }
-    }
-    out
-}
-
-// Best-effort canonical form for policy checks: existing prefixes resolve
-// through symlinks, the missing tail (fs_write targets) is appended back.
-pub(crate) fn canonicalish(path: &Path) -> PathBuf {
-    if let Ok(c) = path.canonicalize() {
-        return c;
-    }
-    let mut tail: Vec<std::ffi::OsString> = Vec::new();
-    let mut cur = path;
-    loop {
-        match cur.canonicalize() {
-            Ok(c) => {
-                let mut out = c;
-                while let Some(name) = tail.pop() {
-                    out.push(name);
-                }
-                return out;
-            }
-            Err(_) => match (cur.parent(), cur.file_name()) {
-                (Some(p), Some(name)) => {
-                    tail.push(name.to_os_string());
-                    cur = p;
-                }
-                _ => return normalize(path),
-            },
-        }
-    }
-}
+// "." and ".." lexically (the target may not exist yet, e.g. fs_write);
+// canonicalish is the best-effort canonical form for policy checks. Both are
+// the shared path_policy primitives (S1.6), re-exported for the other agent
+// tool modules.
+pub(crate) use crate::path_policy::{canonicalish, normalize, resolve_path};
 
 // SPEC 5.2: writes inside Harness/ and Projects/ skip confirmation.
 pub(crate) fn in_default_territory(path: &Path, wd: &Path) -> bool {
@@ -254,7 +198,7 @@ fn is_obviously_destructive(path: &Path, wd: &Path) -> bool {
     let resolved = canonicalish(path);
     let base = wd.canonicalize().unwrap_or_else(|_| normalize(wd));
     resolved == Path::new("/")
-        || resolved == normalize(&home_dir())
+        || resolved == normalize(&crate::path_policy::home_dir())
         || resolved == base
         || resolved == base.join(paths::HARNESS_DIR)
         || resolved == base.join(paths::PROJECTS_DIR)
@@ -277,7 +221,7 @@ pub(crate) fn lenient_existing(path: &Path) -> Result<PathBuf> {
     if fs::symlink_metadata(path).is_ok() {
         return Ok(path.to_path_buf());
     }
-    fs_ops::lenient_absolute(path)
+    crate::path_policy::lenient_absolute(path)
 }
 
 // Maps a lenient-resolution failure to the envelope: ambiguous candidates
@@ -296,7 +240,7 @@ pub(crate) fn lenient_fail(e: &AppError) -> ToolResult {
 // the final component as requested; a genuinely missing parent chain is
 // returned unchanged so the caller creates it.
 fn lenient_target_parent(path: &Path) -> Result<PathBuf> {
-    fs_ops::lenient_parent(path)
+    crate::path_policy::lenient_parent(path)
 }
 
 // Harness CRM tools address projects by id or exact name. Cross-project
@@ -631,34 +575,12 @@ impl Tool for FsDeleteTool {
 // falls back to copy + remove.
 const EXDEV: i32 = 18;
 
-// First symlink component on the way to `path` below the working dir (the
-// final component included), so auto-created parents and in-territory links
-// can never land outside the territory the policy checked.
-fn symlink_below_wd(path: &Path, wd: &Path) -> Option<PathBuf> {
-    let Ok(rest) = path.strip_prefix(wd) else {
-        return None;
-    };
-    let mut cur = wd.to_path_buf();
-    for part in rest.components() {
-        cur.push(part.as_os_str());
-        if fs::symlink_metadata(&cur)
-            .map(|m| m.file_type().is_symlink())
-            .unwrap_or(false)
-        {
-            return Some(cur);
-        }
-    }
-    None
-}
-
 // Symlink anywhere under the working dir, or the final entry of a path
-// outside it: fs_copy/fs_move never follow or replace symlinks.
+// outside it: fs_copy/fs_move never follow or replace symlinks. The chain
+// walk below the working dir is the shared path_policy guard (S1.6).
 fn symlink_guard(path: &Path, wd: &Path) -> Option<PathBuf> {
-    symlink_below_wd(path, wd).or_else(|| {
-        fs::symlink_metadata(path)
-            .ok()
-            .filter(|m| m.file_type().is_symlink())
-            .map(|_| path.to_path_buf())
+    crate::path_policy::first_symlink_below(wd, path).or_else(|| {
+        crate::path_policy::is_symlink(path).then(|| path.to_path_buf())
     })
 }
 

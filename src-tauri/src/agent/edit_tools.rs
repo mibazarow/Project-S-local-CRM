@@ -11,7 +11,6 @@ use super::project_tools::{emit_versions_changed, envelope, require_wd, with_con
 use super::result::{ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
-use crate::fs_ops;
 use crate::paths;
 use crate::projects;
 use serde_json::{json, Value};
@@ -26,22 +25,6 @@ fn nanos() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0)
-}
-
-// Project-relative join: only Normal components are allowed.
-fn join_rel(root: &Path, rel: &str) -> Result<PathBuf> {
-    let mut out = root.to_path_buf();
-    for part in Path::new(rel).components() {
-        match part {
-            Component::Normal(name) => out.push(name),
-            _ => {
-                return Err(AppError::Invalid(format!(
-                    "path \"{rel}\" is not project-relative"
-                )))
-            }
-        }
-    }
-    Ok(out)
 }
 
 fn io_fail(path: &Path, e: &std::io::Error) -> ToolResult {
@@ -59,7 +42,7 @@ fn resolve_target(args: &Value, ctx: &ToolCtx, wd: &Path) -> Result<(String, Pat
     match ctx.project_id {
         Some(pid) => {
             let root = with_conn(ctx, |conn| projects::project_root(conn, wd, pid))?;
-            let joined = fs_ops::resolve_rel(&root, raw, "project")?;
+            let joined = crate::path_policy::resolve_rel(&root, raw, "project")?;
             let canon = joined
                 .canonicalize()
                 .map_err(|_| AppError::Invalid(format!("\"{raw}\" not found")))?;
@@ -303,7 +286,7 @@ fn resolve_base(args: &Value, ctx: &ToolCtx, wd: &Path) -> Result<(PathBuf, Path
             if raw.is_empty() {
                 return Ok((root.clone(), root));
             }
-            let joined = fs_ops::resolve_rel(&root, raw, "project")?;
+            let joined = crate::path_policy::resolve_rel(&root, raw, "project")?;
             let canon = joined
                 .canonicalize()
                 .map_err(|_| AppError::Invalid(format!("\"{raw}\" not found")))?;

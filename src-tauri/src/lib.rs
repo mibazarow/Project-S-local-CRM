@@ -23,6 +23,7 @@ mod objectives;
 mod onboarding;
 mod open_with;
 mod ops;
+mod path_policy;
 mod paths;
 mod processes;
 mod projects;

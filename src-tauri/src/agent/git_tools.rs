@@ -14,7 +14,7 @@ use crate::journal::mask_secrets;
 use crate::projects;
 use serde_json::{json, Value};
 use std::io::Read;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -115,7 +115,7 @@ fn resolve_dir(args: &Value, ctx: &ToolCtx) -> Result<PathBuf> {
             if raw.is_empty() {
                 return Ok(root);
             }
-            let joined = join_rel(&root, raw)?;
+            let joined = crate::path_policy::join_rel(&root, raw)?;
             let canon = joined
                 .canonicalize()
                 .map_err(|_| AppError::Invalid(format!("\"{raw}\" not found")))?;
@@ -136,21 +136,6 @@ fn resolve_dir(args: &Value, ctx: &ToolCtx) -> Result<PathBuf> {
                 .map_err(|_| AppError::Invalid(format!("\"{}\" not found", dir.display())))
         }
     }
-}
-
-pub(crate) fn join_rel(root: &Path, rel: &str) -> Result<PathBuf> {
-    let mut out = root.to_path_buf();
-    for part in Path::new(rel).components() {
-        match part {
-            Component::Normal(name) => out.push(name),
-            _ => {
-                return Err(AppError::Invalid(format!(
-                    "path \"{rel}\" is not project-relative"
-                )))
-            }
-        }
-    }
-    Ok(out)
 }
 
 fn ensure_repo(dir: &Path) -> Result<()> {

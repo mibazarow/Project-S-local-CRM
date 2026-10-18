@@ -2,6 +2,7 @@ use crate::error::{AppError, Result};
 use crate::sync_util::lock_recover;
 use crate::fs_ops::{self, FsEntry};
 use crate::paths;
+use crate::path_policy;
 use crate::state::AppState;
 use rusqlite::{Connection, OptionalExtension};
 use std::fs;
@@ -11,8 +12,8 @@ use tauri::AppHandle;
 
 // Notes vault: a top-level Notes/ folder of the working dir holding markdown
 // notes (folders allowed). All paths are vault-relative and resolved through
-// the shared fs_ops containment helpers, so escapes ("..", absolute paths,
-// symlink hops) are rejected exactly like in project file operations.
+// the shared path_policy containment helpers, so escapes ("..", absolute
+// paths, symlink hops) are rejected exactly like in project file operations.
 
 pub const WELCOME_NOTE: &str = "Добро пожаловать.md";
 
@@ -44,21 +45,17 @@ pub(crate) fn vault_root(wd: &Path) -> Result<PathBuf> {
 // the vault root once per run (ToolCtx.notes_root) instead of the working
 // dir, and the wd-based public API just wraps them.
 fn existing_at(root: &Path, rel: &str) -> Result<PathBuf> {
-    fs_ops::contain_existing(root, rel, "Notes")
+    path_policy::contain_existing(root, rel, "Notes")
 }
 
 // Like existing_at(), but refuses the vault root itself and symlink entries.
-fn existing_for_mutation_at(root: &Path, rel: &str) -> Result<PathBuf> {
+pub(crate) fn existing_for_mutation_at(root: &Path, rel: &str) -> Result<PathBuf> {
     if rel.trim().is_empty() {
         return Err(AppError::Invalid(
             "cannot modify the Notes folder itself".into(),
         ));
     }
-    let joined = fs_ops::resolve_rel(root, rel, "Notes")?;
-    fs_ops::reject_symlink(&joined, rel)?;
-    joined
-        .canonicalize()
-        .map_err(|_| AppError::Invalid(format!("\"{rel}\" not found")))
+    path_policy::contain_for_mutation(root, rel, "Notes")
 }
 
 // One folder level, sorted dirs-first case-insensitive (same order as the
@@ -151,12 +148,12 @@ pub(crate) fn create_at(root: &Path, rel: &str, content: Option<&str>) -> Result
             )));
         }
     }
-    let joined = fs_ops::join_rel(root, rel)?;
+    let joined = path_policy::join_rel(root, rel)?;
     // Existing parent folders are matched leniently (dash/space/case/NFD
     // variants), so a variant note name lands in the real folder instead of
     // spawning a near-duplicate one; the note's own name stays as requested.
-    let joined = fs_ops::lenient_parent(&joined)?;
-    fs_ops::reject_symlink_chain(root, &joined, rel)?;
+    let joined = path_policy::lenient_parent(&joined)?;
+    path_policy::reject_symlink_chain(root, &joined, rel)?;
     if fs::symlink_metadata(&joined).is_ok() {
         return Err(AppError::Invalid(format!("\"{rel}\" already exists")));
     }
@@ -302,7 +299,7 @@ pub fn append_inbox(wd: &Path, text: &str) -> Result<String> {
     let now = chrono::Local::now();
     let date = now.format("%Y-%m-%d").to_string();
     let rel = format!("Входящие/{date}.md");
-    let path = fs_ops::join_rel(&root, &rel)?;
+    let path = path_policy::join_rel(&root, &rel)?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }

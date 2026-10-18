@@ -15,7 +15,7 @@
 // Child processes see TMPDIR/TEMP/TMP pointed at Harness/tmp/ (SPEC 5.2).
 // Output is secret-masked and capped; home paths are shortened to ~ in
 // errors.
-use super::git_tools::join_rel;
+use crate::path_policy::join_rel;
 use super::harness_tools::{canonicalish, resolve_path};
 use super::project_tools::{envelope, require_wd, with_conn};
 use super::task_glue::{read_datas, upsert_section, write_datas};

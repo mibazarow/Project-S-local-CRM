@@ -232,12 +232,12 @@ fn resolve_output(raw: &str, ctx: &ToolCtx, wd: &Path) -> Result<(String, PathBu
     match ctx.project_id {
         Some(pid) => {
             let root = with_conn(ctx, |conn| projects::project_root(conn, wd, pid))?;
-            let joined = fs_ops::join_rel(&root, raw)?;
+            let joined = crate::path_policy::join_rel(&root, raw)?;
             let name = joined
                 .file_name()
                 .ok_or_else(|| AppError::Invalid(format!("invalid path \"{raw}\"")))?;
             fs_ops::check_name(&name.to_string_lossy())?;
-            let joined = fs_ops::lenient_parent(&joined)?;
+            let joined = crate::path_policy::lenient_parent(&joined)?;
             if !canonicalish(&joined).starts_with(&root) {
                 return Err(AppError::Invalid(format!(
                     "\"{raw}\" escapes the project folder"
@@ -251,7 +251,7 @@ fn resolve_output(raw: &str, ctx: &ToolCtx, wd: &Path) -> Result<(String, PathBu
                 .file_name()
                 .ok_or_else(|| AppError::Invalid(format!("invalid path \"{raw}\"")))?;
             fs_ops::check_name(&name.to_string_lossy())?;
-            let path = fs_ops::lenient_parent(&path)?;
+            let path = crate::path_policy::lenient_parent(&path)?;
             Ok((path.display().to_string(), path))
         }
     }

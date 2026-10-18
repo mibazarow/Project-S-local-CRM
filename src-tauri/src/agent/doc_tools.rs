@@ -23,7 +23,7 @@ use serde_json::{json, Value};
 use std::cell::RefCell;
 use std::fs;
 use std::io::{Seek, SeekFrom, Write};
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -702,21 +702,6 @@ fn build_csv(sheet: &Value) -> Vec<u8> {
 // Shared path resolution and write helpers
 // ---------------------------------------------------------------------------
 
-fn join_rel(root: &Path, rel: &str) -> Result<PathBuf> {
-    let mut out = root.to_path_buf();
-    for part in Path::new(rel).components() {
-        match part {
-            Component::Normal(name) => out.push(name),
-            _ => {
-                return Err(AppError::Invalid(format!(
-                    "path \"{rel}\" is not project-relative"
-                )))
-            }
-        }
-    }
-    Ok(out)
-}
-
 // (label shown back to the model, absolute target path).
 fn resolve_target(args: &Value, ctx: &ToolCtx, wd: &Path) -> Result<(String, PathBuf)> {
     let raw = args["path"].as_str().unwrap_or_default();
@@ -726,7 +711,7 @@ fn resolve_target(args: &Value, ctx: &ToolCtx, wd: &Path) -> Result<(String, Pat
     match ctx.project_id {
         Some(pid) => {
             let root = with_conn(ctx, |conn| projects::project_root(conn, wd, pid))?;
-            let joined = join_rel(&root, raw)?;
+            let joined = crate::path_policy::join_rel(&root, raw)?;
             let name = joined
                 .file_name()
                 .ok_or_else(|| AppError::Invalid(format!("invalid path \"{raw}\"")))?;
@@ -737,7 +722,7 @@ fn resolve_target(args: &Value, ctx: &ToolCtx, wd: &Path) -> Result<(String, Pat
             let joined = match super::harness_tools::lenient_existing(&joined) {
                 Ok(p) => p,
                 Err(e) if e.to_string().contains("ambiguous") => return Err(e),
-                Err(_) => fs_ops::lenient_parent(&joined)?,
+                Err(_) => crate::path_policy::lenient_parent(&joined)?,
             };
             if !canonicalish(&joined).starts_with(&root) {
                 return Err(AppError::Invalid(format!(
@@ -755,7 +740,7 @@ fn resolve_target(args: &Value, ctx: &ToolCtx, wd: &Path) -> Result<(String, Pat
             let path = match super::harness_tools::lenient_existing(&path) {
                 Ok(p) => p,
                 Err(e) if e.to_string().contains("ambiguous") => return Err(e),
-                Err(_) => fs_ops::lenient_parent(&path)?,
+                Err(_) => crate::path_policy::lenient_parent(&path)?,
             };
             Ok((path.display().to_string(), path))
         }
