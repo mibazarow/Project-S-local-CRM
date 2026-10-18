@@ -7,12 +7,11 @@
 
 ## Текущее состояние
 - Последний зелёный HEAD: `ab60b04` — `npm test` **164 passed**, `npm run build` OK, oxlint — только pre-existing `crossActions.ts`.
-- Бэкенд последний раз проверен на `182d90e`: `cargo test` **788 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings. Контракты/DTO/схема не затронуты.
+- Бэкенд последний раз проверен на `5dd74bc`: `cargo test` **788 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings. Контракты/DTO/схема не затронуты.
 - Baseline-скриншоты: `/tmp/project-s-baseline/` (7 экранов).
 - Полный `npm run app:build` — только в финале.
 
 ## Фаза 5 — остаток
-- **S5.4 module-cycle** — `ConfirmDecision` в лист.
 - **S5.5 statics** — по одному process-static за срез (scheduler/reindex/browser/processes/backups/cache), только с тестами.
 
 ## Проверка среза
@@ -25,4 +24,4 @@
 - `BAG_REPORT.md`/`Q.md` — рабочие файлы задач, не менять их в рамках рефакторинга.
 
 ## Следующий шаг
-**S5.4 module-cycle** — `ConfirmDecision` в лист.
+**S5.5 statics** — по одному process-static за срез, только с тестами.
