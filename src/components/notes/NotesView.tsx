@@ -9,6 +9,7 @@ import NotesChat from "./NotesChat";
 import NotesSearchResults from "./NotesSearchResults";
 import NotesTree from "./NotesTree";
 import { IconClose, IconSearch } from "../files/icons";
+import { toast } from "../shared/toast";
 
 // NOTES_SCOPE_ID in index/mod.rs: "index-changed" rows for the Notes/ vault
 // (agent tool writes reach the tree through the debounced reindex watcher).
@@ -99,8 +100,11 @@ export default function NotesView() {
       try {
         const entry = await resolveEntry(path, (dir) => ipc.notesList(dir));
         if (entry) setSelected(entry);
+        else toast("err", `Заметка не найдена: ${path}`);
       } catch {
-        // The note vanished between palette load and open: stay put.
+        // The note vanished between the click/palette load and open: report it
+        // in the shared toast style instead of silently staying put.
+        toast("err", `Заметка не найдена: ${path}`);
       }
     })();
   }, [state.pendingNotePath, actions]);

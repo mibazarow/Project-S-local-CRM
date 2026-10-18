@@ -1,11 +1,19 @@
 import { marked, type MarkedOptions } from "marked";
 import DOMPurify from "dompurify";
 
+// DOMPurify's default URI allowlist strips custom schemes, so a `note:`/`notes:`
+// link would lose its href. Mirror the default IS_ALLOWED_URI and add `notes?`
+// so explicit note links survive sanitization; every other scheme is unchanged.
+const MARKDOWN_SANITIZE_CONFIG = {
+  ALLOWED_URI_REGEXP:
+    /^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix|notes?):|[^a-z]|[a-z+.-]+(?:[^a-z+.:-]|$))/i,
+};
+
 // Shared sanitized markdown renderer (marked + DOMPurify), used by chat
 // bubbles and the notes block editor. DOMPurify's default allowlist keeps
 // inline HTML like <u>, so underline formatting survives sanitization.
 export function renderMarkdown(source: string, options?: MarkedOptions): string {
-  return DOMPurify.sanitize(marked.parse(source, { ...options, async: false }));
+  return DOMPurify.sanitize(marked.parse(source, { ...options, async: false }), MARKDOWN_SANITIZE_CONFIG);
 }
 
 // Top-level markdown blocks: split on blank lines, but never inside a fenced

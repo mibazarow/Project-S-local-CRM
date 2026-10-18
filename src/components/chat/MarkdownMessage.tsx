@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { renderMarkdown } from "../shared/markdown";
+import { openNoteLink, resolveNoteLink } from "../../shared/noteLink";
 
 const COPIED_MS = 1500;
 
@@ -92,7 +93,18 @@ export const MarkdownMessage = memo(function MarkdownMessage({ text }: { text: s
   };
 
   const onContentClick = (e: MouseEvent<HTMLDivElement>) => {
-    const btn = (e.target as HTMLElement).closest<HTMLElement>("button.md-code-copy");
+    const target = e.target as HTMLElement;
+    const anchor = target.closest<HTMLAnchorElement>("a[href]");
+    if (anchor) {
+      const href = anchor.getAttribute("href");
+      const rel = href ? resolveNoteLink(href) : null;
+      if (rel !== null) {
+        e.preventDefault();
+        openNoteLink(rel);
+      }
+      return;
+    }
+    const btn = target.closest<HTMLElement>("button.md-code-copy");
     if (!btn) return;
     const code = btn.parentElement?.querySelector("pre")?.textContent ?? "";
     void copyToClipboard(code.trim()).then((ok) => {

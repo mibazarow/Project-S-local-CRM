@@ -13,6 +13,7 @@ import ProjectChat from "./components/chat/ProjectChat";
 import HarnessView from "./components/harness/HarnessView";
 import NotesView from "./components/notes/NotesView";
 import Toasts from "./components/shared/toast";
+import { setNoteLinkHandler } from "./shared/noteLink";
 
 export default function App() {
   const { state, actions } = useApp();
@@ -65,6 +66,16 @@ export default function App() {
   useEffect(() => {
     if (state.pendingAsk) setTab("projects");
   }, [state.pendingAsk]);
+
+  // A note link clicked in any agent answer opens that note inside the Notes
+  // section (not externally): reuse the pendingNote intent and switch tabs.
+  useEffect(() => {
+    setNoteLinkHandler((relPath) => {
+      actions.requestNote(relPath);
+      setTab("notes");
+    });
+    return () => setNoteLinkHandler(null);
+  }, [actions]);
 
   if (state.loading) {
     return (
