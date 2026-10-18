@@ -22,6 +22,7 @@ const EXTRACT_ENVELOPE_RESERVE: usize = 512;
 pub fn project_catalog() -> Catalog {
     let mut catalog = Catalog::new();
     let tools: Vec<Arc<dyn Tool>> = vec![
+        Arc::new(crate::agent::finish::FinishTaskTool),
         Arc::new(SearchTool),
         Arc::new(ReadFileTool),
         Arc::new(ListTreeTool),
@@ -1015,7 +1016,8 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 50] = [
+    const TOOL_NAMES: [&str; 51] = [
+        "finish_task",
         "search",
         "read_file",
         "list_tree",

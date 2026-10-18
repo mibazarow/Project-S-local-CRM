@@ -2011,7 +2011,10 @@ impl Tool for DeleteChatTool {
         ToolClass::Mutating
     }
     fn policy(&self) -> PermissionPolicy {
-        PermissionPolicy::Skip
+        // Deleting a session and all its messages is destructive and
+        // irreversible from the agent's side, so it confirms like every other
+        // delete in the catalog (fs_delete, task_delete, crm_task_delete).
+        PermissionPolicy::Check
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let session_id = match args.get("sessionId") {
@@ -2295,11 +2298,12 @@ mod tests {
         assert_eq!(tool("list_chats").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("rename_chat").class(), ToolClass::Mutating);
         assert_eq!(tool("rename_chat").policy(), PermissionPolicy::Skip);
-        // Chat management is safe: create/delete never enter the confirmation queue.
+        // Chat create/rename are non-destructive and skip the queue; delete
+        // destroys a session and its messages, so it confirms like other deletes.
         assert_eq!(tool("new_chat").class(), ToolClass::Mutating);
         assert_eq!(tool("new_chat").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("delete_chat").class(), ToolClass::Mutating);
-        assert_eq!(tool("delete_chat").policy(), PermissionPolicy::Skip);
+        assert_eq!(tool("delete_chat").policy(), PermissionPolicy::Check);
         assert_eq!(tool("search_chats").class(), ToolClass::ReadOnly);
         assert_eq!(tool("search_chats").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("todowrite").class(), ToolClass::Mutating);

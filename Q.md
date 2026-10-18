@@ -42,7 +42,6 @@
 ## android-harness (остаток)
 - [TODO] Undo + run inspector.
 - [TODO] Ранжирование памяти + FactExtractor (v20 уже частично в схеме — довести).
-- [TODO] Тесты-инварианты инструментов.
 - [TODO] Objectives (долгоживущие цели).
 - [TODO] Rate limiter/retry для расписаний.
 

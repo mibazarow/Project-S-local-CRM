@@ -143,7 +143,6 @@ answer to the user; if the work is impossible or interrupted — action=stop wit
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
 
     fn sample() -> ProjectDto {
         ProjectDto {
@@ -159,14 +158,10 @@ mod tests {
         }
     }
 
-    // The real project-run catalog (core tools + finish_task), exactly as
+    // The real project-run catalog (core tools incl. finish_task), exactly as
     // chat::start_project_run builds it before generating the prompt block.
     fn project_tools_block() -> String {
-        let mut catalog = crate::agent::project_tools::project_catalog();
-        catalog
-            .register(Arc::new(crate::agent::finish::FinishTaskTool), true)
-            .unwrap();
-        catalog.summary_prompt_block()
+        crate::agent::project_tools::project_catalog().summary_prompt_block()
     }
 
     fn harness_tools_block() -> String {

@@ -8,7 +8,6 @@
 pub mod context;
 
 use crate::agent::catalog::Catalog;
-use crate::agent::finish::FinishTaskTool;
 use crate::agent::r#loop as agent_loop;
 use crate::agent::permissions::{ConfirmDecision, ConfirmRequest, Confirmer};
 use crate::agent::project_tools::project_catalog;
@@ -848,7 +847,6 @@ pub fn start_project_run(
     // covers everything the run can see, MCP bridges included (schemas stay
     // lazy via list_available_tools/enable_tools).
     let mut catalog = project_catalog();
-    catalog.register(Arc::new(FinishTaskTool), true)?;
     // MCP tools are bridged from the app-level registry: the run's catalog
     // borrows the live server clients (SPEC 6.2).
     register_mcp_tools(&mut catalog, state.mcp.lock().unwrap().tools());
@@ -1176,6 +1174,7 @@ pub(crate) fn persist_final_answer(
 mod tests {
     use super::*;
     use crate::agent::catalog::Catalog;
+    use crate::agent::finish::FinishTaskTool;
     use crate::agent::r#loop::ChatBackend;
     use crate::agent::permissions::{AutoConfirmer, DenyAllConfirmer};
     use crate::agent::tool::{EchoTool, PermissionPolicy};
