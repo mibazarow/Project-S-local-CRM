@@ -32,7 +32,7 @@
 - [TODO] `undo_last` / `undo_list` + корзина для удалений.
 - [TODO] `compact_context` (агентский вызов сжатия).
 - [TODO] `image_transform` (resize/crop/rotate/format) — срез был прерван, довести.
-- [TODO] Моделирование: `browser` — политика по действию (read-only без подтверждения); `ssh_exec` — CheckConditional для read-only?; унифицировать `task_*`/`crm_task_*`; убрать дубли `datas_*`; `fs_rename`/`fs_mkdir` в харнесе.
+- [TODO] Чистка: унифицировать `task_*`/`crm_task_*`, убрать дубли `datas_*`.
 
 ## Продуктовые улучшения (делаем)
 - [TODO] **Единый глобальный поиск** по files/tasks/memory (в ⌘K-палитре; проекты/заметки/чаты уже есть).

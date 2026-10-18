@@ -73,25 +73,24 @@ fn cap_json(value: Value, max_chars: usize) -> Value {
     }
 }
 
-fn danger_for(action: &str) -> &'static str {
+// Per-action policy (SPEC 5.2): read-only actions never confirm; anything
+// that acts on the page, the network or the local disk confirms. Unknown
+// actions confirm too: the safe default is the confirmation queue.
+fn danger_for(action: &str) -> Option<&'static str> {
     match action {
-        "open" => "открыть страницу в браузере",
-        "text" => "прочитать текст страницы через браузер",
-        "screenshot" => "сделать скриншот страницы",
-        "click" => "клик по элементу на странице",
-        "eval" => "выполнить JavaScript на странице",
-        "wait" => "ждать появления элемента или текста на странице",
-        "type" => "ввести текст в поле на странице",
-        "press" => "нажать клавишу на странице",
-        "select" => "выбрать пункт в выпадающем списке на странице",
-        "extract" => "извлечь данные со страницы через JavaScript",
-        "upload" => "загрузить локальный файл в поле input[type=file] на странице",
-        "download" => "скачать файл из браузера в рабочую папку",
-        "tab_open" => "открыть новую вкладку в браузере",
-        "tab_list" => "прочитать список вкладок браузера",
-        "tab_close" => "закрыть вкладку браузера",
-        "tab_switch" => "переключить активную вкладку браузера",
-        _ => "управление браузером",
+        "text" | "screenshot" | "tab_list" | "extract" | "wait" => None,
+        "open" => Some("открыть страницу в браузере"),
+        "click" => Some("клик по элементу на странице"),
+        "eval" => Some("выполнить JavaScript на странице"),
+        "type" => Some("ввести текст в поле на странице"),
+        "press" => Some("нажать клавишу на странице"),
+        "select" => Some("выбрать пункт в выпадающем списке на странице"),
+        "upload" => Some("загрузить локальный файл в поле input[type=file] на странице"),
+        "download" => Some("скачать файл из браузера в рабочую папку"),
+        "tab_open" => Some("открыть новую вкладку в браузере"),
+        "tab_close" => Some("закрыть вкладку браузера"),
+        "tab_switch" => Some("переключить активную вкладку браузера"),
+        _ => Some("управление браузером"),
     }
 }
 
@@ -129,10 +128,10 @@ impl Tool for BrowserTool {
         ToolClass::Mutating
     }
     fn policy(&self) -> PermissionPolicy {
-        PermissionPolicy::Check
+        PermissionPolicy::CheckConditional
     }
     fn danger_reason(&self, args: &Value, _ctx: &ToolCtx) -> Option<String> {
-        Some(danger_for(args.get("action").and_then(Value::as_str).unwrap_or("")).to_string())
+        danger_for(args.get("action").and_then(Value::as_str).unwrap_or("")).map(str::to_string)
     }
     fn max_result_len(&self) -> usize {
         // 55 k so a 50 k extract result still fits inside the capped envelope.
@@ -486,26 +485,36 @@ mod tests {
     }
 
     #[test]
-    fn browser_tool_is_registered_as_deferred_check_tool() {
+    fn browser_tool_policy_is_check_conditional_per_action() {
         let catalog = super::super::harness_tools::harness_catalog();
         match catalog.resolve("browser") {
             Resolution::Found(tool) => {
                 assert_eq!(tool.class(), ToolClass::Mutating);
-                assert_eq!(tool.policy(), PermissionPolicy::Check);
+                assert_eq!(tool.policy(), PermissionPolicy::CheckConditional);
+                for action in ["text", "screenshot", "tab_list", "extract", "wait"] {
+                    assert!(
+                        tool.danger_reason(&json!({ "action": action }), &ToolCtx::default())
+                            .is_none(),
+                        "{action} must not confirm"
+                    );
+                }
                 for action in [
-                    "open", "text", "screenshot", "click", "eval", "wait", "type", "press",
-                    "select", "extract", "upload", "download", "tab_open", "tab_list",
-                    "tab_close", "tab_switch",
+                    "open", "click", "type", "press", "select", "eval", "upload", "download",
+                    "tab_open", "tab_close", "tab_switch",
                 ] {
                     let reason = tool.danger_reason(&json!({ "action": action }), &ToolCtx::default());
                     assert!(reason.is_some(), "no danger_reason for {action}");
                     assert!(!reason.unwrap().is_empty());
                 }
+                // unknown and missing actions keep the confirmation
                 assert_eq!(
                     tool.danger_reason(&json!({ "action": "weird" }), &ToolCtx::default())
                         .unwrap(),
                     "управление браузером"
                 );
+                assert!(tool
+                    .danger_reason(&json!({}), &ToolCtx::default())
+                    .is_some());
             }
             _ => panic!("browser tool missing from harness catalog"),
         }

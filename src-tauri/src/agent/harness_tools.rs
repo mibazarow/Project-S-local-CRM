@@ -3,7 +3,8 @@
 // paths are absolute, ~-expanded, or relative to the working dir; the default
 // territory is Harness/. fs_write skips confirmation only inside Harness/ and
 // Projects/ (CheckConditional), and so do fs_copy/fs_move unless overwrite is
-// requested or an endpoint lies outside; fs_delete and bash are always
+// requested or an endpoint lies outside, and fs_rename/fs_mkdir when the path
+// lies outside; fs_delete and bash are always
 // confirmed — the
 // confirmation is the guard, there is no path allowlist. Child processes of
 // bash always see TMPDIR/TEMP/TMP pointed at Harness/tmp/ (SPEC 5.2), never
@@ -74,6 +75,8 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(FsDeleteTool),
         Arc::new(FsCopyTool),
         Arc::new(FsMoveTool),
+        Arc::new(FsRenameTool),
+        Arc::new(FsMkdirTool),
         Arc::new(FsGrepTool),
         // Precise edits (exact string replacement + git apply patches);
         // see edit_tools.rs for the safety rules.
@@ -820,6 +823,132 @@ impl Tool for FsMoveTool {
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         fs_transfer(args, ctx, true, self.max_result_len())
+    }
+}
+
+pub struct FsRenameTool;
+
+impl Tool for FsRenameTool {
+    fn name(&self) -> &str {
+        "fs_rename"
+    }
+    fn description(&self) -> &str {
+        "Rename a file or folder inside its current parent folder: path plus newName (a plain name without separators or traversal). The destination must not exist. Renames inside Harness/ and Projects/ run without confirmation, elsewhere the user confirms."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "path": { "type": "string" },
+                "newName": { "type": "string" }
+            },
+            "required": ["path", "newName"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::CheckConditional
+    }
+    fn danger_reason(&self, args: &Value, ctx: &ToolCtx) -> Option<String> {
+        let wd = ctx.working_dir.as_deref()?;
+        let path = resolve_path(args.get("path").and_then(Value::as_str)?, wd);
+        (!in_default_territory(&path, wd)).then(|| "переименование вне Harness/ и Projects/".to_string())
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let wd = require_wd(ctx)?;
+        let path = resolve_path(args["path"].as_str().unwrap_or_default(), &wd);
+        let new_name = match fs_ops::check_name(args["newName"].as_str().unwrap_or_default()) {
+            Ok(name) => name,
+            Err(e) => return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, e.to_string())),
+        };
+        let parent = match path.parent() {
+            Some(p) => p.to_path_buf(),
+            None => {
+                return Ok(ToolResult::err(
+                    ToolErrorCode::InvalidArgs,
+                    format!("{} has no parent folder to rename in", path.display()),
+                ))
+            }
+        };
+        let target = parent.join(&new_name);
+        if target != path && fs::symlink_metadata(&target).is_ok() {
+            return Ok(ToolResult::err(
+                ToolErrorCode::InvalidArgs,
+                format!("destination exists: {}", target.display()),
+            ));
+        }
+        match fs::rename(&path, &target) {
+            Ok(()) => Ok(ToolResult::ok(json!({
+                "from": path.display().to_string(),
+                "to": target.display().to_string(),
+            }))),
+            Err(e) => Ok(io_fail(&path, &e)),
+        }
+    }
+}
+
+pub struct FsMkdirTool;
+
+impl Tool for FsMkdirTool {
+    fn name(&self) -> &str {
+        "fs_mkdir"
+    }
+    fn description(&self) -> &str {
+        "Create a single folder: the parent must already exist (parents are not created) and the path must not exist yet. Creation inside Harness/ and Projects/ runs without confirmation, elsewhere the user confirms."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "path": { "type": "string" } },
+            "required": ["path"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::CheckConditional
+    }
+    fn danger_reason(&self, args: &Value, ctx: &ToolCtx) -> Option<String> {
+        let wd = ctx.working_dir.as_deref()?;
+        let path = resolve_path(args.get("path").and_then(Value::as_str)?, wd);
+        (!in_default_territory(&path, wd)).then(|| "создание папки вне Harness/ и Projects/".to_string())
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let wd = require_wd(ctx)?;
+        let raw = args["path"].as_str().unwrap_or_default();
+        if raw.trim().is_empty() {
+            return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, "path is empty"));
+        }
+        let path = resolve_path(raw, &wd);
+        let Some(parent) = path.parent() else {
+            return Ok(ToolResult::err(
+                ToolErrorCode::InvalidArgs,
+                format!("{} has no parent folder", path.display()),
+            ));
+        };
+        if let Ok(meta) = fs::symlink_metadata(&path) {
+            let kind = if meta.is_dir() { "folder" } else { "file" };
+            return Ok(ToolResult::err(
+                ToolErrorCode::InvalidArgs,
+                format!("{} already exists as a {kind}", path.display()),
+            ));
+        }
+        match fs::create_dir(&path) {
+            Ok(()) => Ok(ToolResult::ok(json!({
+                "path": path.display().to_string(),
+                "created": true,
+            }))),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(ToolResult::err(
+                ToolErrorCode::InvalidArgs,
+                format!("parent folder does not exist: {}", parent.display()),
+            )),
+            Err(e) => Ok(io_fail(&path, &e)),
+        }
     }
 }
 
@@ -1923,6 +2052,7 @@ impl Tool for SearchChatsTool {
 mod tests {
     use super::*;
     use crate::agent::catalog::{Resolution, LIST_TOOLS, ENABLE_TOOLS};
+    use crate::agent::tool::validate_args;
     use crate::db;
     use crate::index;
     use crate::onboarding::temp_test_dir;
@@ -1986,13 +2116,15 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const DEFERRED_NAMES: [&str; 54] = [
+    const DEFERRED_NAMES: [&str; 56] = [
         "fs_read",
         "fs_list",
         "fs_write",
         "fs_delete",
         "fs_copy",
         "fs_move",
+        "fs_rename",
+        "fs_mkdir",
         "fs_grep",
         "edit_file",
         "apply_patch",
@@ -2067,19 +2199,32 @@ mod tests {
             assert_eq!(tool(name).class(), ToolClass::ReadOnly, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
         }
-        for name in ["fs_write", "fs_copy", "fs_move", "crm_task_create", "crm_task_update", "crm_task_move", "datas_add", "create_skill", "ssh_save_profile_to_datas"] {
+        for name in ["fs_write", "fs_copy", "fs_move", "fs_rename", "fs_mkdir", "crm_task_create", "crm_task_update", "crm_task_move", "datas_add", "create_skill", "ssh_save_profile_to_datas"] {
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
         }
         assert_eq!(tool("ssh_save_profile_to_datas").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("fs_write").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("fs_copy").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("fs_move").policy(), PermissionPolicy::CheckConditional);
+        assert_eq!(tool("fs_rename").policy(), PermissionPolicy::CheckConditional);
+        assert_eq!(tool("fs_mkdir").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("create_skill").policy(), PermissionPolicy::Skip);
-        for name in ["fs_delete", "bash", "crm_task_delete", "git_commit", "git_pull", "git_push", "apply_patch", "ssh_exec", "ssh_upload", "ssh_download", "ssh_generate_key", "ssh_install_key", "screenshot"] {
+        for name in ["fs_delete", "bash", "crm_task_delete", "git_commit", "git_pull", "git_push", "apply_patch", "ssh_upload", "ssh_download", "ssh_generate_key", "ssh_install_key", "screenshot"] {
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
             assert!(tool(name).danger_reason(&json!({}), &ToolCtx::default()).is_some(), "{name} danger_reason");
         }
+        // ssh_exec decides per call: read-only commands skip, the rest confirm
+        assert_eq!(tool("ssh_exec").class(), ToolClass::Mutating);
+        assert_eq!(tool("ssh_exec").policy(), PermissionPolicy::CheckConditional);
+        assert!(tool("ssh_exec").danger_reason(&json!({ "command": "ls" }), &ToolCtx::default()).is_none());
+        assert!(tool("ssh_exec").danger_reason(&json!({ "command": "ls | wc -l" }), &ToolCtx::default()).is_some());
+        assert!(tool("ssh_exec").danger_reason(&json!({ "command": "rm -rf /" }), &ToolCtx::default()).is_some());
+        // browser decides per action: read-only actions skip, the rest confirm
+        assert_eq!(tool("browser").class(), ToolClass::Mutating);
+        assert_eq!(tool("browser").policy(), PermissionPolicy::CheckConditional);
+        assert!(tool("browser").danger_reason(&json!({ "action": "text" }), &ToolCtx::default()).is_none());
+        assert!(tool("browser").danger_reason(&json!({ "action": "open" }), &ToolCtx::default()).is_some());
         assert_eq!(tool("git_branch").class(), ToolClass::Mutating);
         assert_eq!(tool("git_branch").policy(), PermissionPolicy::CheckConditional);
         assert!(tool("git_branch").danger_reason(&json!({ "action": "list" }), &ToolCtx::default()).is_none());
@@ -2151,6 +2296,30 @@ mod tests {
             assert!(t.danger_reason(&out_from, &env.ctx).is_some(), "{name}: outside source must confirm");
             let forced = json!({ "from": "Harness/a.txt", "to": "Harness/b.txt", "overwrite": true });
             assert!(t.danger_reason(&forced, &env.ctx).is_some(), "{name}: overwrite must confirm even inside");
+        }
+
+        for name in ["fs_rename", "fs_mkdir"] {
+            let t = tool(name);
+            assert!(
+                t.danger_reason(&json!({ "path": "Harness/a.txt" }), &env.ctx)
+                    .is_none(),
+                "{name}: inside Harness must not confirm"
+            );
+            assert!(
+                t.danger_reason(&json!({ "path": "Projects/p/a.txt" }), &env.ctx)
+                    .is_none(),
+                "{name}: inside Projects must not confirm"
+            );
+            assert!(
+                t.danger_reason(&json!({ "path": "outside.txt" }), &env.ctx)
+                    .is_some(),
+                "{name}: outside must confirm"
+            );
+            assert!(
+                t.danger_reason(&json!({ "path": "/etc/cron.d" }), &env.ctx)
+                    .is_some(),
+                "{name}: absolute outside must confirm"
+            );
         }
 
         let img = tool("image_transform");
@@ -2540,6 +2709,111 @@ mod tests {
         assert_eq!(r.error.unwrap().code, "not_found");
         let r = exec("fs_move", json!({ "from": "Harness/missing.txt", "to": "Harness/x.txt" }), &env.ctx);
         assert_eq!(r.error.unwrap().code, "not_found");
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn fs_rename_files_dirs_collisions_and_invalid_names() {
+        let env = setup("ht-rename");
+        let h = env.wd.join("Harness");
+
+        // rename a file inside the same parent
+        fs::write(h.join("a.txt"), "hello").unwrap();
+        let r = exec("fs_rename", json!({ "path": "Harness/a.txt", "newName": "b.txt" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["from"], h.join("a.txt").display().to_string());
+        assert_eq!(data["to"], h.join("b.txt").display().to_string());
+        assert!(!h.join("a.txt").exists());
+        assert_eq!(fs::read_to_string(h.join("b.txt")).unwrap(), "hello");
+
+        // rename a directory: the whole tree moves with it
+        fs::create_dir_all(h.join("dir/sub")).unwrap();
+        fs::write(h.join("dir/sub/f.txt"), "x").unwrap();
+        let r = exec("fs_rename", json!({ "path": "Harness/dir", "newName": "dir2" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert!(!h.join("dir").exists());
+        assert_eq!(fs::read_to_string(h.join("dir2/sub/f.txt")).unwrap(), "x");
+
+        // renaming to the same name is a no-op success
+        let r = exec("fs_rename", json!({ "path": "Harness/b.txt", "newName": "b.txt" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+
+        // collision with an existing entry is refused, both sides survive
+        fs::write(h.join("c.txt"), "c").unwrap();
+        let r = exec("fs_rename", json!({ "path": "Harness/b.txt", "newName": "c.txt" }), &env.ctx);
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "invalid_args");
+        assert!(err.message.contains("destination exists"), "{}", err.message);
+        assert!(h.join("b.txt").is_file() && h.join("c.txt").is_file());
+
+        // invalid names: separators, traversal, empty, control characters
+        for bad in ["x/y", "..", ".", "", "a\\b", "x\u{0}y"] {
+            let r = exec("fs_rename", json!({ "path": "Harness/c.txt", "newName": bad }), &env.ctx);
+            assert_eq!(r.error.unwrap().code, "invalid_args", "newName {bad:?}");
+        }
+        assert!(h.join("c.txt").is_file());
+
+        // missing source maps to not_found
+        let r = exec("fs_rename", json!({ "path": "Harness/missing.txt", "newName": "x" }), &env.ctx);
+        assert_eq!(r.error.unwrap().code, "not_found");
+
+        // schema: both fields required, extras refused
+        let schema = tool("fs_rename").parameters();
+        assert!(validate_args(&schema, &json!({ "path": "Harness/a.txt", "newName": "b" })).is_ok());
+        assert!(validate_args(&schema, &json!({ "path": "Harness/a.txt" }))
+            .unwrap_err()
+            .contains("newName"));
+        assert!(validate_args(&schema, &json!({ "path": "a", "newName": "b", "overwrite": true }))
+            .unwrap_err()
+            .contains("overwrite"));
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn fs_mkdir_requires_existing_parent_and_refuses_existing() {
+        let env = setup("ht-mkdir");
+        let h = env.wd.join("Harness");
+
+        let r = exec("fs_mkdir", json!({ "path": "Harness/newdir" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(r.data.unwrap()["created"], true);
+        assert!(h.join("newdir").is_dir());
+
+        // an existing folder or file is refused
+        let r = exec("fs_mkdir", json!({ "path": "Harness/newdir" }), &env.ctx);
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "invalid_args");
+        assert!(err.message.contains("already exists"), "{}", err.message);
+        fs::write(h.join("afile.txt"), "x").unwrap();
+        let r = exec("fs_mkdir", json!({ "path": "Harness/afile.txt" }), &env.ctx);
+        assert!(
+            r.error.unwrap().message.contains("already exists as a file"),
+            "must name the kind"
+        );
+
+        // parents are not created
+        let r = exec("fs_mkdir", json!({ "path": "Harness/no/such/parent" }), &env.ctx);
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "invalid_args");
+        assert!(err.message.contains("parent folder does not exist"), "{}", err.message);
+        assert!(!h.join("no").exists());
+
+        // empty path is refused
+        let r = exec("fs_mkdir", json!({ "path": "   " }), &env.ctx);
+        assert_eq!(r.error.unwrap().code, "invalid_args");
+
+        // inside Projects behaves like inside Harness
+        let r = exec("fs_mkdir", json!({ "path": "Projects/pdir" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+
+        // schema: path required, extras refused
+        let schema = tool("fs_mkdir").parameters();
+        assert!(validate_args(&schema, &json!({ "path": "Harness/x" })).is_ok());
+        assert!(validate_args(&schema, &json!({})).unwrap_err().contains("path"));
+        assert!(validate_args(&schema, &json!({ "path": "x", "parents": true }))
+            .unwrap_err()
+            .contains("parents"));
         fs::remove_dir_all(&env.wd).unwrap();
     }
 

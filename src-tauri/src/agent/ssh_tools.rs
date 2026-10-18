@@ -4,10 +4,12 @@
 // sources authenticate with keys/ssh-agent and passwords. Password auth
 // goes through SSH_ASKPASS: the password lives only in a 0600 file under
 // Harness/tmp/ next to a 0700 askpass script, both deleted when the call
-// ends — it never enters argv, tool results or errors. ssh_exec/ssh_upload/
-// ssh_download/ssh_generate_key/ssh_install_key are Mutating and always
-// confirmed — the destructive-command analysis below only enriches the
-// confirmation text, the Check itself is the guard. Local paths stay inside
+// ends — it never enters argv, tool results or errors. ssh_exec is Mutating
+// and CheckConditional: a clearly read-only command (safe first token, no
+// shell metacharacters) skips confirmation, everything else confirms with
+// the destructive-command analysis enriching the confirmation text.
+// ssh_upload/ssh_download/ssh_generate_key/ssh_install_key stay always
+// confirmed. Local paths stay inside
 // the project root (project mode) or resolve like the harness fs tools
 // (harness mode); remote paths pass through with newline/NUL rejection.
 // Child processes see TMPDIR/TEMP/TMP pointed at Harness/tmp/ (SPEC 5.2).
@@ -692,11 +694,51 @@ fn check_remote_path(path: &str) -> Result<()> {
     Ok(())
 }
 
+// ---- read-only command allowlist (pure, decides the ssh_exec policy) ----
+
+// Commands that only read remote state. Multi-word entries need both the
+// program and its read-only subcommand/arguments matched exactly.
+const READ_ONLY_COMMANDS: [&str; 23] = [
+    "ls", "cat", "head", "tail", "grep", "find", "ps", "top", "df", "du", "free", "uptime",
+    "whoami", "id", "pwd", "uname", "hostname", "date", "ss", "netstat", "wc", "stat", "file",
+];
+const READ_ONLY_COMMAND_PAIRS: [&str; 6] = [
+    "git status",
+    "git log",
+    "git diff",
+    "docker ps",
+    "systemctl status",
+    "ip addr",
+];
+
+// A command is clearly read-only only when its first token (or the first two
+// for the multi-word entries) is on the allowlist AND it carries no shell
+// metacharacters, redirections, substitutions or separators that could hide
+// a second command: ; | > < & (covering && and ||), backticks, "$(", and
+// newlines. Everything else stays on the confirmation side.
+fn is_read_only_command(command: &str) -> bool {
+    let command = command.trim();
+    if command.is_empty() || command.contains([';', '|', '>', '<', '&', '`', '\n', '\r']) {
+        return false;
+    }
+    if command.contains("$(") {
+        return false;
+    }
+    let mut words = command.split_whitespace();
+    let first = words.next().unwrap_or("");
+    if READ_ONLY_COMMANDS.contains(&first) {
+        return true;
+    }
+    let second = words.next().unwrap_or("");
+    READ_ONLY_COMMAND_PAIRS.contains(&format!("{first} {second}").as_str())
+}
+
 // ---- destructive-command labeling (pure, never blocks) ----
 
-// The Check is the guard; this only explains WHY a command looks dangerous
-// in the confirmation queue. It errs on the side of flagging: a false
-// positive costs nothing extra (ssh_exec always confirms anyway).
+// The confirmation is the guard; this only explains WHY a command looks
+// dangerous in the confirmation queue. It errs on the side of flagging: a
+// false positive costs nothing extra (non-read-only commands confirm
+// anyway).
 const WRAPPERS: [&str; 5] = ["sudo", "env", "xargs", "timeout", "nohup"];
 
 fn basename_word(token: &str) -> &str {
@@ -932,11 +974,18 @@ impl Tool for SshExecTool {
         ToolClass::Mutating
     }
     fn policy(&self) -> PermissionPolicy {
-        PermissionPolicy::Check
+        PermissionPolicy::CheckConditional
     }
     fn danger_reason(&self, args: &Value, ctx: &ToolCtx) -> Option<String> {
+        let command = args
+            .get("command")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim();
+        if is_read_only_command(command) {
+            return None;
+        }
         let label = target_label(args, ctx);
-        let command = args.get("command").and_then(Value::as_str).unwrap_or("");
         let mut reason = format!("выполнение команды по SSH на {label}");
         let flags = destructive_reasons(command);
         if !flags.is_empty() {
@@ -1739,13 +1788,18 @@ mod tests {
             .unwrap();
         assert!(r.contains("example.ru"), "{r}");
         assert!(r.contains("rm"), "{r}");
+        // not on the read-only allowlist: confirms, without destructive flags
         let safe = SshExecTool
-            .danger_reason(&json!({ "host": "example.ru", "user": "deploy", "command": "ls" }), &ctx)
+            .danger_reason(&json!({ "host": "example.ru", "user": "deploy", "command": "echo hi" }), &ctx)
             .unwrap();
         assert!(!safe.contains("деструктив"), "{safe}");
-        // unresolvable target still yields a reason (Check always confirms)
+        // read-only commands never confirm, even with an unresolvable target
         assert!(SshExecTool
             .danger_reason(&json!({ "command": "ls" }), &ToolCtx::default())
+            .is_none());
+        // unresolvable target still yields a reason for non-read-only commands
+        assert!(SshExecTool
+            .danger_reason(&json!({ "command": "echo hi" }), &ToolCtx::default())
             .is_some());
         assert!(SshListProfilesTool
             .danger_reason(&json!({}), &ctx)
@@ -1753,6 +1807,76 @@ mod tests {
         assert!(SshCopyTool::upload()
             .danger_reason(&json!({ "localPath": "a", "remotePath": "b" }), &ctx)
             .is_some());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn ssh_exec_read_only_commands_skip_confirmation() {
+        let wd = temp_test_dir("st-readonly");
+        let ctx = harness_ctx(&wd);
+        let reason = |command: &str| {
+            SshExecTool.danger_reason(
+                &json!({ "host": "example.ru", "user": "deploy", "command": command }),
+                &ctx,
+            )
+        };
+        for safe in [
+            "ls",
+            "ls -la /var/log",
+            "cat /etc/hosts",
+            "head -n 5 f",
+            "tail -f log",
+            "grep -i x f",
+            "find . -name x",
+            "ps aux",
+            "top -bn1",
+            "df -h",
+            "du -sh .",
+            "free -m",
+            "uptime",
+            "whoami",
+            "id",
+            "pwd",
+            "uname -a",
+            "hostname",
+            "date",
+            "ss -tlnp",
+            "netstat -tuln",
+            "wc -l f",
+            "stat f",
+            "file f",
+            "git status",
+            "git log --oneline -5",
+            "git diff HEAD",
+            "docker ps -a",
+            "systemctl status nginx",
+            "ip addr show",
+        ] {
+            assert!(reason(safe).is_none(), "read-only {safe:?} must not confirm");
+        }
+        for unsafe_case in [
+            "ls | wc -l",
+            "ls > out.txt",
+            "cat < in.txt",
+            "ls && echo done",
+            "false || ls",
+            "ls &",
+            "echo $(whoami)",
+            "ls `id`",
+            "ls\nrm -rf /",
+            "rm -rf /tmp/x",
+            "sudo ls",
+            "apt-get update",
+            "git push",
+            "git -C repo status",
+            "docker ps | wc -l",
+            "ip route",
+            "unknowncmd",
+            "",
+            "   ",
+        ] {
+            assert!(reason(unsafe_case).is_some(), "{unsafe_case:?} must confirm");
+        }
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -1887,8 +2011,16 @@ mod tests {
     fn classes_policies_and_schemas_match_the_spec() {
         assert_eq!(SshListProfilesTool.class(), ToolClass::ReadOnly);
         assert_eq!(SshListProfilesTool.policy(), PermissionPolicy::Skip);
+        // ssh_exec is per-call: read-only commands skip, the rest confirm
+        assert_eq!(SshExecTool.class(), ToolClass::Mutating);
+        assert_eq!(SshExecTool.policy(), PermissionPolicy::CheckConditional);
+        assert!(SshExecTool
+            .danger_reason(&json!({ "host": "example.ru", "user": "u", "command": "ls" }), &ToolCtx::default())
+            .is_none());
+        assert!(SshExecTool
+            .danger_reason(&json!({ "host": "example.ru", "user": "u", "command": "rm -rf /tmp/x" }), &ToolCtx::default())
+            .is_some());
         let mutating: Vec<Box<dyn Tool>> = vec![
-            Box::new(SshExecTool),
             Box::new(SshCopyTool::upload()),
             Box::new(SshCopyTool::download()),
             Box::new(SshGenerateKeyTool),
@@ -2274,7 +2406,7 @@ mod tests {
         )
         .unwrap();
         let reason = SshExecTool
-            .danger_reason(&json!({ "profile": "db", "command": "ls" }), &ctx)
+            .danger_reason(&json!({ "profile": "db", "command": "apt-get update" }), &ctx)
             .unwrap();
         assert!(reason.contains("db.example.ru"), "{reason}");
         assert!(!reason.contains("hunter2"), "{reason}");
