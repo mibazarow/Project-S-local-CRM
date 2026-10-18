@@ -5,6 +5,8 @@
 // stays append-only and only the model-facing view is compacted, so the
 // untouched prefix stays prompt-cache friendly. On any summarization failure
 // the uncompacted history is returned: compaction must never break a chat.
+// Before an expired range is folded away, durable facts are distilled into
+// global memory through memory::extract_facts (best-effort, SPEC 6.3).
 use super::load_history;
 use crate::agent::r#loop::ChatBackend;
 use crate::error::{AppError, Result};
@@ -203,9 +205,27 @@ pub fn build_context(
     }
     let mut new_checkpoint_up_to = None;
     if boundary as i64 > last_up_to {
+        let expired = &history[last_up_to as usize..boundary];
+        // Durable facts (SPEC 6.3): before the expired range disappears into
+        // a summary, distill stable user/project facts into global memory
+        // (source = "fact"). Best-effort: any failure must not break
+        // compaction, and facts already stored verbatim are not re-added.
+        if let Ok(facts) = crate::memory::extract_facts(backend, params, expired) {
+            let chat_project: Option<i64> = conn
+                .query_row("SELECT project_id FROM chats WHERE id = ?1", params![chat_id], |r| r.get(0))
+                .unwrap_or(None);
+            for fact in facts {
+                let known: bool = conn
+                    .query_row("SELECT EXISTS(SELECT 1 FROM memory WHERE content = ?1)", params![&fact], |r| r.get(0))
+                    .unwrap_or(false);
+                if !known {
+                    let _ = crate::memory::add(conn, &fact, chat_project, None, Some(crate::memory::FACT_SOURCE));
+                }
+            }
+        }
         // Only the range beyond the last checkpoint is summarized; stored
         // checkpoints are reused, never re-summarized.
-        let transcript = render_transcript(&history[last_up_to as usize..boundary]);
+        let transcript = render_transcript(expired);
         match summarize(backend, params, &transcript) {
             Ok(summary) => {
                 conn.execute(
@@ -261,8 +281,9 @@ fn load_summaries(conn: &Connection, chat_id: i64) -> Result<Vec<String>> {
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-// Flattens messages into plain text for the summarizer prompt.
-fn render_transcript(messages: &[ChatMessage]) -> String {
+// Flattens messages into plain text for the summarizer prompt (also used by
+// the memory FactExtractor: same transcript, same char cap).
+pub(crate) fn render_transcript(messages: &[ChatMessage]) -> String {
     let mut out = String::new();
     for m in messages {
         let role = match m.role {
@@ -329,27 +350,36 @@ mod tests {
     use crate::projects;
     use rusqlite::Connection;
     use serde_json::json;
+    use std::collections::VecDeque;
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
     struct FakeBackend {
         reply: std::result::Result<ChatOutcome, String>,
+        // When non-empty, replies are taken from the queue first (one per
+        // call: fact extraction, then summarization), then `reply` repeats.
+        queue: Mutex<VecDeque<std::result::Result<ChatOutcome, String>>>,
         calls: AtomicUsize,
         prompts: Mutex<Vec<Vec<ChatMessage>>>,
         tool_options: Mutex<Vec<bool>>,
     }
 
     impl FakeBackend {
+        fn outcome(reply: &str) -> ChatOutcome {
+            ChatOutcome {
+                content: Some(reply.into()),
+                reasoning: None,
+                tool_calls: vec![],
+                finish_reason: Some("stop".into()),
+                usage: None,
+            }
+        }
+
         fn ok(reply: &str) -> Self {
             FakeBackend {
-                reply: Ok(ChatOutcome {
-                    content: Some(reply.into()),
-                    reasoning: None,
-                    tool_calls: vec![],
-                    finish_reason: Some("stop".into()),
-                    usage: None,
-                }),
+                reply: Ok(Self::outcome(reply)),
+                queue: Mutex::new(VecDeque::new()),
                 calls: AtomicUsize::new(0),
                 prompts: Mutex::new(Vec::new()),
                 tool_options: Mutex::new(Vec::new()),
@@ -359,6 +389,17 @@ mod tests {
         fn failing() -> Self {
             FakeBackend {
                 reply: Err("llm down".into()),
+                queue: Mutex::new(VecDeque::new()),
+                calls: AtomicUsize::new(0),
+                prompts: Mutex::new(Vec::new()),
+                tool_options: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn queued(replies: Vec<std::result::Result<ChatOutcome, String>>) -> Self {
+            FakeBackend {
+                reply: Err("queue exhausted".into()),
+                queue: Mutex::new(replies.into()),
                 calls: AtomicUsize::new(0),
                 prompts: Mutex::new(Vec::new()),
                 tool_options: Mutex::new(Vec::new()),
@@ -377,7 +418,14 @@ mod tests {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.prompts.lock().unwrap().push(messages.to_vec());
             self.tool_options.lock().unwrap().push(tools.is_some());
-            self.reply.clone().map_err(AppError::Http)
+            let reply = {
+                let mut queue = self.queue.lock().unwrap();
+                match queue.pop_front() {
+                    Some(reply) => reply,
+                    None => self.reply.clone(),
+                }
+            };
+            reply.map_err(AppError::Http)
         }
     }
 
@@ -521,8 +569,12 @@ mod tests {
         append_message(&conn, chat_id, Role::User, Some("latest turn"), &[], None, None).unwrap();
         let backend = FakeBackend::ok("SUMMARY BODY");
         let out = build_context(&conn, chat_id, "sys", "", 1000, 80, &backend, &params(), false).unwrap();
-        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
-        assert!(!backend.tool_options.lock().unwrap()[0], "summarizer got tools");
+        // Two LLM calls per fold: fact extraction first, then summarization.
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        assert!(
+            backend.tool_options.lock().unwrap().iter().all(|t| !t),
+            "fact extractor/summarizer got tools"
+        );
         let rows = summary_rows(&conn, chat_id);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].1, "SUMMARY BODY");
@@ -533,9 +585,10 @@ mod tests {
             .starts_with(&format!("{SUMMARY_PREFIX}\nSUMMARY BODY")));
         assert_eq!(out.messages.last().unwrap().text_content(), Some("latest turn"));
         assert!(out.messages.len() < 1 + 41);
-        // The oldest messages went into the summarization prompt.
+        // The oldest messages went into the summarization prompt (the second
+        // call; the first one is the fact extractor over the same range).
         let prompts = backend.prompts.lock().unwrap();
-        let transcript = prompts[0][1].text_content().unwrap();
+        let transcript = prompts[1][1].text_content().unwrap();
         assert!(transcript.contains("turn0-u"));
         fs::remove_dir_all(&wd).unwrap();
     }
@@ -549,9 +602,9 @@ mod tests {
         let first = build_context(&conn, chat_id, "sys", "", 1000, 80, &backend, &params(), false).unwrap();
         let up_to = first.new_checkpoint_up_to.unwrap();
 
-        // Same transcript: the stored checkpoint is reused, no new call.
+        // Same transcript: the stored checkpoint is reused, no new calls.
         let second = build_context(&conn, chat_id, "sys", "", 1000, 80, &backend, &params(), false).unwrap();
-        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
         assert_eq!(second.new_checkpoint_up_to, None);
         assert_eq!(
             serde_json::to_string(&second.messages).unwrap(),
@@ -575,7 +628,7 @@ mod tests {
         .unwrap();
         let backend2 = FakeBackend::ok("S2");
         let third = build_context(&conn, chat_id, "sys", "", 1000, 80, &backend2, &params(), false).unwrap();
-        assert_eq!(backend2.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(backend2.calls.load(Ordering::SeqCst), 2);
         let new_up_to = third.new_checkpoint_up_to.unwrap();
         assert!(new_up_to > up_to);
         let rows = summary_rows(&conn, chat_id);
@@ -583,7 +636,7 @@ mod tests {
         assert_eq!(rows[1], (new_up_to, "S2".to_string()));
 
         let prompts = backend2.prompts.lock().unwrap();
-        let transcript = prompts[0][1].text_content().unwrap();
+        let transcript = prompts[1][1].text_content().unwrap();
         for content in contents_in_range(&conn, chat_id, up_to, new_up_to) {
             assert!(transcript.contains(&content), "new range missing from prompt");
         }
@@ -613,10 +666,77 @@ mod tests {
         append_message(&conn, chat_id, Role::User, Some("latest"), &[], None, None).unwrap();
         let backend = FakeBackend::failing();
         let out = build_context(&conn, chat_id, "sys", "", 1000, 80, &backend, &params(), false).unwrap();
-        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
         assert_eq!(out.new_checkpoint_up_to, None);
         assert_eq!(out.messages.len(), 1 + 41);
         assert!(summary_rows(&conn, chat_id).is_empty());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // Durable facts (SPEC 6.3): the expired range is distilled into global
+    // memory (source = "fact") before it disappears into the summary; the
+    // fact call comes first, duplicates collapse, the fold still happens.
+    #[test]
+    fn durable_facts_are_extracted_before_summarizing_the_expired_range() {
+        let (wd, conn, chat_id) = setup("ctx-facts");
+        fill(&conn, chat_id, 20);
+        append_message(&conn, chat_id, Role::User, Some("latest"), &[], None, None).unwrap();
+        let backend = FakeBackend::ok(
+            "[\"Пользователь любит кофе\", \"пользователь любит кофе\", \"Клиент example.ru — аптечная сеть\"]",
+        );
+        let out = build_context(&conn, chat_id, "sys", "", 1000, 80, &backend, &params(), false).unwrap();
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        // The fact extractor ran first, over the same expired range.
+        let prompts = backend.prompts.lock().unwrap();
+        assert!(prompts[0][0].text_content().unwrap().contains("extract durable facts"));
+        assert!(prompts[0][1].text_content().unwrap().contains("turn0-u"));
+        drop(prompts);
+
+        let facts: Vec<String> = conn
+            .prepare("SELECT content FROM memory WHERE source = 'fact' ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(facts, vec!["Пользователь любит кофе", "Клиент example.ru — аптечная сеть"]);
+        // Facts of a project chat are attached to that project.
+        let project_id: i64 = conn
+            .query_row("SELECT project_id FROM chats WHERE id = ?1", params![chat_id], |r| r.get(0))
+            .unwrap();
+        let attached: i64 = conn
+            .query_row("SELECT count(*) FROM memory WHERE source = 'fact' AND project_id = ?1", params![project_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(attached, 2);
+
+        // Compaction itself is unaffected: the checkpoint row exists.
+        let rows = summary_rows(&conn, chat_id);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(out.new_checkpoint_up_to, Some(rows[0].0));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // A failing fact extraction must not break compaction: the fold and the
+    // checkpoint row survive on the summarizer's success alone.
+    #[test]
+    fn fact_extraction_failure_does_not_break_compaction() {
+        let (wd, conn, chat_id) = setup("ctx-facts-fail");
+        fill(&conn, chat_id, 20);
+        append_message(&conn, chat_id, Role::User, Some("latest"), &[], None, None).unwrap();
+        let backend = FakeBackend::queued(vec![
+            Err("fact extractor down".into()),
+            Ok(FakeBackend::outcome("SUMMARY BODY")),
+        ]);
+        let out = build_context(&conn, chat_id, "sys", "", 1000, 80, &backend, &params(), false).unwrap();
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        let rows = summary_rows(&conn, chat_id);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].1, "SUMMARY BODY");
+        assert_eq!(out.new_checkpoint_up_to, Some(rows[0].0));
+        let facts: i64 = conn
+            .query_row("SELECT count(*) FROM memory WHERE source = 'fact'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(facts, 0);
         fs::remove_dir_all(&wd).unwrap();
     }
 

@@ -1551,9 +1551,16 @@ fn memory_search(
     state: State<AppState>,
     query: String,
     limit: Option<usize>,
-) -> Result<Vec<memory::MemoryDto>> {
+) -> Result<Vec<memory::MemoryHit>> {
     let limit = limit.unwrap_or(10).clamp(1, 100);
     with_db(&state, |conn| memory::search(conn, &query, limit))
+}
+
+// Backfill the memory FTS mirror and vectors for records whose index rows
+// are missing (legacy rows or vectors skipped while the model was absent).
+#[tauri::command]
+fn index_memory(state: State<AppState>) -> Result<usize> {
+    memory::index_memory(&state)
 }
 
 // Per-server MCP status for the settings UI (SPEC 6.2; the UI itself is a
@@ -2130,6 +2137,7 @@ pub fn run() {
             memory_update,
             memory_delete,
             memory_search,
+            index_memory,
             mcp_status,
             mcp_reload,
             skills_list,
