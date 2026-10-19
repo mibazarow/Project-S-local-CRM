@@ -231,8 +231,8 @@ input, textarea { font-family: inherit; }
   color: var(--text-muted);
 }
 .project-item.active .meta { color: rgba(255, 255, 255, .75); }
-.badge-red { color: var(--danger); font-weight: 600; }
-.project-item.active .badge-red { color: var(--danger-tint); }
+.project-item .meta-overdue { color: var(--danger); font-weight: 600; }
+.project-item.active .meta-overdue { color: var(--danger-tint); }
 /* Active-task Play indicator: inline in the meta line, no reserved space when absent. */
 .project-item .active-tasks { color: var(--accent); margin-left: 6px; vertical-align: -1px; }
 .project-item.active .active-tasks { color: rgba(255, 255, 255, .85); }
@@ -304,6 +304,9 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 .segmented { display: flex; background: #e9e9ee; border-radius: 7px; padding: 2px; }
 .seg { border: none; background: transparent; padding: 4px 12px; font-size: 12.5px; color: var(--text); border-radius: 5px; cursor: pointer; transition: background .15s, box-shadow .15s; }
 .seg.active { background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .12); }
+.seg-filter { display: inline-flex; align-items: center; gap: 5px; margin-left: 4px; padding: 4px 10px; background: #e9e9ee; border-radius: 7px; font-size: 12.5px; color: var(--text); cursor: pointer; user-select: none; transition: background .15s, box-shadow .15s; }
+.seg-filter input { margin: 0; accent-color: var(--accent); }
+.seg-filter.active { background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .12); }
 
 /* ---------- Файловое дерево (портировано из design/styles.css) ---------- */
 
@@ -397,7 +400,7 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 .task-board::-webkit-scrollbar-track { background: rgba(0, 0, 0, .05); border-radius: 999px; }
 .task-board::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 999px; min-width: 48px; border: 2px solid transparent; background-clip: padding-box; }
 .task-board::-webkit-scrollbar-thumb:hover { background: #2f5b88; background-clip: padding-box; }
-.task-col { flex: 0 0 300px; width: 300px; min-width: 300px; max-width: 300px; box-sizing: border-box; background: #fbeeda; border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 2px 2px; }
+.task-col { flex: 0 0 300px; width: 300px; min-width: 300px; max-width: 300px; box-sizing: border-box; background: #fbeeda; border-radius: var(--radius); padding: 10px 2px 2px; }
 .task-col-head { font-size: 11.5px; font-weight: 600; color: var(--text-muted); padding: 2px 8px 10px; display: flex; gap: 8px; align-items: center; }
 .count { background: #e4e4e9; border-radius: 10px; padding: 1px 8px; font-size: 11px; }
 .task-list { display: flex; flex-direction: column; gap: 2px; min-height: 24px; }
@@ -490,7 +493,6 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 
 /* ---------- Фильтры и сохранённые виды канбана ---------- */
 
-.task-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 12px; }
 .tf-check { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; color: var(--text-muted); cursor: pointer; user-select: none; }
 .tf-check input { accent-color: var(--accent); }
 
@@ -1410,11 +1412,11 @@ details.set-card code {
 .sidebar .session-item.active { background: var(--accent); color: #fff; }
 .sidebar .project-item.active .meta,
 .sidebar .session-item.active .meta { color: rgba(255, 255, 255, .75); }
+.sidebar .project-item.active .meta-overdue { color: var(--danger-tint); }
 .sidebar .project-item.active .mini-btn,
 .sidebar .session-item.active .mini-btn { color: rgba(255, 255, 255, .85); }
 
 .sidebar .project-item .active-tasks { color: #9cc4ec; }
-.sidebar .badge-red { color: #ff8a80; }
 
 .sidebar .add-project-btn { color: var(--sidebar-text); }
 .sidebar .add-project-btn:hover { background: var(--sidebar-hover); }

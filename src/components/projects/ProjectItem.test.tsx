@@ -52,6 +52,33 @@ async function mount(project: ProjectDto) {
   });
 }
 
+describe("ProjectItem overdue line", () => {
+  it("renders the overdue count on its own line after the meta line", async () => {
+    await mount(makeProject({ overdueCount: 3 }));
+    const meta = container.querySelector(".project-item > .meta:not(.meta-overdue)")!;
+    const overdue = container.querySelector(".project-item > .meta-overdue")!;
+    expect(meta.textContent).not.toContain("просрочено");
+    expect(overdue.textContent).toBe("Просрочено 3 задачи");
+    expect(overdue.previousElementSibling).toBe(meta);
+  });
+
+  it.each([
+    [1, "Просрочено 1 задача"],
+    [3, "Просрочено 3 задачи"],
+    [5, "Просрочено 5 задач"],
+    [11, "Просрочено 11 задач"],
+    [22, "Просрочено 22 задачи"],
+  ])("uses the right Russian plural for %i", async (count, text) => {
+    await mount(makeProject({ overdueCount: count }));
+    expect(container.querySelector(".meta-overdue")!.textContent).toBe(text);
+  });
+
+  it("renders no overdue line when the count is zero", async () => {
+    await mount(makeProject({ overdueCount: 0 }));
+    expect(container.querySelector(".meta-overdue")).toBeNull();
+  });
+});
+
 describe("ProjectItem active-task indicator", () => {
   it("shows the Play icon with a Russian tooltip and accessible label when a task is in progress", async () => {
     await mount(makeProject({ hasActiveTasks: true }));

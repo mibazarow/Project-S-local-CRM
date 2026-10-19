@@ -13,14 +13,6 @@ import { useAppActions } from "../../state/AppStore";
 const STATUSES = ["new", "progress", "done"] as const;
 const DEFAULT_COLUMNS = ["Новые", "В работе", "Готово"];
 
-interface Filters {
-  overdueOnly: boolean;
-}
-
-const EMPTY_FILTERS: Filters = { overdueOnly: false };
-
-const isDefaultFilters = (f: Filters) => !f.overdueOnly;
-
 const blankTask = (projectId: number, status: string): TaskDto => ({
   id: -1,
   projectId,
@@ -45,14 +37,19 @@ interface Props {
   project: ProjectDto;
   tasksVersion: number;
   highlightTaskId: number | null;
+  overdueOnly?: boolean;
 }
 
-export default function KanbanBoard({ project, tasksVersion, highlightTaskId }: Props) {
+export default function KanbanBoard({
+  project,
+  tasksVersion,
+  highlightTaskId,
+  overdueOnly = false,
+}: Props) {
   const projectId = project.id;
   const [tasks, setTasks] = useState<TaskDto[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [addingStatus, setAddingStatus] = useState<string | null>(null);
-  const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [renamingIndex, setRenamingIndex] = useState<number | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
   const actions = useAppActions();
@@ -65,11 +62,6 @@ export default function KanbanBoard({ project, tasksVersion, highlightTaskId }: 
       `Задача #${task.id} «${task.title}»${detail ? `: ${detail}` : ""}. Кратко: текущий статус и следующий шаг.`,
     );
   };
-
-  // Per-project filter state: reset on project switch.
-  useEffect(() => {
-    setFilters(EMPTY_FILTERS);
-  }, [projectId]);
 
   const columns =
     project.taskColumns?.length === 3 ? project.taskColumns : DEFAULT_COLUMNS;
@@ -87,11 +79,8 @@ export default function KanbanBoard({ project, tasksVersion, highlightTaskId }: 
   };
 
   const visible = useMemo(() => {
-    return (tasks ?? []).filter((t) => {
-      if (filters.overdueOnly && !t.overdue) return false;
-      return true;
-    });
-  }, [tasks, filters]);
+    return (tasks ?? []).filter((t) => !overdueOnly || t.overdue);
+  }, [tasks, overdueOnly]);
 
   const byStatus = useMemo(() => {
     const map: Record<string, TaskDto[]> = { new: [], progress: [], done: [] };
@@ -271,16 +260,6 @@ export default function KanbanBoard({ project, tasksVersion, highlightTaskId }: 
   return (
     <div className="center-body">
       {error && <div className="tree-error">{error}</div>}
-      <div className="task-filters">
-        <label className="tf-check">
-          <input
-            type="checkbox"
-            checked={filters.overdueOnly}
-            onChange={(e) => setFilters((prev) => ({ ...prev, overdueOnly: e.target.checked }))}
-          />
-          только просроченные
-        </label>
-      </div>
       {tasks && (
         <div className="task-board" ref={boardRef}>
           {STATUSES.map((status, i) => {
@@ -356,7 +335,7 @@ export default function KanbanBoard({ project, tasksVersion, highlightTaskId }: 
                   {nodes}
                   {tasks && cards.length === 0 && addingStatus !== status && (
                     <div className="empty-note">
-                      {isDefaultFilters(filters) ? "Пусто" : "Нет подходящих"}
+                      {overdueOnly ? "Нет подходящих" : "Пусто"}
                     </div>
                   )}
                 </div>

@@ -32,7 +32,15 @@ export default function ProjectItem({
     if (next && next !== project.name) onRename(project.id, next);
   };
 
-  const classes = ["project-item"];
+  const pluralTasks = (n: number) => {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return "задача";
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "задачи";
+  return "задач";
+};
+
+const classes = ["project-item"];
   if (active) classes.push("active");
   if (dragging) classes.push("dragging");
 
@@ -64,12 +72,6 @@ export default function ProjectItem({
       )}
       <span className="meta">
         {project.fileCount} файлов · {project.taskCount} задач
-        {project.overdueCount > 0 && (
-          <>
-            {" · "}
-            <span className="badge-red">{project.overdueCount} просрочено</span>
-          </>
-        )}
         {project.hasActiveTasks && (
           <svg
             className="active-tasks"
@@ -85,6 +87,11 @@ export default function ProjectItem({
           </svg>
         )}
       </span>
+      {project.overdueCount > 0 && (
+        <span className="meta meta-overdue">
+          Просрочено {project.overdueCount} {pluralTasks(project.overdueCount)}
+        </span>
+      )}
       <span className="proj-actions">
         <button
           className="mini-btn"

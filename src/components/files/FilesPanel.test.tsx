@@ -142,10 +142,32 @@ describe("FilesPanel segmented tab switch", () => {
 
   it("clicking the tasks segment activates it and renders the board", async () => {
     await mount(projects[0]);
+    expect(container.querySelector(".seg-filter")).toBeNull();
     await click(segs()[1]);
     expect(segs()[0].className).toBe("seg");
     expect(segs()[1].className).toBe("seg active");
-    expect(container.querySelector(".task-filters")).not.toBeNull();
+    expect(container.querySelector(".seg-filter")).not.toBeNull();
+  });
+
+  it("toggles the overdue filter and its active styling", async () => {
+    await mount(projects[0]);
+    await click(segs()[1]);
+    const filter = container.querySelector(".seg-filter")!;
+    const input = filter.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
+    expect(input.checked).toBe(false);
+    expect(filter.className).toBe("seg-filter");
+
+    await act(async () => {
+      input.click();
+    });
+    expect(input.checked).toBe(true);
+    expect(filter.className).toBe("seg-filter active");
+
+    await act(async () => {
+      input.click();
+    });
+    expect(input.checked).toBe(false);
+    expect(filter.className).toBe("seg-filter");
   });
 });
 

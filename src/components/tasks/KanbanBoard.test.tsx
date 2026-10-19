@@ -323,6 +323,43 @@ const makeTask = (o: Partial<TaskDto>): TaskDto => ({
   ...o,
 });
 
+describe("KanbanBoard overdue filter", () => {
+  const cardIds = () =>
+    Array.from(container.querySelectorAll<HTMLElement>(".task-card")).map((el) => el.dataset.id);
+
+  it("keeps every task when overdueOnly is omitted", async () => {
+    taskHolder.tasks = [
+      makeTask({ id: 1, position: 1 }),
+      makeTask({ id: 2, position: 2, overdue: true }),
+    ];
+    await act(async () => {
+      root.render(
+        <AppProvider>
+          <KanbanBoard project={project} tasksVersion={0} highlightTaskId={null} />
+        </AppProvider>,
+      );
+    });
+    await settle();
+    expect(cardIds()).toEqual(["1", "2"]);
+  });
+
+  it("shows only overdue tasks when overdueOnly is set", async () => {
+    taskHolder.tasks = [
+      makeTask({ id: 1, position: 1 }),
+      makeTask({ id: 2, position: 2, overdue: true }),
+    ];
+    await act(async () => {
+      root.render(
+        <AppProvider>
+          <KanbanBoard project={project} tasksVersion={0} highlightTaskId={null} overdueOnly />
+        </AppProvider>,
+      );
+    });
+    await settle();
+    expect(cardIds()).toEqual(["2"]);
+  });
+});
+
 describe("KanbanBoard focus from Today", () => {
   let scrollSpy: ReturnType<typeof vi.fn>;
   let origRect: (() => DOMRect) | undefined;

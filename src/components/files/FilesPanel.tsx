@@ -25,6 +25,7 @@ export default function FilesPanel({ project }: Props) {
   const [currentDir, setCurrentDir] = useState("");
   const [selected, setSelected] = useState<FsEntry | null>(null);
   const [highlightTaskId, setHighlightTaskId] = useState<number | null>(null);
+  const [overdueOnly, setOverdueOnly] = useState(false);
   const dirtyRef = useRef(false);
   const setDirty = useCallback((dirty: boolean) => {
     dirtyRef.current = dirty;
@@ -115,6 +116,16 @@ export default function FilesPanel({ project }: Props) {
           ]}
           onChange={switchTab}
         />
+        {tab === "tasks" && (
+          <label className={overdueOnly ? "seg-filter active" : "seg-filter"}>
+            <input
+              type="checkbox"
+              checked={overdueOnly}
+              onChange={(e) => setOverdueOnly(e.target.checked)}
+            />
+            Просроченные
+          </label>
+        )}
       </div>
 
       {tab === "tasks" ? (
@@ -122,6 +133,7 @@ export default function FilesPanel({ project }: Props) {
           project={project}
           tasksVersion={state.tasksVersion}
           highlightTaskId={highlightTaskId}
+          overdueOnly={overdueOnly}
         />
       ) : (
         <>
