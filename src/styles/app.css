@@ -444,6 +444,7 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 .task-due-row .rename-input { font-size: 11px; padding: 2px 4px; }
 .task-add-form { background: #fff; border: 1px solid var(--border-strong); border-radius: 7px; padding: 8px; }
 .task-add-form .task-edit { margin-top: 0; padding-top: 0; border-top: 0; }
+.task-add-form .task-details { margin-top: 0; padding-top: 0; border-top: 0; }
 .task-add-form .rename-input { width: 100%; box-sizing: border-box; font-size: 11.5px; }
 .task-add-form textarea.rename-input { min-height: 46px; resize: vertical; }
 .task-add-form .rename-input[type="date"],

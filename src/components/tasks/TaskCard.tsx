@@ -138,6 +138,7 @@ export function TaskEditor({
       <textarea
         ref={titleRef}
         className="rename-input task-edit-title"
+        placeholder="Название задачи"
         value={title}
         rows={Math.min(6, Math.max(2, title.split("\n").length))}
         onChange={(e) => setTitle(e.target.value)}
