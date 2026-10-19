@@ -43,20 +43,17 @@
   - удалён провайдер/агент Ornith;
   - удалён файл `~/.config/kilo/agents/ornith-coder.md`;
   - `bxmcp` (Bitrix MCP) выключен для Kilo; в PhpStorm он живёт отдельно;
-  - добавлен лёгкий субагент `builder` (сейчас на Qwen; на DeepSeek он работал в большой сессии, на Qwen падал — см. §7).
+  - добавлен лёгкий субагент `builder` (сейчас на `deepseek/deepseek-flash`; им выполнена финальная сборка/установка — см. §7).
 
 ## 3. Что сейчас является «остатком»
 
 Активной очереди нет: `DOCS/Q.md` и `DOCS/REFACTOR_PLAN.md` пусты.
 
-Единственная незакрытая техническая тема — **субагенты и контекст**:
+Тема **субагентов и контекста** закрыта:
 
-- `explore` на Qwen работает.
-- `general` на Qwen (240k) в текущей большой сессии падает с `Compaction exhausted: context still exceeds model limits after 3 attempts`.
-- `builder` на DeepSeek (1M) работал; им и делали финальную сборку/установку. Сейчас `builder` переведён на Qwen по решению пользователя; в большой сессии на Qwen он падал.
-- Компакт текущей сессии не помог, перезапуск процесса тоже: история сессии не очищается.
-- Ожидание: в **новой пустой сессии** `general` и `builder` на Qwen снова влезут. Это и нужно проверить первым делом.
-- Если и в новой сессии не влезет — перевести `general` на DeepSeek или использовать `builder` для команд, `explore` для чтения.
+- В свежей сессии `general` на Qwen (240k) всё равно упал с `Compaction exhausted: context still exceeds model limits after 3 attempts` — новая сессия не помогла.
+- Поэтому `agent.general.model` и `agent.builder.model` переведены на `deepseek/deepseek-flash` и проверены: smoke-тест `general` на `DOCS/` прошёл, `builder` проверил `git status` и версию установленного приложения.
+- `explore`, `build`, `plan` остаются на Qwen.
 
 Опционально, не блокирует:
 
@@ -101,25 +98,25 @@
 Глобальный конфиг: `~/.config/kilo/kilo.jsonc`.
 
 - Основная модель (оркестратор): `deepseek/deepseek-flash` (1M).
-- `agent.general`: `llm-server/Qwen-Flash-Vision`, 240k, `permission.mcp: deny`.
+- `agent.general`: `deepseek/deepseek-flash`, `permission.mcp: deny`.
 - `agent.explore`: `llm-server/Qwen-Flash-Vision`.
 - `agent.build`: `llm-server/Qwen-Flash-Vision`.
 - `agent.plan`: `llm-server/Qwen-Flash-Vision`.
-- `agent.builder`: `llm-server/Qwen-Flash-Vision`; кастомный лёгкий субагент: read/edit/bash, без MCP, веба и вложенных задач.
+- `agent.builder`: `deepseek/deepseek-flash`; кастомный лёгкий субагент: read/edit/bash, без MCP, веба и вложенных задач.
 - `agent.compaction`: `deepseek/deepseek-flash`.
 - `compaction`: auto, `threshold_percent: 85`, `reserved: 30000`, `prune: true`, `tail_turns: 2`.
 - `subagent_model`: `llm-server/Qwen-Flash-Vision`.
 - MCP: `bxmcp` — `enabled: false`; `rea` и `scrapling` — включены.
 - `ornith`-провайдер удалён; `ornith-coder.md` удалён.
 
-Решение пользователя: **все агенты, кроме оркестратора, — на Qwen; оркестратор и модель сжатия — на DeepSeek.**
+Решение пользователя: **`explore`, `build`, `plan` — на Qwen; `general`, `builder`, оркестратор и модель сжатия — на DeepSeek.**
 
-Почему `general` падал:
+Почему `general` падал (вопрос закрыт):
 
 - 240k — это не «запас на всё»: в контекст входят системный промпт, схемы инструментов, MCP и унаследованная история сессии.
-- `explore` с урезанным набором инструментов влезает, `general` с полным — нет.
+- `explore` с урезанным набором инструментов влезал, `general` с полным — нет; свежая сессия этого не изменила.
 - `builder` на Qwen тоже падал, на DeepSeek с 1M — сразу заработал. Значит, дело в размере контекста, а не в MCP или коде.
-- Компакт и перезапуск не заменяют новую сессию: история остаётся.
+- Компакт и перезапуск не заменяют новую сессию: история остаётся. Итог: `general` и `builder` переведены на DeepSeek.
 
 ## 8. Ключевые файлы
 
@@ -170,9 +167,7 @@ git add -A && git commit -m "…"
 1. Прочитать этот файл и `AGENTS.md`.
 2. Проверить, что дерево чистое: `git status --short`.
 3. Проверить установленную версию: `defaults read … CFBundleShortVersionString` → `1.0.0`.
-4. Проверить `general` на Qwen **маленькой read-only задачей** (например, список файлов в `DOCS/`).
-   - Работает → можно пользоваться Qwen.
-   - Падает → переключить `agent.general.model` и `agent.builder.model` на `deepseek/deepseek-flash`.
+4. Проверка `general` на Qwen уже выполнена: в свежей сессии `general` упал с `Compaction exhausted…`, поэтому `agent.general.model` и `agent.builder.model` переведены на `deepseek/deepseek-flash` и проверены. Повторять не нужно.
 5. Не переделывать завершённый рефакторинг и не восстанавливать `SPEC.md`.
 6. Дальше — только по новой очереди от пользователя: сначала фиксировать пункт в `DOCS/Q.md`, потом реализация, тесты, коммит, удаление пункта.
 
