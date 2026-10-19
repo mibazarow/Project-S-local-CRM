@@ -123,22 +123,61 @@ input, textarea { font-family: inherit; }
   color: var(--text-muted);
 }
 
-/* «Новый проект» — круглая акцентная кнопка с белым плюсом. */
+/* «Новый проект» — подпись + круглый акцентный плюс с белым плюсом (Q-21). */
 .add-project-btn {
-  width: 28px;
   height: 28px;
   border: none;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 4px 0 10px;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background .15s;
+}
+.add-project-btn:hover { background: var(--accent-soft); }
+.add-project-btn:active { transform: scale(.97); }
+.add-project-btn:disabled { opacity: .55; cursor: default; }
+.add-project-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(55, 106, 159, .35); }
+.add-project-btn .add-project-plus {
+  width: 20px;
+  height: 20px;
+  flex: none;
   border-radius: 50%;
   background: var(--accent);
   color: #fff;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+}
+
+/* «Новый чат» — синяя скруглённая кнопка с белым плюсом и подписью (Q-21). */
+.new-chat-btn {
+  height: 28px;
+  border: none;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
   cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .12);
   transition: background .15s;
 }
-.add-project-btn:hover { background: var(--accent-hover); }
-.add-project-btn:active { transform: scale(.94); }
+.new-chat-btn:hover { background: var(--accent-hover); }
+.new-chat-btn:active { transform: scale(.97); }
+.new-chat-btn:disabled { opacity: .55; cursor: default; }
+.new-chat-btn:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(55, 106, 159, .35); }
 
 .project-list {
   flex: 1;

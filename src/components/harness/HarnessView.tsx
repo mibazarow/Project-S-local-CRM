@@ -596,8 +596,9 @@ export default function HarnessView() {
             >
               <RefreshIcon />
             </button>
-            <button className="icon-btn small" type="button" title="Новая сессия" onClick={() => void createSession()}>
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+            <button className="new-chat-btn" type="button" title="Новая сессия" onClick={() => void createSession()}>
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14" /></svg>
+              <span className="new-chat-label">Новый чат</span>
             </button>
           </span>
         </div>
