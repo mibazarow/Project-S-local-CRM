@@ -6,7 +6,6 @@ import TopBar, { type Tab } from "./components/TopBar";
 import CommandPalette from "./components/CommandPalette";
 import QuickCapture from "./components/QuickCapture";
 import SettingsModal from "./components/SettingsModal";
-import TodayView from "./components/today/TodayView";
 import ProjectList from "./components/projects/ProjectList";
 import FilesPanel from "./components/files/FilesPanel";
 import ProjectChat from "./components/chat/ProjectChat";
@@ -98,9 +97,7 @@ export default function App() {
     <div className="app">
       <TopBar tab={tab} onTab={setTab} onSettings={() => setSettingsOpen(true)} onSearch={() => setPaletteOpen(true)} />
 
-      {tab === "today" ? (
-        <TodayView onTab={setTab} />
-      ) : tab === "projects" ? (
+      {tab === "projects" ? (
         <main className="view active">
           <ProjectList />
 

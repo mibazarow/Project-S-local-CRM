@@ -6,7 +6,7 @@ import type { ReindexStatus } from "../api/types";
 import { IconSearch } from "./files/icons";
 import { toast } from "./shared/toast";
 
-export type Tab = "today" | "projects" | "harness" | "notes";
+export type Tab = "projects" | "harness" | "notes";
 
 // Backend REINDEX_INTERVAL_MS mirror: the "reindex-done" payload carries no
 // nextRunAt, so the reset countdown is derived client-side from event arrival.
@@ -169,12 +169,6 @@ export default function TopBar({ tab, onTab, onSettings, onSearch }: Props) {
         <img className="app-logo" src={logo} alt="" data-tauri-drag-region onMouseDown={onDragMouseDown} />
       </div>
       <nav className="tabs">
-        <button
-          className={tab === "today" ? "tab active" : "tab"}
-          onClick={() => onTab("today")}
-        >
-          Сегодня
-        </button>
         <button
           className={tab === "projects" ? "tab active" : "tab"}
           onClick={() => onTab("projects")}

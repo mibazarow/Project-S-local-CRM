@@ -235,7 +235,7 @@ input, textarea { font-family: inherit; }
 /* ---------- Pointer drag & drop (projects + kanban) ---------- */
 
 body.dnd-active { cursor: grabbing; -webkit-user-select: none; user-select: none; }
-body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .notes-tree .tree-row, body.dnd-active .file-tree .tree-row, body.dnd-active .today-card-head { cursor: grabbing; }
+body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .notes-tree .tree-row, body.dnd-active .file-tree .tree-row { cursor: grabbing; }
 
 .drag-ghost {
   opacity: .95;
@@ -244,7 +244,6 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
   transition: none;
 }
 .drag-ghost.project-item:not(.active) { background: var(--surface); }
-.drag-ghost.today-card { background: var(--surface); }
 
 .drop-indicator { position: relative; height: 0; flex-shrink: 0; }
 .drop-indicator::before {
@@ -1832,137 +1831,6 @@ details.set-card code {
 .capture-foot .primary-btn { margin-left: auto; }
 .capture-ok { font-size: 12px; color: var(--ok); }
 .capture-error { font-size: 12px; color: var(--danger); }
-
-/* ---------- «Сегодня» (дашборд) ---------- */
-
-.today-view { grid-template-columns: 1fr; }
-
-.today-header {
-  padding: 18px 18px 14px;
-  border-bottom: 1px solid var(--hairline);
-  background: var(--surface);
-}
-.today-header-top { display: flex; align-items: flex-start; gap: 12px; }
-.today-title-block { min-width: 0; }
-.today-date { font-size: 22px; font-weight: 700; letter-spacing: -.01em; line-height: 1.2; }
-.today-greeting { margin-top: 4px; font-size: 13px; color: var(--text-muted); }
-.today-refresh { margin-left: auto; flex-shrink: 0; }
-
-/* Сетка карточек: 2 колонки от 1100px, иначе 1. */
-.today-grid {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 14px;
-  align-items: start;
-  max-width: 1180px;
-}
-@media (min-width: 1100px) { .today-grid { grid-template-columns: 1fr 1fr; } }
-
-.today-card {
-  min-width: 0;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
-  box-shadow: var(--shadow);
-  overflow: hidden;
-  transition: box-shadow .15s, border-color .15s;
-}
-.today-card:hover { border-color: var(--border-strong); box-shadow: 0 2px 8px rgba(0, 0, 0, .07); }
-.today-card.dragging { opacity: .45; }
-.today-card-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 11px 12px 9px;
-  border-bottom: 1px solid var(--hairline);
-  cursor: grab;
-}
-.today-card-grip { display: flex; flex-shrink: 0; color: var(--border-strong); }
-.today-card-icon { display: flex; flex-shrink: 0; color: var(--text-muted); }
-.today-card-icon.is-danger { color: var(--danger); }
-.today-card-title { font-size: 13px; font-weight: 600; color: var(--text); }
-.today-count {
-  margin-left: 2px;
-  padding: 1px 8px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-2);
-  font-size: 11px;
-  color: var(--text-muted);
-  font-variant-numeric: tabular-nums;
-}
-.today-count.is-zero { opacity: .55; }
-.today-card-all {
-  margin-left: auto;
-  border: none;
-  background: transparent;
-  color: var(--accent);
-  font-size: 11.5px;
-  padding: 3px 7px;
-  border-radius: 5px;
-  transition: background .12s;
-}
-.today-card-all:hover { background: var(--accent-soft); }
-
-.today-list { display: flex; flex-direction: column; padding: 4px 6px 6px; }
-.today-row {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  padding: 7px 8px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: background .12s;
-}
-.today-row:hover { background: rgba(0, 0, 0, .045); }
-.today-row-title {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 12.5px;
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.today-row-meta {
-  flex: 0 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: baseline;
-  justify-content: flex-end;
-  gap: 8px;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-.today-row-meta > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.today-row-date { flex-shrink: 0; }
-.today-row-date.is-overdue { color: var(--danger); font-weight: 600; }
-.today-row-time { flex-shrink: 0; opacity: 0.75; }
-.today-empty { padding: 10px 12px 12px; font-size: 11.5px; color: var(--text-muted); line-height: 1.45; }
-
-/* ---------- Цели (Today) ---------- */
-
-.badge.st-paused { color: var(--text-muted); }
-
-.obj-add { display: flex; flex-direction: column; gap: 6px; padding: 4px 10px 8px; }
-.obj-add input, .obj-add textarea { width: 100%; box-sizing: border-box; }
-.obj-add .rename-input { border-color: var(--border-strong); box-shadow: none; }
-.obj-add .rename-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(55, 106, 159, .18); }
-.obj-add .obj-steps-input { min-height: 40px; font-size: 11.5px; resize: vertical; }
-.obj-add button { align-self: flex-start; }
-
-.obj-row { display: flex; flex-direction: column; gap: 4px; padding: 7px 10px; border-radius: var(--radius-sm); }
-.obj-row:hover { background: rgba(0, 0, 0, .045); }
-.obj-head { display: flex; align-items: center; gap: 8px; cursor: pointer; }
-.obj-head .t { font-size: 12.5px; font-weight: 500; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.obj-count { font-size: 10.5px; color: var(--text-muted); flex-shrink: 0; }
-.obj-bar { height: 4px; border-radius: 2px; background: #e4e4e9; overflow: hidden; }
-.obj-bar i { display: block; height: 100%; background: var(--ok); border-radius: 2px; }
-.obj-steps { display: flex; flex-direction: column; gap: 4px; padding: 2px 2px 0 4px; }
-.obj-step { display: flex; align-items: center; gap: 6px; font-size: 11.5px; cursor: pointer; }
-.obj-step input[type="checkbox"] { accent-color: var(--accent); flex-shrink: 0; }
-.obj-step .strikethrough { text-decoration: line-through; color: var(--text-muted); }
-.obj-actions { display: flex; gap: 4px; }
 
 /* ---------- Тосты (кросс-сущностные быстрые действия) ---------- */
 

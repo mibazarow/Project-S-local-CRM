@@ -80,7 +80,7 @@ afterEach(() => {
 
 async function mount() {
   await act(async () => {
-    root.render(<TopBar tab="today" onTab={() => {}} onSettings={() => {}} onSearch={() => {}} />);
+    root.render(<TopBar tab="projects" onTab={() => {}} onSettings={() => {}} onSearch={() => {}} />);
   });
 }
 

@@ -73,7 +73,7 @@ Tauri 2 (`bundle.windows.webviewInstallMode`):
 ### 2.5. Что проверить в WebView2
 
 - Рендеринг CSS/шрифтов/скроллов, `backdrop-filter`, `position: sticky`, SVG.
-- `localStorage`/IndexedDB (сейчас там `lastProject` и порядок карточек «Сегодня»).
+- `localStorage`/IndexedDB (сейчас там `lastProject`).
 - Drag-and-drop, clipboard, file input, PDF/iframe.
 - Стриминг SSE и долгие запросы.
 - DevTools в dev-сборке; в release отключить.
