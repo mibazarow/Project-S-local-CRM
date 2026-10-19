@@ -6,10 +6,6 @@
 
 ## Модель, стриминг, стиль
 
-- [ ] **24. Несколько провайдеров.**
-  - Сохранять несколько провайдеров: произвольное имя, endpoint, API-ключ; редактировать.
-  - Активен один; переключение — **только в настройках**.
-  - Референс: ITScreen в `/Users/mb/Documents/STREAMS/android-harness`, скриншот `design/IMG_20261018_205944.jpg`.
 - [ ] **25. `reasoning_content` (DeepSeek).**
   - Исправить HTTP 400 «reasoning_content must be passed back» (повторился на DeepSeek).
   - Проверить pass-back reasoning во всех путях и типах сообщений; протестировать на DeepSeek; устранить подобные ошибки.
