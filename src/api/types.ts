@@ -506,6 +506,10 @@ export interface SessionDto {
   createdAt: string;
   updatedAt: string;
   lastActiveAt: string;
+  // Persistent pin (Harness chats only): pinnedAt is the pin stamp, null when
+  // unpinned. Pinned sessions sort to the top of the session list.
+  pinned: boolean;
+  pinnedAt: string | null;
 }
 
 // search::ChatHit — one harness session matched by search_chats; the snippet

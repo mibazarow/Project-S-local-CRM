@@ -458,6 +458,10 @@ export const harnessRenameSession = (id: number, title: string) =>
 
 export const harnessDeleteSession = (id: number) => invoke<void>("harness_delete_session", { id });
 
+// Pin/unpin a Harness chat; returns the fresh session list (pinned first).
+export const harnessPinSession = (id: number, pinned: boolean) =>
+  invoke<SessionDto[]>("harness_pin_session", { id, pinned });
+
 export const harnessSessionHistory = (id: number) =>
   invoke<MessageDto[]>("harness_session_history", { id });
 

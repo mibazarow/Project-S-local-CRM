@@ -332,6 +332,7 @@ pub fn run() {
             commands::harness::harness_list_sessions,
             commands::harness::harness_rename_session,
             commands::harness::harness_delete_session,
+            commands::harness::harness_pin_session,
             commands::harness::harness_session_history,
             commands::chat::chat_pin,
             commands::chat::chat_truncate_after,

@@ -27,6 +27,7 @@ import { confirmRemove } from "../../shared/confirm";
 import TodoPanel from "../chat/TodoPanel";
 import SchedulePanel from "./SchedulePanel";
 import { TrashIcon } from "./shared";
+import { IconPin } from "../files/icons";
 
 const UNTITLED = "Новая сессия";
 
@@ -48,12 +49,14 @@ function SessionItem({
   onOpen,
   onRename,
   onDelete,
+  onTogglePin,
 }: {
   session: SessionDto;
   active: boolean;
   onOpen: () => void;
   onRename: (id: number, title: string) => void;
   onDelete: () => void;
+  onTogglePin: () => void;
 }) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(session.title ?? "");
@@ -98,6 +101,19 @@ function SessionItem({
         <span className="name">{session.title ?? UNTITLED}</span>
       )}
       <span className="meta">{formatActivity(session.lastActiveAt)}</span>
+      <button
+        className={session.pinned ? "session-pin pinned" : "session-pin"}
+        type="button"
+        title={session.pinned ? "Открепить чат" : "Закрепить чат"}
+        aria-pressed={session.pinned}
+        onClick={(e) => {
+          e.stopPropagation();
+          onTogglePin();
+        }}
+        onMouseDown={(e) => e.stopPropagation()}
+      >
+        <IconPin />
+      </button>
       <span className="session-actions">
         <button
           className="mini-btn"
@@ -328,6 +344,15 @@ export default function HarnessView() {
   const renameSession = async (id: number, title: string) => {
     try {
       await ipc.harnessRenameSession(id, title);
+      await loadSessions();
+    } catch (e) {
+      setSessionsError(toMessage(e));
+    }
+  };
+
+  const togglePin = async (s: SessionDto) => {
+    try {
+      await ipc.harnessPinSession(s.id, !s.pinned);
       await loadSessions();
     } catch (e) {
       setSessionsError(toMessage(e));
@@ -589,6 +614,7 @@ export default function HarnessView() {
               onOpen={() => setActiveId(s.id)}
               onRename={(id, title) => void renameSession(id, title)}
               onDelete={() => void deleteSession(s)}
+              onTogglePin={() => void togglePin(s)}
             />
           ))}
           {sessions.length === 0 && (

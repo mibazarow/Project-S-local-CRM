@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::{params, Connection};
 
-pub const SCHEMA_VERSION: i64 = 36;
+pub const SCHEMA_VERSION: i64 = 37;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -637,6 +637,13 @@ CREATE TABLE IF NOT EXISTS style_profile (
 );
 ";
 
+// Persistent pinning of Harness chats (Q.md pin slice): a nullable pinned_at
+// on the kind='harness' chat row is the pin stamp (NULL = unpinned). Only
+// Harness sessions are pinned; project and notes chats leave it NULL. Guarded
+// per column (v14 recipe) so a re-run after an interrupted v37 does not
+// re-ALTER.
+const MIGRATION_37_CHAT_PINNED_AT: &str = "ALTER TABLE chats ADD COLUMN pinned_at TEXT";
+
 fn migrate_v1(conn: &Connection) -> Result<()> {
     conn.execute_batch(MIGRATION_1)?;
     Ok(())
@@ -1000,6 +1007,20 @@ fn migrate_v36(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v37(conn: &Connection) -> Result<()> {
+    // Guarded per column (v14 recipe) so a re-run after an interrupted v37
+    // does not re-ALTER.
+    let has_pinned_at: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('chats') WHERE name = 'pinned_at'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_pinned_at == 0 {
+        conn.execute(MIGRATION_37_CHAT_PINNED_AT, [])?;
+    }
+    Ok(())
+}
+
 // Ordered (user_version target, migration body) table: each body runs when
 // the stored user_version is below its target, then the runner bumps
 // user_version to the target, exactly like the previous hand-rolled
@@ -1043,7 +1064,8 @@ const MIGRATIONS: &[(u32, Migration)] = &[
     (33, migrate_v33),
     (34, migrate_v34),
     (35, migrate_v35),
-    (SCHEMA_VERSION as u32, migrate_v36),
+    (36, migrate_v36),
+    (SCHEMA_VERSION as u32, migrate_v37),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {

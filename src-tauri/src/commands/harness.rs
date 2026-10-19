@@ -33,6 +33,17 @@ pub(crate) fn harness_delete_session(state: State<AppState>, id: i64) -> Result<
     with_db(&state, |conn| harness::delete_session(conn, id))
 }
 
+// Pin or unpin a Harness chat; returns the fresh session list so the sidebar
+// reorders (pinned first) without a second read.
+#[tauri::command]
+pub(crate) fn harness_pin_session(
+    state: State<AppState>,
+    id: i64,
+    pinned: bool,
+) -> Result<Vec<harness::SessionDto>> {
+    with_db(&state, |conn| harness::set_session_pinned(conn, id, pinned))
+}
+
 #[tauri::command]
 pub(crate) fn harness_session_history(
     state: State<AppState>,

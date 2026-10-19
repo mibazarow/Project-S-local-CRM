@@ -11,6 +11,8 @@ vi.mock("../../api/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../api/ipc")>()),
   harnessListSessions: vi.fn(async () => []),
   scheduleList: vi.fn(async () => []),
+  harnessDeleteSession: vi.fn(async () => undefined),
+  harnessPinSession: vi.fn(async () => []),
   harnessSessionHistory: vi.fn(async () => []),
   harnessCreateSession: vi.fn(async () => ({ id: 1, title: null, lastActiveAt: 0 })),
   indexChatMessages: vi.fn(async () => 0),
@@ -83,5 +85,48 @@ describe("HarnessView new-chat button (Q-21)", () => {
       btn.click();
     });
     expect(ipc.harnessCreateSession).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("HarnessView session pinning (Q.md pin slice)", () => {
+  const sessions = [
+    { id: 1, title: "First", createdAt: "", updatedAt: "", lastActiveAt: "2026-01-01", pinned: true, pinnedAt: "2026-02-01" },
+    { id: 2, title: "Second", createdAt: "", updatedAt: "", lastActiveAt: "2026-01-02", pinned: false, pinnedAt: null },
+  ];
+
+  beforeEach(() => {
+    vi.mocked(ipc.harnessListSessions).mockResolvedValue(sessions as never);
+  });
+
+  it("marks the pinned row's pin with the pinned class and leaves the unpinned one plain", async () => {
+    await mount();
+    const rows = container.querySelectorAll<HTMLElement>(".session-item");
+    expect(rows).toHaveLength(2);
+    const pinnedPin = rows[0].querySelector<HTMLButtonElement>(".session-pin")!;
+    const plainPin = rows[1].querySelector<HTMLButtonElement>(".session-pin")!;
+    expect(pinnedPin.classList.contains("pinned")).toBe(true);
+    expect(pinnedPin.getAttribute("aria-pressed")).toBe("true");
+    expect(plainPin.classList.contains("pinned")).toBe(false);
+    expect(plainPin.getAttribute("aria-pressed")).toBe("false");
+    expect(pinnedPin.querySelector("svg")).not.toBeNull();
+  });
+
+  it("toggles the pin through IPC and does not open/select the chat", async () => {
+    await mount();
+    const rows = container.querySelectorAll<HTMLElement>(".session-item");
+    // The first session is active after load; the second is not.
+    expect(rows[0].classList.contains("active")).toBe(true);
+    expect(rows[1].classList.contains("active")).toBe(false);
+
+    const plainPin = rows[1].querySelector<HTMLButtonElement>(".session-pin")!;
+    await act(async () => {
+      plainPin.click();
+    });
+    expect(ipc.harnessPinSession).toHaveBeenCalledTimes(1);
+    expect(ipc.harnessPinSession).toHaveBeenCalledWith(2, true);
+    // Clicking the pin must not select the chat: the second row stays inactive.
+    const after = container.querySelectorAll<HTMLElement>(".session-item");
+    expect(after[1].classList.contains("active")).toBe(false);
+    expect(after[0].classList.contains("active")).toBe(true);
   });
 });

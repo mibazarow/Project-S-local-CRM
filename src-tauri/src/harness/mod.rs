@@ -32,19 +32,29 @@ pub struct SessionDto {
     pub created_at: String,
     pub updated_at: String,
     pub last_active_at: String,
+    // Persistent pin (Q.md pin slice): pinned_at is the stamp on the session's
+    // kind='harness' chat row; NULL means unpinned. Harness sessions only.
+    pub pinned: bool,
+    pub pinned_at: Option<String>,
 }
 
 fn session_dto(conn: &Connection, id: i64) -> Result<SessionDto> {
     conn.query_row(
-        "SELECT title, created_at, updated_at, last_active_at FROM sessions WHERE id = ?1",
+        "SELECT s.title, s.created_at, s.updated_at, s.last_active_at, c.pinned_at
+         FROM sessions s
+         LEFT JOIN chats c ON c.session_id = s.id AND c.kind = 'harness'
+         WHERE s.id = ?1",
         params![id],
         |r| {
+            let pinned_at: Option<String> = r.get(4)?;
             Ok(SessionDto {
                 id,
                 title: r.get(0)?,
                 created_at: r.get(1)?,
                 updated_at: r.get(2)?,
                 last_active_at: r.get(3)?,
+                pinned: pinned_at.is_some(),
+                pinned_at,
             })
         },
     )
@@ -80,15 +90,38 @@ pub fn create_session(conn: &Connection, title: Option<&str>) -> Result<SessionD
     session_dto(conn, id)
 }
 
-// Most recently active first (SPEC 5.1 session list).
+// Pinned sessions first (most recently pinned first), then the rest by most
+// recently active (SPEC 5.1 session list). The pin stamp lives on the
+// session's kind='harness' chat row (pinned_at); NULL sorts into the unpinned
+// tail, where last_active_at/id keep the previous order.
 pub fn list_sessions(conn: &Connection) -> Result<Vec<SessionDto>> {
     let ids: Vec<i64> = {
-        let mut stmt =
-            conn.prepare("SELECT id FROM sessions ORDER BY last_active_at DESC, id DESC")?;
+        let mut stmt = conn.prepare(
+            "SELECT s.id FROM sessions s
+             LEFT JOIN chats c ON c.session_id = s.id AND c.kind = 'harness'
+             ORDER BY (c.pinned_at IS NOT NULL) DESC, c.pinned_at DESC, s.last_active_at DESC, s.id DESC",
+        )?;
         let rows = stmt.query_map([], |r| r.get(0))?;
         rows.collect::<rusqlite::Result<Vec<_>>>()?
     };
     ids.iter().map(|id| session_dto(conn, *id)).collect()
+}
+
+// Pin or unpin a Harness session: pinned_at on its kind='harness' chat row is
+// the pin stamp (NULL = unpinned). Returns the fresh session list so the UI
+// reorders without a second read. Harness sessions only — project and notes
+// chats are out of scope and rejected by session_chat_id.
+pub fn set_session_pinned(conn: &Connection, id: i64, pinned: bool) -> Result<Vec<SessionDto>> {
+    let chat_id = session_chat_id(conn, id)?;
+    if pinned {
+        conn.execute(
+            "UPDATE chats SET pinned_at = datetime('now','localtime') WHERE id = ?1",
+            params![chat_id],
+        )?;
+    } else {
+        conn.execute("UPDATE chats SET pinned_at = NULL WHERE id = ?1", params![chat_id])?;
+    }
+    list_sessions(conn)
 }
 
 pub fn rename_session(conn: &Connection, id: i64, title: &str) -> Result<SessionDto> {
@@ -623,6 +656,60 @@ mod tests {
         touch_session(&conn, a.id).unwrap();
         let order: Vec<i64> = list_sessions(&conn).unwrap().into_iter().map(|s| s.id).collect();
         assert_eq!(order, vec![a.id, b.id]);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn pinning_orders_pinned_first_by_pin_time_and_persists() {
+        let (wd, conn) = setup("harness-pin");
+        let a = create_session(&conn, Some("a")).unwrap();
+        let b = create_session(&conn, Some("b")).unwrap();
+        let c = create_session(&conn, Some("c")).unwrap();
+        // Distinct last_active so the unpinned tail order is deterministic.
+        for (id, when) in [(a.id, "2026-01-01"), (b.id, "2026-01-02"), (c.id, "2026-01-03")] {
+            conn.execute(
+                "UPDATE sessions SET last_active_at = ?1 WHERE id = ?2",
+                params![when, id],
+            )
+            .unwrap();
+        }
+        let ids = |list: &Vec<SessionDto>| list.iter().map(|s| s.id).collect::<Vec<_>>();
+        assert_eq!(ids(&list_sessions(&conn).unwrap()), vec![c.id, b.id, a.id]);
+
+        // Pin a, then b, with distinct pin stamps so b (later) sorts first.
+        set_session_pinned(&conn, a.id, true).unwrap();
+        set_session_pinned(&conn, b.id, true).unwrap();
+        conn.execute(
+            "UPDATE chats SET pinned_at = '2026-02-01' WHERE session_id = ?1 AND kind = 'harness'",
+            params![a.id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE chats SET pinned_at = '2026-02-02' WHERE session_id = ?1 AND kind = 'harness'",
+            params![b.id],
+        )
+        .unwrap();
+        let list = list_sessions(&conn).unwrap();
+        assert_eq!(ids(&list), vec![b.id, a.id, c.id]);
+        assert!(list[0].pinned && list[0].pinned_at.is_some());
+        assert!(list[1].pinned && list[1].pinned_at.is_some());
+        assert!(!list[2].pinned && list[2].pinned_at.is_none());
+
+        // The command returns the fresh list with the flag applied.
+        let after = set_session_pinned(&conn, c.id, true).unwrap();
+        assert_eq!(ids(&after), vec![c.id, b.id, a.id]);
+        assert!(after.iter().find(|s| s.id == c.id).unwrap().pinned);
+
+        // Unpin b: it drops back into the unpinned tail by last_active.
+        set_session_pinned(&conn, b.id, false).unwrap();
+        let list = list_sessions(&conn).unwrap();
+        assert_eq!(ids(&list), vec![c.id, a.id, b.id]);
+        assert!(!list.iter().find(|s| s.id == b.id).unwrap().pinned);
+
+        assert!(matches!(
+            set_session_pinned(&conn, 999, true),
+            Err(AppError::Invalid(_))
+        ));
         fs::remove_dir_all(&wd).unwrap();
     }
 
