@@ -597,6 +597,50 @@ mod tests {
     }
 
     #[test]
+    fn sse_stream_flushes_one_delta_per_content_chunk_in_order() {
+        // Progressive display depends on the backend emitting one Delta per SSE
+        // data event (no buffering to the full response): N content chunks must
+        // yield N ordered, non-empty deltas whose concatenation is the answer.
+        let (events, outcome) = sse(&[
+            r#"data: {"choices":[{"index":0,"delta":{"content":"При"}}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"content":"вет"}}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"content":"!"}}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            "data: [DONE]",
+        ]);
+        let streamed: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                ChatEvent::Delta(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(streamed, ["При", "вет", "!"]);
+        assert_eq!(outcome.content.as_deref(), Some("Привет!"));
+    }
+
+    #[test]
+    fn sse_stream_one_chunk_delivers_the_whole_answer_in_a_single_delta() {
+        // A provider that buffers the whole answer into one SSE chunk still
+        // yields exactly one delta carrying the full text (the frontend then
+        // reveals it with a typewriter fallback).
+        let (events, outcome) = sse(&[
+            r#"data: {"choices":[{"index":0,"delta":{"content":"Весь ответ одним куском"}}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            "data: [DONE]",
+        ]);
+        let deltas: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                ChatEvent::Delta(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(deltas, ["Весь ответ одним куском"]);
+        assert_eq!(outcome.content.as_deref(), Some("Весь ответ одним куском"));
+    }
+
+    #[test]
     fn sse_stream_accumulates_reasoning_from_both_delta_keys() {
         let (events, outcome) = sse(&[
             r#"data: {"choices":[{"index":0,"delta":{"reasoning_content":"Thin"}}]}"#,

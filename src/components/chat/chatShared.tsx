@@ -1,4 +1,4 @@
-import { memo, useEffect, useState, type ReactNode, type RefObject } from "react";
+import { memo, useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import * as ipc from "../../api/ipc";
 import { MarkdownMessage } from "./MarkdownMessage";
 import type {
@@ -944,6 +944,78 @@ export interface TranscriptActions {
   onToTask?: (item: ChatItem) => void;
 }
 
+// Progressive answer reveal (SPEC 6.0, Q22). The backend already streams
+// content deltas per SSE chunk, but a provider may deliver the answer in one
+// large chunk or not stream it at all (it then arrives whole in `done`). The
+// reveal turns such a single block into a short typewriter: ~30 chars per
+// frame, with the step grown so a long answer still settles within
+// TYPEWRITER_MAX_FRAMES. `seed` is how much is already on screen, so the live
+// run bubble and the settled answer share one continuous reveal and never
+// re-type or duplicate what the stream already showed. `enabled` is false for
+// prefers-reduced-motion and for settled stop/error items, which show the full
+// text instantly.
+const TYPEWRITER_CHARS_PER_FRAME = 30;
+const TYPEWRITER_MAX_FRAMES = 60;
+
+export function usePrefersReducedMotion(): boolean {
+  const query = "(prefers-reduced-motion: reduce)";
+  const [reduced, setReduced] = useState(
+    () => typeof window !== "undefined" && !!window.matchMedia?.(query).matches,
+  );
+  useEffect(() => {
+    const mq = typeof window !== "undefined" ? window.matchMedia?.(query) : undefined;
+    if (!mq) return;
+    const onChange = () => setReduced(mq.matches);
+    mq.addEventListener?.("change", onChange);
+    return () => mq.removeEventListener?.("change", onChange);
+  }, []);
+  return reduced;
+}
+
+function RevealAnswer({
+  text,
+  seed,
+  enabled,
+  onShown,
+}: {
+  text: string;
+  seed?: number;
+  enabled: boolean;
+  onShown?: (n: number) => void;
+}) {
+  // A streamed delta is small, so the live bubble starts fully shown and grows
+  // at once (no artificial per-token delay). A single large chunk (or a
+  // non-streamed answer seeded at 0) starts empty and is typed frame-by-frame.
+  const [n, setN] = useState(() =>
+    enabled
+      ? Math.min(seed ?? (text.length <= TYPEWRITER_CHARS_PER_FRAME ? text.length : 0), text.length)
+      : text.length,
+  );
+  useEffect(() => {
+    if (!enabled) {
+      setN((v) => (v < text.length ? text.length : v));
+      return;
+    }
+    if (n >= text.length) return;
+    // A streamed delta (small growth) appears immediately; only a large jump is
+    // revealed as a typewriter.
+    if (text.length - n <= TYPEWRITER_CHARS_PER_FRAME) {
+      setN(text.length);
+      return;
+    }
+    const step = Math.max(
+      TYPEWRITER_CHARS_PER_FRAME,
+      Math.ceil((text.length - n) / TYPEWRITER_MAX_FRAMES),
+    );
+    const id = requestAnimationFrame(() => setN((v) => Math.min(text.length, v + step)));
+    return () => cancelAnimationFrame(id);
+  }, [n, text, enabled]);
+  useEffect(() => {
+    onShown?.(n);
+  }, [n, onShown]);
+  return <MarkdownMessage text={text.slice(0, n)} />;
+}
+
 // One settled transcript row. Memoized so a streaming delta (which only
 // changes the slice's run) or an unrelated store bump never re-renders the
 // settled rows: the props are the item itself plus primitives and the
@@ -956,6 +1028,7 @@ const MessageRow = memo(function MessageRow({
   projectId,
   chatId,
   actions,
+  reveal,
 }: {
   item: ChatItem;
   q: string;
@@ -964,6 +1037,7 @@ const MessageRow = memo(function MessageRow({
   projectId: number | null;
   chatId: number | null;
   actions?: TranscriptActions;
+  reveal?: { seed: number; enabled: boolean } | null;
 }) {
   const canRegenerate = !!actions?.onRegenerate && item.role === "agent" && isLast && !hasRun;
   const onPin = actions?.onPin;
@@ -1044,7 +1118,11 @@ const MessageRow = memo(function MessageRow({
         (q ? (
           <div className="bubble">{highlight(item.text, q)}</div>
         ) : item.role === "agent" ? (
-          <MarkdownMessage text={item.text} />
+          reveal ? (
+            <RevealAnswer key={item.key} text={item.text} seed={reveal.seed} enabled={reveal.enabled} />
+          ) : (
+            <MarkdownMessage text={item.text} />
+          )
         ) : (
           <div className="bubble">{item.text}</div>
         ))}
@@ -1096,6 +1174,36 @@ export function ChatTranscript({
   const items = slice?.items ?? [];
   const visible = q ? items.filter((it) => countMatches([it], q) > 0) : items;
   const pinned = items.filter((it) => it.pinned);
+
+  // Progressive reveal (SPEC 6.0): the live run bubble and the answer it just
+  // produced share one continuous reveal. runRevealRef tracks how much of the
+  // current answer the run bubble already showed, so the settled bubble seeds
+  // from it (a fully streamed answer settles instantly; a one-chunk or
+  // non-streamed answer continues the typewriter). runSeq bumps once per run so
+  // the run bubble's reveal resets for a new run instead of inheriting the last.
+  const reduced = usePrefersReducedMotion();
+  const runRevealRef = useRef(0);
+  const prevRunRef = useRef(false);
+  const runSeqRef = useRef(0);
+  const hasRun = slice?.run != null;
+  if (hasRun && !prevRunRef.current) {
+    runSeqRef.current += 1;
+    runRevealRef.current = 0;
+  }
+  prevRunRef.current = hasRun;
+  const setRunReveal = useCallback((n: number) => {
+    runRevealRef.current = n;
+  }, []);
+  const last = items[items.length - 1];
+  const lastIsLiveAnswer =
+    !!last &&
+    last.role === "agent" &&
+    !last.synthetic &&
+    last.messageIds.length === 0 &&
+    last.error == null &&
+    last.note == null;
+  const lastKey = last?.key;
+
   const scrollToKey = (key: number) => {
     listRef.current
       ?.querySelector(`[data-msg-key="${key}"]`)
@@ -1136,13 +1244,25 @@ export function ChatTranscript({
               projectId={projectId}
               chatId={chatId}
               actions={actions}
+              reveal={
+                lastIsLiveAnswer && item.key === lastKey
+                  ? { seed: runRevealRef.current, enabled: !reduced }
+                  : null
+              }
             />
           ))}
           {slice.run && (
             <div className="msg agent">
               <span className="who">Агент</span>
               <ReasoningBlock text={slice.run.reasoning} />
-              {slice.run.text && <MarkdownMessage text={slice.run.text} />}
+              {slice.run.text && (
+                <RevealAnswer
+                  key={runSeqRef.current}
+                  text={slice.run.text}
+                  enabled={!reduced}
+                  onShown={setRunReveal}
+                />
+              )}
               <StepsList steps={slice.run.steps} />
               {slice.run.compactions.map((c) => (
                 <CompactionNote key={c.key} compaction={c} />

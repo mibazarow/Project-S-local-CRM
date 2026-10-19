@@ -1104,6 +1104,50 @@ mod tests {
     }
 
     #[test]
+    fn streamed_content_deltas_become_ordered_text_delta_events() {
+        // Progressive display: a round that streams its answer in several
+        // content chunks must surface one TextDelta per chunk, in order, before
+        // the run ends. The finish_task answer still travels through Done.
+        struct StreamingBackend;
+        impl ChatBackend for StreamingBackend {
+            fn chat_stream(
+                &self,
+                _messages: &[ChatMessage],
+                _tools: Option<&[ToolSpec]>,
+                _params: &ChatParams,
+                on_event: &mut dyn FnMut(ChatEvent),
+            ) -> Result<ChatOutcome> {
+                for chunk in ["При", "вет", "! "] {
+                    on_event(ChatEvent::Delta(chunk.into()));
+                }
+                Ok(tools_outcome(vec![finish_call("Привет!")]))
+            }
+        }
+        let backend = StreamingBackend;
+        let mut catalog = catalog_with(None);
+        let mut state = AgentState {
+            backend: &backend,
+            catalog: &mut catalog,
+        };
+        let mut events = Vec::new();
+        let result = run(&mut state, &config(8), &AutoConfirmer::allowing(false), |e| events.push(e)).unwrap();
+        let deltas: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::TextDelta { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(deltas, ["При", "вет", "! "]);
+        assert_eq!(result.answer, "Привет!");
+        // The Done event is the last event and carries the final answer once.
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::Done { answer, .. }) if answer == "Привет!"
+        ));
+    }
+
+    #[test]
     fn reasoning_streams_accumulates_and_travels_back_to_the_model() {
         let backend = ScriptedBackend::new(vec![
             reasoning_outcome("working on it", "first thought"),

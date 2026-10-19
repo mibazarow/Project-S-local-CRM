@@ -850,6 +850,47 @@ mod tests {
         fs::remove_dir_all(&wd).unwrap();
     }
 
+    #[test]
+    fn final_answer_is_persisted_exactly_once() {
+        // The streamed deltas are display-only. When a round streams its answer
+        // as content AND ends on finish_task with the same text (the normal
+        // streaming shape), the content is latched as the fallback, not written
+        // as its own turn, so persist_final_answer writes the answer exactly
+        // once — no duplicate copy of the streamed text.
+        let (wd, conn, pid) = setup("chat-final-once");
+        let chat_id = ensure_project_chat(&conn, pid).unwrap();
+        append_message(&conn, chat_id, Role::User, Some("go"), &[], None, None).unwrap();
+
+        let mut streamed_finish = tools_outcome(vec![finish_call("Привет!")]);
+        streamed_finish.content = Some("Привет!".into());
+        let backend = ScriptedBackend::new(vec![streamed_finish]);
+        let mut catalog = catalog_with(None);
+        let mut state = agent_loop::AgentState {
+            backend: &backend,
+            catalog: &mut catalog,
+        };
+        let mut on_message = |msg: &ChatMessage| {
+            append_chat_message(&conn, chat_id, msg).unwrap();
+        };
+        let result = agent_loop::run_with(
+            &mut state,
+            &test_config("go"),
+            &DenyAllConfirmer,
+            |_| {},
+            &mut on_message,
+        )
+        .unwrap();
+        persist_final_answer(&conn, chat_id, &result).unwrap();
+
+        let hist = load_history(&conn, chat_id, false).unwrap();
+        let answer_copies = hist
+            .iter()
+            .filter(|m| m.role == Role::Assistant && m.text_content() == Some("Привет!"))
+            .count();
+        assert_eq!(answer_copies, 1, "final answer must be persisted exactly once");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
     fn confirmer_with(
         registry: &Arc<AgentRegistry>,
         payloads: &Arc<Mutex<Vec<ConfirmationRequestPayload>>>,
