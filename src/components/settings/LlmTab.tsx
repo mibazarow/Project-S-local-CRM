@@ -141,6 +141,8 @@ export default function LlmTab({
   // One-shot auto-load of the model list once the active provider is complete.
   const modelsAutoLoadedRef = useRef(false);
   const modelsAutoTimer = useRef<number | undefined>(undefined);
+  // Provider id awaiting a one-shot model auto-pick after its list arrives.
+  const pendingModelPickRef = useRef<string | null>(null);
 
   // A new model id re-arms the context-window auto-fill; edits of the field
   // itself (same model) keep the "user edited" flag.
@@ -321,6 +323,22 @@ export default function LlmTab({
     return () => window.clearTimeout(modelsAutoTimer.current);
   }, [activeProvider?.baseUrl, activeProvider?.apiKey, llmModels, llmBusy, runLlmAction]);
 
+  // After a provider switch, once its model list arrives: pick the remembered
+  // model if it is in the list, otherwise the first one, and remember it.
+  // Runs once per activation; a manual pick afterwards is never overwritten.
+  useEffect(() => {
+    const p = activeProvider;
+    if (!p || pendingModelPickRef.current !== p.id) return;
+    if (llmModels === null || llmModels.length === 0 || !llmForm) return;
+    pendingModelPickRef.current = null;
+    const remembered = llmForm.lastModelByProvider[p.id];
+    const chosen = remembered && llmModels.includes(remembered) ? remembered : llmModels[0];
+    updateLlmForm({
+      model: chosen,
+      lastModelByProvider: { ...llmForm.lastModelByProvider, [p.id]: chosen },
+    });
+  }, [llmModels, activeProvider, llmForm, updateLlmForm]);
+
   // Auto-fill the context window from a size token in the model id
   // ("…-128k", "…-1m") while the field is still empty or on the default.
   useEffect(() => {
@@ -379,6 +397,7 @@ export default function LlmTab({
       setProviders(await ipc.llmProviderActivate(id));
       // A different endpoint: re-arm the model auto-load for the new provider.
       modelsAutoLoadedRef.current = false;
+      pendingModelPickRef.current = id;
       setLlmModels(null);
       setLlmModelsError(null);
     } catch (e) {
@@ -591,7 +610,19 @@ export default function LlmTab({
               models={llmModels}
               error={llmModelsError}
               busy={llmBusy === "models"}
-              onChange={(model) => updateLlmForm({ model })}
+              onChange={(model) => {
+                if (activeProvider && llmModels !== null && llmModels.length > 0) {
+                  updateLlmForm({
+                    model,
+                    lastModelByProvider: {
+                      ...(llmForm?.lastModelByProvider ?? {}),
+                      [activeProvider.id]: model,
+                    },
+                  });
+                } else {
+                  updateLlmForm({ model });
+                }
+              }}
               onFocus={focusLlmField("model")}
               onBlur={blurLlmField}
             />

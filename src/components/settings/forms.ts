@@ -42,6 +42,7 @@ export function indexingToPatch(f: Form, raw: Record<string, unknown>): Record<s
 
 export interface LlmForm {
   model: string;
+  lastModelByProvider: Record<string, string>;
   contextWindow: string;
   maxTokens: string;
   vision: "auto" | "yes" | "no";
@@ -51,6 +52,7 @@ export interface LlmForm {
 export function toLlmForm(cfg: LlmConfig): LlmForm {
   return {
     model: cfg.model,
+    lastModelByProvider: cfg.lastModelByProvider ?? {},
     contextWindow: String(cfg.contextWindow),
     maxTokens: cfg.maxTokens == null ? "" : String(cfg.maxTokens),
     vision: cfg.vision == null ? "auto" : cfg.vision ? "yes" : "no",
@@ -64,6 +66,7 @@ export function toLlmForm(cfg: LlmConfig): LlmForm {
 export function llmToPatch(f: LlmForm, raw: Record<string, unknown>): Record<string, unknown> {
   const patch: Record<string, unknown> = { ...raw };
   patch.model = f.model;
+  patch.lastModelByProvider = f.lastModelByProvider;
   const cw = parseNum(f.contextWindow);
   if (cw !== null) patch.contextWindow = Math.max(1, Math.round(cw));
   if (f.maxTokens.trim() === "") patch.maxTokens = null;

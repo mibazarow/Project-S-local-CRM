@@ -16,9 +16,11 @@ import ConfirmDialogHost from "../shared/ConfirmDialogHost";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
+let activeId = "a";
+
 const providers = () => [
-  { id: "a", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", apiKey: "sk-secret", active: true },
-  { id: "b", name: "Local", baseUrl: "http://localhost:11434/v1", apiKey: "", active: false },
+  { id: "a", name: "DeepSeek", baseUrl: "https://api.deepseek.com/v1", apiKey: "sk-secret", active: activeId === "a" },
+  { id: "b", name: "Local", baseUrl: "http://localhost:11434/v1", apiKey: "", active: activeId === "b" },
 ];
 
 const invoked = (cmd: string) => invokeMock.mock.calls.filter((c) => c[0] === cmd);
@@ -27,13 +29,18 @@ const argsOf = (cmd: string) => invoked(cmd).at(-1)?.[1] as Record<string, unkno
 let container: HTMLDivElement;
 let root: Root;
 let listModelsResult: { id: string }[];
+let listModelsB: { id: string }[];
 let listModelsFails: boolean;
 let configModel: string;
+let configLastModelByProvider: Record<string, string>;
 
 beforeEach(() => {
+  activeId = "a";
   listModelsResult = [{ id: "deepseek-chat" }];
+  listModelsB = [{ id: "llama-3.1" }, { id: "qwen-max" }];
   listModelsFails = false;
   configModel = "deepseek-chat";
+  configLastModelByProvider = {};
   invokeMock.mockReset();
   invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
     switch (cmd) {
@@ -44,11 +51,15 @@ beforeEach(() => {
           maxTokens: null,
           vision: null,
           thinkingLevel: "medium",
+          lastModelByProvider: configLastModelByProvider,
         };
       case "llm_providers_list":
         return providers();
-      case "llm_provider_activate":
-        return providers().map((p) => ({ ...p, active: p.id === (args as { id?: string })?.id }));
+      case "llm_provider_activate": {
+        const id = (args as { id?: string })?.id;
+        if (id) activeId = id;
+        return providers();
+      }
       case "llm_provider_update":
         return providers();
       case "llm_provider_add": {
@@ -70,7 +81,7 @@ beforeEach(() => {
         return { ok: true, message: "ok", modelCount: 2 };
       case "list_models":
         if (listModelsFails) throw new Error("models failed");
-        return listModelsResult;
+        return activeId === "b" ? listModelsB : listModelsResult;
       case "get_vision_status":
         return { supported: null, overridden: false, reason: null };
       case "write_config":
@@ -323,5 +334,93 @@ describe("LlmTab model picker", () => {
     expect(text()).toContain(
       "К сожалению, ваш endpoint не вернул список доступных моделей. Внесите название вручную. Уточните у провайдера.",
     );
+  });
+});
+
+describe("LlmTab model memory per provider", () => {
+  const modelSelect = () =>
+    container.querySelector<HTMLElement>(".model-row")?.querySelector<HTMLSelectElement>("select") ??
+    null;
+  const options = () => Array.from(modelSelect()?.options ?? []);
+
+  async function activate(id: "a" | "b") {
+    const radios = Array.from(container.querySelectorAll<HTMLButtonElement>(".provider-radio"));
+    await click(radios[id === "a" ? 0 : 1]);
+  }
+
+  async function loadModels() {
+    await click(btn("Загрузить модели"));
+    await act(async () => {});
+    await act(async () => {});
+  }
+
+  async function flushWrite() {
+    const select = modelSelect()!;
+    await act(async () => {
+      select.focus();
+      select.blur();
+    });
+    await act(async () => {});
+    return argsOf("write_config")?.value as Record<string, unknown>;
+  }
+
+  it("on provider switch loads new models and selects the remembered model", async () => {
+    configLastModelByProvider = { b: "qwen-max" };
+    await mount();
+    await activate("b");
+    await loadModels();
+    expect(modelSelect()!.value).toBe("qwen-max");
+    const written = await flushWrite();
+    expect(written.model).toBe("qwen-max");
+    expect((written.lastModelByProvider as Record<string, string>).b).toBe("qwen-max");
+  });
+
+  it("without history selects the first model of the new provider and remembers it", async () => {
+    await mount();
+    await activate("b");
+    await loadModels();
+    expect(modelSelect()!.value).toBe("llama-3.1");
+    const written = await flushWrite();
+    expect(written.model).toBe("llama-3.1");
+    expect((written.lastModelByProvider as Record<string, string>).b).toBe("llama-3.1");
+  });
+
+  it("when the remembered model is gone from the list selects the first model", async () => {
+    configLastModelByProvider = { b: "gone-model" };
+    await mount();
+    await activate("b");
+    await loadModels();
+    expect(modelSelect()!.value).toBe("llama-3.1");
+    expect(options().map((o) => o.textContent)).toEqual(["llama-3.1", "qwen-max"]);
+  });
+
+  it("selecting a model records it in lastModelByProvider of the config write", async () => {
+    await mount();
+    await loadModels();
+    listModelsResult = [{ id: "deepseek-chat" }, { id: "deepseek-r1" }];
+    await click(btn("Загрузить модели"));
+    await act(async () => {});
+    await act(async () => {});
+    const sel = modelSelect()!;
+    await act(async () => {
+      sel.focus();
+      selectValue(sel, "deepseek-r1");
+      sel.blur();
+    });
+    await act(async () => {});
+    const written = argsOf("write_config")?.value as Record<string, unknown>;
+    expect(written.model).toBe("deepseek-r1");
+    expect((written.lastModelByProvider as Record<string, string>).a).toBe("deepseek-r1");
+  });
+
+  it("switching providers never keeps the previous provider's models", async () => {
+    await mount();
+    await loadModels();
+    expect(options().map((o) => o.value)).toContain("deepseek-chat");
+    await activate("b");
+    expect(options().map((o) => o.value)).not.toContain("deepseek-chat");
+    await loadModels();
+    expect(options().map((o) => o.value)).toEqual(["llama-3.1", "qwen-max"]);
+    expect(modelSelect()!.value).toBe("llama-3.1");
   });
 });

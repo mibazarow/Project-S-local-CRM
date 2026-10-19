@@ -273,6 +273,7 @@ export interface LlmConfig {
   // top-level baseUrl/apiKey mirror the active provider (legacy fallback).
   providers?: LlmProvider[];
   activeProvider?: string | null;
+  lastModelByProvider?: Record<string, string>;
 }
 
 // A saved provider profile (config.rs LlmProvider). baseUrl/apiKey are the
