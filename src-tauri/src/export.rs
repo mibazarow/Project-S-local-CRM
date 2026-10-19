@@ -225,9 +225,10 @@ mod tests {
                 crate::tasks::ChecklistItem { text: "collect data".into(), done: true },
                 crate::tasks::ChecklistItem { text: "send to ИП Иванов".into(), done: false },
             ]),
-            Some("weekly".into()),
         )
         .unwrap();
+        conn.execute("UPDATE tasks SET recurrence = 'weekly' WHERE id = 1", [])
+            .unwrap();
         export_project(&conn, &wd, pid).unwrap();
 
         let body = fs::read_to_string(dir.join("1-weekly-report.md")).unwrap();

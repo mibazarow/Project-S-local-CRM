@@ -136,7 +136,6 @@ export interface TaskPatch {
   remindAt?: string | null;
   isPriority?: boolean;
   checklist?: ChecklistItem[];
-  recurrence?: string;
 }
 
 export type ConfigKind = "llm" | "app" | "indexing" | "mcp";

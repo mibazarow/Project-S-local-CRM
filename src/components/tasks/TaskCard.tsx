@@ -7,22 +7,10 @@ import {
   IconComment,
   IconPencil,
   IconPlus,
-  IconRepeat,
   IconTrash,
 } from "../files/icons";
 
 type Mode = "edit" | "comment" | null;
-
-const RECURRENCES = [
-  { value: "none", label: "нет" },
-  { value: "daily", label: "ежедневно" },
-  { value: "weekly", label: "еженедельно" },
-  { value: "monthly", label: "ежемесячно" },
-];
-
-const RECURRENCE_LABEL: Record<string, string> = Object.fromEntries(
-  RECURRENCES.map((r) => [r.value, r.label]),
-);
 
 interface Props {
   task: TaskDto;
@@ -94,7 +82,6 @@ function TaskEditor({
   const [dueTime, setDueTime] = useState(task.dueTime || "07:00");
   const [remindTime, setRemindTime] = useState(task.remindAt?.split("T")[1] ?? "");
   const [isPriority, setIsPriority] = useState(task.isPriority);
-  const [recurrence, setRecurrence] = useState(task.recurrence);
   const [checklist, setChecklist] = useState<ChecklistItem[]>(task.checklist);
   const [newItem, setNewItem] = useState("");
 
@@ -126,7 +113,6 @@ function TaskEditor({
       dueTime: dueTime || "07:00",
       remindAt: date && remindTime ? `${date}T${remindTime}` : null,
       isPriority,
-      recurrence,
       checklist,
     });
   };
@@ -194,16 +180,6 @@ function TaskEditor({
             onChange={(e) => setIsPriority(e.target.checked)}
           />
           Приоритетная
-        </label>
-        <label>
-          Повтор
-          <select value={recurrence} onChange={(e) => setRecurrence(e.target.value)}>
-            {RECURRENCES.map((r) => (
-              <option key={r.value} value={r.value}>
-                {r.label}
-              </option>
-            ))}
-          </select>
         </label>
       </div>
       <div className="td-checklist">
@@ -369,22 +345,12 @@ export default function TaskCard({
             {task.title}
           </div>
           {task.overdue && <div className="overdue-label">Просрочено</div>}
-          {(task.dueDate || task.recurrence !== "none") && (
+          {task.dueDate && (
             <div className="m">
-              {task.dueDate && (
-                <>
-                  <span className={task.overdue ? "red" : undefined}>
-                    {formatDue(task.dueDate)}
-                  </span>
-                  <span className={task.overdue ? "red" : "due-time"}>{task.dueTime}</span>
-                </>
-              )}
-              {task.recurrence !== "none" && (
-                <span className="rec" title="Повторяющаяся задача">
-                  <IconRepeat />
-                  {RECURRENCE_LABEL[task.recurrence] ?? task.recurrence}
-                </span>
-              )}
+              <span className={task.overdue ? "red" : undefined}>
+                {formatDue(task.dueDate)}
+              </span>
+              <span className={task.overdue ? "red" : "due-time"}>{task.dueTime}</span>
             </div>
           )}
           {task.comment && mode !== "comment" && <div className="c">{task.comment}</div>}

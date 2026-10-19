@@ -33,7 +33,6 @@ pub(crate) fn task_create(
     due_time: Option<String>,
     is_priority: Option<bool>,
     checklist: Option<Vec<tasks::ChecklistItem>>,
-    recurrence: Option<String>,
 ) -> Result<TaskDto> {
     let wd = state.working_dir()?;
     let dto = with_db(&state, |conn| {
@@ -46,7 +45,6 @@ pub(crate) fn task_create(
             due_time,
             is_priority,
             checklist,
-            recurrence,
         )?;
         let _ = undo::push_task_create(conn, dto.id, dto.project_id);
         export::export_project(conn, &wd, project_id)?;

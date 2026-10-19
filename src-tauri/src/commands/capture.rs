@@ -66,7 +66,6 @@ pub(crate) fn quick_capture(
                     None,
                     None,
                     None,
-                    None,
                 )?;
                 export::export_project(conn, &wd, pid)?;
                 Ok(dto)

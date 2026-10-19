@@ -450,7 +450,6 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 
 .task-card .m span.red { color: var(--danger); font-weight: 600; }
 .task-card .m .due-time { opacity: 0.75; }
-.task-card .m .rec { display: inline-flex; align-items: center; gap: 4px; }
 .task-card .check-count { font-size: 10.5px; color: var(--text-muted); flex-shrink: 0; }
 .task-checklist { margin-top: 7px; border-top: 1px solid var(--hairline); padding-top: 6px; }
 .task-checklist-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 10.5px; font-weight: 600; color: var(--text-muted); }

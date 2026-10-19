@@ -651,7 +651,7 @@ impl Tool for TaskCreateTool {
         "task_create"
     }
     fn description(&self) -> &str {
-        "Create a task in this project; optional status (new|progress|done, default new), dueDate (YYYY-MM-DD), dueTime (HH:MM deadline time, default 07:00), isPriority (true|false, default false), recurrence (none|daily|weekly|monthly, default none), checklist ([{text, done?}], max 100 items)."
+        "Create a task in this project; optional status (new|progress|done, default new), dueDate (YYYY-MM-DD), dueTime (HH:MM deadline time, default 07:00), isPriority (true|false, default false), checklist ([{text, done?}], max 100 items)."
     }
     fn parameters(&self) -> Value {
         create_schema(false)
@@ -683,7 +683,7 @@ impl Tool for TaskUpdateTool {
         "task_update"
     }
     fn description(&self) -> &str {
-        "Update fields of one of this project's tasks; absent fields stay unchanged, explicit null clears comment/dueDate/remindAt. Dates: YYYY-MM-DD, dueTime: HH:MM (null/absent keeps the current value), remindAt: YYYY-MM-DDTHH:MM. isPriority: true|false, recurrence: none|daily|weekly|monthly, checklist: [{text, done?}] max 100 (null/absent keeps the current value)."
+        "Update fields of one of this project's tasks; absent fields stay unchanged, explicit null clears comment/dueDate/remindAt. Dates: YYYY-MM-DD, dueTime: HH:MM (null/absent keeps the current value), remindAt: YYYY-MM-DDTHH:MM. isPriority: true|false, checklist: [{text, done?}] max 100 (null/absent keeps the current value)."
     }
     fn parameters(&self) -> Value {
         update_schema()
@@ -723,7 +723,7 @@ impl Tool for TaskMoveTool {
         "task_move"
     }
     fn description(&self) -> &str {
-        "Move one of this project's tasks to a kanban column (new|progress|done); optional position, appended at the column end when absent. Moving a recurring task (recurrence daily/weekly/monthly) to done queues the next occurrence in the new column."
+        "Move one of this project's tasks to a kanban column (new|progress|done); optional position, appended at the column end when absent."
     }
     fn parameters(&self) -> Value {
         move_schema()
@@ -1338,7 +1338,7 @@ mod tests {
     }
 
     #[test]
-    fn task_tools_accept_and_validate_is_priority_due_date_checklist_recurrence() {
+    fn task_tools_accept_and_validate_is_priority_due_date_checklist() {
         let env = setup("pt-tasks-upgrade");
         let r = exec(
             "task_create",
@@ -1346,7 +1346,6 @@ mod tests {
                 "title": "report",
                 "dueDate": "2099-01-02",
                 "isPriority": true,
-                "recurrence": "weekly",
                 "checklist": [{ "text": "draft", "done": true }, { "text": "send" }]
             }),
             &env.ctx,
@@ -1356,7 +1355,6 @@ mod tests {
         let id = data["id"].as_i64().unwrap();
         assert_eq!(data["isPriority"], true);
         assert_eq!(data["dueDate"], "2099-01-02");
-        assert_eq!(data["recurrence"], "weekly");
         assert_eq!(
             data["checklist"],
             json!([{ "text": "draft", "done": true }, { "text": "send", "done": false }])
@@ -1364,41 +1362,21 @@ mod tests {
 
         let r = exec(
             "task_update",
-            json!({ "id": id, "isPriority": false, "recurrence": "none", "checklist": [{ "text": "only", "done": true }] }),
+            json!({ "id": id, "isPriority": false, "checklist": [{ "text": "only", "done": true }] }),
             &env.ctx,
         );
         assert!(r.ok, "{:?}", r.error);
         let data = r.data.unwrap();
         assert_eq!(data["isPriority"], false);
-        assert_eq!(data["recurrence"].as_str(), Some("none"));
         assert_eq!(data["checklist"], json!([{ "text": "only", "done": true }]));
 
         // Domain validation surfaces as a tool error, not a panic.
         let r = exec("task_create", json!({ "title": "x", "dueDate": "2099-13-01" }), &env.ctx);
         assert!(!r.ok);
         assert!(r.error.unwrap().message.contains("due_date"));
-        let r = exec("task_create", json!({ "title": "x", "recurrence": "yearly" }), &env.ctx);
-        assert!(!r.ok);
-        assert!(r.error.unwrap().message.contains("recurrence"));
         let r = exec("task_update", json!({ "id": id, "checklist": [{ "nope": 1 }] }), &env.ctx);
         assert!(!r.ok);
         assert_eq!(r.error.unwrap().code, "invalid_args");
-
-        // done move of a recurring task queues the next occurrence in 'new'.
-        let r = exec(
-            "task_update",
-            json!({ "id": id, "isPriority": true, "recurrence": "daily", "dueDate": "2099-01-02" }),
-            &env.ctx,
-        );
-        assert!(r.ok, "{:?}", r.error);
-        let r = exec("task_move", json!({ "id": id, "status": "done" }), &env.ctx);
-        assert!(r.ok, "{:?}", r.error);
-        let r = exec("task_list", json!({ "status": "new" }), &env.ctx);
-        let tasks = r.data.unwrap()["tasks"].as_array().unwrap().clone();
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0]["title"], "report");
-        assert_eq!(tasks[0]["dueDate"], "2099-01-03");
-        assert_eq!(tasks[0]["isPriority"], true, "the flag must be copied to the next occurrence");
         fs::remove_dir_all(&env.wd).unwrap();
     }
 
@@ -1423,7 +1401,6 @@ mod tests {
                 "comment": "call after 14:00",
                 "remindAt": "2099-02-03T14:00",
                 "isPriority": true,
-                "recurrence": "weekly",
                 "checklist": [{ "text": "prep", "done": false }]
             }),
             &env.ctx,
@@ -1437,7 +1414,6 @@ mod tests {
         assert_eq!(data["comment"], "call after 14:00");
         assert_eq!(data["remindAt"], "2099-02-03T14:00");
         assert_eq!(data["isPriority"], true);
-        assert_eq!(data["recurrence"], "weekly");
         assert_eq!(data["checklist"], json!([{ "text": "prep", "done": false }]));
 
         // editing must not create or delete tasks: same id, still exactly one
@@ -1499,7 +1475,6 @@ mod tests {
             "dueTime",
             "remindAt",
             "isPriority",
-            "recurrence",
             "checklist",
         ] {
             assert!(props.contains_key(field), "task_update schema must expose {field}");
