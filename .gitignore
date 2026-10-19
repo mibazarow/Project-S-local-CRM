@@ -23,6 +23,10 @@ target/
 src-tauri/target/
 src-tauri/gen/
 
+# Staged embedding model (copied by scripts/stage-embed-model.sh)
+src-tauri/resources/models/embeddinggemma-2/*
+!src-tauri/resources/models/embeddinggemma-2/.gitkeep
+
 # Прочее
 *.log
 *.tmp

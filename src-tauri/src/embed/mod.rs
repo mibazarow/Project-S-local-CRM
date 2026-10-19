@@ -78,8 +78,7 @@ where
 
 #[cfg(feature = "ort-backend")]
 pub fn select_embedder(wd: &Path) -> Arc<dyn Embedder> {
-    let dir = model_store::model_dir(wd);
-    if model_store::model_present(wd) {
+    if let Some(dir) = model_store::resolved_model_dir(wd) {
         cached_embedder(dir.clone(), move || {
             Arc::new(ort_backend::OrtEmbedder::new(dir, EMBED_DIM))
         })
@@ -88,7 +87,7 @@ pub fn select_embedder(wd: &Path) -> Arc<dyn Embedder> {
         // can appear between two calls and the next one must pick them up.
         eprintln!(
             "embedding: model files are missing in {}; falling back to noop (FTS only). Provision them with `cargo test provision_real_working_dir -- --ignored`.",
-            dir.display()
+            model_store::model_dir(wd).display()
         );
         Arc::new(NoopEmbedder)
     }

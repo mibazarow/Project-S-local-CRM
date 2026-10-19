@@ -167,6 +167,13 @@ pub fn run() {
             // Background emitters (the rename_chat, todowrite tools) reach
             // the windows through the app state handle.
             *lock_recover(&state.emitter) = Some(Arc::new(app.handle().clone()));
+            if let Ok(resource_dir) = app.path().resource_dir() {
+                embed::model_store::set_bundled_model_dir(
+                    resource_dir
+                        .join("resources/models")
+                        .join(embed::model_store::MODEL_DIR_NAME),
+                );
+            }
             if let Some(wd) = onboarding::load_working_dir(&app_cfg) {
                 *lock_recover(&state.db) = Some(db::open(&paths::db_path(&wd))?);
                 *lock_recover(&state.working_dir) = Some(wd.clone());

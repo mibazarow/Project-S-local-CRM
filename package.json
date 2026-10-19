@@ -9,8 +9,8 @@
     "preview": "vite preview",
     "test": "vitest run",
     "tauri": "tauri",
-    "app:build": "tauri build",
-    "app:install": "tauri build && bash scripts/install-app.sh",
+    "app:build": "bash scripts/stage-embed-model.sh && tauri build",
+    "app:install": "bash scripts/stage-embed-model.sh && tauri build && bash scripts/install-app.sh",
     "app:update": "bash scripts/install-app.sh"
   },
   "dependencies": {

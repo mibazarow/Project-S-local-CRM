@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 // ONNX q8 text-encoder export of google/embeddinggemma-2 (Apache-2.0).
@@ -36,15 +37,33 @@ pub const TEXT_MODEL_FILES: [ModelFile; 4] = [
     },
 ];
 
+static BUNDLED_MODEL_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+pub fn set_bundled_model_dir(dir: PathBuf) {
+    let _ = BUNDLED_MODEL_DIR.set(dir);
+}
+
 pub fn model_dir(wd: &Path) -> PathBuf {
     paths::models_dir(wd).join(MODEL_DIR_NAME)
 }
 
-pub fn model_present(wd: &Path) -> bool {
-    let dir = model_dir(wd);
+fn files_present(dir: &Path) -> bool {
     TEXT_MODEL_FILES
         .iter()
         .all(|file| dir.join(file.local_name).is_file())
+}
+
+pub fn resolved_model_dir(wd: &Path) -> Option<PathBuf> {
+    let local = model_dir(wd);
+    if files_present(&local) {
+        return Some(local);
+    }
+    let bundled = BUNDLED_MODEL_DIR.get()?;
+    files_present(bundled).then(|| bundled.clone())
+}
+
+pub fn model_present(wd: &Path) -> bool {
+    resolved_model_dir(wd).is_some()
 }
 
 #[derive(Default)]
@@ -216,6 +235,17 @@ mod tests {
     fn model_dir_is_under_settings_models() {
         let dir = model_dir(Path::new("/tmp/wd"));
         assert_eq!(dir, PathBuf::from("/tmp/wd/Settings/models/embeddinggemma-2"));
+    }
+
+    #[test]
+    fn files_present_requires_all_four_files() {
+        let dir = temp_test_dir("model-files-present");
+        assert!(!files_present(&dir));
+        for (i, file) in TEXT_MODEL_FILES.iter().enumerate() {
+            fs::write(dir.join(file.local_name), "x").unwrap();
+            assert_eq!(files_present(&dir), i + 1 == TEXT_MODEL_FILES.len());
+        }
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
