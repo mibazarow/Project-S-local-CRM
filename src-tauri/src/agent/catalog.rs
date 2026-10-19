@@ -15,7 +15,7 @@ pub const DEFAULT_SCHEMA_CAP: usize = 128;
 // project and harness tool blocks (incl. image_transform, forget, the
 // objective tools and mcp_add) fit in full without truncation; only a
 // runaway MCP set would ever hit it.
-pub const SUMMARY_BLOCK_CAP: usize = 26_000;
+pub const SUMMARY_BLOCK_CAP: usize = 28_000;
 
 pub enum Resolution<'a> {
     Found(&'a Arc<dyn Tool>),
@@ -354,7 +354,7 @@ mod tests {
 
         // blow the cap: many tools with long one-line descriptions
         let mut big = Catalog::new();
-        for i in 0..120 {
+        for i in 0..150 {
             big.register(
                 desc_tool(&format!("tool_{i:03}"), &"d".repeat(200)),
                 false,
@@ -364,6 +364,6 @@ mod tests {
         let block = big.summary_prompt_block();
         assert!(block.len() <= SUMMARY_BLOCK_CAP + 200, "len {}", block.len());
         assert!(block.contains("truncated: "), "{block}");
-        assert!(block.contains("of 120 tools listed"));
+        assert!(block.contains("of 150 tools listed"));
     }
 }

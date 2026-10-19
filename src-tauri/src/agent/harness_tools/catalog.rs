@@ -4,6 +4,7 @@
 // its own schema list with enable_tools. The core/deferred lists and their
 // order are the contract checked by agent/invariants.rs and the catalog
 // test below — keep them identical.
+use super::archive_tools::ArchiveTool;
 use super::chat_tools::{DeleteChatTool, ListChatsTool, NewChatTool, RenameChatTool, SearchChatsTool};
 use super::crm_tools::{
     CrmListProjectsTool, CrmSearchTool, CrmTaskCreateTool, CrmTaskDeleteTool, CrmTaskMoveTool,
@@ -14,6 +15,8 @@ use super::fs_tools::{
     FsRenameTool, FsWriteTool,
 };
 use super::launchd_tools::LaunchdTool;
+use super::macos_tools::{DefaultsWriteTool, KeychainGetTool};
+use super::pdf_render_tools::PdfToImageTool;
 use super::schedule_tools::{
     ScheduleCreateTool, ScheduleDeleteTool, ScheduleListTool, SchedulePauseTool,
 };
@@ -73,6 +76,9 @@ pub fn harness_catalog() -> Catalog {
         // slice): both confirm; see trash_tools.rs.
         Arc::new(TrashPathsTool),
         Arc::new(RestoreTrashedTool),
+        // zip/tar.gz/7z create+extract via the system CLIs with zip-slip
+        // refusal (Q.md computer-control slice); see archive_tools.rs.
+        Arc::new(ArchiveTool),
         // Precise edits (exact string replacement + git apply patches);
         // see edit_tools.rs for the safety rules.
         Arc::new(super::super::edit_tools::EditFileTool::harness()),
@@ -89,6 +95,10 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(super::super::pdf_tools::PdfMergeTool),
         Arc::new(super::super::pdf_tools::PdfSplitTool),
         Arc::new(super::super::pdf_tools::PdfFillFormTool),
+        // PDF pages to PNG via pdftoppm/sips/qlmanage (Q.md computer-control
+        // slice): read-only source, writes app tmp, so it skips; see
+        // pdf_render_tools.rs.
+        Arc::new(PdfToImageTool::default()),
         // Image resize/crop/rotate/convert via the macOS sips CLI; in-place
         // calls confirm, new files in the territory skip; see image_tools.rs.
         Arc::new(super::super::image_tools::ImageTransformTool),
@@ -161,6 +171,11 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(NotifyTool::default()),
         Arc::new(OpenTool::default()),
         Arc::new(FsWatchTool),
+        // Keychain secret read and preference write via the system CLIs
+        // (Q.md computer-control slice): both always confirm; see
+        // macos_tools.rs.
+        Arc::new(KeychainGetTool::default()),
+        Arc::new(DefaultsWriteTool::default()),
         Arc::new(crate::agent::undo_tools::UndoLastTool),
         Arc::new(crate::agent::undo_tools::UndoListTool),
         // Background entity links (links slice): lazy-discovered like the
@@ -190,7 +205,7 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
-    const DEFERRED_NAMES: [&str; 71] = [
+    const DEFERRED_NAMES: [&str; 75] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -203,6 +218,7 @@ mod tests {
         "mdfind",
         "trash_paths",
         "restore_trashed",
+        "archive",
         "edit_file",
         "apply_patch",
         "create_document",
@@ -211,6 +227,7 @@ mod tests {
         "pdf_merge",
         "pdf_split",
         "pdf_fill_form",
+        "pdf_to_image",
         "image_transform",
         "screenshot",
         "create_skill",
@@ -259,6 +276,8 @@ mod tests {
         "notify",
         "open",
         "fs_watch",
+        "keychain_get",
+        "defaults_write",
         "settings_list",
         "settings_propose",
         "settings_apply",
@@ -334,6 +353,23 @@ mod tests {
         assert!(tool("launchd").danger_reason(&json!({ "action": "status", "label": "ru.example.x" }), &ToolCtx::default()).is_none());
         assert!(tool("launchd").danger_reason(&json!({ "action": "create", "label": "ru.example.x", "program": "/bin/ls" }), &ToolCtx::default()).is_some());
         assert!(tool("launchd").danger_reason(&json!({ "action": "remove", "label": "ru.example.x" }), &ToolCtx::default()).is_some());
+        // archive decides per action: a fresh create skips, extract and
+        // every overwrite confirm
+        assert_eq!(tool("archive").class(), ToolClass::Mutating);
+        assert_eq!(tool("archive").policy(), PermissionPolicy::CheckConditional);
+        assert!(tool("archive").danger_reason(&json!({ "action": "create", "format": "zip", "sources": ["a"], "dest": "Harness/a.zip" }), &ToolCtx::default()).is_none());
+        assert!(tool("archive").danger_reason(&json!({ "action": "create", "format": "zip", "sources": ["a"], "dest": "Harness/a.zip", "overwrite": true }), &ToolCtx::default()).is_some());
+        assert!(tool("archive").danger_reason(&json!({ "action": "extract", "sources": ["a.zip"], "dest": "Harness/x" }), &ToolCtx::default()).is_some());
+        // Keychain read and defaults write always confirm (Q.md
+        // computer-control slice): a secret and a preference rewrite
+        assert_eq!(tool("keychain_get").policy(), PermissionPolicy::Check);
+        assert!(tool("keychain_get").danger_reason(&json!({ "service": "ru.example", "account": "ftp" }), &ToolCtx::default()).is_some());
+        assert_eq!(tool("defaults_write").class(), ToolClass::Mutating);
+        assert_eq!(tool("defaults_write").policy(), PermissionPolicy::Check);
+        assert!(tool("defaults_write").danger_reason(&json!({ "domain": "ru.example.app", "key": "k", "value": "v", "type": "string" }), &ToolCtx::default()).is_some());
+        // pdf_to_image renders into the app's own tmp: skip
+        assert_eq!(tool("pdf_to_image").class(), ToolClass::Mutating);
+        assert_eq!(tool("pdf_to_image").policy(), PermissionPolicy::Skip);
         // Spotlight search is read-only
         assert_eq!(tool("mdfind").class(), ToolClass::ReadOnly);
         assert_eq!(tool("mdfind").policy(), PermissionPolicy::Skip);

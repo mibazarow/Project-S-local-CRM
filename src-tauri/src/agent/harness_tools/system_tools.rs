@@ -25,20 +25,31 @@ const WATCH_DEFAULT_SECS: u64 = 10;
 const WATCH_MAX_SECS: u64 = 60;
 const MAX_WATCH_EVENTS: usize = 500;
 
-struct CmdOutput {
-    code: Option<i32>,
-    stdout: String,
-    stderr: String,
+pub(crate) struct CmdOutput {
+    pub code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
 }
 
-fn run_cmd(binary: &Path, args: &[String], timeout: Duration) -> std::result::Result<CmdOutput, String> {
-    let mut child = match Command::new(binary)
+// Shared argv-array runner for the system CLI tools (no shell): capped
+// stdout/stderr pipes and a wall-clock kill switch. cwd is optional so
+// callers like the archive tool can pin the working dir of a command.
+pub(crate) fn run_cmd(
+    binary: &Path,
+    args: &[String],
+    cwd: Option<&Path>,
+    timeout: Duration,
+) -> std::result::Result<CmdOutput, String> {
+    let mut command = Command::new(binary);
+    command
         .args(args)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
+        .stderr(Stdio::piped());
+    if let Some(dir) = cwd {
+        command.current_dir(dir);
+    }
+    let mut child = match command.spawn() {
         Ok(c) => c,
         Err(e) => return Err(format!("cannot run {}: {e}", binary.display())),
     };
@@ -114,7 +125,7 @@ fn battery_state(text: &str) -> Option<&'static str> {
 }
 
 fn battery_info() -> Option<Value> {
-    let out = run_cmd(Path::new(PMSET_BINARY), &["-g".into(), "batt".into()], CMD_TIMEOUT).ok()?;
+    let out = run_cmd(Path::new(PMSET_BINARY), &["-g".into(), "batt".into()], None, CMD_TIMEOUT).ok()?;
     if out.code != Some(0) {
         return None;
     }
@@ -141,6 +152,7 @@ fn default_route() -> Option<Value> {
     let out = run_cmd(
         Path::new(ROUTE_BINARY),
         &["-n".into(), "get".into(), "default".into()],
+        None,
         CMD_TIMEOUT,
     )
     .ok()?;
@@ -485,7 +497,7 @@ impl Tool for OpenTool {
                 ),
             ));
         }
-        let out = match run_cmd(&self.binary, &argv, self.timeout) {
+        let out = match run_cmd(&self.binary, &argv, None, self.timeout) {
             Ok(o) => o,
             Err(e) => return Ok(ToolResult::err(ToolErrorCode::ExecutionError, e)),
         };

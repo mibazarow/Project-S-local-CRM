@@ -16,12 +16,15 @@
 // lists) and transfer (the fs_copy/fs_move body). The shared path/policy
 // primitives stay here so the external import paths (super::harness_tools::…)
 // keep working unchanged.
+mod archive_tools;
 mod catalog;
 mod chat_tools;
 mod crm_tools;
 mod fs_tools;
 mod launchd_tools;
+mod macos_tools;
 mod mcp_tools;
+mod pdf_render_tools;
 mod schedule_tools;
 mod shell_tools;
 mod spotlight_tools;
