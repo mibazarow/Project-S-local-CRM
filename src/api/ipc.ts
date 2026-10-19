@@ -8,6 +8,7 @@ import type {
   BackupInfo,
   BackupStatus,
   ChatBranchResult,
+  ChecklistItem,
   ConfigChanged,
   ConfigKind,
   ConnectionTest,
@@ -174,6 +175,7 @@ export const taskCreate = (
   dueDate?: string | null,
   dueTime?: string | null,
   isPriority?: boolean,
+  checklist?: ChecklistItem[],
 ) =>
   invoke<TaskDto>("task_create", {
     projectId,
@@ -182,6 +184,7 @@ export const taskCreate = (
     dueDate: dueDate ?? null,
     dueTime: dueTime ?? null,
     isPriority: isPriority ?? null,
+    checklist: checklist ?? null,
   });
 
 export const taskUpdate = (id: number, patch: TaskPatch) =>

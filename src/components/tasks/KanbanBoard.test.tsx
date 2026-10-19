@@ -137,10 +137,10 @@ describe("KanbanBoard add task form", () => {
 
     await click(container.querySelector(".task-add-btn")!);
     const form = container.querySelector(".task-add-form")!;
-    setValue(form.querySelector("textarea")!, "Новая задача");
+    setValue(form.querySelector(".task-edit-title")!, "Новая задача");
     setValue(form.querySelector<HTMLInputElement>('input[type="date"]')!, "2099-01-03");
     setValue(form.querySelector<HTMLInputElement>('input[type="time"]')!, "18:45");
-    await click(form.querySelector('button[title="Создать задачу"]')!);
+    await click(form.querySelector('button[title="Сохранить"]')!);
     await settle();
 
     expect(taskCreate).toHaveBeenCalledWith(
@@ -150,10 +150,11 @@ describe("KanbanBoard add task form", () => {
       "2099-01-03",
       "18:45",
       false,
+      [],
     );
   });
 
-  it("omits due time when only a date is set (backend defaults to 07:00)", async () => {
+  it("keeps the default 07:00 due time when only a date is set", async () => {
     await act(async () => {
       root.render(
         <AppProvider>
@@ -164,9 +165,9 @@ describe("KanbanBoard add task form", () => {
     await settle();
     await click(container.querySelector(".task-add-btn")!);
     const form = container.querySelector(".task-add-form")!;
-    setValue(form.querySelector("textarea")!, "Без времени");
+    setValue(form.querySelector(".task-edit-title")!, "Без времени");
     setValue(form.querySelector<HTMLInputElement>('input[type="date"]')!, "2099-01-04");
-    await click(form.querySelector('button[title="Создать задачу"]')!);
+    await click(form.querySelector('button[title="Сохранить"]')!);
     await settle();
 
     expect(taskCreate).toHaveBeenCalledWith(
@@ -174,9 +175,64 @@ describe("KanbanBoard add task form", () => {
       "Без времени",
       "new",
       "2099-01-04",
-      null,
+      "07:00",
       false,
+      [],
     );
+  });
+
+  it("opens the full editor for a new task with the «Важная» label", async () => {
+    await act(async () => {
+      root.render(
+        <AppProvider>
+          <KanbanBoard project={project} tasksVersion={0} highlightTaskId={null} />
+        </AppProvider>,
+      );
+    });
+    await settle();
+    await click(container.querySelector(".task-add-btn")!);
+    const form = container.querySelector(".task-add-form")!;
+    expect(form.querySelector(".task-edit")).not.toBeNull();
+    expect(form.textContent).toContain("Важная");
+    expect(form.textContent).not.toContain("Приоритетная");
+  });
+
+  it("creates a priority task with its checklist and follow-up comment", async () => {
+    await act(async () => {
+      root.render(
+        <AppProvider>
+          <KanbanBoard project={project} tasksVersion={0} highlightTaskId={null} />
+        </AppProvider>,
+      );
+    });
+    await settle();
+    await click(container.querySelector(".task-add-btn")!);
+    const form = container.querySelector(".task-add-form")!;
+    setValue(form.querySelector(".task-edit-title")!, "Важное дело");
+    const comment = form.querySelector(".task-edit-comment")!;
+    setValue(comment as HTMLTextAreaElement, "Комментарий");
+    const priority = form.querySelector<HTMLInputElement>(
+      ".td-priority input[type='checkbox']",
+    )!;
+    await click(priority);
+    const checkInput = form.querySelector<HTMLInputElement>(".td-check-add input")!;
+    setValue(checkInput, "Пункт");
+    await click(form.querySelector('button[title="Добавить пункт"]')!);
+    await click(form.querySelector('button[title="Сохранить"]')!);
+    await settle();
+
+    expect(taskCreate).toHaveBeenCalledWith(
+      1,
+      "Важное дело",
+      "new",
+      null,
+      "07:00",
+      true,
+      [{ text: "Пункт", done: false }],
+    );
+    expect(taskUpdate).toHaveBeenCalledWith(1, expect.objectContaining({
+      comment: "Комментарий",
+    }));
   });
 });
 

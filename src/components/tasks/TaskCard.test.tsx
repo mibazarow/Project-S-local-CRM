@@ -161,6 +161,33 @@ describe("TaskCard priority toggle", () => {
     expect(card.className).not.toContain("priority");
   });
 
+  it("an important overdue card carries both priority and overdue classes", async () => {
+    await mount(makeTask({ overdue: true, isPriority: true }));
+    const card = container.querySelector(".task-card")!;
+    expect(card.className).toContain("priority");
+    expect(card.className).toContain("overdue");
+  });
+
+  it("the stylesheet keeps overdue pink, gives priority a red border on white, and uses the beige column", () => {
+    const css = readFileSync("src/styles/app.css", "utf8");
+    const priority = css.match(/\.task-card\.priority \{[^}]*\}/);
+    expect(priority, "the priority rule must exist").not.toBeNull();
+    expect(priority![0]).toContain("border-color: var(--danger)");
+    expect(priority![0]).toContain("background: #fff");
+    const overdue = css.match(/\.task-card\.overdue \{[^}]*\}/);
+    expect(overdue, "the overdue rule must exist").not.toBeNull();
+    expect(overdue![0]).toContain("background: var(--danger-soft)");
+    const both = css.match(/\.task-card\.priority\.overdue \{[^}]*\}/);
+    expect(both, "the combined priority+overdue rule must exist").not.toBeNull();
+    expect(both![0]).toContain("background: var(--danger-soft)");
+    const column = css.match(/\.task-col \{[^}]*\}/);
+    expect(column, "the kanban column rule must exist").not.toBeNull();
+    expect(column![0]).toContain("#fbeeda");
+    const foot = css.match(/\.task-card \.task-foot \{[^}]*\}/);
+    expect(foot, "the task footer rule must exist").not.toBeNull();
+    expect(foot![0]).toContain("margin-top: 10px");
+  });
+
   it("the full editor shows the checkbox reflecting the current flag", async () => {
     await mount(makeTask({ isPriority: true }));
     const checkbox = await openPriority();

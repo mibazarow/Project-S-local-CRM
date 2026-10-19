@@ -66,7 +66,7 @@ function CommentInput({
   );
 }
 
-function TaskEditor({
+export function TaskEditor({
   task,
   onSave,
   onCancel,

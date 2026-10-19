@@ -397,7 +397,7 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 .task-board::-webkit-scrollbar-track { background: rgba(0, 0, 0, .05); border-radius: 999px; }
 .task-board::-webkit-scrollbar-thumb { background: var(--accent); border-radius: 999px; min-width: 48px; border: 2px solid transparent; background-clip: padding-box; }
 .task-board::-webkit-scrollbar-thumb:hover { background: #2f5b88; background-clip: padding-box; }
-.task-col { flex: 0 0 300px; width: 300px; min-width: 300px; max-width: 300px; box-sizing: border-box; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 2px 2px; }
+.task-col { flex: 0 0 300px; width: 300px; min-width: 300px; max-width: 300px; box-sizing: border-box; background: #fbeeda; border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 2px 2px; }
 .task-col-head { font-size: 11.5px; font-weight: 600; color: var(--text-muted); padding: 2px 8px 10px; display: flex; gap: 8px; align-items: center; }
 .count { background: #e4e4e9; border-radius: 10px; padding: 1px 8px; font-size: 11px; }
 .task-list { display: flex; flex-direction: column; gap: 2px; min-height: 24px; }
@@ -405,8 +405,9 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 .task-card:hover { box-shadow: 0 2px 6px rgba(0, 0, 0, .09); border-color: var(--border-strong); }
 .task-card.dragging { opacity: .45; }
 .task-card.overdue { border-color: var(--danger); background: var(--danger-soft); }
-.task-card.priority { border-color: rgba(55, 106, 159, .55); box-shadow: 0 0 0 1px rgba(55, 106, 159, .14), 0 0 7px rgba(55, 106, 159, .16); }
-.task-card.priority:hover { border-color: rgba(55, 106, 159, .7); box-shadow: 0 2px 6px rgba(0, 0, 0, .09), 0 0 7px rgba(55, 106, 159, .2); }
+.task-card.priority { border-color: var(--danger); background: #fff; box-shadow: 0 0 0 1px rgba(255, 59, 48, .14), 0 0 7px rgba(255, 59, 48, .16); }
+.task-card.priority:hover { border-color: var(--danger); box-shadow: 0 2px 6px rgba(0, 0, 0, .09), 0 0 7px rgba(255, 59, 48, .2); }
+.task-card.priority.overdue { background: var(--danger-soft); }
 .task-card.highlight {
   border-color: var(--accent);
   background: var(--accent-soft);
@@ -427,7 +428,7 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 .task-card .m { font-size: 11px; color: var(--text-muted); display: flex; gap: 8px; }
 .task-card .c { font-size: 11px; color: var(--text-muted); font-style: italic; margin-top: 9px; border-left: 2px solid var(--border-strong); padding-left: 6px; }
 .task-col.drop-over { outline: 2px dashed var(--accent); outline-offset: -4px; background: var(--accent-soft); }
-.task-card .task-foot { margin-top: auto; padding-top: 7px; border-top: 1px solid var(--hairline); display: flex; align-items: center; gap: 8px; min-height: 18px; }
+.task-card .task-foot { margin-top: 10px; padding-top: 7px; border-top: 1px solid var(--hairline); display: flex; align-items: center; gap: 8px; min-height: 18px; }
 .task-card .task-actions { display: flex; justify-content: flex-end; gap: 2px; opacity: 0; transition: opacity .12s; margin: 0 0 0 auto; flex-shrink: 0; }
 .task-card .task-actions .mini-btn { padding: 2px; }
 .task-card .task-actions svg { width: 14px; height: 14px; }
@@ -441,13 +442,12 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 .task-card textarea.rename-input { width: 100%; box-sizing: border-box; min-height: 46px; font-size: 11.5px; resize: vertical; }
 .task-due-row { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
 .task-due-row .rename-input { font-size: 11px; padding: 2px 4px; }
-.task-add-form { display: flex; flex-direction: column; gap: 6px; background: #fff; border: 1px solid var(--border-strong); border-radius: 7px; padding: 8px; }
+.task-add-form { background: #fff; border: 1px solid var(--border-strong); border-radius: 7px; padding: 8px; }
+.task-add-form .task-edit { margin-top: 0; padding-top: 0; border-top: 0; }
 .task-add-form .rename-input { width: 100%; box-sizing: border-box; font-size: 11.5px; }
 .task-add-form textarea.rename-input { min-height: 46px; resize: vertical; }
 .task-add-form .rename-input[type="date"],
 .task-add-form .rename-input[type="time"] { font-size: 11px; padding: 2px 4px; }
-.task-add-row { display: flex; align-items: center; gap: 6px; }
-.task-add-row .tf-check { margin-right: auto; font-size: 10.5px; }
 
 /* ---------- Приоритет, чек-лист, повтор на карточке ---------- */
 

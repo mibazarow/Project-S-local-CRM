@@ -1,17 +1,10 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type KeyboardEvent,
-  type ReactNode,
-} from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as ipc from "../../api/ipc";
 import type { ProjectDto, TaskDto, TaskPatch } from "../../api/types";
 import { toMessage } from "../files/fileOps";
 import RenameInput from "../files/RenameInput";
-import { IconCheck, IconClose, IconPencil, IconPlus } from "../files/icons";
-import TaskCard from "./TaskCard";
+import { IconPencil, IconPlus } from "../files/icons";
+import TaskCard, { TaskEditor } from "./TaskCard";
 import { usePointerDrag, type DropTarget } from "../../hooks/usePointerDrag";
 import { useAppActions } from "../../state/AppStore";
 
@@ -28,89 +21,25 @@ const EMPTY_FILTERS: Filters = { overdueOnly: false };
 
 const isDefaultFilters = (f: Filters) => !f.overdueOnly;
 
-interface NewTaskDraft {
-  title: string;
-  dueDate: string | null;
-  dueTime: string | null;
-  isPriority: boolean;
-}
-
-// Inline create form in a column: title + due date + due time + «Приоритетная».
-function AddTaskForm({
-  onCommit,
-  onCancel,
-}: {
-  onCommit: (draft: NewTaskDraft) => void;
-  onCancel: () => void;
-}) {
-  const titleRef = useRef<HTMLTextAreaElement>(null);
-  const [due, setDue] = useState("");
-  const [dueTime, setDueTime] = useState("");
-  const [priority, setPriority] = useState(false);
-  const done = useRef(false);
-
-  useEffect(() => {
-    titleRef.current?.focus();
-  }, []);
-
-  const submit = () => {
-    if (done.current) return;
-    done.current = true;
-    const title = titleRef.current?.value.trim() ?? "";
-    if (!title) onCancel();
-    else onCommit({ title, dueDate: due || null, dueTime: due && dueTime ? dueTime : null, isPriority: priority });
-  };
-
-  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    // Enter inserts a newline; Cmd/Ctrl+Enter saves.
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      submit();
-    }
-    if (e.key === "Escape") onCancel();
-  };
-
-  return (
-    <div className="task-add-form">
-      <textarea
-        ref={titleRef}
-        className="rename-input"
-        placeholder="Новая задача…"
-        rows={2}
-        onKeyDown={onKeyDown}
-      />
-      <input
-        className="rename-input"
-        type="date"
-        value={due}
-        onChange={(e) => setDue(e.target.value)}
-      />
-      <input
-        className="rename-input"
-        type="time"
-        title="Время дедлайна (по умолчанию 07:00)"
-        value={dueTime}
-        onChange={(e) => setDueTime(e.target.value)}
-      />
-      <div className="task-add-row">
-        <label className="tf-check">
-          <input
-            type="checkbox"
-            checked={priority}
-            onChange={(e) => setPriority(e.target.checked)}
-          />
-          Приоритетная
-        </label>
-        <button className="mini-btn" title="Создать задачу" onClick={submit}>
-          <IconCheck />
-        </button>
-        <button className="mini-btn danger" title="Отменить" onClick={onCancel}>
-          <IconClose />
-        </button>
-      </div>
-    </div>
-  );
-}
+const blankTask = (projectId: number, status: string): TaskDto => ({
+  id: -1,
+  projectId,
+  title: "",
+  status,
+  comment: null,
+  dueDate: null,
+  dueTime: "07:00",
+  remindAt: null,
+  position: 0,
+  createdAt: "",
+  closedAt: null,
+  overdue: false,
+  isPriority: false,
+  checklist: [],
+  recurrence: "none",
+  spentMs: 0,
+  startedAt: null,
+});
 
 interface Props {
   project: ProjectDto;
@@ -276,13 +205,31 @@ export default function KanbanBoard({ project, tasksVersion, highlightTaskId }: 
       return next;
     });
 
-  const handleCreate = (status: string, draft: NewTaskDraft) => {
-    setAddingStatus(null);
+  const handleCreate = (status: string, patch: TaskPatch) => {
     ipc
-      .taskCreate(projectId, draft.title, status, draft.dueDate, draft.dueTime, draft.isPriority)
-      .then((dto) => {
+      .taskCreate(
+        projectId,
+        patch.title ?? "",
+        status,
+        patch.dueDate,
+        patch.dueTime,
+        patch.isPriority,
+        patch.checklist,
+      )
+      .then((created) => {
+        setAddingStatus(null);
         setError(null);
-        upsert(dto);
+        if (patch.comment != null || patch.remindAt != null) {
+          ipc
+            .taskUpdate(created.id, {
+              comment: patch.comment,
+              remindAt: patch.remindAt,
+            })
+            .then((dto) => upsert(dto))
+            .catch((e) => setError(toMessage(e)));
+        } else {
+          upsert(created);
+        }
       })
       .catch((e) => setError(toMessage(e)));
   };
@@ -398,10 +345,13 @@ export default function KanbanBoard({ project, tasksVersion, highlightTaskId }: 
                 </div>
                 <div className="task-list">
                   {addingStatus === status && (
-                    <AddTaskForm
-                      onCommit={(draft) => handleCreate(status, draft)}
-                      onCancel={() => setAddingStatus(null)}
-                    />
+                    <div className="task-add-form">
+                      <TaskEditor
+                        task={blankTask(projectId, status)}
+                        onSave={(patch) => handleCreate(status, patch)}
+                        onCancel={() => setAddingStatus(null)}
+                      />
+                    </div>
                   )}
                   {nodes}
                   {tasks && cards.length === 0 && addingStatus !== status && (
