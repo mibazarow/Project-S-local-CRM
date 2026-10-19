@@ -98,6 +98,8 @@ const projects = vi.hoisted(() => [
     hasActiveTasks: false,
     taskColumns: ["a"],
     filesView: "list",
+    archived: false,
+    archivedAt: null,
   },
 ]);
 

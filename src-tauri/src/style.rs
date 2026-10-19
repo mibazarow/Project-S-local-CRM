@@ -376,6 +376,8 @@ mod tests {
             has_active_tasks: false,
             task_columns: crate::projects::DEFAULT_TASK_COLUMNS.map(str::to_owned),
             files_view: crate::projects::DEFAULT_FILES_VIEW.into(),
+            archived: false,
+            archived_at: None,
         };
         for (label, prompt) in [
             (

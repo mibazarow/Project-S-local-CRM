@@ -29,6 +29,8 @@ export interface ProjectDto {
   // Per-project file view mode (SPEC 4.2): remembered list/grid, stored in
   // the project DB; unknown backend values normalize to "list".
   filesView: "list" | "grid";
+  archived: boolean;
+  archivedAt: string | null;
 }
 
 export interface FsEntry {

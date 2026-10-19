@@ -35,6 +35,8 @@ const projects = vi.hoisted(() => [
     hasActiveTasks: false,
     taskColumns: ["a", "b", "c"],
     filesView: "list",
+    archived: false,
+    archivedAt: null,
   } satisfies ProjectDto,
   {
     id: 2,
@@ -49,6 +51,8 @@ const projects = vi.hoisted(() => [
     hasActiveTasks: false,
     taskColumns: ["a", "b", "c"],
     filesView: "grid",
+    archived: false,
+    archivedAt: null,
   } satisfies ProjectDto,
 ]);
 
@@ -231,6 +235,44 @@ describe("FilesPanel per-project file view mode", () => {
     expect(container.querySelector(".tree-toolbar .view-toggle[title='Вид файлов']")).not.toBeNull();
     expect(vts()).toHaveLength(2);
     expect(container.querySelector(".file-grid")).not.toBeNull();
+  });
+});
+
+describe("FilesPanel archived project (Q.md item 5)", () => {
+  const archivedProject = (p: ProjectDto): ProjectDto => ({
+    ...p,
+    archived: true,
+    archivedAt: "2026-01-01 10:00:00",
+  });
+
+  it("renders no Tasks tab and no board for an archived project", async () => {
+    await mount(archivedProject(projects[0]));
+    expect(segs()).toHaveLength(1);
+    expect(segs()[0].textContent).toBe("Файлы");
+    expect(segs()[0].className).toBe("seg active");
+    expect(container.querySelector(".task-board")).toBeNull();
+    expect(container.querySelector(".task-add-btn")).toBeNull();
+  });
+
+  it("archiving a project with the Tasks tab open switches back to Файлы", async () => {
+    await mount(projects[0]);
+    await click(segs()[1]);
+    expect(segs()[1].className).toBe("seg active");
+    expect(container.querySelector(".seg-filter")).not.toBeNull();
+    await act(async () => {
+      root.render(
+        <AppProvider>
+          <FilesPanel key={projects[0].id} project={archivedProject(projects[0])} />
+        </AppProvider>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(segs()).toHaveLength(1);
+    expect(segs()[0].className).toBe("seg active");
+    expect(container.querySelector(".seg-filter")).toBeNull();
+    expect(container.querySelector(".task-board")).toBeNull();
   });
 });
 

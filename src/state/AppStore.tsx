@@ -156,6 +156,7 @@ interface AppActions {
   createProject: (name: string) => Promise<void>;
   createProjectFromTemplate: (templateName: string, projectName?: string) => Promise<void>;
   renameProject: (id: number, newName: string) => Promise<void>;
+  archiveProject: (id: number, archived: boolean) => Promise<void>;
   openProject: (id: number) => Promise<void>;
   moveProject: (id: number, position: number) => Promise<void>;
   refreshProjects: () => Promise<void>;
@@ -278,6 +279,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const archiveProject = useCallback(async (id: number, archived: boolean) => {
+    dispatch({ type: "error", message: null });
+    try {
+      await ipc.projectSetArchived(id, archived);
+      dispatch({ type: "projects", projects: await ipc.listProjects() });
+    } catch (e) {
+      dispatch({ type: "error", message: toMessage(e) });
+    }
+  }, []);
+
   const openProject = useCallback(async (id: number) => {
     dispatch({ type: "activeProject", id });
     try {
@@ -386,6 +397,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       createProject,
       createProjectFromTemplate,
       renameProject,
+      archiveProject,
       openProject,
       moveProject,
       refreshProjects: loadProjects,
@@ -412,6 +424,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       createProject,
       createProjectFromTemplate,
       renameProject,
+      archiveProject,
       openProject,
       moveProject,
       loadProjects,

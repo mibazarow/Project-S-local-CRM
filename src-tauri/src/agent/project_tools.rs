@@ -164,6 +164,14 @@ pub(crate) fn emit_trash_changed(ctx: &ToolCtx, id: Option<i64>) {
     }
 }
 
+pub(crate) fn emit_projects_changed(ctx: &ToolCtx) {
+    if let Ok(state) = state_of(ctx) {
+        if let Some(emitter) = lock_recover(&state.emitter).as_ref() {
+            emitter.emit_event("projects-changed", json!({}));
+        }
+    }
+}
+
 // Version history panel refresh after a snapshot was saved.
 pub(crate) fn emit_versions_changed(ctx: &ToolCtx, scope: &str, path: &str) {
     if let Ok(state) = state_of(ctx) {

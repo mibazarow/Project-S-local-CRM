@@ -1,16 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProjectDto } from "../../api/types";
+
+const projects = vi.hoisted((): ProjectDto[] => []);
 
 const actions = vi.hoisted(() => ({
   createProject: vi.fn(async () => {}),
   moveProject: vi.fn(async () => {}),
   openProject: vi.fn(async () => {}),
   renameProject: vi.fn(async () => {}),
+  archiveProject: vi.fn(async () => {}),
   clearNewProject: vi.fn(),
 }));
 
 vi.mock("../../state/AppStore", () => ({
   useApp: () => ({
-    state: { projects: [], activeProjectId: null, newProjectRequested: false },
+    state: { projects, activeProjectId: null, newProjectRequested: false },
     actions,
   }),
 }));
@@ -25,6 +29,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  projects.length = 0;
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -60,5 +65,72 @@ describe("ProjectList new-project button (Q-21)", () => {
       btn.click();
     });
     expect(container.querySelector(".add-input")).not.toBeNull();
+  });
+});
+
+const makeProject = (id: number, name: string, archived: boolean): ProjectDto => ({
+  id,
+  name,
+  path: `/p/${name}`,
+  createdAt: "2026-01-01 09:00:00",
+  openedAt: null,
+  position: id,
+  fileCount: 1,
+  taskCount: 0,
+  overdueCount: 0,
+  hasActiveTasks: false,
+  taskColumns: ["Новые", "В работе", "Готово"],
+  filesView: "list",
+  archived,
+  archivedAt: archived ? "2026-01-01 10:00:00" : null,
+});
+
+describe("ProjectList current/archive tabs (Q.md item 5)", () => {
+  const segs = () => Array.from(container.querySelectorAll(".sidebar-seg .seg"));
+  const rowNames = () =>
+    Array.from(container.querySelectorAll(".project-item .name")).map((el) => el.textContent);
+  const click = (el: Element) =>
+    act(async () => {
+      el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+  it("renders «Текущие» and «Архивные» tabs with current active by default", async () => {
+    await mount();
+    expect(segs()).toHaveLength(2);
+    expect(segs()[0].textContent).toBe("Текущие");
+    expect(segs()[0].className).toBe("seg active");
+    expect(segs()[1].textContent).toBe("Архивные");
+    expect(segs()[1].className).toBe("seg");
+  });
+
+  it("the current tab lists only non-archived projects", async () => {
+    projects.push(makeProject(1, "Alpha", false), makeProject(2, "Beta", true));
+    await mount();
+    expect(rowNames()).toEqual(["Alpha"]);
+  });
+
+  it("the archive tab lists only archived projects", async () => {
+    projects.push(makeProject(1, "Alpha", false), makeProject(2, "Beta", true));
+    await mount();
+    await click(segs()[1]);
+    expect(segs()[1].className).toBe("seg active");
+    expect(rowNames()).toEqual(["Beta"]);
+  });
+
+  it("the archive action on a current row archives it via the store action", async () => {
+    projects.push(makeProject(1, "Alpha", false));
+    await mount();
+    const btn = container.querySelector<HTMLButtonElement>(".project-item .archive-toggle-btn")!;
+    await click(btn);
+    expect(actions.archiveProject).toHaveBeenCalledWith(1, true);
+  });
+
+  it("the archive action on an archived row returns it via the store action", async () => {
+    projects.push(makeProject(2, "Beta", true));
+    await mount();
+    await click(segs()[1]);
+    const btn = container.querySelector<HTMLButtonElement>(".project-item .archive-toggle-btn")!;
+    await click(btn);
+    expect(actions.archiveProject).toHaveBeenCalledWith(2, false);
   });
 });

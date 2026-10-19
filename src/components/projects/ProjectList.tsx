@@ -1,19 +1,24 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useApp } from "../../state/AppStore";
 import { usePointerDrag, type DropTarget } from "../../hooks/usePointerDrag";
+import Segmented from "../shared/Segmented";
 import ProjectItem from "./ProjectItem";
 
 export default function ProjectList() {
   const { state, actions } = useApp();
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
+  const [filter, setFilter] = useState<"current" | "archived">("current");
   const listRef = useRef<HTMLDivElement>(null);
+
+  const visible = state.projects.filter((p) => p.archived === (filter === "archived"));
 
   // Command-palette intent: open the inline "new project" input.
   useEffect(() => {
     if (!state.newProjectRequested) return;
     actions.clearNewProject();
     setDraft("");
+    setFilter("current");
     setAdding(true);
   }, [state.newProjectRequested, actions]);
 
@@ -53,7 +58,7 @@ export default function ProjectList() {
     },
     // Midpoint between neighbors, first-1 for the top, last+1 for the end.
     onDrop: (id, target) => {
-      const others = state.projects.filter((p) => p.id !== id);
+      const others = visible.filter((p) => p.id !== id);
       let position: number;
       if (others.length === 0) position = 1;
       else if (target.index === 0) position = others[0].position - 1;
@@ -72,7 +77,7 @@ export default function ProjectList() {
   const dropIndex = dropTarget ? dropTarget.index : null;
   const rows: ReactNode[] = [];
   let visibleIndex = 0;
-  for (const p of state.projects) {
+  for (const p of visible) {
     if (p.id === draggingId) {
       rows.push(
         <ProjectItem
@@ -82,6 +87,7 @@ export default function ProjectList() {
           dragging
           onOpen={handleOpen}
           onRename={(id, name) => void actions.renameProject(id, name)}
+          onArchive={(id, archived) => void actions.archiveProject(id, archived)}
           onPointerDown={(e) => onPointerDown(e, p.id)}
         />,
       );
@@ -98,6 +104,7 @@ export default function ProjectList() {
         dragging={false}
         onOpen={handleOpen}
         onRename={(id, name) => void actions.renameProject(id, name)}
+        onArchive={(id, archived) => void actions.archiveProject(id, archived)}
         onPointerDown={(e) => onPointerDown(e, p.id)}
       />,
     );
@@ -117,6 +124,7 @@ export default function ProjectList() {
             title="Новый проект"
             onClick={() => {
               setDraft("");
+              setFilter("current");
               setAdding(true);
             }}
           >
@@ -137,6 +145,17 @@ export default function ProjectList() {
           </button>
         </span>
       </div>
+      <div className="sidebar-tabs">
+        <Segmented
+          value={filter}
+          options={[
+            { value: "current", label: "Текущие" },
+            { value: "archived", label: "Архивные" },
+          ]}
+          onChange={setFilter}
+          wrapperClassName="segmented sidebar-seg"
+        />
+      </div>
       <div ref={listRef} className="project-list">
         {adding && (
           <input
@@ -156,8 +175,12 @@ export default function ProjectList() {
           />
         )}
         {rows}
-        {!adding && state.projects.length === 0 && (
-          <div className="empty-note">Пока нет проектов. Нажми «+», чтобы создать.</div>
+        {!adding && visible.length === 0 && (
+          <div className="empty-note">
+            {filter === "archived"
+              ? "Архивных проектов пока нет."
+              : "Пока нет проектов. Нажми «+», чтобы создать."}
+          </div>
         )}
       </div>
     </aside>

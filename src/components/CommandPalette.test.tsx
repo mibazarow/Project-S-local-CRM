@@ -36,6 +36,8 @@ const project = (id: number, name: string): ProjectDto => ({
   hasActiveTasks: false,
   taskColumns: ["Новые", "В работе", "Готово"],
   filesView: "list",
+    archived: false,
+    archivedAt: null,
 });
 
 const noteEntry = (relPath: string): FsEntry => ({

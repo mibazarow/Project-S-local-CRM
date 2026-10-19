@@ -26,12 +26,15 @@ const projects = vi.hoisted((): ProjectDto[] => [
     hasActiveTasks: false,
     taskColumns: ["a", "b", "c"],
     filesView: "list",
+    archived: false,
+    archivedAt: null,
   },
 ]);
 
 vi.mock("../api/ipc", () => ({
   onboardingStatus: vi.fn(async () => ({ configured: true, workingDir: "/ws-test" })),
   listProjects: vi.fn(async () => projects),
+  projectSetArchived: vi.fn(async () => undefined),
   touchProjectOpened: vi.fn(async () => undefined),
   onFsChanged: vi.fn(async (cb: (p: { projectId: number; relPath: string }) => void) => {
     bus.fs = cb;
@@ -183,5 +186,22 @@ describe("app store split", () => {
     await act(async () => bus.tasks?.({ projectId: 1 }));
     expect(ipc.listProjects).toHaveBeenCalledTimes(1);
     expect(container.querySelector(".active-flag")!.textContent).toBe("true");
+  });
+
+  it("archiveProject calls the IPC and reloads the project list", async () => {
+    await mount();
+    const acts = seenActions[0] as {
+      archiveProject: (id: number, archived: boolean) => Promise<void>;
+    };
+    vi.mocked(ipc.listProjects).mockClear();
+    await act(async () => {
+      await acts.archiveProject(1, true);
+    });
+    expect(ipc.projectSetArchived).toHaveBeenCalledWith(1, true);
+    expect(ipc.listProjects).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await acts.archiveProject(1, false);
+    });
+    expect(ipc.projectSetArchived).toHaveBeenCalledWith(1, false);
   });
 });

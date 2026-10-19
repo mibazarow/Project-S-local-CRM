@@ -30,6 +30,8 @@ const projects = vi.hoisted(() => [
     hasActiveTasks: false,
     taskColumns: ["a", "b", "c"],
     filesView: "list",
+    archived: false,
+    archivedAt: null,
   } satisfies ProjectDto,
 ]);
 

@@ -20,6 +20,8 @@ pub struct ProjectDto {
     pub has_active_tasks: bool,
     pub task_columns: [String; 3],
     pub files_view: String,
+    pub archived: bool,
+    pub archived_at: Option<String>,
 }
 
 const TASK_COUNT_SQL: &str = "SELECT count(*) FROM tasks WHERE project_id = ?1";
@@ -90,6 +92,18 @@ pub fn set_files_view(conn: &Connection, id: i64, raw: &str) -> Result<ProjectDt
     let updated = conn.execute(
         "UPDATE projects SET files_view = ?1 WHERE id = ?2",
         params![normalize_files_view(raw), id],
+    )?;
+    if updated != 1 {
+        return Err(AppError::Invalid(format!("project {id} not found")));
+    }
+    dto(conn, id)
+}
+
+pub fn set_archived(conn: &Connection, id: i64, archived: bool) -> Result<ProjectDto> {
+    let updated = conn.execute(
+        "UPDATE projects SET archived_at = CASE WHEN ?1 THEN datetime('now','localtime') ELSE NULL END
+         WHERE id = ?2",
+        params![archived, id],
     )?;
     if updated != 1 {
         return Err(AppError::Invalid(format!("project {id} not found")));
@@ -326,14 +340,15 @@ pub(crate) struct ProjectDbRow {
     position: f64,
     task_columns: String,
     files_view: String,
+    archived_at: Option<String>,
     task_count: i64,
     overdue_count: i64,
     has_active_tasks: bool,
 }
 
 fn db_row(conn: &Connection, id: i64) -> Result<ProjectDbRow> {
-    let (name, path, created_at, opened_at, position, task_columns, files_view, has_active_tasks) = conn.query_row(
-        "SELECT name, path, created_at, opened_at, position, task_columns, files_view,
+    let (name, path, created_at, opened_at, position, task_columns, files_view, archived_at, has_active_tasks) = conn.query_row(
+        "SELECT name, path, created_at, opened_at, position, task_columns, files_view, archived_at,
                 EXISTS(SELECT 1 FROM tasks WHERE project_id = ?1 AND status = 'progress')
          FROM projects WHERE id = ?1",
         params![id],
@@ -345,7 +360,8 @@ fn db_row(conn: &Connection, id: i64) -> Result<ProjectDbRow> {
             r.get::<_, f64>(4)?,
             r.get::<_, String>(5)?,
             r.get::<_, String>(6)?,
-            r.get::<_, bool>(7)?,
+            r.get::<_, Option<String>>(7)?,
+            r.get::<_, bool>(8)?,
         )),
     )?;
     let task_count = conn.query_row(TASK_COUNT_SQL, params![id], |r| r.get(0))?;
@@ -358,6 +374,7 @@ fn db_row(conn: &Connection, id: i64) -> Result<ProjectDbRow> {
         position,
         task_columns,
         files_view,
+        archived_at,
         task_count,
         overdue_count,
         has_active_tasks,
@@ -380,6 +397,8 @@ pub(crate) fn dto_from_row(id: i64, row: ProjectDbRow) -> ProjectDto {
         has_active_tasks: row.has_active_tasks,
         task_columns: parse_task_columns(&row.task_columns),
         files_view: parse_files_view(&row.files_view),
+        archived: row.archived_at.is_some(),
+        archived_at: row.archived_at,
     }
 }
 
@@ -754,6 +773,58 @@ mod tests {
         // normally prevents this) still renders as the default mode.
         assert_eq!(parse_files_view("tiles"), "list");
         assert_eq!(parse_files_view("grid"), "grid");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn archive_round_trip_stamps_and_clears_archived_at() {
+        let (wd, conn) = setup("proj-archive");
+        let p = create_project(&conn, &wd, "p").unwrap();
+        assert!(!p.archived);
+        assert_eq!(p.archived_at, None);
+
+        let archived = set_archived(&conn, p.id, true).unwrap();
+        assert!(archived.archived);
+        assert!(archived.archived_at.as_deref().unwrap().len() >= 10);
+
+        assert!(get_project(&conn, p.id).unwrap().archived);
+        assert!(list_projects(&conn).unwrap()[0].archived);
+
+        let restored = set_archived(&conn, p.id, false).unwrap();
+        assert!(!restored.archived);
+        assert_eq!(restored.archived_at, None);
+        assert!(!get_project(&conn, p.id).unwrap().archived);
+
+        assert!(matches!(set_archived(&conn, 999, true), Err(AppError::Invalid(_))));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn list_flags_archived_keeps_order_and_retains_tasks() {
+        let (wd, conn) = setup("proj-archive-list");
+        let p1 = create_project(&conn, &wd, "p1").unwrap();
+        let p2 = create_project(&conn, &wd, "p2").unwrap();
+        let p3 = create_project(&conn, &wd, "p3").unwrap();
+        conn.execute(
+            "INSERT INTO tasks (project_id, title, status, created_at) VALUES (?1, 'kept', 'new', '2026-01-01')",
+            params![p2.id],
+        )
+        .unwrap();
+
+        set_archived(&conn, p2.id, true).unwrap();
+        let list = list_projects(&conn).unwrap();
+        assert_eq!(list.iter().map(|p| p.id).collect::<Vec<_>>(), vec![p1.id, p2.id, p3.id]);
+        assert_eq!(
+            list.iter().map(|p| p.archived).collect::<Vec<_>>(),
+            vec![false, true, false]
+        );
+        let archived = list.iter().find(|p| p.id == p2.id).unwrap();
+        assert!(archived.archived);
+        assert_eq!(archived.task_count, 1);
+
+        set_archived(&conn, p2.id, false).unwrap();
+        assert_eq!(list_ids(&conn), vec![p1.id, p2.id, p3.id]);
+        assert_eq!(get_project(&conn, p2.id).unwrap().task_count, 1);
         fs::remove_dir_all(&wd).unwrap();
     }
 }

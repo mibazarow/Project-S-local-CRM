@@ -166,6 +166,9 @@ export const setTaskColumns = (projectId: number, columns: string[]) =>
 export const projectSetFilesView = (projectId: number, view: "list" | "grid") =>
   invoke<ProjectDto>("project_set_files_view", { projectId, view });
 
+export const projectSetArchived = (projectId: number, archived: boolean) =>
+  invoke<ProjectDto>("project_set_archived", { projectId, archived });
+
 export const tasksList = (projectId: number) => invoke<TaskDto[]>("tasks_list", { projectId });
 
 export const taskCreate = (

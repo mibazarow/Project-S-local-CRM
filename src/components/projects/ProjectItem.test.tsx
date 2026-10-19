@@ -34,10 +34,12 @@ const makeProject = (overrides: Partial<ProjectDto> = {}): ProjectDto => ({
   hasActiveTasks: false,
   taskColumns: ["Новые", "В работе", "Готово"],
   filesView: "list",
+    archived: false,
+    archivedAt: null,
   ...overrides,
 });
 
-async function mount(project: ProjectDto) {
+async function mount(project: ProjectDto, onArchive = (_id: number, _archived: boolean) => {}) {
   await act(async () => {
     root.render(
       <ProjectItem
@@ -46,6 +48,7 @@ async function mount(project: ProjectDto) {
         dragging={false}
         onOpen={() => {}}
         onRename={() => {}}
+        onArchive={onArchive}
         onPointerDown={() => {}}
       />,
     );
@@ -91,5 +94,46 @@ describe("ProjectItem active-task indicator", () => {
   it("renders no Play icon when the project has no progress task", async () => {
     await mount(makeProject({ hasActiveTasks: false }));
     expect(container.querySelector(".active-tasks")).toBeNull();
+  });
+});
+
+describe("ProjectItem archive action", () => {
+  const archiveBtn = () =>
+    container.querySelector<HTMLButtonElement>(".proj-actions .archive-toggle-btn")!;
+
+  it("shows an icon plus «В архив» label and tooltip on a current project", async () => {
+    await mount(makeProject());
+    const btn = archiveBtn();
+    expect(btn).not.toBeNull();
+    expect(btn.getAttribute("title")).toBe("В архив");
+    expect(btn.querySelector("svg")).not.toBeNull();
+    expect(btn.querySelector(".btn-label")?.textContent).toBe("В архив");
+  });
+
+  it("shows «Вернуть» with the «Вернуть из архива» tooltip on an archived project", async () => {
+    await mount(makeProject({ archived: true, archivedAt: "2026-01-01 10:00:00" }));
+    const btn = archiveBtn();
+    expect(btn.getAttribute("title")).toBe("Вернуть из архива");
+    expect(btn.querySelector(".btn-label")?.textContent).toBe("Вернуть");
+  });
+
+  it("clicking the action toggles the archive flag through the callback", async () => {
+    const calls: [number, boolean][] = [];
+    await mount(makeProject(), (id, archived) => calls.push([id, archived]));
+    await act(async () => {
+      archiveBtn().click();
+    });
+    expect(calls).toEqual([[1, true]]);
+  });
+
+  it("clicking the action on an archived project returns it (archived=false)", async () => {
+    const calls: [number, boolean][] = [];
+    await mount(makeProject({ archived: true, archivedAt: "2026-01-01 10:00:00" }), (id, archived) =>
+      calls.push([id, archived]),
+    );
+    await act(async () => {
+      archiveBtn().click();
+    });
+    expect(calls).toEqual([[1, false]]);
   });
 });

@@ -151,3 +151,15 @@ pub(crate) fn project_set_files_view(
     emit_projects_changed(&app);
     Ok(dto)
 }
+
+#[tauri::command]
+pub(crate) fn project_set_archived(
+    app: AppHandle,
+    state: State<AppState>,
+    project_id: i64,
+    archived: bool,
+) -> Result<ProjectDto> {
+    let dto = with_db(&state, |conn| projects::set_archived(conn, project_id, archived))?;
+    emit_projects_changed(&app);
+    Ok(dto)
+}

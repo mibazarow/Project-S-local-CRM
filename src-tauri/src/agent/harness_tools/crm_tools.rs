@@ -3,7 +3,8 @@
 // search iterates all projects: the UI keeps search per-project (SPEC 4.4),
 // but the harness agent explicitly gets CRM-wide tools.
 use crate::agent::project_tools::{
-    emit_tasks_changed, emit_trash_changed, envelope, require_wd, state_of, with_conn,
+    emit_projects_changed, emit_tasks_changed, emit_trash_changed, envelope, require_wd, state_of,
+    with_conn,
 };
 use crate::agent::result::{ToolErrorCode, ToolResult};
 use crate::agent::task_glue::{
@@ -48,7 +49,7 @@ impl Tool for CrmListProjectsTool {
         "crm_list_projects"
     }
     fn description(&self) -> &str {
-        "List all CRM projects with id, name, path and counts (files, tasks, overdue)."
+        "List all CRM projects with id, name, path, archived flag and counts (files, tasks, overdue)."
     }
     fn parameters(&self) -> Value {
         json!({ "type": "object", "properties": {}, "required": [], "additionalProperties": false })
@@ -65,6 +66,46 @@ impl Tool for CrmListProjectsTool {
             Ok(list) => ToolResult::ok(json!({ "projects": list })).capped(self.max_result_len()),
             Err(e) => envelope_r(e),
         })
+    }
+}
+
+pub struct ProjectSetArchivedTool;
+
+impl Tool for ProjectSetArchivedTool {
+    fn name(&self) -> &str {
+        "project_set_archived"
+    }
+    fn description(&self) -> &str {
+        "Archive or unarchive a project (project_id or project_name; archived: true to archive, false to return it to the current list). Reversible: an archived project stays fully usable (files, notes, datas, chat, search, agent work) and its tasks are kept, but the Tasks section is hidden and task creation is rejected until the project is returned. Use it only when the user asks."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "project_id": { "type": "number" },
+                "project_name": { "type": "string" },
+                "archived": { "type": "boolean" }
+            },
+            "required": ["archived"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let archived = args["archived"].as_bool().unwrap_or(false);
+        let r = with_conn(ctx, |conn| {
+            let pid = resolve_project_id(conn, args)?;
+            projects::set_archived(conn, pid, archived)
+        });
+        if r.is_ok() {
+            emit_projects_changed(ctx);
+        }
+        Ok(envelope(r))
     }
 }
 
@@ -469,6 +510,62 @@ mod tests {
         assert!(content.contains("## FTP example.ru") && content.contains("user-1"));
 
         let r = exec("crm_tasks", json!({ "project_name": "nope" }), &env.ctx);
+        assert_eq!(r.error.unwrap().code, "not_found");
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn project_set_archived_round_trip_blocks_task_create_while_archived() {
+        let env = setup("ht-crm-archive");
+        with_conn(&env.ctx, |conn| {
+            projects::create_project(conn, &env.wd, "alpha")?;
+            Ok::<(), AppError>(())
+        })
+        .unwrap();
+
+        let r = exec(
+            "project_set_archived",
+            json!({ "project_name": "alpha", "archived": true }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["archived"], true);
+        assert!(data["archivedAt"].is_string());
+
+        let r = exec("crm_list_projects", json!({}), &env.ctx);
+        let listed = r.data.unwrap()["projects"].as_array().unwrap().clone();
+        assert_eq!(listed[0]["archived"], true);
+
+        let r = exec("crm_task_create", json!({ "project_name": "alpha", "title": "blocked" }), &env.ctx);
+        assert!(!r.ok);
+        let err = r.error.unwrap();
+        assert!(err.message.contains("архив"), "{:?}", err.message);
+
+        let r = exec(
+            "project_set_archived",
+            json!({ "project_name": "alpha", "archived": false }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["archived"], false);
+        assert!(data["archivedAt"].is_null());
+
+        let r = exec("crm_task_create", json!({ "project_name": "alpha", "title": "allowed" }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+
+        let events = env.events.lock().unwrap().clone();
+        assert!(
+            events.iter().any(|(name, _)| name == "projects-changed"),
+            "archive mutations must notify the UI: {events:?}"
+        );
+
+        let r = exec(
+            "project_set_archived",
+            json!({ "project_name": "nope", "archived": true }),
+            &env.ctx,
+        );
         assert_eq!(r.error.unwrap().code, "not_found");
         fs::remove_dir_all(&env.wd).unwrap();
     }

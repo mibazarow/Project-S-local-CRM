@@ -73,6 +73,9 @@ const MUTATING_SKIP_ALLOWLIST: &[&str] = &[
     // Pausing/resuming a schedule is a reversible flag toggle; schedule_delete
     // (the destructive one) confirms.
     "schedule_pause",
+    // Archiving/unarchiving a project is a reversible visibility toggle: no
+    // rows, files or tasks are touched, and the UI mirrors the same action.
+    "project_set_archived",
     // Undo pops the bounded undo stack and restores a prior snapshot/trash
     // entry; it only reverses an earlier mutation, never reaches a new path.
     "undo_last",

@@ -7,7 +7,7 @@
 use super::chat_tools::{DeleteChatTool, ListChatsTool, NewChatTool, RenameChatTool, SearchChatsTool};
 use super::crm_tools::{
     CrmListProjectsTool, CrmSearchTool, CrmTaskCreateTool, CrmTaskDeleteTool, CrmTaskMoveTool,
-    CrmTaskUpdateTool, CrmTasksTool, DatasAddTool, DatasReadTool,
+    CrmTaskUpdateTool, CrmTasksTool, DatasAddTool, DatasReadTool, ProjectSetArchivedTool,
 };
 use super::fs_tools::{
     FsCopyTool, FsDeleteTool, FsGrepTool, FsListTool, FsMkdirTool, FsMoveTool, FsReadTool,
@@ -101,6 +101,7 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(super::super::net_tools::WebsearchTool::new()),
         Arc::new(super::super::net_tools::HttpRequestTool),
         Arc::new(CrmListProjectsTool),
+        Arc::new(ProjectSetArchivedTool),
         Arc::new(CrmSearchTool),
         Arc::new(CrmTasksTool),
         Arc::new(CrmTaskCreateTool),
@@ -161,7 +162,7 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
-    const DEFERRED_NAMES: [&str; 57] = [
+    const DEFERRED_NAMES: [&str; 58] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -193,6 +194,7 @@ mod tests {
         "websearch",
         "http_request",
         "crm_list_projects",
+        "project_set_archived",
         "crm_search",
         "crm_tasks",
         "crm_task_create",

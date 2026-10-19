@@ -7,6 +7,7 @@ interface Props {
   dragging: boolean;
   onOpen: (id: number) => void;
   onRename: (id: number, newName: string) => void;
+  onArchive: (id: number, archived: boolean) => void;
   onPointerDown: (e: PointerEvent<HTMLDivElement>) => void;
 }
 
@@ -16,6 +17,7 @@ export default function ProjectItem({
   dragging,
   onOpen,
   onRename,
+  onArchive,
   onPointerDown,
 }: Props) {
   const [renaming, setRenaming] = useState(false);
@@ -113,6 +115,37 @@ const classes = ["project-item"];
           >
             <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
           </svg>
+        </button>
+        <button
+          className="mini-btn archive-toggle-btn"
+          title={project.archived ? "Вернуть из архива" : "В архив"}
+          onClick={(e) => {
+            e.stopPropagation();
+            onArchive(project.id, !project.archived);
+          }}
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="14"
+            height="14"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          >
+            <rect x="2" y="3" width="20" height="5" rx="1" />
+            <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+            {project.archived ? (
+              <>
+                <path d="M12 12v6" />
+                <path d="m9 15 3-3 3 3" />
+              </>
+            ) : (
+              <path d="M10 12h4" />
+            )}
+          </svg>
+          <span className="btn-label">{project.archived ? "Вернуть" : "В архив"}</span>
         </button>
       </span>
     </div>

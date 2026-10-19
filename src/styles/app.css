@@ -157,6 +157,11 @@ input, textarea { font-family: inherit; }
   justify-content: center;
 }
 
+.sidebar-tabs { display: flex; padding: 0 10px 8px; }
+.sidebar .segmented.sidebar-seg { background: var(--sidebar-selected); }
+.sidebar .segmented.sidebar-seg .seg { color: var(--sidebar-muted); padding: 3px 10px; font-size: 12px; }
+.sidebar .segmented.sidebar-seg .seg.active { background: var(--accent); color: #fff; box-shadow: none; }
+
 /* «Новый чат» — синяя скруглённая кнопка с белым плюсом и подписью (Q-21). */
 .new-chat-btn {
   height: 28px;
@@ -237,10 +242,12 @@ input, textarea { font-family: inherit; }
 .project-item .active-tasks { color: var(--accent); margin-left: 6px; vertical-align: -1px; }
 .project-item.active .active-tasks { color: rgba(255, 255, 255, .85); }
 
-.proj-actions { position: absolute; top: 7px; right: 6px; opacity: 0; transition: opacity .12s; }
+.proj-actions { position: absolute; top: 7px; right: 6px; opacity: 0; transition: opacity .12s; display: flex; align-items: center; gap: 2px; }
 .project-item:hover .proj-actions { opacity: 1; }
 .project-item.active .mini-btn { color: rgba(255, 255, 255, .85); }
 .project-item.active .mini-btn:hover { background: rgba(255, 255, 255, .2); color: #fff; }
+.mini-btn .btn-label { font-size: 11px; margin-left: 4px; white-space: nowrap; }
+.project-item:hover .name { padding-right: 118px; }
 
 .project-item.dragging { opacity: .45; }
 

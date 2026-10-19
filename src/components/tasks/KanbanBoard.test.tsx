@@ -80,6 +80,8 @@ const project = vi.hoisted(
     hasActiveTasks: false,
     taskColumns: ["Новые", "В работе", "Готово"],
     filesView: "list",
+    archived: false,
+    archivedAt: null,
   }),
 );
 

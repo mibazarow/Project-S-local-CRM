@@ -38,6 +38,10 @@ export default function FilesPanel({ project }: Props) {
     return () => clearTimeout(timer);
   }, [highlightTaskId]);
 
+  useEffect(() => {
+    if (project.archived && tab === "tasks") setTab("files");
+  }, [project.archived, tab]);
+
   // Grid navigation is per-project: an entered folder must not leak across projects.
   useEffect(() => {
     setCurrentDir("");
@@ -120,7 +124,7 @@ export default function FilesPanel({ project }: Props) {
           value={tab}
           options={[
             { value: "files", label: "Файлы" },
-            { value: "tasks", label: "Задачи" },
+            ...(!project.archived ? [{ value: "tasks" as const, label: "Задачи" }] : []),
           ]}
           onChange={switchTab}
         />

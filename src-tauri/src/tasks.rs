@@ -136,6 +136,11 @@ pub fn task_create_with(
     checklist: Option<Vec<ChecklistItem>>,
 ) -> Result<TaskDto> {
     ensure_project(conn, project_id)?;
+    if is_archived(conn, project_id)? {
+        return Err(AppError::Invalid(
+            "Проект в архиве: создание задач недоступно. Сначала верните проект из архива.".into(),
+        ));
+    }
     let title = raw_title.trim();
     if title.is_empty() {
         return Err(AppError::Invalid("task title is empty".into()));
@@ -611,6 +616,14 @@ fn ensure_project(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+fn is_archived(conn: &Connection, id: i64) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT archived_at IS NOT NULL FROM projects WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?)
+}
+
 fn check_status(status: &str) -> Result<()> {
     if STATUSES.contains(&status) {
         Ok(())
@@ -769,6 +782,27 @@ mod tests {
             task_create(&conn, 999, "x", None),
             Err(AppError::Invalid(_))
         ));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn task_create_is_rejected_for_archived_projects() {
+        let (wd, conn, pid) = setup("tasks-archived");
+        let before = task_create(&conn, pid, "before", None).unwrap();
+        projects::set_archived(&conn, pid, true).unwrap();
+
+        let err = task_create(&conn, pid, "blocked", None).unwrap_err();
+        match err {
+            AppError::Invalid(msg) => assert!(msg.contains("архив"), "{msg}"),
+            other => panic!("{other}"),
+        }
+
+        let list = tasks_list(&conn, pid).unwrap();
+        assert_eq!(list.iter().map(|t| t.id).collect::<Vec<_>>(), vec![before.id]);
+
+        projects::set_archived(&conn, pid, false).unwrap();
+        task_create(&conn, pid, "after", None).unwrap();
+        assert_eq!(tasks_list(&conn, pid).unwrap().len(), 2);
         fs::remove_dir_all(&wd).unwrap();
     }
 
