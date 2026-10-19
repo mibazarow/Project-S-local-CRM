@@ -102,6 +102,10 @@ function TaskEditor({
     titleRef.current?.focus();
   }, []);
 
+  useEffect(() => {
+    setIsPriority(task.isPriority);
+  }, [task.isPriority]);
+
   const canSave = title.trim().length > 0;
 
   const addItem = () => {

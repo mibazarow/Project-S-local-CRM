@@ -119,9 +119,6 @@ export default function FilesPanel({ project }: Props) {
     <section className="center">
       <div className="center-head">
         <h2>{project.name}</h2>
-        {project.overdueCount > 0 && (
-          <span className="badge st-overdue">{project.overdueCount} просрочено</span>
-        )}
         <Segmented
           value={tab}
           options={[

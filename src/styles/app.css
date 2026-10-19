@@ -443,8 +443,8 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 .task-card:hover { box-shadow: 0 2px 6px rgba(0, 0, 0, .09); border-color: var(--border-strong); }
 .task-card.dragging { opacity: .45; }
 .task-card.overdue { border-color: var(--danger); background: var(--danger-soft); }
-.task-card.priority { border-color: rgba(255, 59, 48, .55); box-shadow: 0 0 0 1px rgba(255, 59, 48, .14), 0 0 7px rgba(255, 59, 48, .16); }
-.task-card.priority:hover { border-color: rgba(255, 59, 48, .7); box-shadow: 0 2px 6px rgba(0, 0, 0, .09), 0 0 7px rgba(255, 59, 48, .2); }
+.task-card.priority { border-color: rgba(55, 106, 159, .55); box-shadow: 0 0 0 1px rgba(55, 106, 159, .14), 0 0 7px rgba(55, 106, 159, .16); }
+.task-card.priority:hover { border-color: rgba(55, 106, 159, .7); box-shadow: 0 2px 6px rgba(0, 0, 0, .09), 0 0 7px rgba(55, 106, 159, .2); }
 .task-card.highlight {
   border-color: var(--accent);
   background: var(--accent-soft);

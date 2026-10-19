@@ -44,7 +44,7 @@ const makeTask = (overrides: Partial<TaskDto> = {}): TaskDto => ({
   ...overrides,
 });
 
-async function mount(task: TaskDto, onPatch = vi.fn()) {
+async function renderCard(task: TaskDto, onPatch = vi.fn()) {
   await act(async () => {
     root.render(
       <TaskCard
@@ -58,6 +58,8 @@ async function mount(task: TaskDto, onPatch = vi.fn()) {
   });
   return onPatch;
 }
+
+const mount = renderCard;
 
 const click = (el: Element) =>
   act(() => el.dispatchEvent(new MouseEvent("click", { bubbles: true })));
@@ -152,10 +154,27 @@ describe("TaskCard priority toggle", () => {
     expect(container.querySelector(".task-card")!.className).not.toContain("priority");
   });
 
+  it("an overdue card without priority does not get the priority class", async () => {
+    await mount(makeTask({ overdue: true, isPriority: false }));
+    const card = container.querySelector(".task-card")!;
+    expect(card.className).toContain("overdue");
+    expect(card.className).not.toContain("priority");
+  });
+
   it("the full editor shows the checkbox reflecting the current flag", async () => {
     await mount(makeTask({ isPriority: true }));
     const checkbox = await openPriority();
     expect(checkbox.checked).toBe(true);
+  });
+
+  it("re-syncs the priority checkbox when the task prop changes while the editor is open", async () => {
+    await mount(makeTask({ isPriority: false }));
+    const checkbox = await openPriority();
+    expect(checkbox.checked).toBe(false);
+    await renderCard(makeTask({ isPriority: true }));
+    expect(
+      (container.querySelector(".td-priority input[type='checkbox']") as HTMLInputElement).checked,
+    ).toBe(true);
   });
 
   it("checking the box in the editor saves isPriority: true", async () => {

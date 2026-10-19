@@ -70,7 +70,7 @@ pub(crate) fn task_update(
         if let Some(snapshot) = snapshot {
             let _ = undo::push_task_snapshot(conn, "task_update", &snapshot, None);
         }
-        export::export_project(conn, &wd, dto.project_id)?;
+        let _ = export::export_project(conn, &wd, dto.project_id);
         Ok(dto)
     })?;
     emit_tasks_changed(&app, dto.project_id);
