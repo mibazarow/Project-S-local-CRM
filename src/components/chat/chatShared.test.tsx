@@ -8,6 +8,7 @@ import {
   combineQueued,
   countMatches,
   historyToItems,
+  LLM_TIMEOUT_CODE,
   summarizeArgs,
   toMessage,
   type ChatAction,
@@ -248,6 +249,51 @@ describe("chatReducer", () => {
     const none = chatReducer({}, { type: "runError", key: KEY, message: "boom" });
     expect(none[KEY].run).toBeNull();
     expect(none[KEY].items).toEqual([]);
+  });
+
+  it("runError with the timeout code marks the item retryable; other codes do not", () => {
+    const timeout = apply(
+      {},
+      { type: "send", key: KEY, text: "hi", attachments: [] },
+      { type: "runError", key: KEY, message: "Провайдер не отвечает 40 секунд", code: LLM_TIMEOUT_CODE },
+    );
+    const item = timeout[KEY].items[1];
+    expect(item.error).toBe("Провайдер не отвечает 40 секунд");
+    expect(item.retryable).toBe(true);
+
+    const other = apply(
+      {},
+      { type: "send", key: KEY, text: "hi", attachments: [] },
+      { type: "runError", key: KEY, message: "HTTP 500", code: "http" },
+    );
+    expect(other[KEY].items[1].retryable).toBe(false);
+
+    const noCode = apply(
+      {},
+      { type: "send", key: KEY, text: "hi", attachments: [] },
+      { type: "runError", key: KEY, message: "boom" },
+    );
+    expect(noCode[KEY].items[1].retryable).toBe(false);
+  });
+
+  it("regenerate after a timeout error drops the failed bubble and reopens a fresh run", () => {
+    let s = apply(
+      {},
+      { type: "send", key: KEY, text: "вопрос", attachments: [] },
+      { type: "runError", key: KEY, message: "Провайдер не отвечает 40 секунд", code: LLM_TIMEOUT_CODE },
+    );
+    // user bubble + failed agent bubble
+    expect(s[KEY].items).toHaveLength(2);
+    const failedKey = s[KEY].items[1].key;
+    s = chatReducer(s, { type: "regenerate", key: KEY, itemKey: failedKey });
+    // The failed bubble is gone (not duplicated); the user turn stays; a new
+    // local run opens (fresh reveal via runSeq bump in the transcript).
+    expect(s[KEY].items).toHaveLength(1);
+    expect(s[KEY].items[0].role).toBe("user");
+    expect(s[KEY].items[0].text).toBe("вопрос");
+    expect(s[KEY].run).not.toBeNull();
+    expect(s[KEY].run?.local).toBe(true);
+    expect(s[KEY].run?.text).toBe("");
   });
 
   it("enqueue appends to the per-chat queue, clearQueue empties it", () => {

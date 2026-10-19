@@ -11,7 +11,27 @@ pub enum AppError {
     Invalid(String),
     InvalidConfig(String),
     Http(String),
+    // Streaming inactivity watchdog fired: the provider sent no bytes/events
+    // for the whole timeout. Distinct code so the UI can offer «Повторить».
+    LlmTimeout(String),
     NotConfigured,
+}
+
+impl AppError {
+    // Stable machine code for the frontend (same string the Serialize impl
+    // emits as `code`).
+    pub fn code(&self) -> &'static str {
+        match self {
+            AppError::Io(_) => "io",
+            AppError::Db(_) => "db",
+            AppError::Json(_) => "json",
+            AppError::Invalid(_) => "invalid",
+            AppError::InvalidConfig(_) => "invalid-config",
+            AppError::Http(_) => "http",
+            AppError::LlmTimeout(_) => "llm-timeout",
+            AppError::NotConfigured => "not-configured",
+        }
+    }
 }
 
 impl std::fmt::Display for AppError {
@@ -23,6 +43,8 @@ impl std::fmt::Display for AppError {
             AppError::Invalid(m) => write!(f, "invalid input: {m}"),
             AppError::InvalidConfig(m) => write!(f, "invalid_config: {m}"),
             AppError::Http(m) => write!(f, "http error: {m}"),
+            // The message is already a full user-readable sentence.
+            AppError::LlmTimeout(m) => write!(f, "{m}"),
             AppError::NotConfigured => write!(f, "working directory is not configured"),
         }
     }
@@ -33,17 +55,18 @@ impl std::error::Error for AppError {}
 // Serialized for the frontend as { code, message }.
 impl Serialize for AppError {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        let (code, message) = match self {
-            AppError::Io(m) => ("io", m.as_str()),
-            AppError::Db(m) => ("db", m.as_str()),
-            AppError::Json(m) => ("json", m.as_str()),
-            AppError::Invalid(m) => ("invalid", m.as_str()),
-            AppError::InvalidConfig(m) => ("invalid-config", m.as_str()),
-            AppError::Http(m) => ("http", m.as_str()),
-            AppError::NotConfigured => ("not-configured", ""),
+        let message = match self {
+            AppError::Io(m)
+            | AppError::Db(m)
+            | AppError::Json(m)
+            | AppError::Invalid(m)
+            | AppError::InvalidConfig(m)
+            | AppError::Http(m)
+            | AppError::LlmTimeout(m) => m.as_str(),
+            AppError::NotConfigured => "",
         };
         let mut map = serializer.serialize_map(Some(2))?;
-        map.serialize_entry("code", code)?;
+        map.serialize_entry("code", self.code())?;
         map.serialize_entry("message", message)?;
         map.end()
     }

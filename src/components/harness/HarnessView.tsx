@@ -528,7 +528,7 @@ export default function HarnessView() {
   );
 
   const transcriptActions = useMemo(
-    () => ({ onPin: pinItem, onRegenerate: regenerateItem, onBranch: branchItem }),
+    () => ({ onPin: pinItem, onRegenerate: regenerateItem, onRetry: regenerateItem, onBranch: branchItem }),
     [pinItem, regenerateItem, branchItem],
   );
 

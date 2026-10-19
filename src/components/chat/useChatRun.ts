@@ -119,7 +119,7 @@ export function useChatRun(config: ChatRunConfig, subscribeDeps: unknown[]): Use
         }
         case "error": {
           const run = stateRef.current[key]?.run ?? null;
-          dispatch({ type: "runError", key, message: p.event.message });
+          dispatch({ type: "runError", key, message: p.event.message, code: p.event.code });
           configRef.current.onRunEnd?.(key, run, dispatch);
           flushQueue(key);
           break;

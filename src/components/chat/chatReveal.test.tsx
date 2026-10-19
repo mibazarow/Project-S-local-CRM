@@ -198,6 +198,21 @@ describe("progressive answer reveal (SPEC 6.0, Q22)", () => {
     expect(rafMap.size).toBe(0);
   });
 
+  it("settles a provider-silence timeout error to the full text instantly", async () => {
+    // Q23: the timeout path sets the run item's `error` (not `note`), so the
+    // reveal settles immediately — no typewriter over a failed answer.
+    const answer = "T".repeat(120);
+    const item = agentItem(answer, {
+      error: "Провайдер не отвечает 40 секунд — проверьте баланс, API-ключ и статус провайдера.",
+      retryable: true,
+    });
+    await act(async () => {
+      root.render(<Transcript slice={settledSlice(item)} />);
+    });
+    expect(shown()).toBe(answer);
+    expect(rafMap.size).toBe(0);
+  });
+
   it("shows the answer instantly under prefers-reduced-motion", async () => {
     setReducedMotion(true);
     const answer = "R".repeat(120);

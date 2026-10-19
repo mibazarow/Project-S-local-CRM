@@ -118,3 +118,85 @@ describe("ChatTranscript DOM", () => {
     expect(container.innerHTML).toMatchSnapshot();
   });
 });
+
+describe("provider-silence retry (SPEC 6.0.1, Q23)", () => {
+  function errorSlice(retryable: boolean): Slice {
+    return {
+      loaded: true,
+      items: [
+        {
+          key: 1,
+          role: "user",
+          text: "сделай отчёт",
+          reasoning: "",
+          attachments: [],
+          messageIds: [11],
+          pinned: false,
+          steps: [],
+          compactions: [],
+          note: null,
+          error: null,
+        },
+        {
+          key: 2,
+          role: "agent",
+          text: "",
+          reasoning: "",
+          attachments: [],
+          messageIds: [],
+          pinned: false,
+          steps: [],
+          compactions: [],
+          note: null,
+          error: "Провайдер не отвечает 40 секунд — проверьте баланс, API-ключ и статус провайдера.",
+          retryable,
+        },
+      ],
+      run: null,
+      confirmations: [],
+      sendError: null,
+      queue: [],
+    };
+  }
+
+  function render(slice: Slice, onRetry: () => void) {
+    const listRef = { current: null } as React.RefObject<HTMLDivElement | null>;
+    return (
+      <ChatTranscript
+        slice={slice}
+        listRef={listRef}
+        empty="Пусто"
+        projectId={1}
+        chatId={10}
+        actions={{ onRetry }}
+        search=""
+      />
+    );
+  }
+
+  it("shows the warning and a single «Повторить» that retries once for a timeout", async () => {
+    const onRetry = vi.fn();
+    await act(async () => {
+      root.render(render(errorSlice(true), onRetry));
+    });
+    const warning = container.querySelector(".error.timeout");
+    expect(warning?.textContent).toContain("Провайдер не отвечает 40 секунд");
+    const buttons = [...container.querySelectorAll<HTMLButtonElement>(".error.timeout button")];
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0].textContent).toBe("Повторить");
+    await act(async () => {
+      buttons[0].click();
+    });
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows no «Повторить» for a non-timeout error", async () => {
+    const onRetry = vi.fn();
+    await act(async () => {
+      root.render(render(errorSlice(false), onRetry));
+    });
+    expect(container.querySelector(".error.timeout")).toBeNull();
+    expect(container.querySelector(".error button")).toBeNull();
+    expect(container.querySelector(".error")?.textContent).toContain("Проверьте Настройки");
+  });
+});

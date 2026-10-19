@@ -439,7 +439,7 @@ impl Run {
             Ok(outcome) => Ok(outcome),
             Err(e) => {
                 hooks.emit(AgentEvent::Error {
-                    code: "llm".into(),
+                    code: e.code().to_string(),
                     message: e.to_string(),
                 });
                 Err(e)

@@ -49,7 +49,15 @@ pub struct LlmClient {
     base_url: String,
     api_key: String,
     agent: ureq::Agent,
+    // Streaming agent: its per-read socket timeout IS the inactivity watchdog
+    // (SO_RCVTIMEO resets on every read), so a slow-but-live stream survives
+    // while a silent provider aborts at the threshold.
+    stream_agent: ureq::Agent,
+    stream_timeout: Duration,
 }
+
+// Provider-silence abort threshold (SPEC 6.0.1, Q23).
+pub const DEFAULT_STREAM_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(40);
 
 // Reads llm.json fresh on every call so hand-edits and settings writes apply
 // without restarting the app.
@@ -63,15 +71,29 @@ pub fn client_from_config(wd: &Path) -> Result<LlmClient> {
 
 impl LlmClient {
     pub fn new(base_url: &str, api_key: &str) -> Self {
+        Self::with_stream_timeout(base_url, api_key, DEFAULT_STREAM_INACTIVITY_TIMEOUT)
+    }
+
+    // Test seam: override the streaming inactivity threshold so a test can
+    // abort a silent provider without waiting the real 40 s.
+    pub fn with_stream_timeout(base_url: &str, api_key: &str, stream_timeout: Duration) -> Self {
         LlmClient {
             base_url: base_url.trim_end_matches('/').to_string(),
             api_key: api_key.trim().to_string(),
-            // timeout_read is per socket read, so a slow first token or a long
-            // stream is fine as long as data keeps arriving.
+            // Non-streaming: timeout_read is per socket read, so a slow first
+            // token or a long stream is fine as long as data keeps arriving.
             agent: ureq::AgentBuilder::new()
                 .timeout_connect(Duration::from_secs(15))
                 .timeout_read(Duration::from_secs(120))
                 .build(),
+            // Streaming: the per-read socket timeout is the inactivity watchdog
+            // (resets on every read), so slow-but-live generation survives and
+            // a provider that stops sending bytes aborts at the threshold.
+            stream_agent: ureq::AgentBuilder::new()
+                .timeout_connect(Duration::from_secs(15))
+                .timeout_read(stream_timeout)
+                .build(),
+            stream_timeout,
         }
     }
 
@@ -172,8 +194,8 @@ impl LlmClient {
         mut on_event: impl FnMut(ChatEvent),
     ) -> Result<ChatOutcome> {
         let body = build_body(messages, tools, params, true);
-        let resp = self.post_chat(&body)?;
-        run_sse(resp.into_reader(), &mut on_event)
+        let resp = self.post_chat_stream(&body)?;
+        run_sse(resp.into_reader(), self.stream_timeout, &mut on_event)
     }
 
     // Non-streaming variant, same request builder (used by tests and fallbacks).
@@ -200,6 +222,18 @@ impl LlmClient {
             .send_json(body)
             .map_err(Box::new)
         })
+    }
+
+    // Streaming POST on the watchdog agent. Single attempt (no retry): a
+    // silent provider must abort at the inactivity bound and surface for the
+    // user's «Повторить», not silently double the wait.
+    fn post_chat_stream(&self, body: &Value) -> Result<ureq::Response> {
+        self.auth(
+            self.stream_agent
+                .post(&format!("{}/chat/completions", self.base_url)),
+        )
+        .send_json(body)
+        .map_err(|e| self.map_err(e))
     }
 }
 
@@ -483,14 +517,30 @@ impl StreamAcc {
     }
 }
 
-fn run_sse(reader: impl std::io::Read, on_event: &mut impl FnMut(ChatEvent)) -> Result<ChatOutcome> {
+fn run_sse(
+    reader: impl std::io::Read,
+    inactivity: Duration,
+    on_event: &mut impl FnMut(ChatEvent),
+) -> Result<ChatOutcome> {
     let mut acc = StreamAcc::default();
     let mut buf = std::io::BufReader::new(reader);
     let mut line = String::new();
     loop {
         line.clear();
-        if buf.read_line(&mut line)? == 0 {
-            break;
+        match buf.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => {}
+            // The stream agent's per-read socket timeout surfaces here as a
+            // TimedOut io error once `inactivity` passes with zero bytes. Map
+            // it to a distinct, user-readable error; the reader (and its
+            // socket) is dropped on return, closing the connection.
+            Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
+                return Err(AppError::LlmTimeout(format!(
+                    "Провайдер не отвечает {} секунд — проверьте баланс, API-ключ и статус провайдера.",
+                    inactivity.as_secs()
+                )));
+            }
+            Err(e) => return Err(e.into()),
         }
         let line = line.trim_end_matches(['\r', '\n']);
         let Some(payload) = line.strip_prefix("data:") else {
@@ -560,7 +610,12 @@ mod tests {
     fn sse(lines: &[&str]) -> (Vec<ChatEvent>, ChatOutcome) {
         let text: String = lines.iter().map(|l| format!("{l}\n\n")).collect();
         let mut events = Vec::new();
-        let outcome = run_sse(Cursor::new(text), &mut |e| events.push(e)).unwrap();
+        let outcome = run_sse(
+            Cursor::new(text),
+            DEFAULT_STREAM_INACTIVITY_TIMEOUT,
+            &mut |e| events.push(e),
+        )
+        .unwrap();
         (events, outcome)
     }
 
@@ -898,6 +953,117 @@ mod tests {
         assert!(msg.contains("HTTP 401"));
         assert!(msg.contains("***"));
         assert!(!msg.contains("sk-secret-123"));
+    }
+
+    // A reader that yields a TimedOut io error on the first read stands in for
+    // the stream agent's per-read socket timeout firing after the inactivity
+    // window with zero bytes (SPEC 6.0.1, Q23).
+    struct SilentReader {
+        dropped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl std::io::Read for SilentReader {
+        fn read(&mut self, _buf: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "no data"))
+        }
+    }
+
+    impl Drop for SilentReader {
+        fn drop(&mut self) {
+            self.dropped
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn run_sse_aborts_on_inactivity_with_distinct_error_and_closes_reader() {
+        let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let err = run_sse(
+            SilentReader {
+                dropped: std::sync::Arc::clone(&dropped),
+            },
+            DEFAULT_STREAM_INACTIVITY_TIMEOUT,
+            &mut |_| {},
+        )
+        .unwrap_err();
+        // Distinct, user-readable error the frontend can offer «Повторить» for.
+        assert!(matches!(err, AppError::LlmTimeout(_)), "{err}");
+        assert_eq!(err.code(), "llm-timeout");
+        let msg = err.to_string();
+        assert!(msg.contains("40"), "message names the threshold: {msg}");
+        assert!(msg.contains("секунд"), "message is Russian: {msg}");
+        // The serialized payload carries the distinct code for the UI.
+        let json = serde_json::to_value(&err).unwrap();
+        assert_eq!(json["code"], "llm-timeout");
+        // The reader (and its socket) is dropped on the early return: cleanup.
+        assert!(
+            dropped.load(std::sync::atomic::Ordering::SeqCst),
+            "reader must be dropped when the watchdog aborts"
+        );
+    }
+
+    // A provider that keeps sending SSE lines, however slowly, must NOT abort:
+    // the watchdog is per-read inactivity, not a total deadline. The reader
+    // sleeps between reads (total well past the tiny threshold passed in) yet
+    // run_sse completes with the full answer.
+    struct SlowReader {
+        parts: Vec<Vec<u8>>,
+        idx: usize,
+        gap: Duration,
+    }
+
+    impl std::io::Read for SlowReader {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.idx >= self.parts.len() {
+                return Ok(0);
+            }
+            std::thread::sleep(self.gap);
+            let part = &self.parts[self.idx];
+            let n = part.len().min(buf.len());
+            buf[..n].copy_from_slice(&part[..n]);
+            self.idx += 1;
+            Ok(n)
+        }
+    }
+
+    #[test]
+    fn run_sse_does_not_abort_a_slow_but_live_stream() {
+        let lines = [
+            r#"data: {"choices":[{"index":0,"delta":{"content":"При"}}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"content":"вет"}}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"content":"!"}}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            "data: [DONE]",
+        ];
+        let parts: Vec<Vec<u8>> = lines.iter().map(|l| format!("{l}\n").into_bytes()).collect();
+        // 5 reads x 6 ms = 30 ms of live streaming, past a 1 ms threshold.
+        let reader = SlowReader {
+            parts,
+            idx: 0,
+            gap: Duration::from_millis(6),
+        };
+        let mut streamed = Vec::new();
+        let outcome = run_sse(reader, Duration::from_millis(1), &mut |e| {
+            if let ChatEvent::Delta(t) = e {
+                streamed.push(t);
+            }
+        })
+        .expect("slow-but-live stream must not abort");
+        assert_eq!(streamed, ["При", "вет", "!"]);
+        assert_eq!(outcome.content.as_deref(), Some("Привет!"));
+    }
+
+    #[test]
+    fn stream_inactivity_timeout_is_injectable() {
+        // The test seam lets a caller shrink the watchdog without a real 40 s.
+        let client = LlmClient::with_stream_timeout("https://example.test/v1", "k", Duration::from_millis(5));
+        assert_eq!(client.stream_timeout, Duration::from_millis(5));
+        // The default constructor keeps the shipped 40 s threshold.
+        assert_eq!(
+            LlmClient::new("https://example.test/v1", "k").stream_timeout,
+            DEFAULT_STREAM_INACTIVITY_TIMEOUT
+        );
+        assert_eq!(DEFAULT_STREAM_INACTIVITY_TIMEOUT, Duration::from_secs(40));
     }
 
     #[test]

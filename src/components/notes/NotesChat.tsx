@@ -173,7 +173,7 @@ export default function NotesChat() {
   );
 
   const transcriptActions = useMemo(
-    () => ({ onPin: pinItem, onRegenerate: regenerateItem }),
+    () => ({ onPin: pinItem, onRegenerate: regenerateItem, onRetry: regenerateItem }),
     [pinItem, regenerateItem],
   );
 

@@ -39,6 +39,10 @@ export function useVisionSupport(): boolean | null {
 // one reducer keyed by a numeric id (project id or session id), the same
 // streaming/steps/confirmation flow for both (SPEC 6: one loop, one stream).
 
+// Backend AppError code for the provider-silence watchdog (SPEC 6.0.1, Q23):
+// the only run error the UI offers «Повторить» for.
+export const LLM_TIMEOUT_CODE = "llm-timeout";
+
 export type StepStatus = "run" | "ok" | "err";
 
 export interface Step {
@@ -89,6 +93,9 @@ export interface ChatItem {
   compactions: Compaction[];
   note: string | null;
   error: string | null;
+  // True when the run failed with the provider-silence timeout (SPEC 6.0.1):
+  // the error bubble offers a «Повторить» button instead of the plain hint.
+  retryable?: boolean;
 }
 
 export interface Run {
@@ -126,7 +133,7 @@ export type ChatAction =
   | { type: "reasoningDelta"; key: number; text: string }
   | { type: "stepStart"; key: number; name: string; summary: string }
   | { type: "stepFinish"; key: number; ok: boolean }
-  | { type: "runError"; key: number; message: string }
+  | { type: "runError"; key: number; message: string; code?: string }
   | { type: "done"; key: number; answer: string; reason: string; reasoning: string | null }
   | { type: "confirm"; key: number; payload: ConfirmationRequestPayload }
   | { type: "confirmResolved"; key: number; id: number }
@@ -248,6 +255,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           compactions: s.run.compactions,
           note: null,
           error: action.message,
+          retryable: action.code === LLM_TIMEOUT_CODE,
         };
         return { ...s, run: null, items: [...s.items, item] };
       });
@@ -939,6 +947,9 @@ export interface TranscriptActions {
   onPin?: (item: ChatItem, pinned: boolean) => void;
   onRegenerate?: (item: ChatItem) => void;
   onBranch?: (item: ChatItem) => void;
+  // Retry the failed request behind a provider-silence timeout (SPEC 6.0.1):
+  // re-runs the same user turn without duplicating the failed bubble.
+  onRetry?: (item: ChatItem) => void;
   // Cross-entity quick actions: turn a message into a Notes/ note or a task.
   onToNote?: (item: ChatItem) => void;
   onToTask?: (item: ChatItem) => void;
@@ -1039,7 +1050,9 @@ const MessageRow = memo(function MessageRow({
   actions?: TranscriptActions;
   reveal?: { seed: number; enabled: boolean } | null;
 }) {
-  const canRegenerate = !!actions?.onRegenerate && item.role === "agent" && isLast && !hasRun;
+  const canRegenerate =
+    !!actions?.onRegenerate && item.role === "agent" && isLast && !hasRun && !item.retryable;
+  const canRetry = !!actions?.onRetry && item.retryable && isLast && !hasRun;
   const onPin = actions?.onPin;
   const onRegenerate = canRegenerate ? actions?.onRegenerate : undefined;
   const onBranch = actions?.onBranch;
@@ -1137,10 +1150,27 @@ const MessageRow = memo(function MessageRow({
       ))}
       {item.note && <span className="note">{item.note}</span>}
       {item.error && (
-        <div className="error">
+        <div className={`error${item.retryable ? " timeout" : ""}`}>
           {item.error}
-          <br />
-          Проверьте Настройки → Модель.
+          {item.retryable ? (
+            canRetry && (
+              <>
+                <br />
+                <button
+                  className="primary-btn small"
+                  type="button"
+                  onClick={() => actions?.onRetry?.(item)}
+                >
+                  Повторить
+                </button>
+              </>
+            )
+          ) : (
+            <>
+              <br />
+              Проверьте Настройки → Модель.
+            </>
+          )}
         </div>
       )}
     </div>

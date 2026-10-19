@@ -271,6 +271,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
     () => ({
       onPin: pinItem,
       onRegenerate: regenerateItem,
+      onRetry: regenerateItem,
       onToNote: messageToNote,
       onToTask: messageToTask,
     }),
