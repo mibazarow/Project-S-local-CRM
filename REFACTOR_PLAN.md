@@ -6,8 +6,8 @@
 > **Правило ведения:** выполненный срез **удаляем из этого файла полностью**. Никаких `done`, зачёркиваний и списков «закрыто». В файле — только актуальный остаток. Закрыл срез → удалил абзац.
 
 ## Текущее состояние
-- Финальный зелёный HEAD: `02aefdb` — `npm test` **164 passed**, `npm run build` OK, oxlint — только pre-existing `crossActions.ts`; `cargo test` **819 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings. Контракты/DTO/схема/UI не затронуты.
-- Полный `npm run app:build` — OK; установка в `/Applications/Project-S.app` (`npm run app:install`).
+- Финальный зелёный HEAD: `c11586b` — `npm test` **299 passed**, `npm run build` OK, oxlint — только pre-existing `crossActions.ts`; `cargo test` **899 passed / 19 ignored**, `cargo check`/`clippy --all-targets` 0 warnings. Контракты/DTO/схема/UI не затронуты.
+- Финальный `npm run app:build` — OK; установка в `/Applications/Project-S.app` (`npm run app:update`); установленный бандл несёт новую иконку (`Contents/Resources/icon.icns` побайтово = `src-tauri/icons/icon.icns`, `CFBundleIconFile=icon.icns`).
 - Автосмоук установленного приложения: окно рендерит дефолтный вид «Проекты», ранее активный проект восстанавливается (persist `project-s:lastProject:*` в WKWebView localStorage), процесс жив, выход по SIGTERM без crash-репорта. Логи чистые: 0 panic/backtrace/unwrap, 0 error/fault в unified log за прогон (совпадения `error` — только в `runs-2026-10-17.jsonl`, до прогона).
 - Ограничение TCC: интерактивный клик-обход вкладок невозможен (у CLI-хоста нет Accessibility). Активный вид/вкладка **не персистятся** (`tab` = `useState("projects")`, `App.tsx:19`; FilesPanel/Settings — тоже `useState`), поэтому Today / Задачи / Блокнот / Харнес / Настройки покрыты **164 фронтенд-тестами** (`TopBar`, `FilesPanel`, `TodayView`, `HarnessView`, `NotesView`, `SettingsModal`, `Modal`), а не ручным обходом.
 
