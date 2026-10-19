@@ -562,6 +562,7 @@ mod tests {
                 temperature: Some(temperature_for_kind(kind)),
                 max_tokens: None,
                 reasoning_effort: None,
+                requires_reasoning_passback: false,
             };
             let body = crate::llm::build_body(&[ChatMessage::user("hi")], None, &params, false);
             assert_eq!(body["temperature"], json!(temperature_for_kind(kind)));
@@ -731,6 +732,7 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 reasoning_effort: None,
+                requires_reasoning_passback: false,
             },
             cancel: None,
             state: None,

@@ -1018,6 +1018,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             reasoning_effort: None,
+            requires_reasoning_passback: false,
         }
     }
 

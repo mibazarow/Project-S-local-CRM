@@ -529,6 +529,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             reasoning_effort: None,
+            requires_reasoning_passback: false,
         };
         let body = crate::llm::build_body(&sanitize_tool_history(&broken), None, &params, false);
         let msgs = body["messages"].as_array().unwrap();

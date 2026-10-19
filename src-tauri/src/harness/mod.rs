@@ -185,6 +185,7 @@ pub(crate) fn llm_title(wd: &Path, text: &str) -> Option<String> {
         temperature: None,
         max_tokens: Some(AUTOTITLE_MAX_TOKENS),
         reasoning_effort: None,
+        requires_reasoning_passback: false,
     };
     let prompt = format!("Give a short Russian title (2–5 words), no quotes\n\n{text}");
     let out = client
@@ -582,6 +583,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             reasoning_effort: None,
+            requires_reasoning_passback: false,
         };
         // Window far above the estimate: no compaction, no summarizer call.
         let backend = ScriptedBackend::new(vec![]);
@@ -724,6 +726,7 @@ mod tests {
                 temperature: None,
                 max_tokens: None,
                 reasoning_effort: None,
+                requires_reasoning_passback: false,
             },
             cancel: None,
             state: None,

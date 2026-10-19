@@ -22,6 +22,25 @@ pub struct ChatParams {
     // Thinking-mode effort ("low" | "medium" | "high"); None omits
     // `reasoning_effort` from the request entirely (thinking off).
     pub reasoning_effort: Option<String>,
+    // Provider requires every assistant turn to carry `reasoning_content`
+    // (empty string when the turn produced none) whenever the request carries
+    // `tools` — DeepSeek thinking mode rejects a follow-up that omits it with
+    // HTTP 400 "reasoning_content must be passed back". False keeps the legacy
+    // behavior (send the trace only when it is non-empty) for other providers.
+    pub requires_reasoning_passback: bool,
+}
+
+// DeepSeek thinking mode is the only provider we gate on today: it requires the
+// reasoning pass-back whenever a request carries tools. Detected from the
+// effective endpoint/model name; thinking off means there is no trace to pass
+// back, so the requirement does not apply.
+fn reasoning_passback_required(cfg: &LlmConfig) -> bool {
+    let deepseek = cfg
+        .effective_base_url()
+        .to_ascii_lowercase()
+        .contains("deepseek")
+        || cfg.model.to_ascii_lowercase().contains("deepseek");
+    deepseek && cfg.reasoning_effort().is_some()
 }
 
 impl From<&LlmConfig> for ChatParams {
@@ -31,6 +50,7 @@ impl From<&LlmConfig> for ChatParams {
             temperature: cfg.temperature,
             max_tokens: cfg.max_tokens,
             reasoning_effort: cfg.reasoning_effort().map(str::to_owned),
+            requires_reasoning_passback: reasoning_passback_required(cfg),
         }
     }
 }
@@ -305,6 +325,7 @@ pub fn detect_vision(wd: &Path) -> Result<VisionStatus> {
         temperature: None,
         max_tokens: Some(1),
         reasoning_effort: None,
+        requires_reasoning_passback: false,
     };
     let probe_url = format!(
         "data:image/png;base64,{}",
@@ -562,6 +583,7 @@ pub(crate) fn build_body(
     params: &ChatParams,
     stream: bool,
 ) -> Value {
+    let tools = tools.filter(|t| !t.is_empty());
     let mut body = json!({
         "model": params.model,
         "messages": messages,
@@ -576,7 +598,7 @@ pub(crate) fn build_body(
     if let Some(effort) = &params.reasoning_effort {
         body["reasoning_effort"] = json!(effort);
     }
-    if let Some(tools) = tools.filter(|t| !t.is_empty()) {
+    if let Some(tools) = tools {
         body["tools"] = Value::Array(
             tools
                 .iter()
@@ -585,7 +607,29 @@ pub(crate) fn build_body(
         );
         body["tool_choice"] = json!("auto");
     }
+    // DeepSeek thinking mode + tools: every assistant turn must carry
+    // `reasoning_content`, or the API rejects the follow-up with HTTP 400. The
+    // serializer already emits the real trace when present; here we only fill
+    // the turns that have none (synthetic summaries, no-CoT rounds) with an
+    // empty string. Stored rows are never rewritten — this is wire-level only.
+    if params.requires_reasoning_passback && tools.is_some() {
+        ensure_reasoning_on_assistants(body["messages"].as_array_mut());
+    }
     body
+}
+
+// Adds `"reasoning_content": ""` to every assistant message object that lacks
+// the key, leaving turns that already carry a trace untouched.
+fn ensure_reasoning_on_assistants(messages: Option<&mut Vec<Value>>) {
+    if let Some(messages) = messages {
+        for m in messages {
+            if m.get("role").and_then(Value::as_str) == Some("assistant")
+                && m.get("reasoning_content").is_none()
+            {
+                m["reasoning_content"] = json!("");
+            }
+        }
+    }
 }
 
 #[derive(Default)]
@@ -929,6 +973,7 @@ mod tests {
             temperature: Some(0.5),
             max_tokens: Some(64),
             reasoning_effort: Some("medium".into()),
+            requires_reasoning_passback: false,
         };
         let body = build_body(&messages, Some(&tools), &params, true);
         assert_eq!(
@@ -979,6 +1024,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             reasoning_effort: None,
+            requires_reasoning_passback: false,
         };
         let body = build_body(&[ChatMessage::user("hi")], None, &params, false);
         assert!(body.get("reasoning_effort").is_none());
@@ -995,6 +1041,7 @@ mod tests {
             temperature: None,
             max_tokens: None,
             reasoning_effort: None,
+            requires_reasoning_passback: false,
         };
         let body = build_body(&messages, None, &params, false);
         assert_eq!(
@@ -1004,6 +1051,202 @@ mod tests {
                 { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAA=" } }
             ])
         );
+    }
+
+    #[test]
+    fn reasoning_passback_gate_is_deepseek_and_thinking_only() {
+        let deepseek_on = crate::config::LlmConfig {
+            base_url: "https://api.deepseek.com/v1".into(),
+            model: "deepseek-chat".into(),
+            thinking_level: "medium".into(),
+            ..Default::default()
+        };
+        assert!(reasoning_passback_required(&deepseek_on));
+        assert!(ChatParams::from(&deepseek_on).requires_reasoning_passback);
+
+        // DeepSeek endpoint but thinking off: there is no trace to pass back.
+        let deepseek_off = crate::config::LlmConfig {
+            thinking_level: "off".into(),
+            ..deepseek_on.clone()
+        };
+        assert!(!reasoning_passback_required(&deepseek_off));
+
+        // A DeepSeek model name behind a non-deepseek base URL still trips it.
+        let model_named = crate::config::LlmConfig {
+            base_url: "https://api.openai.com/v1".into(),
+            model: "DeepSeek-R1".into(),
+            ..Default::default()
+        };
+        assert!(reasoning_passback_required(&model_named));
+
+        // OpenAI with thinking on keeps the legacy behavior (no forced pass-back).
+        let openai = crate::config::LlmConfig {
+            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-4o-mini".into(),
+            thinking_level: "high".into(),
+            ..Default::default()
+        };
+        assert!(!reasoning_passback_required(&openai));
+        assert!(!ChatParams::from(&openai).requires_reasoning_passback);
+    }
+
+    #[test]
+    fn build_body_fills_missing_reasoning_on_assistant_turns_for_deepseek() {
+        let messages = vec![
+            ChatMessage::system("sys"),
+            ChatMessage::user("hi"),
+            ChatMessage::assistant("plain answer"),
+            ChatMessage::assistant_tool_calls(vec![ToolCall::new(
+                "c1".into(),
+                "f".into(),
+                "{}".into(),
+            )]),
+            ChatMessage::assistant("traced").with_reasoning(Some("real thought".into())),
+            ChatMessage::tool_result("c1", "ok"),
+        ];
+        let tools = [ToolSpec {
+            name: "f".into(),
+            description: "d".into(),
+            parameters: json!({ "type": "object" }),
+        }];
+        let params = ChatParams {
+            model: "deepseek-chat".into(),
+            temperature: None,
+            max_tokens: None,
+            reasoning_effort: Some("medium".into()),
+            requires_reasoning_passback: true,
+        };
+        let body = build_body(&messages, Some(&tools), &params, false);
+        let msgs = body["messages"].as_array().unwrap();
+        // Non-assistant roles are never given the key.
+        assert!(msgs[0].get("reasoning_content").is_none());
+        assert!(msgs[1].get("reasoning_content").is_none());
+        assert!(msgs[5].get("reasoning_content").is_none());
+        // Assistant turns without a trace (plain and tool-call) get an empty one.
+        assert_eq!(msgs[2]["reasoning_content"], "");
+        assert!(msgs[3].get("tool_calls").is_some());
+        assert_eq!(msgs[3]["reasoning_content"], "");
+        // An existing non-empty trace is preserved, not overwritten.
+        assert_eq!(msgs[4]["reasoning_content"], "real thought");
+    }
+
+    #[test]
+    fn build_body_adds_no_reasoning_field_for_other_providers() {
+        let messages = vec![
+            ChatMessage::assistant("plain"),
+            ChatMessage::assistant_tool_calls(vec![ToolCall::new(
+                "c1".into(),
+                "f".into(),
+                "{}".into(),
+            )]),
+        ];
+        let tools = [ToolSpec {
+            name: "f".into(),
+            description: "d".into(),
+            parameters: json!({ "type": "object" }),
+        }];
+        let params = ChatParams {
+            model: "gpt-4o-mini".into(),
+            temperature: None,
+            max_tokens: None,
+            reasoning_effort: Some("medium".into()),
+            requires_reasoning_passback: false,
+        };
+        let body = build_body(&messages, Some(&tools), &params, false);
+        let msgs = body["messages"].as_array().unwrap();
+        assert!(msgs[0].get("reasoning_content").is_none());
+        assert!(msgs[1].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn build_body_passback_is_noop_without_tools() {
+        let messages = vec![ChatMessage::assistant("plain")];
+        let params = ChatParams {
+            model: "deepseek-chat".into(),
+            temperature: None,
+            max_tokens: None,
+            reasoning_effort: Some("medium".into()),
+            requires_reasoning_passback: true,
+        };
+        let body = build_body(&messages, None, &params, false);
+        assert!(body["messages"][0].get("reasoning_content").is_none());
+    }
+
+    #[test]
+    fn deepseek_mock_rejects_body_missing_reasoning_passback() {
+        use crate::mcp::mock_server::{respond, CapturedRequest, Handler, MockServer};
+
+        // DeepSeek-like gate: HTTP 400 unless every assistant turn carries
+        // `reasoning_content`; 200 with a valid completion otherwise.
+        let handler: Handler = std::sync::Arc::new(
+            |stream: &mut std::net::TcpStream, req: &CapturedRequest| {
+                let body: Value = serde_json::from_str(&req.body).unwrap();
+                let missing = body["messages"]
+                    .as_array()
+                    .map(|msgs| {
+                        msgs.iter().any(|m| {
+                            m.get("role").and_then(Value::as_str) == Some("assistant")
+                                && m.get("reasoning_content").is_none()
+                        })
+                    })
+                    .unwrap_or(false);
+                if missing {
+                    respond(
+                        stream,
+                        400,
+                        "application/json",
+                        r#"{"error":{"message":"reasoning_content must be passed back"}}"#,
+                        &[],
+                    )
+                } else {
+                    respond(
+                        stream,
+                        200,
+                        "application/json",
+                        r#"{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#,
+                        &[],
+                    )
+                }
+            },
+        );
+        let server = MockServer::start(handler);
+        let client = LlmClient::new(&server.url_base, "k");
+
+        let messages = vec![
+            ChatMessage::user("hi"),
+            ChatMessage::assistant("earlier"),
+            ChatMessage::user("again"),
+        ];
+        let tools = [ToolSpec {
+            name: "f".into(),
+            description: "d".into(),
+            parameters: json!({ "type": "object" }),
+        }];
+
+        // Gate on (DeepSeek thinking): the empty trace is filled in, so the
+        // provider accepts the follow-up.
+        let fixed = ChatParams {
+            model: "deepseek-chat".into(),
+            temperature: None,
+            max_tokens: None,
+            reasoning_effort: Some("medium".into()),
+            requires_reasoning_passback: true,
+        };
+        let out = client.chat(&messages, Some(&tools), &fixed).unwrap();
+        assert_eq!(out.content.as_deref(), Some("ok"));
+
+        // The wire body actually carried the empty trace on the assistant turn.
+        let sent: Value =
+            serde_json::from_str(&server.request_log().last().unwrap().body).unwrap();
+        assert_eq!(sent["messages"][1]["reasoning_content"], "");
+
+        // Regression control: gate off omits the trace, so the mock 400s.
+        let legacy = ChatParams {
+            requires_reasoning_passback: false,
+            ..fixed.clone()
+        };
+        let err = client.chat(&messages, Some(&tools), &legacy).unwrap_err();
+        assert!(err.to_string().contains("400"), "expected HTTP 400, got {err}");
     }
 
     #[test]
