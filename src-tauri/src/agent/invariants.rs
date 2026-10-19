@@ -83,6 +83,12 @@ const MUTATING_SKIP_ALLOWLIST: &[&str] = &[
     // only through a single-use proposal token; the confirmation is the
     // explicit chat yes the tool description mandates, not the modal queue.
     "settings_apply",
+    // Notification Center banner: shows a transient banner, touches no user
+    // files; same guard class as clipboard_set.
+    "notify",
+    // LaunchServices open: launches the default handler for an existing path
+    // or an http(s)/file URL; non-destructive, the user closes what opens.
+    "open",
 ];
 
 fn is_valid_tool_name(name: &str) -> bool {

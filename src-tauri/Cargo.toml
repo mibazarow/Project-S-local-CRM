@@ -62,6 +62,7 @@ rust_xlsxwriter = "0.100.0"
 # transitive dep, pinned to the version in Cargo.lock so no new download.
 unicode-normalization = "0.1.25"
 printpdf = { version = "0.12.8", default-features = false }
+sysinfo = "0.39"
 
 [features]
 # ONNX text embedder + model provisioning is the default embedding backend.

@@ -25,6 +25,7 @@ mod mcp_tools;
 mod schedule_tools;
 mod shell_tools;
 mod spotlight_tools;
+mod system_tools;
 mod transfer;
 mod trash_tools;
 

@@ -19,6 +19,7 @@ use super::schedule_tools::{
 };
 use super::shell_tools::BashTool;
 use super::spotlight_tools::SpotlightSearchTool;
+use super::system_tools::{FsWatchTool, NotifyTool, OpenTool, SysinfoTool};
 use super::trash_tools::{RestoreTrashedTool, TrashPathsTool};
 use crate::agent::catalog::Catalog;
 use crate::agent::tool::Tool;
@@ -156,6 +157,10 @@ pub fn harness_catalog() -> Catalog {
         // launchd LaunchAgents: survive app close (Q.md computer-control
         // slice); list/status skip, create/remove confirm; see launchd_tools.rs.
         Arc::new(LaunchdTool),
+        Arc::new(SysinfoTool),
+        Arc::new(NotifyTool::default()),
+        Arc::new(OpenTool::default()),
+        Arc::new(FsWatchTool),
         Arc::new(crate::agent::undo_tools::UndoLastTool),
         Arc::new(crate::agent::undo_tools::UndoListTool),
         // Background entity links (links slice): lazy-discovered like the
@@ -185,7 +190,7 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
-    const DEFERRED_NAMES: [&str; 67] = [
+    const DEFERRED_NAMES: [&str; 71] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -250,6 +255,10 @@ mod tests {
         "schedule_pause",
         "schedule_delete",
         "launchd",
+        "sysinfo",
+        "notify",
+        "open",
+        "fs_watch",
         "settings_list",
         "settings_propose",
         "settings_apply",
@@ -328,6 +337,14 @@ mod tests {
         // Spotlight search is read-only
         assert_eq!(tool("mdfind").class(), ToolClass::ReadOnly);
         assert_eq!(tool("mdfind").policy(), PermissionPolicy::Skip);
+        assert_eq!(tool("sysinfo").class(), ToolClass::ReadOnly);
+        assert_eq!(tool("sysinfo").policy(), PermissionPolicy::Skip);
+        assert_eq!(tool("fs_watch").class(), ToolClass::ReadOnly);
+        assert_eq!(tool("fs_watch").policy(), PermissionPolicy::Skip);
+        assert_eq!(tool("notify").class(), ToolClass::Mutating);
+        assert_eq!(tool("notify").policy(), PermissionPolicy::Skip);
+        assert_eq!(tool("open").class(), ToolClass::Mutating);
+        assert_eq!(tool("open").policy(), PermissionPolicy::Skip);
         // Real Trash and its restore both mutate the filesystem: always confirm
         for name in ["trash_paths", "restore_trashed"] {
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
