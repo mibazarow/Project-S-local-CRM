@@ -622,47 +622,6 @@ pub fn branch_chat(conn: &Connection, chat_id: i64, message_id: i64) -> Result<C
     })
 }
 
-// Readable Markdown transcript of a chat for export: role headers with
-// timestamps, reasoning in a collapsible block, a compact one-line note per
-// tool round; tool results and system turns are skipped as noise.
-pub fn export_markdown(conn: &Connection, chat_id: i64) -> Result<String> {
-    let exists: i64 = conn
-        .query_row("SELECT count(*) FROM chats WHERE id = ?1", params![chat_id], |r| r.get(0))?;
-    if exists != 1 {
-        return Err(AppError::Invalid(format!("chat {chat_id} not found")));
-    }
-    let mut out = format!("# Чат #{chat_id}\n");
-    for m in history_by_chat(conn, chat_id)? {
-        if m.role != "user" && m.role != "assistant" {
-            continue;
-        }
-        let who = if m.role == "user" { "Вы" } else { "Агент" };
-        out.push_str(&format!("\n## {who} · {}\n\n", m.created_at));
-        if let Some(reasoning) = m.reasoning.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
-            out.push_str(&format!(
-                "<details><summary>Размышления</summary>\n\n{reasoning}\n\n</details>\n\n"
-            ));
-        }
-        if let Some(content) = m.content.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
-            out.push_str(content);
-            out.push('\n');
-        }
-        let tools: Vec<String> = m
-            .tool_calls
-            .iter()
-            .filter_map(|tc| tc["name"].as_str().map(str::to_string))
-            .collect();
-        if !tools.is_empty() {
-            out.push_str(&format!("\n> Инструменты: {}\n", tools.join(", ")));
-        }
-        if !m.attachments.is_empty() {
-            let names: Vec<&str> = m.attachments.iter().map(|a| a.name.as_str()).collect();
-            out.push_str(&format!("\n> Файлы: {}\n", names.join(", ")));
-        }
-    }
-    Ok(out)
-}
-
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatSearchHitDto {
@@ -1274,29 +1233,6 @@ mod tests {
         let notes_chat = crate::notes::ensure_notes_chat(&conn).unwrap();
         let nm = append_message(&conn, notes_chat, Role::User, Some("y"), &[], None, None).unwrap();
         assert!(matches!(branch_chat(&conn, notes_chat, nm.id), Err(AppError::Invalid(_))));
-        fs::remove_dir_all(&wd).unwrap();
-    }
-
-    #[test]
-    fn export_markdown_keeps_roles_and_skips_tool_noise() {
-        let (wd, conn, pid) = setup("chat-export");
-        let chat_id = ensure_project_chat(&conn, pid).unwrap();
-        append_message(&conn, chat_id, Role::User, Some("сделай отчёт"), &[], None, None).unwrap();
-        let calls = vec![call("c1", "read_file", json!({ "rel_path": "a.md" }))];
-        append_message(&conn, chat_id, Role::Assistant, None, &calls, None, None).unwrap();
-        append_message(&conn, chat_id, Role::Tool, Some("{\"ok\":true}"), &[], Some("c1"), None).unwrap();
-        let asst = ChatMessage::assistant("готово").with_reasoning(Some("думал".into()));
-        append_chat_message(&conn, chat_id, &asst).unwrap();
-
-        let md = export_markdown(&conn, chat_id).unwrap();
-        assert!(md.contains("## Вы ·"));
-        assert!(md.contains("сделай отчёт"));
-        assert!(md.contains("## Агент ·"));
-        assert!(md.contains("готово"));
-        assert!(md.contains("<details><summary>Размышления</summary>"));
-        assert!(md.contains("думал"));
-        assert!(md.contains("> Инструменты: read_file"));
-        assert!(!md.contains("{\"ok\":true}"), "tool result noise must not leak into the export");
         fs::remove_dir_all(&wd).unwrap();
     }
 

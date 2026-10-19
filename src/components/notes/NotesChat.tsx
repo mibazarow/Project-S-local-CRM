@@ -9,10 +9,8 @@ import {
   ChatHeaderTools,
   ConfirmCard,
   countMatches,
-  downloadMarkdown,
   resolvePinMessageId,
   resolveRegenerateTurn,
-  runChatExport,
   type ChatItem,
 } from "../chat/chatShared";
 import { useChatRun } from "../chat/useChatRun";
@@ -177,11 +175,6 @@ export default function NotesChat() {
     [pinItem, regenerateItem],
   );
 
-  const exportChat = () => {
-    if (chatId == null) return;
-    runChatExport(chatId, (r) => downloadMarkdown(r.markdown, `notes-chat-${chatId}.md`));
-  };
-
   return (
     <aside className="chat">
       <div className="chat-head">
@@ -191,8 +184,6 @@ export default function NotesChat() {
           query={chatQuery}
           onQuery={setChatQuery}
           matchCount={countMatches(slice?.items ?? [], chatQuery)}
-          onExport={exportChat}
-          exportDisabled={chatId == null}
         />
       </div>
 

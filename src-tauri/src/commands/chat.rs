@@ -60,7 +60,7 @@ pub(crate) fn cancel_run(registry: State<'_, Arc<AgentRegistry>>, project_id: i6
 }
 
 // Message-level chat UX (SPEC chat UX slice): pin, truncate (regenerate),
-// branch (harness only), Markdown export and in-chat LIKE search.
+// branch (harness only) and in-chat LIKE search.
 #[tauri::command]
 pub(crate) fn chat_pin(state: State<AppState>, chat_id: i64, message_id: i64, pinned: bool) -> Result<()> {
     with_db(&state, |conn| chat::set_pinned(conn, chat_id, message_id, pinned))
@@ -83,18 +83,6 @@ pub(crate) fn chat_branch(
     let dto = with_db(&state, |conn| chat::branch_chat(conn, chat_id, message_id))?;
     let _ = app.emit("sessions-changed", serde_json::json!({}));
     Ok(dto)
-}
-
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct ChatExportResult {
-    markdown: String,
-}
-
-#[tauri::command]
-pub(crate) fn chat_export(state: State<AppState>, chat_id: i64) -> Result<ChatExportResult> {
-    let markdown = with_db(&state, |conn| chat::export_markdown(conn, chat_id))?;
-    Ok(ChatExportResult { markdown })
 }
 
 #[tauri::command]

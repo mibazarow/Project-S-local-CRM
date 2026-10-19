@@ -18,10 +18,8 @@ import {
   AttachFileIcon,
   AttachXIcon,
   countMatches,
-  downloadMarkdown,
   resolvePinMessageId,
   resolveRegenerateTurn,
-  runChatExport,
   useVisionSupport,
   type ChatItem,
 } from "../chat/chatShared";
@@ -532,13 +530,6 @@ export default function HarnessView() {
     [pinItem, regenerateItem, branchItem],
   );
 
-  const exportChat = () => {
-    if (activeId == null) return;
-    const chatId = sessionChatIds[activeId];
-    if (chatId == null) return;
-    runChatExport(chatId, (r) => downloadMarkdown(r.markdown, `session-chat-${chatId}.md`));
-  };
-
   const toggleSchedule = async (s: ScheduleDto) => {
     try {
       if (s.status === "active") await ipc.schedulePause(s.id);
@@ -684,8 +675,6 @@ export default function HarnessView() {
             query={chatQuery}
             onQuery={setChatQuery}
             matchCount={countMatches(slice?.items ?? [], chatQuery)}
-            onExport={exportChat}
-            exportDisabled={activeId == null || (activeId != null && sessionChatIds[activeId] == null)}
           />
         </div>
 

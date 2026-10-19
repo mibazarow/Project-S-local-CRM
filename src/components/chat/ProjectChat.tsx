@@ -11,10 +11,8 @@ import {
   AttachFileIcon,
   AttachXIcon,
   countMatches,
-  downloadMarkdown,
   resolvePinMessageId,
   resolveRegenerateTurn,
-  runChatExport,
   useVisionSupport,
   type ChatItem,
 } from "./chatShared";
@@ -260,13 +258,6 @@ export default function ProjectChat({ projectId, projectName }: Props) {
     [projectId, stateRef, dispatch, rememberChatId],
   );
 
-  const exportChat = useCallback(() => {
-    if (projectId == null) return;
-    const chatId = chatIdsRef.current[projectId];
-    if (chatId == null) return;
-    runChatExport(chatId, (r) => downloadMarkdown(r.markdown, `chat-${chatId}.md`));
-  }, [projectId]);
-
   const transcriptActions = useMemo(
     () => ({
       onPin: pinItem,
@@ -291,8 +282,6 @@ export default function ProjectChat({ projectId, projectName }: Props) {
           query={chatQuery}
           onQuery={setChatQuery}
           matchCount={countMatches(slice?.items ?? [], chatQuery)}
-          onExport={exportChat}
-          exportDisabled={projectId == null || chatIds[projectId] == null}
         />
       </div>
 

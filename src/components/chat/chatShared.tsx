@@ -601,14 +601,6 @@ export async function resolveRegenerateTurn(
   return { messageId, userText };
 }
 
-// Export saves the Markdown transcript as a local download; failures are silent.
-export function runChatExport(chatId: number, download: (r: { markdown: string }) => void): void {
-  void ipc
-    .chatExport(chatId)
-    .then(download)
-    .catch(() => {});
-}
-
 // Case-insensitive occurrence count of the query across item texts (the
 // header shows the total; the transcript filters by it).
 export function countMatches(items: ChatItem[], query: string): number {
@@ -642,20 +634,6 @@ function highlight(text: string, q: string): ReactNode {
   }
   parts.push(text.slice(i));
   return parts;
-}
-
-// Export saves the Markdown transcript as a local download; the app itself
-// never writes to disk from the UI.
-export function downloadMarkdown(markdown: string, filename: string) {
-  const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export const PinIcon = () => (
@@ -695,19 +673,15 @@ export const TaskIcon = () => (
   </svg>
 );
 
-// Export + search controls shared by the headers of all three chats.
+// Search controls shared by the headers of all three chats.
 export function ChatHeaderTools({
   query,
   onQuery,
   matchCount,
-  onExport,
-  exportDisabled,
 }: {
   query: string;
   onQuery: (q: string) => void;
   matchCount: number;
-  onExport: () => void;
-  exportDisabled?: boolean;
 }) {
   return (
     <span className="chat-head-tools">
@@ -725,15 +699,6 @@ export function ChatHeaderTools({
           }
         }}
       />
-      <button
-        className="ghost-btn small"
-        type="button"
-        title="Скачать чат в Markdown"
-        onClick={onExport}
-        disabled={exportDisabled}
-      >
-        Экспорт
-      </button>
     </span>
   );
 }

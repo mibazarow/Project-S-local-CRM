@@ -329,7 +329,6 @@ pub fn run() {
             commands::chat::chat_pin,
             commands::chat::chat_truncate_after,
             commands::chat::chat_branch,
-            commands::chat::chat_export,
             commands::chat::chat_search,
             commands::harness::send_session_message,
             commands::harness::cancel_session_run,
