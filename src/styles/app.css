@@ -186,7 +186,7 @@ input, textarea { font-family: inherit; }
   padding: 0 8px 8px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 8px;
 }
 
 .project-item {
@@ -206,6 +206,17 @@ input, textarea { font-family: inherit; }
 }
 .project-item:hover { background: rgba(0, 0, 0, .045); }
 .project-item.active { background: var(--accent); color: #fff; }
+.project-list > .project-item + .project-item::before,
+.session-list > .session-item + .session-item::before {
+  content: "";
+  position: absolute;
+  top: -4.5px;
+  left: 10px;
+  right: 10px;
+  height: 1px;
+  background: rgba(255, 255, 255, .09);
+  pointer-events: none;
+}
 
 .project-item .name {
   font-weight: 500;
@@ -1385,7 +1396,7 @@ details.set-card code {
   padding: 0 8px 8px;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 8px;
 }
 .session-item {
   text-align: left;
