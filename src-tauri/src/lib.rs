@@ -35,6 +35,7 @@ mod search;
 mod search_reindex;
 mod skills;
 mod state;
+mod style;
 pub mod sync_util;
 mod tasks;
 mod templates;
@@ -345,6 +346,7 @@ pub fn run() {
             commands::memory::memory_delete,
             commands::memory::memory_search,
             commands::memory::index_memory,
+            commands::style::style_reset,
             commands::mcp::mcp_status,
             commands::mcp::mcp_reload,
             commands::skills::skills_list,

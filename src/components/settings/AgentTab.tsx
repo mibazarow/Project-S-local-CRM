@@ -26,6 +26,8 @@ export default function AgentTab({
   const [embed, setEmbed] = useState<EmbedStatus | null>(null);
   const [reindexBusy, setReindexBusy] = useState(false);
   const [reindexNote, setReindexNote] = useState<string | null>(null);
+  const [styleBusy, setStyleBusy] = useState(false);
+  const [styleNote, setStyleNote] = useState<string | null>(null);
 
   useEffect(() => {
     void ipc
@@ -72,6 +74,15 @@ export default function AgentTab({
       })
       .catch((e) => setError(errMsg(e)))
       .finally(() => setReindexBusy(false));
+  };
+
+  const resetStyle = () => {
+    setStyleBusy(true);
+    void ipc
+      .styleReset()
+      .then(() => setStyleNote("Стиль общения сброшен: агент начнёт с нейтрального тона."))
+      .catch((e) => setError(errMsg(e)))
+      .finally(() => setStyleBusy(false));
   };
 
   if (!active) return null;
@@ -142,6 +153,17 @@ export default function AgentTab({
           </button>
         </div>
         {reindexNote && <div className="set-note">{reindexNote}</div>}
+      </Card>
+      <Card
+        title="Стиль общения"
+        desc="Агент постепенно перенимает тон, обращение (ты/вы) и манеру пользователя во всех чатах. Сброс возвращает нейтральный стиль."
+      >
+        <div className="set-actions">
+          <button className="ghost-btn" disabled={styleBusy} onClick={resetStyle}>
+            {styleBusy ? "Сброс…" : "Сбросить стиль общения"}
+          </button>
+        </div>
+        {styleNote && <div className="set-note">{styleNote}</div>}
       </Card>
       <Card
         title="Семантический поиск"

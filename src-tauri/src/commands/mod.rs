@@ -17,6 +17,7 @@ pub(crate) mod schedules;
 pub(crate) mod search;
 pub(crate) mod settings;
 pub(crate) mod skills;
+pub(crate) mod style;
 pub(crate) mod tasks;
 pub(crate) mod templates;
 pub(crate) mod trash;

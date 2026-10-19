@@ -522,17 +522,25 @@ fn upsert_identity(conn: &Connection, source: &str, content: &str, tags: &[Strin
 }
 
 // The stable "[Memory]" block for the system prompt: the fixed identity lines
-// plus the always-injected gender line. Nothing here depends on the fresh
-// user turn, so the system prompt stays byte-identical across turns and the
-// prompt-cache prefix survives; query-relevant records live in the volatile
-// [Context] block instead (relevant_records).
+// plus the always-injected gender line, plus the global style-of-communication
+// instruction (SPEC 6.6) when the user's profile is non-neutral. Nothing here
+// depends on the fresh user turn's query, so the system prompt stays byte-identical
+// across turns for a fixed profile and the prompt-cache prefix survives; the style
+// line only changes as the profile itself evolves. Query-relevant records live in
+// the volatile [Context] block instead (relevant_records).
 pub fn identity_block(conn: &Connection) -> Result<String> {
     let gender = user_gender(conn)?;
-    Ok(format!(
+    let mut block = format!(
         "{MEMORY_BLOCK_PREFIX}\n{}\n{}",
         identity_lines(),
         gender_line(&gender)
-    ))
+    );
+    let style = crate::style::instruction_block(conn)?;
+    if !style.is_empty() {
+        block.push('\n');
+        block.push_str(&style);
+    }
+    Ok(block)
 }
 
 // The query-relevant records section for the volatile [Context] block: the

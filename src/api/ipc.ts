@@ -409,6 +409,10 @@ export const chatAttachmentOpen = (chatId: number, messageId: number, index: num
 
 export const reindexAll = () => invoke<ProjectIndexStats[]>("reindex_all");
 
+// Style profile (SPEC 6.6): reset the global style-of-communication profile the
+// agents mirror from the user's messages.
+export const styleReset = () => invoke<void>("style_reset");
+
 // Search reindex («Переиндексация поиска»): manual start (no-op while a pass
 // runs) and read-only status; the same pass also fires automatically every
 // 5 minutes. Progress arrives as "reindex-progress" / "reindex-done".

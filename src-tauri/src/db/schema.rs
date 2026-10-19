@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::{params, Connection};
 
-pub const SCHEMA_VERSION: i64 = 35;
+pub const SCHEMA_VERSION: i64 = 36;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -619,6 +619,24 @@ CREATE TABLE IF NOT EXISTS skill_proposals (
 );
 ";
 
+// Style profile (SPEC 6.6 Q-26): one global row (id = 1) of decayed counters
+// derived from the user's own messages only — address (ты/вы), emoji, profanity,
+// word and message counts. Shared by every chat and session, survives restarts.
+// The agent's style instruction is derived from these counters and injected into
+// every system prompt through the [Memory] block.
+const MIGRATION_36_STYLE_PROFILE: &str = "
+CREATE TABLE IF NOT EXISTS style_profile (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    informal REAL NOT NULL DEFAULT 0,
+    formal REAL NOT NULL DEFAULT 0,
+    emoji REAL NOT NULL DEFAULT 0,
+    profanity REAL NOT NULL DEFAULT 0,
+    words REAL NOT NULL DEFAULT 0,
+    messages REAL NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+";
+
 fn migrate_v1(conn: &Connection) -> Result<()> {
     conn.execute_batch(MIGRATION_1)?;
     Ok(())
@@ -976,6 +994,12 @@ fn migrate_v35(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v36(conn: &Connection) -> Result<()> {
+    // CREATE TABLE IF NOT EXISTS: idempotent across interrupted re-runs.
+    conn.execute_batch(MIGRATION_36_STYLE_PROFILE)?;
+    Ok(())
+}
+
 // Ordered (user_version target, migration body) table: each body runs when
 // the stored user_version is below its target, then the runner bumps
 // user_version to the target, exactly like the previous hand-rolled
@@ -1018,7 +1042,8 @@ const MIGRATIONS: &[(u32, Migration)] = &[
     (32, migrate_v32),
     (33, migrate_v33),
     (34, migrate_v34),
-    (SCHEMA_VERSION as u32, migrate_v35),
+    (35, migrate_v35),
+    (SCHEMA_VERSION as u32, migrate_v36),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
@@ -1074,12 +1099,13 @@ mod tests {
                     'chats','messages','summaries','sessions','schedules','memory','memory_fts',
                     'tasks_fts','message_attachments','todos','messages_fts','message_vectors',
                     'vec_messages','processes','trash','versions','undo_log','objectives',
-                    'objective_steps','links','memory_vectors','vec_memory','skill_proposals')",
+                    'objective_steps','links','memory_vectors','vec_memory','skill_proposals',
+                    'style_profile')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 29);
+        assert_eq!(tables, 30);
     }
 
     #[test]

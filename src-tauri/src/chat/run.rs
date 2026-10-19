@@ -319,13 +319,21 @@ fn run_agent_inner(
     let app_cfg = run_app_config(wd)?;
 
     // Global memory (SPEC 6.3): only the stable part — the fixed identity
-    // lines and the always-injected gender line — is appended to the system
-    // prompt of every run (project chats and harness sessions alike); it is
-    // the same for any query, so the cacheable prefix survives. The records
-    // relevant to the fresh user turn already ride the volatile block.
+    // lines, the always-injected gender line and the style-of-communication
+    // instruction (SPEC 6.6) — is appended to the system prompt of every run
+    // (project chats, notes and harness sessions alike); it is the same for any
+    // query, so the cacheable prefix survives. The records relevant to the
+    // fresh user turn already ride the volatile block.
+    //
+    // The style profile is folded from the fresh user turn first (skipped for
+    // scheduled runs, whose "user" text is the agent's own schedule prompt), so
+    // the instruction this run injects already reflects the current message.
     {
         let guard = lock_recover(&thread_state.db);
         let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
+        if kind != "schedule" {
+            let _ = crate::style::observe_user_message(conn, &user_text);
+        }
         system_prompt.push_str(&format!("\n\n{}", memory::identity_block(conn)?));
     }
 
