@@ -21,6 +21,7 @@ pub mod prompts;
 pub mod result;
 pub mod screenshot_tool;
 pub mod send_file;
+pub mod settings_tools;
 pub mod ssh_tools;
 pub mod task_glue;
 pub mod tool;

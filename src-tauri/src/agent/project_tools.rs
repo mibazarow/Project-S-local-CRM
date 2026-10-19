@@ -116,6 +116,12 @@ pub fn project_catalog() -> Catalog {
         // Background entity links (links slice): read what a chat/file/task
         // is connected to; links are recorded automatically by the loop.
         Arc::new(crate::links::RelatedTool),
+        // Settings from chat (Q.md settings slice): the agent sees the real
+        // config keys/values and edits them only after an explicit chat
+        // confirmation; see settings_tools.rs for the allow/deny registry.
+        Arc::new(crate::agent::settings_tools::SettingsListTool),
+        Arc::new(crate::agent::settings_tools::SettingsProposeTool),
+        Arc::new(crate::agent::settings_tools::SettingsApplyTool),
     ];
     for tool in tools {
         // Names are statically unique; a failure here is a programming bug.
@@ -940,7 +946,7 @@ mod tests {
         tool(name).execute(&args, ctx).unwrap()
     }
 
-    const TOOL_NAMES: [&str; 60] = [
+    const TOOL_NAMES: [&str; 63] = [
         "finish_task",
         "search",
         "read_file",
@@ -1001,6 +1007,9 @@ mod tests {
         "undo_last",
         "undo_list",
         "related",
+        "settings_list",
+        "settings_propose",
+        "settings_apply",
     ];
 
     #[test]

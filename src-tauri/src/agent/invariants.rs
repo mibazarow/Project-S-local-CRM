@@ -79,6 +79,10 @@ const MUTATING_SKIP_ALLOWLIST: &[&str] = &[
     // Undo pops the bounded undo stack and restores a prior snapshot/trash
     // entry; it only reverses an earlier mutation, never reaches a new path.
     "undo_last",
+    // Settings apply (Q.md settings slice): writes one allowlisted config key
+    // only through a single-use proposal token; the confirmation is the
+    // explicit chat yes the tool description mandates, not the modal queue.
+    "settings_apply",
 ];
 
 fn is_valid_tool_name(name: &str) -> bool {

@@ -143,6 +143,11 @@ pub fn harness_catalog() -> Catalog {
         // Background entity links (links slice): lazy-discovered like the
         // rest of the machine-wide set.
         Arc::new(crate::links::RelatedTool),
+        // Settings from chat (Q.md settings slice): real config keys/values,
+        // propose → chat confirmation → apply; see settings_tools.rs.
+        Arc::new(crate::agent::settings_tools::SettingsListTool),
+        Arc::new(crate::agent::settings_tools::SettingsProposeTool),
+        Arc::new(crate::agent::settings_tools::SettingsApplyTool),
     ];
     for tool in core {
         catalog.register(tool, true).expect("unique tool names");
@@ -162,7 +167,7 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
-    const DEFERRED_NAMES: [&str; 58] = [
+    const DEFERRED_NAMES: [&str; 61] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -221,6 +226,9 @@ mod tests {
         "schedule_list",
         "schedule_pause",
         "schedule_delete",
+        "settings_list",
+        "settings_propose",
+        "settings_apply",
     ];
 
     #[test]
