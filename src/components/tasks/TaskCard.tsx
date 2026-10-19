@@ -149,37 +149,37 @@ function TaskEditor({
         rows={2}
         onChange={(e) => setComment(e.target.value)}
       />
-      <div className="task-due-row">
-        <input
-          className="rename-input"
-          type="date"
-          title="Срок"
-          value={dueDate}
-          onChange={(e) => setDueDate(e.target.value)}
-        />
-        <input
-          className="rename-input"
-          type="time"
-          title="Время дедлайна"
-          value={dueTime}
-          onChange={(e) => setDueTime(e.target.value)}
-        />
-        <input
-          className="rename-input"
-          type="time"
-          title="Время напоминания"
-          value={remindTime}
-          onChange={(e) => setRemindTime(e.target.value)}
-        />
-      </div>
-      <div className="td-row">
+      <div className="task-edit-datetime">
+        <div className="task-due-row">
+          <input
+            className="rename-input"
+            type="date"
+            title="Срок"
+            value={dueDate}
+            onChange={(e) => setDueDate(e.target.value)}
+          />
+          <input
+            className="rename-input"
+            type="time"
+            title="Время дедлайна"
+            value={dueTime}
+            onChange={(e) => setDueTime(e.target.value)}
+          />
+          <input
+            className="rename-input"
+            type="time"
+            title="Время напоминания"
+            value={remindTime}
+            onChange={(e) => setRemindTime(e.target.value)}
+          />
+        </div>
         <label className="tf-check td-priority">
           <input
             type="checkbox"
             checked={isPriority}
             onChange={(e) => setIsPriority(e.target.checked)}
           />
-          Приоритетная
+          Важная
         </label>
       </div>
       <div className="td-checklist">

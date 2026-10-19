@@ -471,11 +471,14 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 /* ---------- Редактор деталей задачи ---------- */
 
 .task-details { display: flex; flex-direction: column; gap: 8px; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--hairline); }
-.task-details .td-row { display: flex; gap: 12px; }
 .task-details label { display: flex; flex-direction: column; gap: 3px; font-size: 10.5px; color: var(--text-muted); }
 .task-details select { border: 1px solid var(--border-strong); border-radius: 6px; padding: 3px 6px; font-size: 11.5px; background: #fff; color: var(--text); }
 .task-details select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(55, 106, 159, .18); }
 .task-details .rename-input { font-size: 11px; padding: 2px 6px; }
+.task-edit-datetime { display: flex; align-items: center; gap: 4px; }
+.task-edit .task-due-row { display: grid; grid-template-columns: 92px 56px 56px; gap: 4px; align-items: center; margin-top: 0; flex: 0 0 auto; }
+.task-edit .task-due-row .rename-input { width: 100%; min-width: 0; box-sizing: border-box; font-size: 10.5px; padding: 2px 3px; }
+.task-edit .td-priority { flex-direction: row; align-items: center; gap: 4px; margin-left: auto; font-size: 10.5px; color: var(--text-muted); white-space: nowrap; flex-shrink: 0; }
 .td-checklist { display: flex; flex-direction: column; gap: 4px; }
 .td-check-row { display: flex; align-items: center; gap: 6px; font-size: 11.5px; }
 .td-check-row input[type="checkbox"] { accent-color: var(--accent); flex-shrink: 0; }
