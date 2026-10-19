@@ -43,7 +43,7 @@
   - удалён провайдер/агент Ornith;
   - удалён файл `~/.config/kilo/agents/ornith-coder.md`;
   - `bxmcp` (Bitrix MCP) выключен для Kilo; в PhpStorm он живёт отдельно;
-  - добавлен лёгкий субагент `builder`.
+  - добавлен лёгкий субагент `builder` (сейчас на Qwen; на DeepSeek он работал в большой сессии, на Qwen падал — см. §7).
 
 ## 3. Что сейчас является «остатком»
 
@@ -53,9 +53,9 @@
 
 - `explore` на Qwen работает.
 - `general` на Qwen (240k) в текущей большой сессии падает с `Compaction exhausted: context still exceeds model limits after 3 attempts`.
-- `builder` на DeepSeek (1M) работает; им и делали финальную сборку/установку.
+- `builder` на DeepSeek (1M) работал; им и делали финальную сборку/установку. Сейчас `builder` переведён на Qwen по решению пользователя; в большой сессии на Qwen он падал.
 - Компакт текущей сессии не помог, перезапуск процесса тоже: история сессии не очищается.
-- Ожидание: в **новой пустой сессии** `general` на Qwen снова влезет. Это и нужно проверить первым делом.
+- Ожидание: в **новой пустой сессии** `general` и `builder` на Qwen снова влезут. Это и нужно проверить первым делом.
 - Если и в новой сессии не влезет — перевести `general` на DeepSeek или использовать `builder` для команд, `explore` для чтения.
 
 Опционально, не блокирует:
@@ -100,15 +100,19 @@
 
 Глобальный конфиг: `~/.config/kilo/kilo.jsonc`.
 
-- Основная модель: `deepseek/deepseek-flash` (1M).
+- Основная модель (оркестратор): `deepseek/deepseek-flash` (1M).
 - `agent.general`: `llm-server/Qwen-Flash-Vision`, 240k, `permission.mcp: deny`.
 - `agent.explore`: `llm-server/Qwen-Flash-Vision`.
-- `agent.builder`: `deepseek/deepseek-flash`; кастомный лёгкий субагент: read/edit/bash, без MCP, веба и вложенных задач.
+- `agent.build`: `llm-server/Qwen-Flash-Vision`.
+- `agent.plan`: `llm-server/Qwen-Flash-Vision`.
+- `agent.builder`: `llm-server/Qwen-Flash-Vision`; кастомный лёгкий субагент: read/edit/bash, без MCP, веба и вложенных задач.
 - `agent.compaction`: `deepseek/deepseek-flash`.
 - `compaction`: auto, `threshold_percent: 85`, `reserved: 30000`, `prune: true`, `tail_turns: 2`.
-- `subagent_model`: `llm-server/Qwen-Flash-Vision` — именно поэтому новый субагент по умолчанию может снова упереться в 240k.
+- `subagent_model`: `llm-server/Qwen-Flash-Vision`.
 - MCP: `bxmcp` — `enabled: false`; `rea` и `scrapling` — включены.
 - `ornith`-провайдер удалён; `ornith-coder.md` удалён.
+
+Решение пользователя: **все агенты, кроме оркестратора, — на Qwen; оркестратор и модель сжатия — на DeepSeek.**
 
 Почему `general` падал:
 
@@ -168,7 +172,7 @@ git add -A && git commit -m "…"
 3. Проверить установленную версию: `defaults read … CFBundleShortVersionString` → `1.0.0`.
 4. Проверить `general` на Qwen **маленькой read-only задачей** (например, список файлов в `DOCS/`).
    - Работает → можно пользоваться Qwen.
-   - Падает → переключить `agent.general.model` на `deepseek/deepseek-flash` или работать через `builder`.
+   - Падает → переключить `agent.general.model` и `agent.builder.model` на `deepseek/deepseek-flash`.
 5. Не переделывать завершённый рефакторинг и не восстанавливать `SPEC.md`.
 6. Дальше — только по новой очереди от пользователя: сначала фиксировать пункт в `DOCS/Q.md`, потом реализация, тесты, коммит, удаление пункта.
 
