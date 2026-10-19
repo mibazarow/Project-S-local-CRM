@@ -12,6 +12,7 @@ pub mod hints;
 pub mod image_tools;
 #[cfg(test)]
 pub mod invariants;
+pub mod macos_ui_tool;
 pub mod notes_tools;
 pub mod ocr_tools;
 pub mod pdf_tools;

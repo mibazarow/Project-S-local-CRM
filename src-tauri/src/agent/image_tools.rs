@@ -170,7 +170,7 @@ fn sips_plan(
 
 // Runs one sips invocation with the TMP vars pointed at Harness/tmp and a
 // wall-clock timeout; returns (exit code, stdout, stderr).
-fn run_sips(
+pub(crate) fn run_sips(
     binary: &Path,
     argv: &[String],
     tmp: &Path,
@@ -224,7 +224,7 @@ fn run_sips(
 
 // Best-effort pixel size of the finished file; absent from the result when
 // the query fails (the transform itself already succeeded).
-fn query_size(binary: &Path, tmp: &Path, path: &Path) -> Option<(u32, u32)> {
+pub(crate) fn query_size(binary: &Path, tmp: &Path, path: &Path) -> Option<(u32, u32)> {
     let (code, stdout, _) =
         run_sips(binary, &["-g".into(), "pixelWidth".into(), "-g".into(), "pixelHeight".into(), path.display().to_string()], tmp, QUERY_TIMEOUT)
             .ok()?;

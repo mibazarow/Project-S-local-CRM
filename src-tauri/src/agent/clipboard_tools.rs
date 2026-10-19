@@ -14,9 +14,13 @@
 // clipboard. Production always passes None (general board, plain pbcopy flags).
 use super::result::{read_capped_bytes, ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
-use crate::error::Result;
+use base64::Engine as _;
+use chrono::Local;
+use crate::error::{AppError, Result};
 use crate::journal::mask_secrets;
+use crate::paths;
 use serde_json::{json, Value};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -303,6 +307,268 @@ impl Tool for ClipboardSetTool {
     }
 }
 
+const OSASCRIPT_BINARY: &str = "/usr/bin/osascript";
+const SIPS_BINARY: &str = "/usr/bin/sips";
+const PNGPASTE_CANDIDATES: [&str; 2] = ["/opt/homebrew/bin/pngpaste", "/usr/local/bin/pngpaste"];
+const IMAGE_TIMEOUT: Duration = Duration::from_secs(10);
+const MAX_IMAGE_BYTES: u64 = 32 * 1024 * 1024;
+const DATA_URL_MAX_BYTES: u64 = 4 * 1024 * 1024;
+const NO_IMAGE_MESSAGE: &str = "В буфере обмена нет изображения: скопируйте картинку (например, Cmd+Ctrl+Shift+4 делает скриншот в буфер) и повторите.";
+
+fn clip_image_script(raw_path: &Path) -> String {
+    format!(
+        "set out to {}\ntry\n\tset theData to (the clipboard as \u{ab}class PNGf\u{bb})\n\tset fmt to \"png\"\non error\n\ttry\n\t\tset theData to (the clipboard as \u{ab}class TIFF\u{bb})\n\t\tset fmt to \"tiff\"\n\ton error\n\t\treturn \"NO_IMAGE\"\n\tend try\nend try\nset fRef to open for access POSIX file out with write permission\nwrite theData to fRef\nclose access POSIX file out\nreturn fmt",
+        super::macos_ui_tool::as_quote(&raw_path.display().to_string())
+    )
+}
+
+fn run_pngpaste(binary: &Path, out: &Path, timeout: Duration) -> std::result::Result<(), String> {
+    let mut child = match Command::new(binary)
+        .arg(out.display().to_string())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!("{} not found", binary.display()))
+        }
+        Err(e) => return Err(format!("cannot run {}: {e}", binary.display())),
+    };
+    let stderr = child.stderr.take();
+    let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped_bytes(r, 4_096).0));
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => {}
+            Err(e) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("failed to wait for {}: {e}", binary.display()));
+            }
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(format!(
+                "{} timed out after {} s and was killed",
+                binary.display(),
+                timeout.as_secs()
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let _ = err_thread.join();
+    Ok(())
+}
+
+pub struct ClipboardGetImageTool {
+    osascript: PathBuf,
+    pngpaste: Option<PathBuf>,
+    sips: PathBuf,
+    timeout: Duration,
+}
+
+impl Default for ClipboardGetImageTool {
+    fn default() -> Self {
+        ClipboardGetImageTool {
+            osascript: PathBuf::from(OSASCRIPT_BINARY),
+            pngpaste: PNGPASTE_CANDIDATES
+                .iter()
+                .map(PathBuf::from)
+                .find(|p| p.is_file()),
+            sips: PathBuf::from(SIPS_BINARY),
+            timeout: IMAGE_TIMEOUT,
+        }
+    }
+}
+
+impl ClipboardGetImageTool {
+    #[cfg(test)]
+    pub fn with_programs(
+        osascript: impl Into<PathBuf>,
+        pngpaste: Option<impl Into<PathBuf>>,
+        sips: impl Into<PathBuf>,
+        timeout: Duration,
+    ) -> Self {
+        ClipboardGetImageTool {
+            osascript: osascript.into(),
+            pngpaste: pngpaste.map(Into::into),
+            sips: sips.into(),
+            timeout,
+        }
+    }
+}
+
+impl Tool for ClipboardGetImageTool {
+    fn name(&self) -> &str {
+        "clipboard_get_image"
+    }
+    fn description(&self) -> &str {
+        "Read an image (PNG or TIFF) from the macOS clipboard and save it as PNG under Settings/tmp/clipboard-<timestamp>.png; read-only, never modifies the clipboard.\nReturns {path, mime, bytes, width, height}; asDataUrl adds a base64 data URL for images up to 4 MB. Uses osascript/System Events with an optional pngpaste fallback; no image on the pasteboard is a clear error, permission failures name the System Settings pane to fix."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": { "asDataUrl": { "type": "boolean" } },
+            "required": [],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::ReadOnly
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn max_result_len(&self) -> usize {
+        6_000_000
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let wd = ctx.working_dir.clone().ok_or(AppError::NotConfigured)?;
+        let as_data_url = args
+            .get("asDataUrl")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let dir = paths::settings_tmp_dir(&wd);
+        fs::create_dir_all(&dir)?;
+        let stamp = Local::now().format("%Y%m%d-%H%M%S-%3f");
+        let out = dir.join(format!("clipboard-{stamp}.png"));
+        let raw = dir.join(format!("clipboard-{stamp}.raw"));
+
+        let mut permission_failure: Option<ToolResult> = None;
+        let mut converted_from_tiff = false;
+        if self.osascript.is_file() {
+            let script = clip_image_script(&raw);
+            match super::macos_ui_tool::run_osascript(&self.osascript, &script, self.timeout) {
+                Ok((Some(0), stdout, _)) => match stdout.trim() {
+                    "NO_IMAGE" => {
+                        return Ok(ToolResult::err(ToolErrorCode::NotFound, NO_IMAGE_MESSAGE))
+                    }
+                    "png" => fs::rename(&raw, &out)?,
+                    "tiff" => {
+                        let argv = vec![
+                            "-s".to_string(),
+                            "format".to_string(),
+                            "png".to_string(),
+                            raw.display().to_string(),
+                            "--out".to_string(),
+                            out.display().to_string(),
+                        ];
+                        let (code, _, stderr) = match super::image_tools::run_sips(
+                            &self.sips,
+                            &argv,
+                            &dir,
+                            self.timeout,
+                        ) {
+                            Ok(runs) => runs,
+                            Err(e) => {
+                                let _ = fs::remove_file(&raw);
+                                return Ok(ToolResult::err(ToolErrorCode::ExecutionError, e));
+                            }
+                        };
+                        let _ = fs::remove_file(&raw);
+                        if code != Some(0) {
+                            return Ok(ToolResult::err(
+                                ToolErrorCode::ExecutionError,
+                                format!(
+                                    "sips could not convert the clipboard TIFF to PNG (exit {}): {}",
+                                    code.unwrap_or(-1),
+                                    stderr.trim()
+                                ),
+                            ));
+                        }
+                        converted_from_tiff = true;
+                    }
+                    other => {
+                        return Ok(ToolResult::err(
+                            ToolErrorCode::ExecutionError,
+                            format!("unexpected osascript answer \"{other}\" from the clipboard image script"),
+                        ))
+                    }
+                },
+                Ok((code, _, stderr)) => {
+                    let mapped = super::macos_ui_tool::map_osascript_failure(code, &stderr);
+                    if mapped.error.as_ref().is_some_and(|e| e.code == "permission_denied") {
+                        permission_failure = Some(mapped);
+                    } else {
+                        return Ok(mapped);
+                    }
+                }
+                Err(e) => return Ok(ToolResult::err(ToolErrorCode::ExecutionError, e)),
+            }
+        }
+        if !out.is_file() {
+            match &self.pngpaste {
+                Some(bin) => {
+                    if let Err(e) = run_pngpaste(bin, &out, self.timeout) {
+                        return Ok(ToolResult::err(ToolErrorCode::ExecutionError, e));
+                    }
+                }
+                None => {
+                    if let Some(mapped) = permission_failure {
+                        return Ok(mapped);
+                    }
+                    return Ok(ToolResult::err(
+                        ToolErrorCode::NotFound,
+                        format!(
+                            "{} not found; osascript ships with every macOS install (pngpaste is an optional fallback)",
+                            self.osascript.display()
+                        ),
+                    ));
+                }
+            }
+        }
+        let bytes = match fs::metadata(&out) {
+            Ok(m) if m.is_file() && m.len() > 0 => m.len(),
+            _ => {
+                let _ = fs::remove_file(&out);
+                return Ok(ToolResult::err(
+                    ToolErrorCode::ExecutionError,
+                    format!("the clipboard image read produced no PNG at {}", out.display()),
+                ));
+            }
+        };
+        if bytes > MAX_IMAGE_BYTES {
+            let _ = fs::remove_file(&out);
+            return Ok(ToolResult::err(
+                ToolErrorCode::LimitExceeded,
+                format!(
+                    "clipboard image is {bytes} bytes, over the {MAX_IMAGE_BYTES}-byte cap"
+                ),
+            ));
+        }
+        let mut data = json!({
+            "path": out.display().to_string(),
+            "mime": "image/png",
+            "bytes": bytes,
+        });
+        if converted_from_tiff {
+            data["convertedFrom"] = json!("tiff");
+        }
+        if let Some((w, h)) = super::image_tools::query_size(&self.sips, &dir, &out) {
+            data["width"] = json!(w);
+            data["height"] = json!(h);
+        }
+        if as_data_url {
+            if bytes <= DATA_URL_MAX_BYTES {
+                let png = fs::read(&out)?;
+                data["dataUrl"] = json!(format!(
+                    "data:image/png;base64,{}",
+                    base64::engine::general_purpose::STANDARD.encode(png)
+                ));
+            } else {
+                data["dataUrlSkipped"] = json!(format!(
+                    "image is {bytes} bytes, over the {DATA_URL_MAX_BYTES}-byte data-url cap"
+                ));
+            }
+        }
+        Ok(ToolResult::ok(data).capped(self.max_result_len()))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -515,5 +781,198 @@ mod tests {
         assert!(board_args(Some("bad name")).is_err());
         assert!(board_args(Some("-help")).is_err());
         assert!(board_args(Some("")).is_err());
+    }
+
+    fn image_ctx(tag: &str) -> (PathBuf, ToolCtx) {
+        let wd = temp_test_dir(tag);
+        (wd.clone(), ToolCtx {
+            working_dir: Some(wd),
+            ..Default::default()
+        })
+    }
+
+    fn fake_osascript(dir: &Path, body: &str) -> PathBuf {
+        let script = dir.join("fake-osascript");
+        fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    fn fake_binary(dir: &Path, name: &str, body: &str) -> PathBuf {
+        let script = dir.join(name);
+        fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+        script
+    }
+
+    const TINY_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+    fn extract_raw_path_body(write_cmd: &str) -> String {
+        format!(
+            "path=$(printf '%s' \"$2\" | sed -n 's/^set out to \"\\(.*\\)\".*/\\1/p')\n{write_cmd}"
+        )
+    }
+
+    #[test]
+    fn image_tool_class_policy_and_schema_shape() {
+        let tool = ClipboardGetImageTool::default();
+        assert_eq!(tool.class(), ToolClass::ReadOnly);
+        assert_eq!(tool.policy(), PermissionPolicy::Skip);
+        let schema = tool.parameters();
+        assert_eq!(schema["additionalProperties"], false);
+        assert!(validate_args(&schema, &json!({})).is_ok());
+        assert!(validate_args(&schema, &json!({ "asDataUrl": true })).is_ok());
+        assert!(validate_args(&schema, &json!({ "asDataUrl": "yes" }))
+            .unwrap_err()
+            .contains("boolean"));
+        assert!(validate_args(&schema, &json!({ "path": "x" }))
+            .unwrap_err()
+            .contains("path"));
+    }
+
+    #[test]
+    fn png_board_saved_under_settings_tmp_with_size_and_data_url() {
+        let (wd, ctx) = image_ctx("clipimg-png");
+        let fake = fake_osascript(
+            &wd,
+            &format!(
+                "{}\necho png",
+                extract_raw_path_body(&format!("printf '{TINY_PNG_B64}' | base64 -D > \"$path\""))
+            ),
+        );
+        let tool = ClipboardGetImageTool::with_programs(&fake, None::<PathBuf>, SIPS_BINARY, CLIP_TIMEOUT);
+        let r = tool
+            .execute(&json!({ "asDataUrl": true }), &ctx)
+            .unwrap();
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["mime"], "image/png");
+        let path = PathBuf::from(data["path"].as_str().unwrap());
+        assert_eq!(path.parent().unwrap(), paths::settings_tmp_dir(&wd));
+        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        assert!(name.starts_with("clipboard-") && name.ends_with(".png"), "{name}");
+        assert_eq!(data["bytes"].as_u64().unwrap(), 70);
+        assert_eq!(data["width"].as_u64(), Some(1));
+        assert_eq!(data["height"].as_u64(), Some(1));
+        assert!(data["dataUrl"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+        assert!(path.is_file());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn empty_board_yields_russian_no_image_error() {
+        let (wd, ctx) = image_ctx("clipimg-noimage");
+        let fake = fake_osascript(&wd, "echo NO_IMAGE");
+        let r = ClipboardGetImageTool::with_programs(&fake, None::<PathBuf>, SIPS_BINARY, CLIP_TIMEOUT)
+            .execute(&json!({}), &ctx)
+            .unwrap();
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "not_found");
+        assert!(err.message.contains("В буфере обмена нет изображения"), "{}", err.message);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn automation_denial_maps_to_permission_error_without_fallback() {
+        let (wd, ctx) = image_ctx("clipimg-permission");
+        let fake = fake_osascript(
+            &wd,
+            "echo 'Не разрешена отправка событий Apple от «osascript» к «System Events». (-1743)' >&2\nexit 1",
+        );
+        let r = ClipboardGetImageTool::with_programs(&fake, None::<PathBuf>, SIPS_BINARY, CLIP_TIMEOUT)
+            .execute(&json!({}), &ctx)
+            .unwrap();
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "permission_denied");
+        assert!(err.message.contains("Автоматизация"), "{}", err.message);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn pngpaste_fallback_recovers_after_permission_denial() {
+        let (wd, ctx) = image_ctx("clipimg-pngpaste");
+        let fake = fake_osascript(
+            &wd,
+            "echo 'osascript is not allowed assistive access. (-1719)' >&2\nexit 1",
+        );
+        let paste = fake_binary(
+            &wd,
+            "fake-pngpaste",
+            &format!("printf '{TINY_PNG_B64}' | base64 -D > \"$1\""),
+        );
+        let r = ClipboardGetImageTool::with_programs(&fake, Some(paste), SIPS_BINARY, CLIP_TIMEOUT)
+            .execute(&json!({}), &ctx)
+            .unwrap();
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["bytes"].as_u64().unwrap(), 70);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn missing_osascript_and_pngpaste_maps_to_not_found() {
+        let (wd, ctx) = image_ctx("clipimg-nobinary");
+        let r = ClipboardGetImageTool::with_programs(
+            wd.join("no-osascript"),
+            None::<PathBuf>,
+            SIPS_BINARY,
+            CLIP_TIMEOUT,
+        )
+        .execute(&json!({}), &ctx)
+        .unwrap();
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "not_found");
+        assert!(err.message.contains("osascript"), "{}", err.message);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn tiff_board_converts_via_sips() {
+        let (wd, ctx) = image_ctx("clipimg-tiff");
+        let fake = fake_osascript(
+            &wd,
+            &format!(
+                "{}\necho tiff",
+                extract_raw_path_body("printf 'II-star-garbage' > \"$path\"")
+            ),
+        );
+        let sips = fake_binary(
+            &wd,
+            "fake-sips-ok",
+            &format!(
+                "out=\"\"; prev=\"\"; for a in \"$@\"; do if [ \"$prev\" = \"--out\" ]; then out=\"$a\"; fi; prev=\"$a\"; done\nprintf '{TINY_PNG_B64}' | base64 -D > \"$out\""
+            ),
+        );
+        let r = ClipboardGetImageTool::with_programs(&fake, None::<PathBuf>, sips, CLIP_TIMEOUT)
+            .execute(&json!({}), &ctx)
+            .unwrap();
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert_eq!(data["convertedFrom"], "tiff");
+        assert_eq!(data["bytes"].as_u64().unwrap(), 70);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn tiff_conversion_failure_names_sips() {
+        let (wd, ctx) = image_ctx("clipimg-tiff-fail");
+        let fake = fake_osascript(
+            &wd,
+            &format!(
+                "{}\necho tiff",
+                extract_raw_path_body("printf 'garbage' > \"$path\"")
+            ),
+        );
+        let sips = fake_binary(&wd, "fake-sips-fail", "echo 'Error: Cannot parse file' >&2\nexit 1");
+        let r = ClipboardGetImageTool::with_programs(&fake, None::<PathBuf>, sips, CLIP_TIMEOUT)
+            .execute(&json!({}), &ctx)
+            .unwrap();
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "execution_error");
+        assert!(err.message.contains("sips"), "{}", err.message);
+        fs::remove_dir_all(&wd).unwrap();
     }
 }

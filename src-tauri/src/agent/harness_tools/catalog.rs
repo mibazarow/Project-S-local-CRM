@@ -134,6 +134,11 @@ pub fn harness_catalog() -> Catalog {
         // discovered like the rest of the machine-wide set; see clipboard_tools.rs.
         Arc::new(super::super::clipboard_tools::ClipboardGetTool::default()),
         Arc::new(super::super::clipboard_tools::ClipboardSetTool::default()),
+        Arc::new(super::super::clipboard_tools::ClipboardGetImageTool::default()),
+        // macOS UI automation via osascript/System Events (Q.md computer-control
+        // slice): window listing is read-only, every UI action confirms; see
+        // macos_ui_tool.rs.
+        Arc::new(super::super::macos_ui_tool::MacosUiTool::default()),
         Arc::new(ScheduleCreateTool),
         Arc::new(ScheduleListTool),
         Arc::new(SchedulePauseTool),
@@ -167,7 +172,7 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
-    const DEFERRED_NAMES: [&str; 61] = [
+    const DEFERRED_NAMES: [&str; 63] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -222,6 +227,8 @@ mod tests {
         "ssh_generate_key",
         "ssh_install_key",
         "ssh_save_profile_to_datas",
+        "clipboard_get_image",
+        "macos_ui",
         "schedule_create",
         "schedule_list",
         "schedule_pause",
@@ -289,6 +296,13 @@ mod tests {
         assert_eq!(tool("browser").policy(), PermissionPolicy::CheckConditional);
         assert!(tool("browser").danger_reason(&json!({ "action": "text" }), &ToolCtx::default()).is_none());
         assert!(tool("browser").danger_reason(&json!({ "action": "open" }), &ToolCtx::default()).is_some());
+        // macos_ui decides per action: window_list is read-only, the rest confirm
+        assert_eq!(tool("macos_ui").class(), ToolClass::Mutating);
+        assert_eq!(tool("macos_ui").policy(), PermissionPolicy::CheckConditional);
+        assert!(tool("macos_ui").danger_reason(&json!({ "action": "window_list" }), &ToolCtx::default()).is_none());
+        assert!(tool("macos_ui").danger_reason(&json!({ "action": "click" }), &ToolCtx::default()).is_some());
+        assert_eq!(tool("clipboard_get_image").class(), ToolClass::ReadOnly);
+        assert_eq!(tool("clipboard_get_image").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("git_branch").class(), ToolClass::Mutating);
         assert_eq!(tool("git_branch").policy(), PermissionPolicy::CheckConditional);
         assert!(tool("git_branch").danger_reason(&json!({ "action": "list" }), &ToolCtx::default()).is_none());
