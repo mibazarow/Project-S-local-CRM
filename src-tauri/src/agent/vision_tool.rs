@@ -89,7 +89,7 @@ impl Tool for VisionTool {
                 "vision is not available: the configured model has no vision support. Pick a vision-capable model (or set the vision flag) in Settings, then retry.",
             ));
         }
-        if cfg.base_url.trim().is_empty() {
+        if cfg.effective_base_url().trim().is_empty() {
             return Ok(ToolResult::err(
                 ToolErrorCode::ExecutionError,
                 "LLM baseUrl is empty; configure the model endpoint in Settings",
@@ -101,7 +101,7 @@ impl Tool for VisionTool {
             Err(e) => return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, e.to_string())),
         };
 
-        let client = LlmClient::new(&cfg.base_url, &cfg.api_key);
+        let client = LlmClient::new(cfg.effective_base_url(), cfg.effective_api_key());
         let params = ChatParams::from(&cfg);
         let message = ChatMessage::user_parts(vec![
             ContentPart::text(prompt),

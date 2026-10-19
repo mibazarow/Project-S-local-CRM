@@ -41,8 +41,6 @@ export function indexingToPatch(f: Form, raw: Record<string, unknown>): Record<s
 }
 
 export interface LlmForm {
-  baseUrl: string;
-  apiKey: string;
   model: string;
   contextWindow: string;
   maxTokens: string;
@@ -52,8 +50,6 @@ export interface LlmForm {
 
 export function toLlmForm(cfg: LlmConfig): LlmForm {
   return {
-    baseUrl: cfg.baseUrl,
-    apiKey: cfg.apiKey,
     model: cfg.model,
     contextWindow: String(cfg.contextWindow),
     maxTokens: cfg.maxTokens == null ? "" : String(cfg.maxTokens),
@@ -63,10 +59,10 @@ export function toLlmForm(cfg: LlmConfig): LlmForm {
 }
 
 // Read-modify-write patch for llm.json (same unknown-key rule as indexing).
+// baseUrl/apiKey are NOT here: they belong to the active provider and are owned
+// by the provider commands (which mirror them into the legacy top-level fields).
 export function llmToPatch(f: LlmForm, raw: Record<string, unknown>): Record<string, unknown> {
   const patch: Record<string, unknown> = { ...raw };
-  patch.baseUrl = f.baseUrl;
-  patch.apiKey = f.apiKey;
   patch.model = f.model;
   const cw = parseNum(f.contextWindow);
   if (cw !== null) patch.contextWindow = Math.max(1, Math.round(cw));
@@ -79,6 +75,16 @@ export function llmToPatch(f: LlmForm, raw: Record<string, unknown>): Record<str
   patch.thinkingLevel = f.thinkingLevel;
   return patch;
 }
+
+// Provider editor form (Q-24): raw strings, validated/saved via the provider
+// commands. `editingId` null means the form adds a new provider.
+export interface ProviderForm {
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+}
+
+export const emptyProviderForm: ProviderForm = { name: "", baseUrl: "", apiKey: "" };
 
 export function fmtMb(bytes: number): string {
   return (bytes / MB).toFixed(1);

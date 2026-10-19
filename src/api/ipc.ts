@@ -20,6 +20,7 @@ import type {
   IndexChanged,
   ImportResult,
   ImportSummary,
+  LlmProviderDto,
   McpServerStatus,
   MessageAttachmentDto,
   MessageDto,
@@ -426,6 +427,27 @@ export const testConnection = () => invoke<ConnectionTest>("test_connection");
 export const getVisionStatus = () => invoke<VisionStatus>("get_vision_status");
 
 export const detectVision = () => invoke<VisionStatus>("detect_vision");
+
+// Provider profiles (SPEC 3.4 Q-24): each mutation returns the fresh list so
+// the UI refreshes without a second read. Switching the active provider is
+// settings-only; the backend mirrors it into the legacy llm.json fields.
+export const llmProvidersList = () => invoke<LlmProviderDto[]>("llm_providers_list");
+
+export const llmProviderAdd = (name: string, baseUrl: string, apiKey: string) =>
+  invoke<LlmProviderDto[]>("llm_provider_add", { name, baseUrl, apiKey });
+
+export const llmProviderUpdate = (
+  id: string,
+  name: string,
+  baseUrl: string,
+  apiKey: string,
+) => invoke<LlmProviderDto[]>("llm_provider_update", { id, name, baseUrl, apiKey });
+
+export const llmProviderDelete = (id: string) =>
+  invoke<LlmProviderDto[]>("llm_provider_delete", { id });
+
+export const llmProviderActivate = (id: string) =>
+  invoke<LlmProviderDto[]>("llm_provider_activate", { id });
 
 export const sendProjectMessage = (
   projectId: number,

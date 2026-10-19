@@ -3,21 +3,24 @@ import {
   useEffect,
   useRef,
   useState,
+  type FormEvent,
   type KeyboardEvent,
 } from "react";
 import * as ipc from "../../api/ipc";
-import type { ConnectionTest, LlmConfig, VisionStatus } from "../../api/types";
+import type { ConnectionTest, LlmConfig, LlmProviderDto, VisionStatus } from "../../api/types";
 import { toMessage as errMsg } from "../../shared/errors";
 import { Card, Field } from "./shared";
 import { useDebouncedConfig } from "./useDebouncedConfig";
 import {
   DEFAULT_CONTEXT_WINDOW,
   detectContextToken,
+  emptyProviderForm,
   llmToPatch,
   parseNum,
   toLlmForm,
   visionLabel,
   type LlmForm,
+  type ProviderForm,
 } from "./forms";
 
 // Searchable model combobox: free-text id + filtered dropdown of ids loaded
@@ -132,6 +135,12 @@ function ModelCombobox({ value, models, onChange, onFocus, onBlur }: ModelCombob
   );
 }
 
+// Endpoint host shown under a provider name (scheme stripped, path dropped).
+function endpointHost(url: string): string {
+  const after = url.trim().split("://")[1] ?? url.trim();
+  return after.split("/")[0];
+}
+
 export default function LlmTab({
   active,
   error,
@@ -145,7 +154,7 @@ export default function LlmTab({
   // overrides a hand-edited value. Reset when the model id itself changes.
   const ctxUserEditedRef = useRef(false);
   const lastModelIdRef = useRef<string | null>(null);
-  // One-shot auto-load of the model list once endpoint+key are filled in.
+  // One-shot auto-load of the model list once the active provider is complete.
   const modelsAutoLoadedRef = useRef(false);
   const modelsAutoTimer = useRef<number | undefined>(undefined);
 
@@ -174,14 +183,31 @@ export default function LlmTab({
     onLlmLoaded,
   );
 
+  // Provider profiles (Q-24): the list, the id being edited (null = new draft),
+  // and the editor form. baseUrl/apiKey live here, not in the debounced llm form.
+  const [providers, setProviders] = useState<LlmProviderDto[] | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [provForm, setProvForm] = useState<ProviderForm>({ ...emptyProviderForm });
+  const [provError, setProvError] = useState<string | null>(null);
+  const [provBusy, setProvBusy] = useState(false);
+  const [revealKey, setRevealKey] = useState(false);
+
   const [llmModels, setLlmModels] = useState<string[] | null>(null);
   const [llmModelsError, setLlmModelsError] = useState<string | null>(null);
   const [llmTest, setLlmTest] = useState<ConnectionTest | null>(null);
   const [llmBusy, setLlmBusy] = useState<"test" | "models" | null>(null);
   const [ctxAutoFilled, setCtxAutoFilled] = useState<{ token: string; tokens: number } | null>(null);
-  const [revealKey, setRevealKey] = useState(false);
   const [vision, setVision] = useState<VisionStatus | null>(null);
   const [visionBusy, setVisionBusy] = useState(false);
+
+  const activeProvider = providers?.find((p) => p.active) ?? null;
+
+  const loadProviders = useCallback(() => {
+    void ipc
+      .llmProvidersList()
+      .then(setProviders)
+      .catch((e) => setError(errMsg(e)));
+  }, [setError]);
 
   const loadVision = useCallback(() => {
     void ipc
@@ -201,8 +227,9 @@ export default function LlmTab({
       .finally(() => setVisionBusy(false));
   };
 
-  // test_connection/list_models read llm.json from disk, so the pending form
-  // must be written first and the write must land before the command runs.
+  // test_connection/list_models read llm.json from disk (the active provider),
+  // so the pending form must be written first and the write must land before
+  // the command runs.
   const runLlmAction = useCallback(
     (action: "test" | "models") => {
       setLlmBusy(action);
@@ -232,19 +259,19 @@ export default function LlmTab({
     [flushLlmSave],
   );
 
-  // Auto-load the model list once, debounced, after endpoint+key are filled
-  // in and nothing is loaded yet; a failure leaves the manual retry button.
+  // Auto-load the model list once, debounced, once the active provider has an
+  // endpoint and key and nothing is loaded yet; a failure leaves manual retry.
   useEffect(() => {
-    const f = llmForm;
-    if (!f || modelsAutoLoadedRef.current) return;
-    if (!f.baseUrl.trim() || !f.apiKey.trim()) return;
+    if (modelsAutoLoadedRef.current) return;
+    const p = activeProvider;
+    if (!p || !p.baseUrl.trim() || !p.apiKey.trim()) return;
     if (llmModels !== null || llmBusy !== null) return;
     window.clearTimeout(modelsAutoTimer.current);
     modelsAutoTimer.current = window.setTimeout(() => {
       if (!modelsAutoLoadedRef.current) runLlmAction("models");
     }, 800);
     return () => window.clearTimeout(modelsAutoTimer.current);
-  }, [llmForm?.baseUrl, llmForm?.apiKey, llmModels, llmBusy, runLlmAction]);
+  }, [activeProvider?.baseUrl, activeProvider?.apiKey, llmModels, llmBusy, runLlmAction]);
 
   // Auto-fill the context window from a size token in the model id
   // ("…-128k", "…-1m") while the field is still empty or on the default.
@@ -261,6 +288,7 @@ export default function LlmTab({
   }, [llmForm, updateLlmForm]);
 
   useEffect(() => {
+    loadProviders();
     loadVision();
     let cancelled = false;
     let unlisten: (() => void) | undefined;
@@ -268,6 +296,7 @@ export default function LlmTab({
       .onConfigChanged(({ which }) => {
         if (which !== "llm") return;
         reloadLlmConfig();
+        loadProviders();
         loadVision();
       })
       .then((u) => (cancelled ? u() : (unlisten = u)));
@@ -275,45 +304,211 @@ export default function LlmTab({
       cancelled = true;
       unlisten?.();
     };
-  }, [reloadLlmConfig, loadVision]);
+  }, [reloadLlmConfig, loadProviders, loadVision]);
+
+  // Provider mutations flush the debounced llm form first so a stale form read
+  // can never clobber the provider keys the command is about to write.
+  const startNew = () => {
+    setEditingId(null);
+    setProvForm({ ...emptyProviderForm });
+    setProvError(null);
+    setRevealKey(false);
+  };
+
+  const startEdit = (p: LlmProviderDto) => {
+    setEditingId(p.id);
+    setProvForm({ name: p.name, baseUrl: p.baseUrl, apiKey: p.apiKey });
+    setProvError(null);
+    setRevealKey(false);
+  };
+
+  const activateProvider = async (id: string) => {
+    if (id === activeProvider?.id) return;
+    setProvBusy(true);
+    setProvError(null);
+    try {
+      await flushLlmSave();
+      setProviders(await ipc.llmProviderActivate(id));
+      // A different endpoint: re-arm the model auto-load for the new provider.
+      modelsAutoLoadedRef.current = false;
+      setLlmModels(null);
+      setLlmModelsError(null);
+    } catch (e) {
+      setProvError(errMsg(e));
+    } finally {
+      setProvBusy(false);
+    }
+  };
+
+  const deleteProvider = async (p: LlmProviderDto) => {
+    if (!window.confirm(`Удалить провайдера «${p.name}» вместе с его API-ключом?`)) return;
+    setProvBusy(true);
+    setProvError(null);
+    try {
+      await flushLlmSave();
+      const list = await ipc.llmProviderDelete(p.id);
+      setProviders(list);
+      if (editingId === p.id) startNew();
+    } catch (e) {
+      setProvError(errMsg(e));
+    } finally {
+      setProvBusy(false);
+    }
+  };
+
+  const saveProvider = async (e: FormEvent) => {
+    e.preventDefault();
+    setProvError(null);
+    const name = provForm.name.trim();
+    const baseUrl = provForm.baseUrl.trim();
+    const apiKey = provForm.apiKey.trim();
+    if (!name) {
+      setProvError("Укажи имя провайдера");
+      return;
+    }
+    if (!/^https?:\/\//i.test(baseUrl)) {
+      setProvError("Endpoint должен начинаться с http:// или https://");
+      return;
+    }
+    const local = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])([:/]|$)/i.test(baseUrl);
+    if (!apiKey && !local) {
+      setProvError("Укажи API-ключ (пусто разрешено только для localhost)");
+      return;
+    }
+    setProvBusy(true);
+    try {
+      await flushLlmSave();
+      const list =
+        editingId === null
+          ? await ipc.llmProviderAdd(name, baseUrl, apiKey)
+          : await ipc.llmProviderUpdate(editingId, name, baseUrl, apiKey);
+      setProviders(list);
+      startNew();
+    } catch (err) {
+      setProvError(errMsg(err));
+    } finally {
+      setProvBusy(false);
+    }
+  };
 
   if (!active) return null;
   return (
     <div className="settings-content">
       <Card
-        title="Подключение"
-        desc="Endpoint и ключ OpenAI-совместимого провайдера. Изменения сохраняются автоматически."
+        title="Провайдеры"
+        desc="Сохраняй любое число OpenAI-совместимых провайдеров; активен ровно один — переключение только здесь."
       >
-        <Field label="Endpoint" wide hint="Базовый адрес провайдера модели, как у OpenAI.">
-          <input
-            type="text"
-            value={llmForm?.baseUrl ?? ""}
-            onChange={(e) => updateLlmForm({ baseUrl: e.target.value })}
-            onFocus={focusLlmField("baseUrl")}
-            onBlur={blurLlmField}
-            placeholder="https://api.example.com/v1"
-          />
-        </Field>
-        <Field label="API-ключ" wide hint="Хранится в llm.json в открытом виде (см. ТЗ 3.4).">
-          <div className="llm-key-row">
+        {providers === null ? (
+          <div className="set-empty">Загрузка…</div>
+        ) : providers.length === 0 ? (
+          <div className="set-empty">Провайдеров нет. Добавь первый ниже.</div>
+        ) : (
+          <div className="set-list">
+            {providers.map((p) => (
+              <div key={p.id} className="provider-item">
+                <button
+                  className="provider-radio"
+                  role="radio"
+                  aria-checked={p.active}
+                  title={p.active ? "Активный провайдер" : "Сделать активным"}
+                  disabled={provBusy}
+                  onClick={() => void activateProvider(p.id)}
+                >
+                  <span className={p.active ? "dot on" : "dot"}></span>
+                </button>
+                <div className="info">
+                  <div className="t">{p.name}</div>
+                  <div className="c">{endpointHost(p.baseUrl)}</div>
+                </div>
+                {p.active && <span className="badge st-active">активен</span>}
+                <span className="mcp-actions">
+                  <button className="ghost-btn small" onClick={() => startEdit(p)}>
+                    Изменить
+                  </button>
+                  <button className="ghost-btn small" onClick={() => void deleteProvider(p)}>
+                    Удалить
+                  </button>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="set-actions">
+          <button className="primary-btn small" onClick={startNew} disabled={provBusy}>
+            + Добавить провайдера
+          </button>
+        </div>
+      </Card>
+      <Card
+        title={editingId === null ? "Новый провайдер" : "Подключение (LLM)"}
+        desc="Имя, endpoint и API-ключ активного провайдера. Ключ хранится в llm.json в открытом виде (см. ТЗ 3.4)."
+      >
+        <form className="set-form" onSubmit={(e) => void saveProvider(e)}>
+          <Field label="Название" wide hint="Произвольная метка провайдера, видна в списке.">
             <input
-              type={revealKey ? "text" : "password"}
-              value={llmForm?.apiKey ?? ""}
-              onChange={(e) => updateLlmForm({ apiKey: e.target.value })}
-              onFocus={focusLlmField("apiKey")}
-              onBlur={blurLlmField}
-              autoComplete="off"
+              type="text"
+              value={provForm.name}
+              onChange={(e) => setProvForm({ ...provForm, name: e.target.value })}
+              placeholder="DeepSeek"
               spellCheck={false}
             />
-            <button className="ghost-btn small" onClick={() => setRevealKey((v) => !v)}>
-              {revealKey ? "Скрыть" : "Показать"}
+          </Field>
+          <Field label="Адрес эндпоинта" wide hint="Базовый адрес провайдера модели, как у OpenAI.">
+            <input
+              type="text"
+              value={provForm.baseUrl}
+              onChange={(e) => setProvForm({ ...provForm, baseUrl: e.target.value })}
+              placeholder="https://api.example.com/v1"
+              spellCheck={false}
+            />
+          </Field>
+          <Field label="API-ключ" wide hint="Пусто разрешено только для локального сервера (Ollama).">
+            <div className="llm-key-row">
+              <input
+                type={revealKey ? "text" : "password"}
+                value={provForm.apiKey}
+                onChange={(e) => setProvForm({ ...provForm, apiKey: e.target.value })}
+                autoComplete="off"
+                spellCheck={false}
+              />
+              <button className="ghost-btn small" type="button" onClick={() => setRevealKey((v) => !v)}>
+                {revealKey ? "Скрыть" : "Показать"}
+              </button>
+            </div>
+          </Field>
+          <div className="set-actions">
+            <button className="primary-btn small" type="submit" disabled={provBusy}>
+              {editingId === null ? "Добавить" : "Сохранить"}
             </button>
+            {editingId !== null && (
+              <button className="ghost-btn small" type="button" onClick={startNew}>
+                Отмена
+              </button>
+            )}
+            <button
+              className="ghost-btn"
+              type="button"
+              disabled={llmBusy !== null || activeProvider === null}
+              onClick={() => runLlmAction("test")}
+            >
+              {llmBusy === "test" && <span className="spinner"></span>}
+              {llmBusy === "test" ? "Проверка…" : "Проверить подключение"}
+            </button>
+            {llmTest && (
+              <div className={llmTest.ok ? "llm-test ok" : "llm-test err"}>
+                <span className="mark">{llmTest.ok ? "✓" : "✕"}</span>
+                {llmTest.message}
+              </div>
+            )}
           </div>
-        </Field>
+          {provError && <div className="set-error">{provError}</div>}
+        </form>
+      </Card>
+      <Card title="Генерация" desc="Параметры запросов к модели. Общие для всех провайдеров.">
         <Field
           label="Модель"
           wide
-          hint="Список подтягивается с endpoint’а; можно вписать любое название вручную."
+          hint="Список подтягивается с endpoint’а активного провайдера; можно вписать любое название вручную."
           error={llmModelsError}
         >
           <div className="model-row">
@@ -334,24 +529,6 @@ export default function LlmTab({
             </button>
           </div>
         </Field>
-        <div className="set-actions">
-          <button
-            className="ghost-btn"
-            disabled={llmBusy !== null}
-            onClick={() => runLlmAction("test")}
-          >
-            {llmBusy === "test" && <span className="spinner"></span>}
-            {llmBusy === "test" ? "Проверка…" : "Проверить подключение"}
-          </button>
-          {llmTest && (
-            <div className={llmTest.ok ? "llm-test ok" : "llm-test err"}>
-              <span className="mark">{llmTest.ok ? "✓" : "✕"}</span>
-              {llmTest.message}
-            </div>
-          )}
-        </div>
-      </Card>
-      <Card title="Генерация" desc="Параметры запросов к модели.">
         <Field
           label="Окно контекста, токенов"
           hint={

@@ -52,6 +52,15 @@ impl ConfigKind {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LlmProvider {
+    pub id: String,
+    pub name: String,
+    pub base_url: String,
+    pub api_key: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 pub struct LlmConfig {
@@ -69,6 +78,24 @@ pub struct LlmConfig {
     // `reasoning_effort` from requests; other levels send it as-is.
     #[serde(default = "default_thinking_level")]
     pub thinking_level: String,
+    // Saved provider profiles (Q-24): any number, exactly one active. The
+    // top-level base_url/api_key mirror the active provider so existing
+    // readers keep working; they are the fallback when no provider is active.
+    pub providers: Vec<LlmProvider>,
+    pub active_provider: Option<String>,
+}
+
+// Stable-enough id for a local single-user config: process-unique counter
+// combined with wall-clock millis, no extra dependency.
+pub fn new_provider_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let millis = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    format!("p{millis}-{n}")
 }
 
 pub fn default_thinking_level() -> String {
@@ -95,6 +122,26 @@ impl LlmConfig {
             _ => Some("medium"),
         }
     }
+
+    // The active provider profile, when one is selected and still present.
+    pub fn active(&self) -> Option<&LlmProvider> {
+        let id = self.active_provider.as_deref()?;
+        self.providers.iter().find(|p| p.id == id)
+    }
+
+    // Effective endpoint/key: the active provider when present, otherwise the
+    // legacy top-level fields (backward compatible with pre-Q-24 llm.json).
+    pub fn effective_base_url(&self) -> &str {
+        self.active()
+            .map(|p| p.base_url.as_str())
+            .unwrap_or(&self.base_url)
+    }
+
+    pub fn effective_api_key(&self) -> &str {
+        self.active()
+            .map(|p| p.api_key.as_str())
+            .unwrap_or(&self.api_key)
+    }
 }
 
 impl Default for LlmConfig {
@@ -109,6 +156,8 @@ impl Default for LlmConfig {
             vision: None,
             vision_detected: None,
             thinking_level: default_thinking_level(),
+            providers: Vec::new(),
+            active_provider: None,
         }
     }
 }
@@ -258,7 +307,8 @@ pub fn ensure_defaults(wd: &Path) -> Result<()> {
             write_json(&file, &default_value(kind)?)?;
         }
     }
-    migrate_indexing_defaults(wd)
+    migrate_indexing_defaults(wd)?;
+    migrate_llm_providers(wd)
 }
 
 // Limits that shipped as indexing.json defaults before the 10 MB / 1M chars
@@ -297,6 +347,60 @@ pub fn migrate_indexing_defaults(wd: &Path) -> Result<()> {
     }
     if changed {
         write_json(&file, &value)?;
+    }
+    Ok(())
+}
+
+// One-time migration of llm.json to the multi-provider shape (Q-24): a file
+// with no `providers` but a non-empty legacy `baseUrl` gets a single
+// «По умолчанию» provider seeded from the legacy endpoint/key and marked
+// active. A file that already has providers but no active id (e.g. a restored
+// backup) gets its first provider activated. The legacy top-level baseUrl/apiKey
+// are left as-is (they already mirror the seeded provider). Idempotent.
+pub fn migrate_llm_providers(wd: &Path) -> Result<()> {
+    let file = file_path(wd, ConfigKind::Llm);
+    let Ok(text) = fs::read_to_string(&file) else {
+        return Ok(()); // no file yet: ensure_defaults already wrote the default
+    };
+    let mut value: Value = serde_json::from_str(&text)?;
+    let Some(obj) = value.as_object_mut() else {
+        return Ok(());
+    };
+    let providers = obj
+        .get("providers")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if providers.is_empty() {
+        let base_url = obj.get("baseUrl").and_then(Value::as_str).unwrap_or("");
+        if base_url.trim().is_empty() {
+            return Ok(()); // nothing to seed
+        }
+        let api_key = obj.get("apiKey").and_then(Value::as_str).unwrap_or("");
+        let id = new_provider_id();
+        obj.insert(
+            "providers".into(),
+            json!([{ "id": id, "name": "По умолчанию", "baseUrl": base_url, "apiKey": api_key }]),
+        );
+        obj.insert("activeProvider".into(), json!(id));
+        write_json(&file, &value)?;
+        return Ok(());
+    }
+    // Providers exist but none is active: activate the first and mirror it.
+    if obj.get("activeProvider").and_then(Value::as_str).is_none() {
+        if let Some(first) = providers.first().and_then(Value::as_object) {
+            let id = first.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+            if !id.is_empty() {
+                obj.insert("activeProvider".into(), json!(id));
+                if let Some(bu) = first.get("baseUrl") {
+                    obj.insert("baseUrl".into(), bu.clone());
+                }
+                if let Some(ak) = first.get("apiKey") {
+                    obj.insert("apiKey".into(), ak.clone());
+                }
+                write_json(&file, &value)?;
+            }
+        }
     }
     Ok(())
 }
@@ -532,6 +636,113 @@ mod tests {
             .unwrap();
             assert_eq!(cfg.reasoning_effort(), effort, "level {level:?}");
         }
+    }
+
+    #[test]
+    fn llm_migration_seeds_one_provider_from_legacy_fields() {
+        let dir = temp_test_dir("config-llm-migrate");
+        fs::create_dir_all(paths::config_dir(&dir)).unwrap();
+        fs::write(
+            file_path(&dir, ConfigKind::Llm),
+            r#"{ "baseUrl": "https://api.deepseek.com/v1", "apiKey": "sk-x", "model": "deepseek-chat", "contextWindow": 65536 }"#,
+        )
+        .unwrap();
+
+        migrate_llm_providers(&dir).unwrap();
+        let v = read_config(&dir, ConfigKind::Llm).unwrap();
+        let providers = v["providers"].as_array().unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0]["name"], "По умолчанию");
+        assert_eq!(providers[0]["baseUrl"], "https://api.deepseek.com/v1");
+        assert_eq!(providers[0]["apiKey"], "sk-x");
+        assert_eq!(v["activeProvider"], providers[0]["id"]);
+        // Legacy fields are untouched (they already mirror the seeded provider).
+        assert_eq!(v["baseUrl"], "https://api.deepseek.com/v1");
+        assert_eq!(v["apiKey"], "sk-x");
+        assert_eq!(v["model"], "deepseek-chat");
+
+        // Idempotent: a second pass does not add another provider.
+        migrate_llm_providers(&dir).unwrap();
+        let v = read_config(&dir, ConfigKind::Llm).unwrap();
+        assert_eq!(v["providers"].as_array().unwrap().len(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn llm_migration_is_a_noop_without_a_baseurl_or_file() {
+        let dir = temp_test_dir("config-llm-migrate-empty");
+        fs::create_dir_all(paths::config_dir(&dir)).unwrap();
+        fs::write(
+            file_path(&dir, ConfigKind::Llm),
+            r#"{ "baseUrl": "", "apiKey": "", "model": "" }"#,
+        )
+        .unwrap();
+        migrate_llm_providers(&dir).unwrap();
+        let v = read_config(&dir, ConfigKind::Llm).unwrap();
+        assert!(v.get("providers").map(|p| p.as_array().unwrap().is_empty()).unwrap_or(true));
+        assert!(v.get("activeProvider").is_none());
+
+        // Missing file: no error, nothing created.
+        let dir2 = temp_test_dir("config-llm-migrate-missing");
+        migrate_llm_providers(&dir2).unwrap();
+        assert!(!file_path(&dir2, ConfigKind::Llm).exists());
+        fs::remove_dir_all(&dir).unwrap();
+        fs::remove_dir_all(&dir2).unwrap();
+    }
+
+    #[test]
+    fn llm_migration_activates_first_provider_when_none_active() {
+        let dir = temp_test_dir("config-llm-migrate-activate");
+        fs::create_dir_all(paths::config_dir(&dir)).unwrap();
+        fs::write(
+            file_path(&dir, ConfigKind::Llm),
+            r#"{ "baseUrl": "", "apiKey": "", "activeProvider": null, "providers": [
+                 { "id": "a", "name": "A", "baseUrl": "https://a.test/v1", "apiKey": "ka" },
+                 { "id": "b", "name": "B", "baseUrl": "https://b.test/v1", "apiKey": "kb" } ] }"#,
+        )
+        .unwrap();
+        migrate_llm_providers(&dir).unwrap();
+        let v = read_config(&dir, ConfigKind::Llm).unwrap();
+        assert_eq!(v["activeProvider"], "a");
+        // The active provider is mirrored into the legacy fields.
+        assert_eq!(v["baseUrl"], "https://a.test/v1");
+        assert_eq!(v["apiKey"], "ka");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn llm_resolution_prefers_active_and_falls_back_to_legacy() {
+        // Active provider present: effective values come from it.
+        let cfg: LlmConfig = serde_json::from_value(json!({
+            "baseUrl": "https://legacy.test/v1", "apiKey": "legacy",
+            "model": "m", "contextWindow": 1,
+            "providers": [
+                { "id": "a", "name": "A", "baseUrl": "https://a.test/v1", "apiKey": "ka" },
+                { "id": "b", "name": "B", "baseUrl": "https://b.test/v1", "apiKey": "kb" } ],
+            "activeProvider": "b",
+        }))
+        .unwrap();
+        assert_eq!(cfg.effective_base_url(), "https://b.test/v1");
+        assert_eq!(cfg.effective_api_key(), "kb");
+
+        // No active id (or a dangling id): fall back to the legacy fields.
+        let legacy: LlmConfig = serde_json::from_value(json!({
+            "baseUrl": "https://legacy.test/v1", "apiKey": "legacy",
+            "model": "m", "contextWindow": 1,
+            "providers": [{ "id": "a", "name": "A", "baseUrl": "https://a.test/v1", "apiKey": "ka" }],
+            "activeProvider": "missing",
+        }))
+        .unwrap();
+        assert_eq!(legacy.effective_base_url(), "https://legacy.test/v1");
+        assert_eq!(legacy.effective_api_key(), "legacy");
+
+        // Pre-Q-24 file (no providers at all): legacy fields win.
+        let old: LlmConfig = serde_json::from_value(json!({
+            "baseUrl": "https://old.test/v1", "apiKey": "old", "model": "m", "contextWindow": 1,
+        }))
+        .unwrap();
+        assert_eq!(old.effective_base_url(), "https://old.test/v1");
+        assert_eq!(old.effective_api_key(), "old");
     }
 
     #[test]

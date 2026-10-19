@@ -36,3 +36,41 @@ pub(crate) async fn detect_vision(state: State<'_, AppState>) -> Result<llm::Vis
 pub(crate) fn get_vision_status(state: State<AppState>) -> Result<llm::VisionStatus> {
     llm::get_vision_status(&state.working_dir()?)
 }
+
+// Provider profiles (Q-24): list/add/update/delete/activate. Each mutation
+// returns the fresh provider list so the UI refreshes without a second read.
+#[tauri::command]
+pub(crate) fn llm_providers_list(state: State<AppState>) -> Result<Vec<llm::LlmProviderDto>> {
+    llm::providers_list(&state.working_dir()?)
+}
+
+#[tauri::command]
+pub(crate) fn llm_provider_add(
+    state: State<AppState>,
+    name: String,
+    base_url: String,
+    api_key: String,
+) -> Result<Vec<llm::LlmProviderDto>> {
+    llm::provider_add(&state.working_dir()?, &name, &base_url, &api_key)
+}
+
+#[tauri::command]
+pub(crate) fn llm_provider_update(
+    state: State<AppState>,
+    id: String,
+    name: String,
+    base_url: String,
+    api_key: String,
+) -> Result<Vec<llm::LlmProviderDto>> {
+    llm::provider_update(&state.working_dir()?, &id, &name, &base_url, &api_key)
+}
+
+#[tauri::command]
+pub(crate) fn llm_provider_delete(state: State<AppState>, id: String) -> Result<Vec<llm::LlmProviderDto>> {
+    llm::provider_delete(&state.working_dir()?, &id)
+}
+
+#[tauri::command]
+pub(crate) fn llm_provider_activate(state: State<AppState>, id: String) -> Result<Vec<llm::LlmProviderDto>> {
+    llm::provider_activate(&state.working_dir()?, &id)
+}

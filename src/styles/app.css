@@ -1493,6 +1493,48 @@ details.set-card code {
 .badge.st-disabled { color: var(--text-muted); }
 .skill-results { display: flex; flex-direction: column; gap: 2px; }
 .mcp-item .mcp-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+/* Провайдеры LLM (SPEC 3.4 Q-24): список с радио-выбором активного. */
+.set-list .provider-item {
+  border: 0;
+  border-top: 1px solid var(--hairline);
+  border-radius: 0;
+  background: transparent;
+  padding: 10px 0;
+  gap: 12px;
+}
+.provider-item { display: flex; align-items: center; gap: 10px; }
+.provider-item .info { flex: 1; min-width: 0; }
+.provider-item .info .t { font-size: 12.5px; font-weight: 500; }
+.provider-item .info .c { font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+.provider-item .mcp-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.provider-radio {
+  border: 0;
+  background: transparent;
+  padding: 2px;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+}
+.provider-radio .dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  background: #fff;
+  display: inline-block;
+  position: relative;
+}
+.provider-radio .dot.on { border-color: var(--accent); }
+.provider-radio .dot.on::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.provider-radio:disabled { cursor: default; opacity: .6; }
 .mcp-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .mcp-chip {
   font-family: ui-monospace, 'SF Mono', Menlo, monospace;

@@ -176,10 +176,10 @@ pub(crate) fn sanitize_title(raw: &str) -> Option<String> {
 pub(crate) fn llm_title(wd: &Path, text: &str) -> Option<String> {
     let cfg: LlmConfig =
         serde_json::from_value(config::read_config(wd, ConfigKind::Llm).ok()?).ok()?;
-    if cfg.base_url.trim().is_empty() {
+    if cfg.effective_base_url().trim().is_empty() {
         return None;
     }
-    let client = llm::LlmClient::new(&cfg.base_url, &cfg.api_key);
+    let client = llm::LlmClient::new(cfg.effective_base_url(), cfg.effective_api_key());
     let params = ChatParams {
         model: cfg.model.clone(),
         temperature: None,

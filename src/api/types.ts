@@ -296,6 +296,24 @@ export interface LlmConfig {
   visionDetected?: boolean | null;
   // Thinking mode level: "off" omits reasoning_effort, the rest send it as-is.
   thinkingLevel?: "off" | "low" | "medium" | "high";
+  // Saved provider profiles (Q-24): any number, exactly one active. The
+  // top-level baseUrl/apiKey mirror the active provider (legacy fallback).
+  providers?: LlmProvider[];
+  activeProvider?: string | null;
+}
+
+// A saved provider profile (config.rs LlmProvider). baseUrl/apiKey are the
+// endpoint and key; name is the user label.
+export interface LlmProvider {
+  id: string;
+  name: string;
+  baseUrl: string;
+  apiKey: string;
+}
+
+// llm::LlmProviderDto — a provider row returned by the provider commands.
+export interface LlmProviderDto extends LlmProvider {
+  active: boolean;
 }
 
 // llm::VisionStatus — result of get_vision_status / detect_vision.

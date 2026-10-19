@@ -44,6 +44,7 @@ beforeEach(() => {
       case "mcp_status":
       case "trash_list":
       case "list_projects":
+      case "llm_providers_list":
         return [];
       case "backup_status":
         return { lastBackupAt: null, count: 0, intervalDays: 1, due: false };
