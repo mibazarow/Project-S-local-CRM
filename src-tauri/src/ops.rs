@@ -27,6 +27,26 @@ fn unique_temp_db(label: &str) -> PathBuf {
     std::env::temp_dir().join(format!("project-s-{label}-{nanos}.db"))
 }
 
+// Default backup name (SPEC 3.6): `project-s-DD-MM-YYYY_HH-MM.zip` in local
+// time, no seconds. If that exact minute already exists in `dir`, a minimal
+// deterministic suffix (`-2`, `-3`, …) is appended before `.zip` so an existing
+// archive is never silently overwritten.
+fn default_backup_path(dir: &Path) -> PathBuf {
+    backup_name_at(dir, &Local::now().format("%d-%m-%Y_%H-%M").to_string())
+}
+
+// Resolve a collision-free `project-s-<stamp>.zip` path inside `dir`, adding a
+// `-2`, `-3`, … suffix before `.zip` when the base name is already taken.
+fn backup_name_at(dir: &Path, stamp: &str) -> PathBuf {
+    let mut candidate = dir.join(format!("project-s-{stamp}.zip"));
+    let mut suffix = 2;
+    while candidate.exists() {
+        candidate = dir.join(format!("project-s-{stamp}-{suffix}.zip"));
+        suffix += 1;
+    }
+    candidate
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BackupInfo {
@@ -39,19 +59,18 @@ pub struct BackupInfo {
 // live WAL DB is copied without locking it) plus copies of Projects/, the
 // Notes/ vault and Harness/ (Harness/tmp with its processes/downloads is
 // deliberately excluded). Default destination is
-// Settings/backups/project-s-YYYYMMDD-HHMMSS.zip. The archive is re-opened
-// and the DB inside integrity-checked before success is reported (SPEC 7
-// "backup archive is recoverable").
+// Settings/backups/project-s-DD-MM-YYYY_HH-MM.zip (local time, no seconds);
+// when that minute is already taken the name gets a minimal deterministic
+// suffix `-2`, `-3`, … before `.zip` so nothing is silently overwritten. The
+// archive is re-opened and the DB inside integrity-checked before success is
+// reported (SPEC 7 "backup archive is recoverable").
 pub fn create_backup(wd: &Path, conn: &Connection, dest: Option<&Path>) -> Result<BackupInfo> {
     let dest = match dest {
         Some(p) => p.to_path_buf(),
         None => {
             let dir = paths::backups_dir(wd);
             fs::create_dir_all(&dir)?;
-            dir.join(format!(
-                "project-s-{}.zip",
-                Local::now().format("%Y%m%d-%H%M%S")
-            ))
+            default_backup_path(&dir)
         }
     };
     if let Some(parent) = dest.parent() {
@@ -282,7 +301,7 @@ impl Drop for BackupGuard {
 }
 
 // Backups named `project-s-*.zip`, oldest first by mtime (the filename
-// timestamp has only second resolution, so mtime is the reliable sort key).
+// timestamp has only minute resolution, so mtime is the reliable sort key).
 fn list_backups(wd: &Path) -> Vec<PathBuf> {
     let mut backups = Vec::new();
     if let Ok(entries) = fs::read_dir(paths::backups_dir(wd)) {
@@ -450,6 +469,88 @@ mod tests {
         assert_eq!(ok, "ok");
         drop(c);
         let _ = fs::remove_file(check);
+        drop(conn);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // `project-s-DD-MM-YYYY_HH-MM.zip`: fixed-width local date/time, no seconds.
+    // A collision suffix (`-2`, `-3`, …) before `.zip` is allowed.
+    fn assert_backup_name_shape(name: &str) {
+        let stem = name
+            .strip_prefix("project-s-")
+            .and_then(|n| n.strip_suffix(".zip"))
+            .unwrap_or_else(|| panic!("unexpected backup name: {name}"));
+        let (date, time) = stem
+            .split_once('_')
+            .unwrap_or_else(|| panic!("no time part: {name}"));
+        // Drop an optional collision suffix (`-2`, `-3`, …) from the time part.
+        let time = match time.rsplit_once('-') {
+            Some((head, tail))
+                if head.contains('-') && !tail.is_empty() && tail.bytes().all(|b| b.is_ascii_digit()) =>
+            {
+                head
+            }
+            _ => time,
+        };
+        let date_parts: Vec<&str> = date.split('-').collect();
+        let time_parts: Vec<&str> = time.split('-').collect();
+        assert_eq!(date_parts.len(), 3, "date must be DD-MM-YYYY: {name}");
+        assert_eq!(time_parts.len(), 2, "time must be HH-MM: {name}");
+        assert_eq!(date_parts[0].len(), 2, "day must be 2 digits: {name}");
+        assert_eq!(date_parts[1].len(), 2, "month must be 2 digits: {name}");
+        assert_eq!(date_parts[2].len(), 4, "year must be 4 digits: {name}");
+        assert_eq!(time_parts[0].len(), 2, "hour must be 2 digits: {name}");
+        assert_eq!(time_parts[1].len(), 2, "minute must be 2 digits: {name}");
+        assert!(date_parts
+            .iter()
+            .chain(time_parts.iter())
+            .all(|p| p.bytes().all(|b| b.is_ascii_digit())));
+    }
+
+    #[test]
+    fn backup_default_name_is_local_dd_mm_yyyy_hh_mm_without_seconds() {
+        let wd = scaffold("backup-name");
+        let conn = db::open(&paths::db_path(&wd)).unwrap();
+        let info = create_backup(&wd, &conn, None).unwrap();
+        let name = PathBuf::from(&info.path)
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_backup_name_shape(&name);
+        drop(conn);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn backup_name_at_appends_minimal_suffix_on_same_minute() {
+        let dir = temp_test_dir("backup-collision");
+        fs::create_dir_all(&dir).unwrap();
+        let stamp = "18-10-2026_19-18";
+        let first = backup_name_at(&dir, stamp);
+        assert_eq!(first.file_name().unwrap().to_string_lossy(), "project-s-18-10-2026_19-18.zip");
+        fs::write(&first, b"a").unwrap();
+        let second = backup_name_at(&dir, stamp);
+        assert_eq!(second.file_name().unwrap().to_string_lossy(), "project-s-18-10-2026_19-18-2.zip");
+        fs::write(&second, b"b").unwrap();
+        let third = backup_name_at(&dir, stamp);
+        assert_eq!(third.file_name().unwrap().to_string_lossy(), "project-s-18-10-2026_19-18-3.zip");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn two_backups_in_one_minute_do_not_overwrite_each_other() {
+        let wd = scaffold("backup-same-minute");
+        let conn = db::open(&paths::db_path(&wd)).unwrap();
+        let a = create_backup(&wd, &conn, None).unwrap();
+        let b = create_backup(&wd, &conn, None).unwrap();
+        assert_ne!(a.path, b.path, "second backup must not overwrite the first");
+        assert!(PathBuf::from(&a.path).is_file());
+        assert!(PathBuf::from(&b.path).is_file());
+        assert_eq!(list_backups(&wd).len(), 2);
+        assert_backup_name_shape(
+            PathBuf::from(&b.path).file_name().unwrap().to_string_lossy().as_ref(),
+        );
         drop(conn);
         fs::remove_dir_all(&wd).unwrap();
     }
