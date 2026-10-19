@@ -13,10 +13,13 @@ use super::fs_tools::{
     FsCopyTool, FsDeleteTool, FsGrepTool, FsListTool, FsMkdirTool, FsMoveTool, FsReadTool,
     FsRenameTool, FsWriteTool,
 };
+use super::launchd_tools::LaunchdTool;
 use super::schedule_tools::{
     ScheduleCreateTool, ScheduleDeleteTool, ScheduleListTool, SchedulePauseTool,
 };
 use super::shell_tools::BashTool;
+use super::spotlight_tools::SpotlightSearchTool;
+use super::trash_tools::{RestoreTrashedTool, TrashPathsTool};
 use crate::agent::catalog::Catalog;
 use crate::agent::tool::Tool;
 use std::sync::Arc;
@@ -62,6 +65,13 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(FsRenameTool),
         Arc::new(FsMkdirTool),
         Arc::new(FsGrepTool),
+        // Spotlight whole-disk search (Q.md computer-control slice): read-only
+        // mdfind wrapper; see spotlight_tools.rs.
+        Arc::new(SpotlightSearchTool),
+        // Real macOS Trash with a restore ledger (Q.md computer-control
+        // slice): both confirm; see trash_tools.rs.
+        Arc::new(TrashPathsTool),
+        Arc::new(RestoreTrashedTool),
         // Precise edits (exact string replacement + git apply patches);
         // see edit_tools.rs for the safety rules.
         Arc::new(super::super::edit_tools::EditFileTool::harness()),
@@ -143,6 +153,9 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(ScheduleListTool),
         Arc::new(SchedulePauseTool),
         Arc::new(ScheduleDeleteTool),
+        // launchd LaunchAgents: survive app close (Q.md computer-control
+        // slice); list/status skip, create/remove confirm; see launchd_tools.rs.
+        Arc::new(LaunchdTool),
         Arc::new(crate::agent::undo_tools::UndoLastTool),
         Arc::new(crate::agent::undo_tools::UndoListTool),
         // Background entity links (links slice): lazy-discovered like the
@@ -172,7 +185,7 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
-    const DEFERRED_NAMES: [&str; 63] = [
+    const DEFERRED_NAMES: [&str; 67] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -182,6 +195,9 @@ mod tests {
         "fs_rename",
         "fs_mkdir",
         "fs_grep",
+        "mdfind",
+        "trash_paths",
+        "restore_trashed",
         "edit_file",
         "apply_patch",
         "create_document",
@@ -233,6 +249,7 @@ mod tests {
         "schedule_list",
         "schedule_pause",
         "schedule_delete",
+        "launchd",
         "settings_list",
         "settings_propose",
         "settings_apply",
@@ -301,6 +318,22 @@ mod tests {
         assert_eq!(tool("macos_ui").policy(), PermissionPolicy::CheckConditional);
         assert!(tool("macos_ui").danger_reason(&json!({ "action": "window_list" }), &ToolCtx::default()).is_none());
         assert!(tool("macos_ui").danger_reason(&json!({ "action": "click" }), &ToolCtx::default()).is_some());
+        // launchd decides per action: list/status skip, create/remove confirm
+        assert_eq!(tool("launchd").class(), ToolClass::Mutating);
+        assert_eq!(tool("launchd").policy(), PermissionPolicy::CheckConditional);
+        assert!(tool("launchd").danger_reason(&json!({ "action": "list" }), &ToolCtx::default()).is_none());
+        assert!(tool("launchd").danger_reason(&json!({ "action": "status", "label": "ru.example.x" }), &ToolCtx::default()).is_none());
+        assert!(tool("launchd").danger_reason(&json!({ "action": "create", "label": "ru.example.x", "program": "/bin/ls" }), &ToolCtx::default()).is_some());
+        assert!(tool("launchd").danger_reason(&json!({ "action": "remove", "label": "ru.example.x" }), &ToolCtx::default()).is_some());
+        // Spotlight search is read-only
+        assert_eq!(tool("mdfind").class(), ToolClass::ReadOnly);
+        assert_eq!(tool("mdfind").policy(), PermissionPolicy::Skip);
+        // Real Trash and its restore both mutate the filesystem: always confirm
+        for name in ["trash_paths", "restore_trashed"] {
+            assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
+            assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
+            assert!(tool(name).danger_reason(&json!({}), &ToolCtx::default()).is_some(), "{name} danger_reason");
+        }
         assert_eq!(tool("clipboard_get_image").class(), ToolClass::ReadOnly);
         assert_eq!(tool("clipboard_get_image").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("git_branch").class(), ToolClass::Mutating);

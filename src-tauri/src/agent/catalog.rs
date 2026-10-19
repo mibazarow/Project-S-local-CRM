@@ -15,7 +15,7 @@ pub const DEFAULT_SCHEMA_CAP: usize = 128;
 // project and harness tool blocks (incl. image_transform, forget, the
 // objective tools and mcp_add) fit in full without truncation; only a
 // runaway MCP set would ever hit it.
-pub const SUMMARY_BLOCK_CAP: usize = 24_000;
+pub const SUMMARY_BLOCK_CAP: usize = 26_000;
 
 pub enum Resolution<'a> {
     Found(&'a Arc<dyn Tool>),

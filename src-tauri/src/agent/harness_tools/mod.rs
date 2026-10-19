@@ -20,10 +20,13 @@ mod catalog;
 mod chat_tools;
 mod crm_tools;
 mod fs_tools;
+mod launchd_tools;
 mod mcp_tools;
 mod schedule_tools;
 mod shell_tools;
+mod spotlight_tools;
 mod transfer;
+mod trash_tools;
 
 pub use self::catalog::harness_catalog;
 
