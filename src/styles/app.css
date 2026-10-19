@@ -715,7 +715,7 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 /* Markdown в ответах агента: пузыри + кнопки копирования (весь ответ, код-блоки) */
 .msg .bubble.md {
   position: relative;
-  padding: 26px 12px 10px;
+  padding: 10px 12px;
   white-space: normal;
 }
 .msg .bubble.md .preview-body { padding: 0; font-size: 13px; }
@@ -727,7 +727,8 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
   padding: 2px 8px;
   border-radius: 5px;
   border: 1px solid var(--border-strong);
-  background: var(--surface);
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .18);
   color: var(--text-muted);
   cursor: pointer;
   opacity: 0;

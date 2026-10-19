@@ -82,3 +82,23 @@ describe("MarkdownMessage note-link clicks", () => {
     expect(handler).not.toHaveBeenCalled();
   });
 });
+
+describe("MarkdownMessage copy whole answer", () => {
+  it("copies the raw text via navigator.clipboard and shows «Скопировано»", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    const md = "**Ответ**\n\nтекст";
+    await render(md);
+    const btn = container.querySelector("button.msg-copy") as HTMLButtonElement;
+    expect(btn).not.toBeNull();
+    await act(async () => {
+      btn.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    expect(writeText).toHaveBeenCalledWith(md);
+    expect(btn.className).toContain("msg-copy copied");
+    expect(btn.textContent).toBe("Скопировано");
+  });
+});
