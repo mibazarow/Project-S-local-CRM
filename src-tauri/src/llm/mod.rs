@@ -173,6 +173,16 @@ impl LlmClient {
         &self,
         make: impl Fn() -> std::result::Result<ureq::Response, Box<ureq::Error>>,
     ) -> Result<ureq::Response> {
+        self.call_with_retry_raw(make)
+            .map_err(|e| self.map_err(e))
+    }
+
+    // Same 429/5xx/transport retry, but hands the raw ureq error back so the
+    // chat paths can inspect a 400 body before it is mapped into an AppError.
+    fn call_with_retry_raw(
+        &self,
+        make: impl Fn() -> std::result::Result<ureq::Response, Box<ureq::Error>>,
+    ) -> std::result::Result<ureq::Response, ureq::Error> {
         let mut attempt = 0;
         loop {
             attempt += 1;
@@ -181,7 +191,7 @@ impl LlmClient {
                 Err(e) if attempt < 2 && Self::is_retryable(&e) => {
                     std::thread::sleep(Duration::from_millis(500));
                 }
-                Err(e) => return Err(self.map_err(*e)),
+                Err(e) => return Err(*e),
             }
         }
     }
@@ -225,7 +235,7 @@ impl LlmClient {
         mut on_event: impl FnMut(ChatEvent),
     ) -> Result<ChatOutcome> {
         let body = build_body(messages, tools, params, true);
-        let resp = self.post_chat_stream(&body)?;
+        let resp = self.post_chat_with_reasoning_retry(&body, |b| self.post_chat_stream_raw(b))?;
         run_sse(resp.into_reader(), self.stream_timeout, &mut on_event)
     }
 
@@ -237,15 +247,15 @@ impl LlmClient {
         params: &ChatParams,
     ) -> Result<ChatOutcome> {
         let body = build_body(messages, tools, params, false);
-        let resp = self.post_chat(&body)?;
+        let resp = self.post_chat_with_reasoning_retry(&body, |b| self.post_chat_raw(b))?;
         let value: Value = resp
             .into_json()
             .map_err(|e| AppError::Json(self.masked(format!("chat response is not valid JSON: {e}"))))?;
         parse_non_stream(&value)
     }
 
-    fn post_chat(&self, body: &Value) -> Result<ureq::Response> {
-        self.call_with_retry(|| {
+    fn post_chat_raw(&self, body: &Value) -> std::result::Result<ureq::Response, ureq::Error> {
+        self.call_with_retry_raw(|| {
             self.auth(
                 self.agent
                     .post(&format!("{}/chat/completions", self.base_url)),
@@ -255,16 +265,44 @@ impl LlmClient {
         })
     }
 
-    // Streaming POST on the watchdog agent. Single attempt (no retry): a
-    // silent provider must abort at the inactivity bound and surface for the
+    // Streaming POST on the watchdog agent. Single attempt (no 429/5xx retry):
+    // a silent provider must abort at the inactivity bound and surface for the
     // user's «Повторить», not silently double the wait.
-    fn post_chat_stream(&self, body: &Value) -> Result<ureq::Response> {
+    fn post_chat_stream_raw(
+        &self,
+        body: &Value,
+    ) -> std::result::Result<ureq::Response, ureq::Error> {
         self.auth(
             self.stream_agent
                 .post(&format!("{}/chat/completions", self.base_url)),
         )
         .send_json(body)
-        .map_err(|e| self.map_err(e))
+    }
+
+    // Sends a chat request (streaming or not) and, on the thinking-mode
+    // "reasoning_content must be passed back" 400, retries exactly once with a
+    // corrected body where every assistant turn carries the field. Provider-
+    // agnostic: the config heuristic may have missed a gateway, and requests
+    // without tools were never patched proactively. A second failure surfaces
+    // as the usual HTTP error.
+    fn post_chat_with_reasoning_retry(
+        &self,
+        body: &Value,
+        post: impl Fn(&Value) -> std::result::Result<ureq::Response, ureq::Error>,
+    ) -> Result<ureq::Response> {
+        match post(body) {
+            Ok(resp) => Ok(resp),
+            Err(ureq::Error::Status(status, resp)) => {
+                let err_body = resp.into_string().unwrap_or_default();
+                if !is_reasoning_passback_error(status, &err_body) {
+                    return Err(self.status_err(status, err_body));
+                }
+                let mut fixed = body.clone();
+                ensure_reasoning_on_assistants(fixed["messages"].as_array_mut());
+                post(&fixed).map_err(|e| self.map_err(e))
+            }
+            Err(e) => Err(self.map_err(e)),
+        }
     }
 }
 
@@ -636,6 +674,15 @@ fn ensure_reasoning_on_assistants(messages: Option<&mut Vec<Value>>) {
             }
         }
     }
+}
+
+// The thinking-mode pass-back rejection: HTTP 400 whose body names
+// `reasoning_content` anywhere (case-insensitive; JSON wrapping, quoting and
+// backticks around the field name are irrelevant to the substring match).
+// Deliberately not keyed on provider or model names: any gateway enforcing the
+// rule answers with this exact class of error.
+fn is_reasoning_passback_error(status: u16, body: &str) -> bool {
+    status == 400 && body.to_ascii_lowercase().contains("reasoning_content")
 }
 
 #[derive(Default)]
@@ -1229,8 +1276,8 @@ mod tests {
             parameters: json!({ "type": "object" }),
         }];
 
-        // Gate on (DeepSeek thinking): the empty trace is filled in, so the
-        // provider accepts the follow-up.
+        // Gate on (DeepSeek thinking): the empty trace is filled in proactively,
+        // so the provider accepts the follow-up on the first attempt.
         let fixed = ChatParams {
             model: "deepseek-chat".into(),
             temperature: None,
@@ -1240,19 +1287,217 @@ mod tests {
         };
         let out = client.chat(&messages, Some(&tools), &fixed).unwrap();
         assert_eq!(out.content.as_deref(), Some("ok"));
+        assert_eq!(server.request_log().len(), 1);
 
         // The wire body actually carried the empty trace on the assistant turn.
         let sent: Value =
             serde_json::from_str(&server.request_log().last().unwrap().body).unwrap();
         assert_eq!(sent["messages"][1]["reasoning_content"], "");
 
-        // Regression control: gate off omits the trace, so the mock 400s.
+        // Gate off: the proactive fill is skipped, the mock 400s, and the
+        // provider-agnostic reasoning retry repairs the follow-up on the
+        // second attempt.
         let legacy = ChatParams {
             requires_reasoning_passback: false,
             ..fixed.clone()
         };
-        let err = client.chat(&messages, Some(&tools), &legacy).unwrap_err();
+        let out = client.chat(&messages, Some(&tools), &legacy).unwrap();
+        assert_eq!(out.content.as_deref(), Some("ok"));
+        let sent = server.request_log();
+        assert_eq!(sent.len(), 3);
+        let first: Value = serde_json::from_str(&sent[1].body).unwrap();
+        assert!(first["messages"][1].get("reasoning_content").is_none());
+        let retry: Value = serde_json::from_str(&sent[2].body).unwrap();
+        assert_eq!(retry["messages"][1]["reasoning_content"], "");
+    }
+
+    #[test]
+    fn reasoning_passback_error_detection_is_provider_agnostic() {
+        // The exact production shape (backticks, request id, JSON wrapping).
+        assert!(is_reasoning_passback_error(
+            400,
+            r#"{"error":{"message":"The `reasoning_content` in the thinking mode must be passed back to the API. (request_id: 94a2e983-5ada-4c47-9499-0ff7821cd23b)","type":"invalid_request_error","param":null,"code":"invalid_request_error"}}"#
+        ));
+        assert!(is_reasoning_passback_error(400, "REASONING_CONTENT MUST BE PASSED BACK"));
+        assert!(is_reasoning_passback_error(400, "  reasoning_content  "));
+        // Other 400s and other statuses saying the word are not this error.
+        assert!(!is_reasoning_passback_error(400, "model does not support image inputs"));
+        assert!(!is_reasoning_passback_error(401, "reasoning_content"));
+        assert!(!is_reasoning_passback_error(500, "reasoning_content"));
+    }
+
+    // A gateway under a non-DeepSeek name that always enforces the pass-back:
+    // 400 while any assistant turn omits the field, 200 otherwise.
+    fn passback_gate_handler() -> crate::mcp::mock_server::Handler {
+        use crate::mcp::mock_server::{respond, CapturedRequest};
+        std::sync::Arc::new(
+            |stream: &mut std::net::TcpStream, req: &CapturedRequest| {
+                let body: Value = serde_json::from_str(&req.body).unwrap();
+                let missing = body["messages"]
+                    .as_array()
+                    .map(|msgs| {
+                        msgs.iter().any(|m| {
+                            m.get("role").and_then(Value::as_str) == Some("assistant")
+                                && m.get("reasoning_content").is_none()
+                        })
+                    })
+                    .unwrap_or(false);
+                if missing {
+                    respond(
+                        stream,
+                        400,
+                        "application/json",
+                        r#"{"error":{"message":"The `reasoning_content` in the thinking mode must be passed back to the API.","type":"invalid_request_error"}}"#,
+                        &[],
+                    )
+                } else {
+                    respond(
+                        stream,
+                        200,
+                        "application/json",
+                        r#"{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}"#,
+                        &[],
+                    )
+                }
+            },
+        )
+    }
+
+    #[test]
+    fn reasoning_400_retries_once_with_and_without_tools() {
+        use crate::mcp::mock_server::MockServer;
+
+        let server = MockServer::start(passback_gate_handler());
+        let client = LlmClient::new(&server.url_base, "k");
+        let messages = vec![
+            ChatMessage::user("hi"),
+            ChatMessage::assistant("earlier").with_reasoning(Some("real trace".into())),
+            ChatMessage::assistant("plain"),
+            ChatMessage::user("again"),
+        ];
+        // Heuristic gate off: neither the endpoint nor the model says deepseek.
+        let params = ChatParams {
+            model: "reasoner-v2".into(),
+            temperature: None,
+            max_tokens: None,
+            reasoning_effort: Some("medium".into()),
+            requires_reasoning_passback: false,
+        };
+        let tools = [ToolSpec {
+            name: "f".into(),
+            description: "d".into(),
+            parameters: json!({ "type": "object" }),
+        }];
+
+        // With tools: exactly one retry; the retry preserves the real trace
+        // and fills the untraced assistant turn with an empty one.
+        let out = client.chat(&messages, Some(&tools), &params).unwrap();
+        assert_eq!(out.content.as_deref(), Some("ok"));
+        let sent = server.request_log();
+        assert_eq!(sent.len(), 2);
+        let first: Value = serde_json::from_str(&sent[0].body).unwrap();
+        assert!(first["messages"][2].get("reasoning_content").is_none());
+        let retry: Value = serde_json::from_str(&sent[1].body).unwrap();
+        assert_eq!(retry["messages"][1]["reasoning_content"], "real trace");
+        assert_eq!(retry["messages"][2]["reasoning_content"], "");
+
+        // Without tools: the same recovery (the proactive patch never applies
+        // here, only the 400-triggered retry does).
+        let out = client.chat(&messages, None, &params).unwrap();
+        assert_eq!(out.content.as_deref(), Some("ok"));
+        let sent = server.request_log();
+        assert_eq!(sent.len(), 4);
+        let first: Value = serde_json::from_str(&sent[2].body).unwrap();
+        assert!(first["messages"][2].get("reasoning_content").is_none());
+        let retry: Value = serde_json::from_str(&sent[3].body).unwrap();
+        assert_eq!(retry["messages"][2]["reasoning_content"], "");
+    }
+
+    #[test]
+    fn reasoning_400_retry_happens_exactly_once() {
+        use crate::mcp::mock_server::{respond, CapturedRequest, MockServer};
+
+        // Always-400 mock: the client must not loop, the error surfaces after
+        // exactly one corrected retry.
+        let handler: crate::mcp::mock_server::Handler = std::sync::Arc::new(
+            |stream: &mut std::net::TcpStream, _req: &CapturedRequest| {
+                respond(
+                    stream,
+                    400,
+                    "application/json",
+                    r#"{"error":{"message":"reasoning_content must be passed back"}}"#,
+                    &[],
+                )
+            },
+        );
+        let server = MockServer::start(handler);
+        let client = LlmClient::new(&server.url_base, "k");
+        let params = ChatParams {
+            model: "reasoner-v2".into(),
+            temperature: None,
+            max_tokens: None,
+            reasoning_effort: Some("medium".into()),
+            requires_reasoning_passback: false,
+        };
+        let messages = vec![ChatMessage::user("hi"), ChatMessage::assistant("earlier")];
+        let err = client.chat(&messages, None, &params).unwrap_err();
         assert!(err.to_string().contains("400"), "expected HTTP 400, got {err}");
+        assert_eq!(server.request_log().len(), 2);
+    }
+
+    #[test]
+    fn reasoning_400_retries_once_for_streaming_requests() {
+        use crate::mcp::mock_server::{write_sse_headers, MockServer};
+        use std::io::Write;
+
+        let handler = std::sync::Arc::new(
+            |stream: &mut std::net::TcpStream, req: &crate::mcp::mock_server::CapturedRequest| {
+                let body: Value = serde_json::from_str(&req.body).unwrap();
+                let missing = body["messages"]
+                    .as_array()
+                    .map(|msgs| {
+                        msgs.iter().any(|m| {
+                            m.get("role").and_then(Value::as_str) == Some("assistant")
+                                && m.get("reasoning_content").is_none()
+                        })
+                    })
+                    .unwrap_or(false);
+                if missing {
+                    crate::mcp::mock_server::respond(
+                        stream,
+                        400,
+                        "application/json",
+                        r#"{"error":{"message":"reasoning_content must be passed back"}}"#,
+                        &[],
+                    )
+                } else {
+                    write_sse_headers(stream)?;
+                    stream.write_all(
+                        b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n",
+                    )?;
+                    stream.write_all(b"data: [DONE]\n\n")
+                }
+            },
+        );
+        let server = MockServer::start(handler);
+        let client = LlmClient::new(&server.url_base, "k");
+        let params = ChatParams {
+            model: "reasoner-v2".into(),
+            temperature: None,
+            max_tokens: None,
+            reasoning_effort: Some("medium".into()),
+            requires_reasoning_passback: false,
+        };
+        let messages = vec![ChatMessage::user("hi"), ChatMessage::assistant("earlier")];
+        let out = client
+            .chat_stream(&messages, None, &params, |_| {})
+            .unwrap();
+        assert_eq!(out.content.as_deref(), Some("ok"));
+        let sent = server.request_log();
+        assert_eq!(sent.len(), 2);
+        let retry: Value = serde_json::from_str(&sent[1].body).unwrap();
+        assert_eq!(retry["messages"][1]["reasoning_content"], "");
+        assert_eq!(retry["stream"], json!(true));
     }
 
     #[test]

@@ -829,6 +829,78 @@ mod tests {
         fs::remove_dir_all(&wd).unwrap();
     }
 
+    // Backend whose rounds can fail, driving the after-tool LLM-failure path.
+    struct FlakyBackend {
+        outcomes: Mutex<VecDeque<std::result::Result<ChatOutcome, AppError>>>,
+    }
+
+    impl ChatBackend for FlakyBackend {
+        fn chat_stream(
+            &self,
+            _messages: &[ChatMessage],
+            _tools: Option<&[ToolSpec]>,
+            _params: &ChatParams,
+            _on_event: &mut dyn FnMut(ChatEvent),
+        ) -> Result<ChatOutcome> {
+            self.outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err(AppError::Invalid("flaky backend exhausted".into())))
+        }
+    }
+
+    #[test]
+    fn llm_error_after_a_successful_tool_persists_the_warning_in_the_transcript() {
+        let (wd, conn, pid) = setup("chat-llm-error-after-tool");
+        let chat_id = ensure_project_chat(&conn, pid).unwrap();
+        append_message(&conn, chat_id, Role::User, Some("go"), &[], None, None).unwrap();
+
+        let backend = FlakyBackend {
+            outcomes: Mutex::new(
+                vec![
+                    Ok(tools_outcome(vec![call("c1", "echo", json!({ "text": "hi" }))])),
+                    Err(AppError::Http(
+                        "HTTP 400: reasoning_content must be passed back".into(),
+                    )),
+                ]
+                .into(),
+            ),
+        };
+        let mut catalog = catalog_with(Some(EchoTool::new(PermissionPolicy::Skip)));
+        let mut state = agent_loop::AgentState {
+            backend: &backend,
+            catalog: &mut catalog,
+        };
+        let mut on_message = |msg: &ChatMessage| {
+            append_chat_message(&conn, chat_id, msg).unwrap();
+        };
+        let result = agent_loop::run_with(
+            &mut state,
+            &test_config("go"),
+            &DenyAllConfirmer,
+            |_| {},
+            &mut on_message,
+        )
+        .unwrap();
+        assert_eq!(result.finish_reason, "llm_error");
+        persist_final_answer(&conn, chat_id, &result).unwrap();
+
+        // The tool result and the warning both survive: user, asst(tool_call),
+        // tool, asst(warning) — the completed action is never lost.
+        let hist = load_history(&conn, chat_id, false).unwrap();
+        let roles: Vec<Role> = hist.iter().map(|m| m.role).collect();
+        assert_eq!(
+            roles,
+            [Role::User, Role::Assistant, Role::Tool, Role::Assistant]
+        );
+        assert_eq!(hist[2].tool_call_id.as_deref(), Some("c1"));
+        let warning = hist[3].text_content().unwrap();
+        assert!(warning.contains("Действие выполнено, но ответ модели не получен"));
+        assert!(warning.contains("HTTP 400"));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
     #[test]
     fn step_limit_does_not_duplicate_the_fallback_answer() {
         let (wd, conn, pid) = setup("chat-step-limit");

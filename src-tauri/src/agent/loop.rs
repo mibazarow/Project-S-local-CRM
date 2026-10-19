@@ -153,6 +153,10 @@ const NO_ATTEMPT_NUDGE: &str = "You have tools. Attempt the task before giving u
 // Consecutive identical call+result signatures before the loop nudge fires.
 const LOOP_REPEAT_LIMIT: usize = 3;
 
+// User-facing warning for a run whose action already landed but whose
+// follow-up model request failed: the operation is not presented as failed.
+const LLM_AFTER_TOOL_WARNING: &str = "Действие выполнено, но ответ модели не получен.";
+
 const COMPLETION_PHRASES: [&str; 5] = ["готово", "сделано", "выполнено", "done", "completed"];
 const INCAPABILITY_PHRASES: [&str; 5] = ["не могу", "я не могу", "i can't", "i cannot", "unable to"];
 
@@ -209,6 +213,7 @@ pub struct AgentRunConfig {
 pub struct AgentRunResult {
     pub answer: String,
     // "finish" | "stop" | "step_limit" | "cancelled" | "timeout" | "stalled"
+    // | "llm_error" (model request failed after a tool call already landed)
     pub finish_reason: String,
     pub steps: usize,
     // Thinking trace of the run, accumulated across rounds.
@@ -269,7 +274,23 @@ fn run_inner(
         if let Some(reason) = run.check_watchdog() {
             return Ok(run.finish_run(&mut hooks, reason, step - 1, None));
         }
-        let outcome = run.call_llm(state, config, &mut hooks)?;
+        let outcome = match run.call_llm(state, config, &mut hooks) {
+            Ok(outcome) => outcome,
+            // A tool call already landed in this run: a follow-up model
+            // failure must not read as an operation failure. End with the
+            // tool result (already persisted through on_message) plus a
+            // visible non-fatal warning instead of an Error event.
+            Err(e) if run.guards.tool_calls_made > 0 => {
+                return Ok(run.finish_after_llm_error(&mut hooks, &e, step - 1));
+            }
+            Err(e) => {
+                hooks.emit(AgentEvent::Error {
+                    code: e.code().to_string(),
+                    message: e.to_string(),
+                });
+                return Err(e);
+            }
+        };
         run.note_round_outcome(&outcome);
         match run.step(state, config, confirmer, &mut hooks, step, &outcome) {
             StepOutcome::Continue => continue,
@@ -416,7 +437,8 @@ impl Run {
     }
 
     // One streamed LLM round; deltas count as watchdog progress. A backend
-    // error emits the llm Error event and aborts the run (same as before).
+    // error is returned to the caller, which decides how it surfaces: fatal
+    // Error event, or the after-tool warning when an action already landed.
     fn call_llm<H: HookSet>(
         &mut self,
         state: &mut AgentState<'_>,
@@ -435,16 +457,7 @@ impl Run {
             }
             _ => {}
         };
-        match state.backend.chat_stream(&self.messages, Some(&specs), &config.params, &mut on_event) {
-            Ok(outcome) => Ok(outcome),
-            Err(e) => {
-                hooks.emit(AgentEvent::Error {
-                    code: e.code().to_string(),
-                    message: e.to_string(),
-                });
-                Err(e)
-            }
-        }
+        state.backend.chat_stream(&self.messages, Some(&specs), &config.params, &mut on_event)
     }
 
     // Accumulate this round's thinking trace and latch its final text as the
@@ -642,6 +655,21 @@ impl Run {
             .unwrap_or("finish")
             .to_string();
         Some((answer, reason))
+    }
+
+    // A backend failure once at least one tool call has already landed: the
+    // run ends as a partial success, not an error. The tool result is already
+    // in the transcript (persisted through on_message); the final answer is
+    // the user-facing warning plus the transport error for diagnosis, so the
+    // completed action is never presented as a failure.
+    fn finish_after_llm_error<H: HookSet>(
+        &mut self,
+        hooks: &mut H,
+        err: &crate::error::AppError,
+        steps: usize,
+    ) -> AgentRunResult {
+        let answer = format!("{LLM_AFTER_TOOL_WARNING}\n{err}");
+        self.finish_run(hooks, "llm_error", steps, Some(answer))
     }
 
     // The single exit for every non-error end: emit Done and build the result
@@ -891,11 +919,43 @@ mod tests {
         }
     }
 
+    // Backend whose rounds can fail with an AppError, to drive the
+    // after-tool LLM-failure path.
+    struct FlakyBackend {
+        outcomes: Mutex<VecDeque<std::result::Result<ChatOutcome, AppError>>>,
+        calls: AtomicUsize,
+    }
+
+    impl FlakyBackend {
+        fn new(outcomes: Vec<std::result::Result<ChatOutcome, AppError>>) -> Self {
+            FlakyBackend {
+                outcomes: Mutex::new(outcomes.into()),
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    impl ChatBackend for FlakyBackend {
+        fn chat_stream(
+            &self,
+            _messages: &[ChatMessage],
+            _tools: Option<&[ToolSpec]>,
+            _params: &ChatParams,
+            _on_event: &mut dyn FnMut(ChatEvent),
+        ) -> Result<ChatOutcome> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.outcomes
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or_else(|| Err(AppError::Invalid("flaky backend exhausted".into())))
+        }
+    }
+
     struct ScriptedConfirmer {
         decisions: Mutex<VecDeque<ConfirmDecision>>,
         calls: AtomicUsize,
     }
-
     impl ScriptedConfirmer {
         fn new(decisions: Vec<ConfirmDecision>) -> Self {
             ScriptedConfirmer {
@@ -1574,6 +1634,64 @@ mod tests {
         assert_eq!(result.answer, "ok");
         // The backend saw: system+user, then +assistant/tool, i.e. growth only.
         assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn llm_failure_after_a_tool_call_ends_the_run_with_a_warning_not_an_error() {
+        let backend = FlakyBackend::new(vec![
+            Ok(tools_outcome(vec![call("c1", "echo", json!({ "text": "hi" }))])),
+            Err(AppError::Http(
+                "HTTP 400: {\"error\":{\"message\":\"The `reasoning_content` in the thinking mode must be passed back to the API.\"}}".into(),
+            )),
+        ]);
+        let mut catalog = catalog_with(Some(EchoTool::new(PermissionPolicy::Skip)));
+        let mut state = AgentState {
+            backend: &backend,
+            catalog: &mut catalog,
+        };
+        let mut events = Vec::new();
+        let mut persisted: Vec<ChatMessage> = Vec::new();
+        let result = run_with(
+            &mut state,
+            &config(8),
+            &DenyAllConfirmer,
+            |e| events.push(e),
+            |m| persisted.push(m.clone()),
+        )
+        .unwrap();
+        // Partial success, not a hard error: the run returns Ok with the
+        // warning as the final answer.
+        assert_eq!(result.finish_reason, "llm_error");
+        assert!(result.answer.contains(LLM_AFTER_TOOL_WARNING));
+        assert!(result.answer.contains("HTTP 400"));
+        // The successful tool call landed in the transcript before the failure.
+        assert!(envelope_for(&events, "echo")["ok"].as_bool().unwrap());
+        assert!(persisted.iter().any(|m| m.role == Role::Tool));
+        // The operation is not presented as failed: no Error event anywhere,
+        // Done closes the run with the warning answer.
+        assert!(!events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::Done { reason, answer, .. })
+                if reason == "llm_error" && answer.contains(LLM_AFTER_TOOL_WARNING)
+        ));
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn llm_failure_before_any_tool_call_still_fails_the_run() {
+        let backend = FlakyBackend::new(vec![Err(AppError::Http("HTTP 500: upstream down".into()))]);
+        let mut catalog = catalog_with(Some(EchoTool::new(PermissionPolicy::Skip)));
+        let mut state = AgentState {
+            backend: &backend,
+            catalog: &mut catalog,
+        };
+        let mut events = Vec::new();
+        let err = run(&mut state, &config(8), &DenyAllConfirmer, |e| events.push(e)).unwrap_err();
+        assert!(err.to_string().contains("500"));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, AgentEvent::Error { message, .. } if message.contains("500"))));
     }
 
     #[test]
