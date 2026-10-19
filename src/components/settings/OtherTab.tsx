@@ -3,6 +3,7 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import * as ipc from "../../api/ipc";
 import type { BackupStatus, ProjectDto, TrashDto } from "../../api/types";
 import { toMessage as errMsg } from "../../shared/errors";
+import { confirmRemove } from "../../shared/confirm";
 import { Card, Field } from "./shared";
 import { type DebouncedConfig } from "./useDebouncedConfig";
 import { exportStamp, fmtLocal, fmtMb, fmtRfc, type AppForm } from "./forms";
@@ -206,8 +207,13 @@ export default function OtherTab({
       .finally(() => setTrashBusyId(null));
   };
 
-  const purgeTrash = (id: number, name: string) => {
-    if (!window.confirm(`Удалить «${name}» навсегда? Это действие необратимо.`)) return;
+  const purgeTrash = async (id: number, name: string) => {
+    const ok = await confirmRemove({
+      title: `Удалить «${name}» навсегда?`,
+      message: "Это действие необратимо.",
+      confirmLabel: "Удалить навсегда",
+    });
+    if (!ok) return;
     setTrashBusyId(id);
     setTrashError(null);
     void ipc

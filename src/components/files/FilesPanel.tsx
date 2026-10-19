@@ -3,6 +3,7 @@ import * as ipc from "../../api/ipc";
 import type { FsEntry, ProjectDto } from "../../api/types";
 import { useApp } from "../../state/AppStore";
 import { resolveEntry } from "../../shared/resolveEntry";
+import { confirmAction } from "../../shared/confirm";
 import Breadcrumbs from "./Breadcrumbs";
 import FileGrid from "./FileGrid";
 import FilePreview from "./FilePreview";
@@ -50,8 +51,8 @@ export default function FilesPanel({ project }: Props) {
     const path = state.pendingFilePath;
     if (!path) return;
     actions.clearPendingFile();
-    if (!confirmDiscard()) return;
     void (async () => {
+      if (!(await confirmDiscard())) return;
       try {
         const entry = await resolveEntry(path, (dir) => ipc.fsListDir(project.id, dir));
         if (entry) {
@@ -69,27 +70,34 @@ export default function FilesPanel({ project }: Props) {
     const id = state.pendingTaskId;
     if (id == null) return;
     actions.clearPendingTask();
-    if (!confirmDiscard()) return;
-    setTab("tasks");
-    setHighlightTaskId(id);
+    void (async () => {
+      if (!(await confirmDiscard())) return;
+      setTab("tasks");
+      setHighlightTaskId(id);
+    })();
   }, [state.pendingTaskId, actions]);
 
-  const confirmDiscard = () =>
+  const confirmDiscard = async () =>
     !dirtyRef.current ||
-    window.confirm("Есть несохранённые изменения. Отменить их?");
+    (await confirmAction({
+      title: "Отменить несохранённые изменения?",
+      message: "В редакторе есть несохранённые изменения — они будут потеряны.",
+      confirmLabel: "Отменить изменения",
+      danger: true,
+    }));
 
-  const handleSelect = (entry: FsEntry) => {
-    if (entry.relPath !== selected?.relPath && !confirmDiscard()) return;
+  const handleSelect = async (entry: FsEntry) => {
+    if (entry.relPath !== selected?.relPath && !(await confirmDiscard())) return;
     setSelected(entry);
   };
 
-  const handleClosePreview = () => {
-    if (!confirmDiscard()) return;
+  const handleClosePreview = async () => {
+    if (!(await confirmDiscard())) return;
     setSelected(null);
   };
 
-  const switchTab = (next: "files" | "tasks") => {
-    if (next !== tab && !confirmDiscard()) return;
+  const switchTab = async (next: "files" | "tasks") => {
+    if (next !== tab && !(await confirmDiscard())) return;
     setTab(next);
     setHighlightTaskId(null);
   };

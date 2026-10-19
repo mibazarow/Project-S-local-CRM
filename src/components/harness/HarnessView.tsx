@@ -23,6 +23,7 @@ import { useChatRun } from "../chat/useChatRun";
 import { ChatComposer } from "../chat/ChatComposer";
 import { useChatAttachments } from "../chat/useChatAttachments";
 import { formatActivity } from "../../shared/format";
+import { confirmRemove } from "../../shared/confirm";
 import TodoPanel from "../chat/TodoPanel";
 import SchedulePanel from "./SchedulePanel";
 import { TrashIcon } from "./shared";
@@ -335,7 +336,11 @@ export default function HarnessView() {
 
   const deleteSession = async (s: SessionDto) => {
     const label = s.title ?? UNTITLED;
-    if (!window.confirm(`Удалить сессию «${label}»? Её история будет удалена, а расписания сохранятся и при следующем срабатывании создадут новую сессию.`)) return;
+    const ok = await confirmRemove({
+      title: `Удалить чат «${label}»?`,
+      message: "История чата будет удалена. Расписания сохранятся и при следующем срабатывании создадут новый чат.",
+    });
+    if (!ok) return;
     try {
       await ipc.harnessDeleteSession(s.id);
       if (activeId === s.id) setActiveId(null);
@@ -522,7 +527,7 @@ export default function HarnessView() {
   };
 
   const deleteSchedule = async (s: ScheduleDto) => {
-    if (!window.confirm("Удалить расписание?")) return;
+    if (!(await confirmRemove({ title: "Удалить расписание?" }))) return;
     try {
       await ipc.scheduleDelete(s.id);
       await loadSchedules();

@@ -12,6 +12,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import LlmTab from "./LlmTab";
+import ConfirmDialogHost from "../shared/ConfirmDialogHost";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -90,7 +91,12 @@ afterEach(() => {
 
 async function mount() {
   await act(async () => {
-    root.render(<LlmTab active error={null} setError={() => {}} />);
+    root.render(
+      <>
+        <LlmTab active error={null} setError={() => {}} />
+        <ConfirmDialogHost />
+      </>,
+    );
   });
   await act(async () => {});
 }
@@ -218,13 +224,23 @@ describe("LlmTab providers", () => {
     expect(a?.apiKey).toBe("sk-x");
   });
 
-  it("deletes a provider after confirmation", async () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+  it("deletes a provider only after the in-app confirmation", async () => {
     await mount();
     await click(btn("Удалить"));
-    expect(confirmSpy).toHaveBeenCalled();
+    const dialog = document.body.querySelector(".confirm-dialog")!;
+    expect(dialog.textContent).toContain("Удалить провайдера «DeepSeek»?");
+    expect(invoked("llm_provider_delete")).toHaveLength(0);
+    await click(dialog.querySelector<HTMLButtonElement>(".primary-btn")!);
     expect(argsOf("llm_provider_delete")?.id).toBe("a");
-    confirmSpy.mockRestore();
+  });
+
+  it("keeps the provider when the confirmation is cancelled", async () => {
+    await mount();
+    await click(btn("Удалить"));
+    const dialog = document.body.querySelector(".confirm-dialog")!;
+    await click(dialog.querySelector<HTMLButtonElement>(".ghost-btn")!);
+    expect(document.body.querySelector(".confirm-dialog")).toBeNull();
+    expect(invoked("llm_provider_delete")).toHaveLength(0);
   });
 
   it("keeps the model picker and vision control working", async () => {

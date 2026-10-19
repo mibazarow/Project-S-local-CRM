@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import * as ipc from "../../api/ipc";
 import type { McpServerStatus } from "../../api/types";
 import { toMessage as errMsg } from "../../shared/errors";
+import { confirmRemove } from "../../shared/confirm";
 import { Card, Field } from "./shared";
 import {
   emptyMcpForm,
@@ -193,7 +194,11 @@ export default function McpTab({ active }: { active: boolean }) {
   };
 
   const deleteMcpServer = async (name: string) => {
-    if (!window.confirm(`Удалить сервер «${name}» из mcp.json?`)) return;
+    const ok = await confirmRemove({
+      title: `Удалить сервер «${name}»?`,
+      message: "Запись о сервере будет удалена из mcp.json.",
+    });
+    if (!ok) return;
     setMcpBusy(true);
     setMcpError(null);
     try {

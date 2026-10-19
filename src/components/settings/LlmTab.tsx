@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from "react"
 import * as ipc from "../../api/ipc";
 import type { ConnectionTest, LlmConfig, LlmProviderDto, VisionStatus } from "../../api/types";
 import { toMessage as errMsg } from "../../shared/errors";
+import { confirmRemove } from "../../shared/confirm";
 import { Card, Field } from "./shared";
 import { useDebouncedConfig } from "./useDebouncedConfig";
 import {
@@ -388,7 +389,11 @@ export default function LlmTab({
   };
 
   const deleteProvider = async (p: LlmProviderDto) => {
-    if (!window.confirm(`Удалить провайдера «${p.name}» вместе с его API-ключом?`)) return;
+    const ok = await confirmRemove({
+      title: `Удалить провайдера «${p.name}»?`,
+      message: "Вместе с провайдером будет удалён его API-ключ.",
+    });
+    if (!ok) return;
     setProvBusy(true);
     setProvError(null);
     try {

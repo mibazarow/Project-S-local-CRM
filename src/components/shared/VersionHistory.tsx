@@ -14,6 +14,7 @@ interface Props {
 }
 
 import { toMessage as errMsg } from "../../shared/errors";
+import { confirmAction } from "../../shared/confirm";
 
 export { toMessage as errMsg } from "../../shared/errors";
 
@@ -53,7 +54,13 @@ export default function VersionHistory({ scope, absPath, onRestore, onClose }: P
   }, [load, scope, absPath]);
 
   const restore = async (id: number) => {
-    if (!window.confirm("Заменить текущее содержимое этой версией?")) return;
+    const ok = await confirmAction({
+      title: "Восстановить эту версию?",
+      message: "Текущее содержимое будет заменено выбранной версией.",
+      confirmLabel: "Восстановить",
+      danger: true,
+    });
+    if (!ok) return;
     setBusyId(id);
     try {
       const r = await ipc.versionRestore(id);

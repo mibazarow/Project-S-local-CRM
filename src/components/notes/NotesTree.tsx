@@ -268,7 +268,14 @@ export default function NotesTree({
         : entry.isMarkdown
           ? `заметку «${entry.name}»`
           : `файл «${entry.name}»`;
-    if (!confirmRemove(what)) return;
+    const message =
+      entry.kind === "dir"
+        ? "Папка будет перемещена в корзину."
+        : entry.isMarkdown
+          ? "Заметка будет перемещена в корзину."
+          : "Файл будет перемещён в корзину.";
+    const ok = await confirmRemove({ title: `Удалить ${what}?`, message });
+    if (!ok) return;
     try {
       await ipc.notesDelete(entry.relPath);
       onDeleted(entry.relPath);

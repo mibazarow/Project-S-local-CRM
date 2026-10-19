@@ -1,20 +1,15 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { confirmRemove } from "./confirm";
+import { describe, expect, it } from "vitest";
+import { confirmAction, confirmRemove } from "./confirm";
 
-afterEach(() => {
-  vi.restoreAllMocks();
-});
-
-describe("confirmRemove", () => {
-  it("asks with the exact «Удалить …?» phrasing and forwards the answer", () => {
-    const spy = vi.spyOn(window, "confirm").mockReturnValue(true);
-    expect(confirmRemove('файл «notes.md»')).toBe(true);
-    expect(spy).toHaveBeenCalledWith("Удалить файл «notes.md»?");
+// The dialog itself is covered by components/shared/ConfirmDialogHost.test.tsx;
+// here the contract is the no-host fallback: the promise must resolve false
+// instead of hanging forever (e.g. in tests or before the app root mounts).
+describe("confirm channel without a mounted host", () => {
+  it("confirmAction resolves false", async () => {
+    await expect(confirmAction({ title: "Удалить файл?" })).resolves.toBe(false);
   });
 
-  it("keeps the folder phrasing verbatim", () => {
-    const spy = vi.spyOn(window, "confirm").mockReturnValue(false);
-    expect(confirmRemove('папку «src» со всем содержимым')).toBe(false);
-    expect(spy).toHaveBeenCalledWith("Удалить папку «src» со всем содержимым?");
+  it("confirmRemove resolves false", async () => {
+    await expect(confirmRemove({ title: "Удалить файл «notes.md»?" })).resolves.toBe(false);
   });
 });

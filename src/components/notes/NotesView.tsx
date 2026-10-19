@@ -3,6 +3,7 @@ import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { useApp } from "../../state/AppStore";
 import { resolveEntry } from "../../shared/resolveEntry";
+import { confirmAction } from "../../shared/confirm";
 import NoteEditor from "./NoteEditor";
 import NotesChat from "./NotesChat";
 import NotesTree from "./NotesTree";
@@ -54,12 +55,17 @@ export default function NotesView() {
     };
   }, []);
 
-  const confirmDiscard = () =>
+  const confirmDiscard = async () =>
     !dirtyRef.current ||
-    window.confirm("Есть несохранённые изменения. Отменить их?");
+    (await confirmAction({
+      title: "Отменить несохранённые изменения?",
+      message: "В редакторе есть несохранённые изменения — они будут потеряны.",
+      confirmLabel: "Отменить изменения",
+      danger: true,
+    }));
 
-  const handleSelect = (entry: FsEntry) => {
-    if (entry.relPath !== selected?.relPath && !confirmDiscard()) return;
+  const handleSelect = async (entry: FsEntry) => {
+    if (entry.relPath !== selected?.relPath && !(await confirmDiscard())) return;
     setSelected(entry);
   };
 
@@ -90,8 +96,8 @@ export default function NotesView() {
     const path = state.pendingNotePath;
     if (!path) return;
     actions.clearPendingNote();
-    if (!confirmDiscard()) return;
     void (async () => {
+      if (!(await confirmDiscard())) return;
       try {
         const entry = await resolveEntry(path, (dir) => ipc.notesList(dir));
         if (entry) setSelected(entry);

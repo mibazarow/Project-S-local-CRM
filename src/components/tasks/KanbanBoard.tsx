@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import * as ipc from "../../api/ipc";
 import type { ProjectDto, TaskDto, TaskPatch } from "../../api/types";
 import { toMessage } from "../files/fileOps";
+import { confirmRemove } from "../../shared/confirm";
 import RenameInput from "../files/RenameInput";
 import { IconPencil, IconPlus } from "../files/icons";
 import TaskCard, { TaskEditor } from "./TaskCard";
@@ -233,8 +234,8 @@ export default function KanbanBoard({
       .catch((e) => setError(toMessage(e)));
   };
 
-  const handleDelete = (task: TaskDto) => {
-    if (!window.confirm(`Удалить задачу «${task.title}»?`)) return;
+  const handleDelete = async (task: TaskDto) => {
+    if (!(await confirmRemove({ title: `Удалить задачу «${task.title}»?` }))) return;
     ipc
       .taskDelete(task.id)
       .then(() => {

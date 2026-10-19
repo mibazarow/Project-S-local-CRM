@@ -1899,6 +1899,33 @@ details.set-card code {
 .context-menu-item:disabled { color: var(--text-muted); cursor: default; }
 .context-menu-item .cm-icon { display: inline-flex; width: 14px; justify-content: center; flex-shrink: 0; }
 
+/* ---------- Асинхронное подтверждение опасных действий ---------- */
+
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .35);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1200;
+}
+.confirm-dialog {
+  width: 380px;
+  background: var(--surface);
+  border-radius: 12px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .35);
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.confirm-dialog h3 { font-size: 15px; font-weight: 600; }
+.confirm-message { font-size: 13px; line-height: 1.5; color: var(--text-muted); }
+.confirm-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.primary-btn.danger { background: var(--danger); }
+.primary-btn.danger:hover { background: #e0342a; }
+
 /* ---------- Скроллбары (overlay, как в macOS) ---------- */
 
 ::-webkit-scrollbar { width: 8px; }

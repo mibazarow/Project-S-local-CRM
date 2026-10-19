@@ -138,11 +138,13 @@ export default function FileTree({
   };
 
   const confirmDelete = async (entry: FsEntry) => {
-    const what =
-      entry.kind === "dir"
-        ? `папку «${entry.name}» со всем содержимым`
-        : `файл «${entry.name}»`;
-    if (!confirmRemove(what)) return;
+    const isDir = entry.kind === "dir";
+    const what = isDir ? `папку «${entry.name}» со всем содержимым` : `файл «${entry.name}»`;
+    const ok = await confirmRemove({
+      title: `Удалить ${what}?`,
+      message: isDir ? "Папка будет перемещена в корзину." : "Файл будет перемещён в корзину.",
+    });
+    if (!ok) return;
     await ops.remove(entry.relPath);
   };
 

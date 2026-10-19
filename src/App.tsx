@@ -12,6 +12,7 @@ import ProjectChat from "./components/chat/ProjectChat";
 import HarnessView from "./components/harness/HarnessView";
 import NotesView from "./components/notes/NotesView";
 import Toasts from "./components/shared/toast";
+import ConfirmDialogHost from "./components/shared/ConfirmDialogHost";
 import { setNoteLinkHandler } from "./shared/noteLink";
 
 export default function App() {
@@ -128,6 +129,7 @@ export default function App() {
         <QuickCapture initialTarget={captureTarget} onClose={() => setCaptureTarget(null)} />
       )}
       <Toasts />
+      <ConfirmDialogHost />
     </div>
   );
 }
