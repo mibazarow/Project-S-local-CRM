@@ -304,7 +304,7 @@ describe("TaskCard spent timer footer", () => {
 
   it("shows the static total for a stopped task with the footer text", async () => {
     await mount(makeTask({ status: "done", spentMs: 3_661_000 }));
-    expect(footer()?.textContent).toBe("Затрачено на задачу: 01:01:01");
+    expect(footer()?.textContent).toBe("Затрачено: 01:01:01");
   });
 
   it("hides the footer at zero while no work has started", async () => {
@@ -312,22 +312,33 @@ describe("TaskCard spent timer footer", () => {
     expect(footer()).toBeNull();
   });
 
+  it("places the action row after the spent text inside the card footer", async () => {
+    await mount(makeTask({ status: "done", spentMs: 3_661_000 }));
+    const foot = container.querySelector(".task-card .task-foot")!;
+    expect(foot).not.toBeNull();
+    const spent = foot.querySelector(".task-spent")!;
+    const actions = foot.querySelector(".task-actions")!;
+    expect(spent).not.toBeNull();
+    expect(actions).not.toBeNull();
+    expect(spent.nextElementSibling).toBe(actions);
+  });
+
   it("shows the footer for a running task even before a second passes", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 9, 18, 12, 0, 0));
     await mount(makeTask({ status: "progress", spentMs: 0, startedAt: Date.now() }));
-    expect(footer()?.textContent).toBe("Затрачено на задачу: 00:00:00");
+    expect(footer()?.textContent).toBe("Затрачено: 00:00:00");
   });
 
   it("ticks once per second by wall clock while in progress", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 9, 18, 12, 0, 5));
     await mount(makeTask({ status: "progress", spentMs: 0, startedAt: Date.now() - 5000 }));
-    expect(footer()?.textContent).toBe("Затрачено на задачу: 00:00:05");
+    expect(footer()?.textContent).toBe("Затрачено: 00:00:05");
     await act(async () => {
       vi.advanceTimersByTime(1000);
     });
-    expect(footer()?.textContent).toBe("Затрачено на задачу: 00:00:06");
+    expect(footer()?.textContent).toBe("Затрачено: 00:00:06");
   });
 
   it("adds the live run to the banked time when resuming", async () => {
@@ -336,7 +347,7 @@ describe("TaskCard spent timer footer", () => {
     await mount(
       makeTask({ status: "progress", spentMs: 3_600_000, startedAt: Date.now() - 10_000 }),
     );
-    expect(footer()?.textContent).toBe("Затрачено на задачу: 01:00:10");
+    expect(footer()?.textContent).toBe("Затрачено: 01:00:10");
   });
 
   it("stays static for stopped tasks across ticks", async () => {
@@ -344,7 +355,7 @@ describe("TaskCard spent timer footer", () => {
     vi.setSystemTime(new Date(2026, 9, 18, 12, 0, 0));
     await mount(makeTask({ status: "new", spentMs: 7_261_000, startedAt: null }));
     const before = footer()?.textContent;
-    expect(before).toBe("Затрачено на задачу: 02:01:01");
+    expect(before).toBe("Затрачено: 02:01:01");
     await act(async () => {
       vi.advanceTimersByTime(3000);
     });

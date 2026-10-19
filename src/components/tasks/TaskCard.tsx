@@ -366,53 +366,55 @@ export default function TaskCard({
           )}
         </>
       )}
-      {(running || spentMs > 0) && (
-        <div className="task-spent">Затрачено на задачу: {formatSpent(spentMs)}</div>
-      )}
-      <span className="task-actions">
-        {onDiscuss && (
+      <div className="task-foot">
+        {(running || spentMs > 0) && (
+          <div className="task-spent">Затрачено: {formatSpent(spentMs)}</div>
+        )}
+        <span className="task-actions">
+          {onDiscuss && (
+            <button
+              className="mini-btn"
+              title="Обсудить с агентом"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDiscuss();
+              }}
+            >
+              <IconAskAgent />
+            </button>
+          )}
           <button
             className="mini-btn"
-            title="Обсудить с агентом"
+            title="Редактировать"
             onClick={(e) => {
               e.stopPropagation();
-              onDiscuss();
+              setMode("edit");
             }}
           >
-            <IconAskAgent />
+            <IconPencil />
           </button>
-        )}
-        <button
-          className="mini-btn"
-          title="Редактировать"
-          onClick={(e) => {
-            e.stopPropagation();
-            setMode("edit");
-          }}
-        >
-          <IconPencil />
-        </button>
-        <button
-          className="mini-btn"
-          title="Комментарий"
-          onClick={(e) => {
-            e.stopPropagation();
-            setMode("comment");
-          }}
-        >
-          <IconComment />
-        </button>
-        <button
-          className="mini-btn danger"
-          title="Удалить"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete();
-          }}
-        >
-          <IconTrash />
-        </button>
-      </span>
+          <button
+            className="mini-btn"
+            title="Комментарий"
+            onClick={(e) => {
+              e.stopPropagation();
+              setMode("comment");
+            }}
+          >
+            <IconComment />
+          </button>
+          <button
+            className="mini-btn danger"
+            title="Удалить"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+          >
+            <IconTrash />
+          </button>
+        </span>
+      </div>
     </div>
   );
 }
