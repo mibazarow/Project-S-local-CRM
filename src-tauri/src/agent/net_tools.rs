@@ -14,10 +14,14 @@ use base64::Engine as _;
 use crate::error::Result;
 use crate::mcp::check_url;
 use serde_json::{json, Value};
+use std::collections::HashSet;
 use std::io::Read;
 use std::time::Duration;
 
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+// connect fails fast on an unreachable host; read stays generous so a live
+// but slow site is not cut off mid-response (ureq read timeout is the gap
+// between reads, not the total transfer time).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 const READ_TIMEOUT: Duration = Duration::from_secs(15);
 const MAX_FETCH_BYTES: u64 = 2 * 1024 * 1024;
 const MAX_REDIRECTS: u32 = 5;
@@ -309,9 +313,13 @@ fn clean_inline(s: &str) -> String {
 }
 
 // DDG result blocks: <a class="result__a" href="...">title</a> plus the
-// matching <a class="result__snippet">snippet</a> in the same result.
+// matching <a class="result__snippet">snippet</a> in the same result. The
+// same target can surface twice (a wrapped /l/?uddg= link and a direct link,
+// or an organic/ad pair), so results are deduped by resolved URL, keeping the
+// first occurrence.
 pub(crate) fn parse_ddg_results(html: &str) -> Vec<Value> {
     let mut out = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
     let mut pos = 0usize;
     while let Some(found) = html[pos..].find("class=\"result__a") {
         let anchor = pos + found;
@@ -332,12 +340,15 @@ pub(crate) fn parse_ddg_results(html: &str) -> Vec<Value> {
         };
         let title = clean_inline(&html[text_start..text_start + rel]);
         let snippet = snippet_after(html, text_start + rel);
-        out.push(json!({
-            "title": title,
-            "url": resolve_ddg_url(href),
-            "snippet": snippet,
-        }));
+        let url = resolve_ddg_url(href);
         pos = text_start + rel;
+        if seen.insert(url.to_lowercase()) {
+            out.push(json!({
+                "title": title,
+                "url": url,
+                "snippet": snippet,
+            }));
+        }
     }
     out
 }
@@ -897,6 +908,37 @@ mod tests {
         );
         assert_eq!(results[1]["url"], "https://direct.example.org/page");
         assert_eq!(results[1]["snippet"], "second <snippet>");
+    }
+
+    #[test]
+    fn parse_ddg_results_dedupes_by_resolved_url_keeping_first() {
+        // the same target reached both through a wrapped /l/?uddg= link and a
+        // direct link, plus a case-differing duplicate: only the first stays.
+        let html = r#"<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2FExample.com%2FDocs&rut=aa">First</a><a class="result__snippet">one</a>
+        <a class="result__a" href="https://example.com/docs">Wrapped dup</a><a class="result__snippet">two</a>
+        <a class="result__a" href="https://other.example/x">Unique</a><a class="result__snippet">three</a>"#;
+        let results = parse_ddg_results(html);
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0]["url"], "https://Example.com/Docs");
+        assert_eq!(results[0]["title"], "First");
+        assert_eq!(results[1]["url"], "https://other.example/x");
+    }
+
+    #[test]
+    fn net_tools_never_shell_out_or_spawn_a_subprocess() {
+        // The whole point of Q-18: the internet tools run in-process on ureq,
+        // never via a shell or an external HTTP subprocess. Guard the source
+        // directly. Tokens are assembled at runtime so this test's own text
+        // does not contain the forbidden substrings it is looking for.
+        let src = include_str!("net_tools.rs");
+        let forbidden = [
+            ["std", "::", "process"].concat(),
+            ["Comm", "and", "::new"].concat(),
+            ["cur", "l"].concat(),
+        ];
+        for token in forbidden {
+            assert!(!src.contains(&token), "net_tools.rs must not contain {token:?}");
+        }
     }
 
     #[test]
