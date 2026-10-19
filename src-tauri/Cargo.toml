@@ -1,6 +1,6 @@
 [package]
 name = "project-s"
-version = "0.1.0"
+version = "1.0.0"
 description = "Project-S"
 authors = ["mb"]
 license = ""
@@ -18,7 +18,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
-# tray-icon feature: menu-bar quick-capture entry point (SPEC quick capture slice)
+# tray-icon feature: menu-bar quick-capture entry point
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
@@ -47,11 +47,11 @@ chrono-tz = "0.10.4"
 cron = "0.17.0"
 iana-time-zone = "0.1.65"
 tauri-plugin-notification = "2.4.0"
-# macOS LaunchAgent autostart (SPEC 5.3)
+# macOS LaunchAgent autostart
 tauri-plugin-autostart = "2"
-# global CmdOrCtrl+Shift+Space quick-capture shortcut (SPEC quick capture slice)
+# global CmdOrCtrl+Shift+Space quick-capture shortcut
 tauri-plugin-global-shortcut = "2"
-# blocking WebSocket client for the CDP browser bridge (SPEC 5.2 #3); default
+# blocking WebSocket client for the CDP browser bridge; default
 # features are handshake-only (no TLS stack) because ws:// targets localhost.
 tungstenite = "0.29"
 # native document generation for the agent doc tools (agent/doc_tools.rs):
