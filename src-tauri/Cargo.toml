@@ -1,6 +1,6 @@
 [package]
 name = "project-s"
-version = "1.0.0"
+version = "1.0.1"
 description = "Project-S"
 authors = ["mb"]
 license = ""
