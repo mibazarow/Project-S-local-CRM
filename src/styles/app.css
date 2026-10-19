@@ -1334,6 +1334,17 @@ details.set-card code {
   animation: spin .7s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+.provider-warn {
+  margin: 8px 0 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
 .llm-test { font-size: 12px; }
 .llm-test .mark { font-weight: 700; margin-right: 4px; }
 .llm-test.ok { color: var(--ok); }

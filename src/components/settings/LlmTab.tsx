@@ -141,6 +141,40 @@ function endpointHost(url: string): string {
   return after.split("/")[0];
 }
 
+type ProviderPreset = "deepseek" | "openai" | "ollama";
+
+const PROVIDER_PRESETS: Record<ProviderPreset, { name: string; baseUrl: string; model?: string }> = {
+  deepseek: {
+    name: "DeepSeek",
+    baseUrl: "https://api.deepseek.com/v1",
+    model: "deepseek-chat",
+  },
+  openai: {
+    name: "OpenAI",
+    baseUrl: "https://api.openai.com/v1",
+    model: "gpt-4o-mini",
+  },
+  ollama: {
+    name: "Ollama",
+    baseUrl: "http://localhost:11434/v1",
+  },
+};
+
+function isLocalEndpoint(url: string): boolean {
+  return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])([:/]|$)/i.test(url.trim());
+}
+
+function validateProviderInput(name: string, baseUrl: string, apiKey: string): string | null {
+  if (!name) return "Укажи имя провайдера";
+  if (!/^https?:\/\//i.test(baseUrl)) {
+    return "Endpoint должен начинаться с http:// или https://";
+  }
+  if (!apiKey && !isLocalEndpoint(baseUrl)) {
+    return "Укажи API-ключ (пусто разрешено только для localhost)";
+  }
+  return null;
+}
+
 export default function LlmTab({
   active,
   error,
@@ -201,6 +235,15 @@ export default function LlmTab({
   const [visionBusy, setVisionBusy] = useState(false);
 
   const activeProvider = providers?.find((p) => p.active) ?? null;
+  const activeMissingKey =
+    activeProvider !== null &&
+    !activeProvider.apiKey.trim() &&
+    !isLocalEndpoint(activeProvider.baseUrl);
+  const emptyProviderDraft =
+    editingId === null &&
+    !provForm.name.trim() &&
+    !provForm.baseUrl.trim() &&
+    !provForm.apiKey.trim();
 
   const loadProviders = useCallback(() => {
     void ipc
@@ -227,13 +270,68 @@ export default function LlmTab({
       .finally(() => setVisionBusy(false));
   };
 
+  const persistProviderForm = useCallback(async (): Promise<string | null> => {
+    setProvError(null);
+    const name = provForm.name.trim();
+    const baseUrl = provForm.baseUrl.trim();
+    const apiKey = provForm.apiKey.trim();
+    const emptyDraft = emptyProviderDraft;
+    if (!emptyDraft) {
+      const invalid = validateProviderInput(name, baseUrl, apiKey);
+      if (invalid) {
+        setProvError(invalid);
+        throw new Error(invalid);
+      }
+    }
+    await flushLlmSave();
+    if (emptyDraft) return activeProvider?.id ?? null;
+    setProvBusy(true);
+    try {
+      const previousIds = new Set((providers ?? []).map((p) => p.id));
+      let list =
+        editingId === null
+          ? await ipc.llmProviderAdd(name, baseUrl, apiKey)
+          : await ipc.llmProviderUpdate(editingId, name, baseUrl, apiKey);
+      let savedId = editingId;
+      if (savedId === null) {
+        const added = list.find((p) => !previousIds.has(p.id));
+        if (!added) throw new Error("Не удалось определить сохранённого провайдера");
+        savedId = added.id;
+      }
+      if (!list.some((p) => p.id === savedId && p.active)) {
+        list = await ipc.llmProviderActivate(savedId);
+      }
+      const saved = list.find((p) => p.id === savedId);
+      const changed =
+        !activeProvider ||
+        !saved ||
+        activeProvider.baseUrl !== saved.baseUrl ||
+        activeProvider.apiKey !== saved.apiKey;
+      setProviders(list);
+      setEditingId(savedId);
+      setProvForm({ name, baseUrl, apiKey });
+      if (changed) {
+        modelsAutoLoadedRef.current = false;
+        setLlmModels(null);
+        setLlmModelsError(null);
+      }
+      return savedId;
+    } catch (err) {
+      setProvError(errMsg(err));
+      throw err;
+    } finally {
+      setProvBusy(false);
+    }
+  }, [activeProvider, editingId, emptyProviderDraft, flushLlmSave, provForm, providers]);
+
   // test_connection/list_models read llm.json from disk (the active provider),
   // so the pending form must be written first and the write must land before
   // the command runs.
   const runLlmAction = useCallback(
-    (action: "test" | "models") => {
+    (action: "test" | "models", persistProvider = false) => {
       setLlmBusy(action);
-      flushLlmSave()
+      const prepared = persistProvider ? persistProviderForm() : flushLlmSave();
+      prepared
         .then(() =>
           action === "test"
             ? ipc.testConnection().then(setLlmTest)
@@ -256,7 +354,7 @@ export default function LlmTab({
         })
         .finally(() => setLlmBusy(null));
     },
-    [flushLlmSave],
+    [flushLlmSave, persistProviderForm],
   );
 
   // Auto-load the model list once, debounced, once the active provider has an
@@ -362,17 +460,9 @@ export default function LlmTab({
     const name = provForm.name.trim();
     const baseUrl = provForm.baseUrl.trim();
     const apiKey = provForm.apiKey.trim();
-    if (!name) {
-      setProvError("Укажи имя провайдера");
-      return;
-    }
-    if (!/^https?:\/\//i.test(baseUrl)) {
-      setProvError("Endpoint должен начинаться с http:// или https://");
-      return;
-    }
-    const local = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])([:/]|$)/i.test(baseUrl);
-    if (!apiKey && !local) {
-      setProvError("Укажи API-ключ (пусто разрешено только для localhost)");
+    const invalid = validateProviderInput(name, baseUrl, apiKey);
+    if (invalid) {
+      setProvError(invalid);
       return;
     }
     setProvBusy(true);
@@ -433,6 +523,11 @@ export default function LlmTab({
             ))}
           </div>
         )}
+        {activeMissingKey && (
+          <div className="provider-warn">
+            У активного провайдера нет API-ключа — впиши ключ и сохрани провайдера.
+          </div>
+        )}
         <div className="set-actions">
           <button className="primary-btn small" onClick={startNew} disabled={provBusy}>
             + Добавить провайдера
@@ -444,6 +539,30 @@ export default function LlmTab({
         desc="Имя, endpoint и API-ключ активного провайдера. Ключ хранится в llm.json в открытом виде (см. ТЗ 3.4)."
       >
         <form className="set-form" onSubmit={(e) => void saveProvider(e)}>
+          <div className="set-hint">
+            OpenAI-совместимые провайдеры используют Bearer-аутентификацию. Форма сохраняется
+            автоматически при проверке подключения и загрузке моделей.
+          </div>
+          <Field
+            label="Шаблон"
+            wide
+            hint="Заполнит имя, endpoint и модель. API-ключ останется как есть."
+          >
+            <select
+              value=""
+              onChange={(e) => {
+                const preset = PROVIDER_PRESETS[e.target.value as ProviderPreset];
+                if (!preset) return;
+                setProvForm({ ...provForm, name: preset.name, baseUrl: preset.baseUrl });
+                if (preset.model) updateLlmForm({ model: preset.model });
+              }}
+            >
+              <option value="">Выбери шаблон…</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="openai">OpenAI</option>
+              <option value="ollama">Ollama (локально)</option>
+            </select>
+          </Field>
           <Field label="Название" wide hint="Произвольная метка провайдера, видна в списке.">
             <input
               type="text"
@@ -488,8 +607,10 @@ export default function LlmTab({
             <button
               className="ghost-btn"
               type="button"
-              disabled={llmBusy !== null || activeProvider === null}
-              onClick={() => runLlmAction("test")}
+              disabled={
+                llmBusy !== null || provBusy || (activeProvider === null && emptyProviderDraft)
+              }
+              onClick={() => void runLlmAction("test", true)}
             >
               {llmBusy === "test" && <span className="spinner"></span>}
               {llmBusy === "test" ? "Проверка…" : "Проверить подключение"}
@@ -521,8 +642,10 @@ export default function LlmTab({
             />
             <button
               className="ghost-btn small"
-              disabled={llmBusy !== null}
-              onClick={() => runLlmAction("models")}
+              disabled={
+                llmBusy !== null || provBusy || (activeProvider === null && emptyProviderDraft)
+              }
+              onClick={() => void runLlmAction("models", true)}
             >
               {llmBusy === "models" && <span className="spinner"></span>}
               {llmBusy === "models" ? "Загрузка…" : "Загрузить модели"}

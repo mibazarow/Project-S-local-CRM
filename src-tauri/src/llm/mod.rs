@@ -91,7 +91,13 @@ pub fn client_from_config(wd: &Path) -> Result<LlmClient> {
     if base_url.trim().is_empty() {
         return Err(AppError::Invalid("llm baseUrl is empty".into()));
     }
-    Ok(LlmClient::new(base_url, cfg.effective_api_key()))
+    let api_key = cfg.effective_api_key();
+    if api_key.trim().is_empty() && !is_local_host(base_url) {
+        return Err(AppError::Invalid(
+            "API-ключ не задан у активного провайдера".into(),
+        ));
+    }
+    Ok(LlmClient::new(base_url, api_key))
 }
 
 impl LlmClient {
@@ -1521,6 +1527,42 @@ mod tests {
         // Pre-Q-24 file (no providers): legacy baseUrl is the fallback.
         write_config(&dir, ConfigKind::Llm, json!({ "baseUrl": "http://127.0.0.1:7/v1", "apiKey": "k" }))
             .unwrap();
+        assert!(client_from_config(&dir).is_ok());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn client_from_config_rejects_missing_key_for_remote_and_allows_local() {
+        let dir = temp_test_dir("llm-client-missing-key");
+        write_config(
+            &dir,
+            ConfigKind::Llm,
+            json!({
+                "baseUrl": "https://api.openai.com/v1",
+                "apiKey": "",
+                "providers": [
+                    { "id": "a", "name": "OpenAI", "baseUrl": "https://api.openai.com/v1", "apiKey": "" }
+                ],
+                "activeProvider": "a",
+            }),
+        )
+        .unwrap();
+        let err = client_from_config(&dir).err().expect("remote provider without key must fail");
+        assert!(err.to_string().contains("API-ключ не задан у активного провайдера"));
+
+        write_config(
+            &dir,
+            ConfigKind::Llm,
+            json!({
+                "baseUrl": "http://localhost:11434/v1",
+                "apiKey": "",
+                "providers": [
+                    { "id": "a", "name": "Ollama", "baseUrl": "http://localhost:11434/v1", "apiKey": "" }
+                ],
+                "activeProvider": "a",
+            }),
+        )
+        .unwrap();
         assert!(client_from_config(&dir).is_ok());
         fs::remove_dir_all(&dir).unwrap();
     }

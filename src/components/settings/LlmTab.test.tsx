@@ -41,10 +41,28 @@ beforeEach(() => {
       case "llm_providers_list":
         return providers();
       case "llm_provider_activate":
-      case "llm_provider_add":
-      case "llm_provider_update":
-      case "llm_provider_delete":
         return providers().map((p) => ({ ...p, active: p.id === (args as { id?: string })?.id }));
+      case "llm_provider_update":
+        return providers();
+      case "llm_provider_add": {
+        const a = args as { name?: string; baseUrl?: string; apiKey?: string };
+        return [
+          ...providers(),
+          {
+            id: "c",
+            name: a.name ?? "",
+            baseUrl: a.baseUrl ?? "",
+            apiKey: a.apiKey ?? "",
+            active: false,
+          },
+        ];
+      }
+      case "llm_provider_delete":
+        return providers().filter((p) => p.id !== (args as { id?: string })?.id);
+      case "test_connection":
+        return { ok: true, message: "ok", modelCount: 2 };
+      case "list_models":
+        return [{ id: "deepseek-chat" }];
       case "get_vision_status":
         return { supported: null, overridden: false, reason: null };
       case "write_config":
@@ -89,6 +107,12 @@ function typeInput(input: HTMLInputElement, value: string) {
   input.dispatchEvent(new Event("input", { bubbles: true }));
 }
 
+function selectValue(select: HTMLSelectElement, value: string) {
+  const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+  setter.call(select, value);
+  select.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
 async function submit() {
   const form = container.querySelector("form.set-form")!;
   await act(async () => {
@@ -123,6 +147,46 @@ describe("LlmTab providers", () => {
     const radios = Array.from(container.querySelectorAll<HTMLButtonElement>(".provider-radio"));
     await click(radios[1]);
     expect(argsOf("llm_provider_activate")?.id).toBe("b");
+  });
+
+  it("saves and activates the edited provider before testing", async () => {
+    await mount();
+    const edit = Array.from(
+      container.querySelectorAll<HTMLButtonElement>(".provider-item button"),
+    ).filter((b) => b.textContent?.trim() === "Изменить");
+    await click(edit[1]);
+    const key = container.querySelector<HTMLInputElement>(".llm-key-row input")!;
+    typeInput(key, "sk-local");
+    await click(btn("Проверить подключение"));
+    await act(async () => {});
+    expect(argsOf("llm_provider_update")?.id).toBe("b");
+    expect(argsOf("llm_provider_update")?.apiKey).toBe("sk-local");
+    expect(argsOf("llm_provider_activate")?.id).toBe("b");
+    const order = invokeMock.mock.calls.map((c) => c[0]);
+    expect(order.indexOf("llm_provider_update")).toBeLessThan(
+      order.indexOf("llm_provider_activate"),
+    );
+    expect(order.indexOf("llm_provider_activate")).toBeLessThan(
+      order.indexOf("test_connection"),
+    );
+  });
+
+  it("applies the DeepSeek preset to the draft and model", async () => {
+    await mount();
+    await click(btn("+ Добавить провайдера"));
+    const template = container.querySelector<HTMLSelectElement>("form.set-form select")!;
+    await act(async () => {
+      selectValue(template, "deepseek");
+    });
+    const name = container.querySelector<HTMLInputElement>('input[placeholder="DeepSeek"]')!;
+    const url = container.querySelector<HTMLInputElement>(
+      'input[placeholder="https://api.example.com/v1"]',
+    )!;
+    const model = container.querySelector<HTMLInputElement>('[role="combobox"]')!;
+    expect(name.value).toBe("DeepSeek");
+    expect(url.value).toBe("https://api.deepseek.com/v1");
+    expect(model.value).toBe("deepseek-chat");
+    expect(template.value).toBe("");
   });
 
   it("adds a provider with trimmed fields", async () => {
