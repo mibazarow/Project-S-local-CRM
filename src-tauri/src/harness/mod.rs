@@ -90,6 +90,23 @@ pub fn create_session(conn: &Connection, title: Option<&str>) -> Result<SessionD
     session_dto(conn, id)
 }
 
+// Creates a session whose chat already holds one static assistant message
+// (no LLM call): the schedule-creation chat greets the user up front, and the
+// greeting rides the persisted history, so it survives session switches and
+// restarts and is never regenerated.
+pub fn create_session_with_greeting(
+    conn: &Connection,
+    title: Option<&str>,
+    greeting: Option<&str>,
+) -> Result<SessionDto> {
+    let session = create_session(conn, title)?;
+    if let Some(text) = greeting.map(str::trim).filter(|t| !t.is_empty()) {
+        let chat_id = session_chat_id(conn, session.id)?;
+        chat::append_message(conn, chat_id, Role::Assistant, Some(text), &[], None, None)?;
+    }
+    Ok(session)
+}
+
 // Pinned sessions first (most recently pinned first), then the rest by most
 // recently active (SPEC 5.1 session list). The pin stamp lives on the
 // session's kind='harness' chat row (pinned_at); NULL sorts into the unpinned
@@ -493,6 +510,24 @@ mod tests {
             session_history(&conn, 999),
             Err(AppError::Invalid(_))
         ));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn create_session_with_greeting_persists_one_static_assistant_message() {
+        let (wd, conn) = setup("harness-greeting");
+        let greeting = "Помогу создать расписание. Что нужно делать, в какое время и как часто — разово или регулярно?";
+        let s = create_session_with_greeting(&conn, Some("Новое расписание"), Some(greeting)).unwrap();
+        assert_eq!(s.title.as_deref(), Some("Новое расписание"));
+        // The greeting is a persisted assistant turn: it survives restarts and
+        // is read back from history, never regenerated.
+        let hist = session_history(&conn, s.id).unwrap();
+        assert_eq!(hist.len(), 1);
+        assert_eq!(hist[0].role, "assistant");
+        assert_eq!(hist[0].content.as_deref(), Some(greeting));
+        // A blank greeting behaves like the plain create: no messages at all.
+        let plain = create_session_with_greeting(&conn, Some("x"), Some("   ")).unwrap();
+        assert!(session_history(&conn, plain.id).unwrap().is_empty());
         fs::remove_dir_all(&wd).unwrap();
     }
 

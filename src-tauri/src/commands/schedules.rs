@@ -13,37 +13,6 @@ pub(crate) fn schedule_list(state: State<AppState>) -> Result<Vec<scheduler::Sch
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn schedule_create(
-    app: AppHandle,
-    state: State<AppState>,
-    kind: String,
-    spec: String,
-    prompt: Option<String>,
-    timezone: Option<String>,
-    session_id: Option<i64>,
-    title: Option<String>,
-) -> Result<scheduler::ScheduleDto> {
-    let dto = with_db(&state, |conn| {
-        scheduler::create(
-            conn,
-            &scheduler::CreateIn {
-                kind: &kind,
-                spec: &spec,
-                prompt: prompt.as_deref(),
-                timezone: timezone.as_deref(),
-                session_id,
-                related_task_id: None,
-                title: title.as_deref(),
-            },
-            scheduler::now_utc(),
-        )
-    })?;
-    emit_schedules_changed(&app);
-    Ok(dto)
-}
-
-#[tauri::command]
 pub(crate) fn schedule_pause(app: AppHandle, state: State<AppState>, id: i64) -> Result<scheduler::ScheduleDto> {
     let dto = with_db(&state, |conn| scheduler::pause(conn, id))?;
     emit_schedules_changed(&app);

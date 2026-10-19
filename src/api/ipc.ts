@@ -448,8 +448,13 @@ export const projectChatHistory = (projectId: number) =>
 export const cancelRun = (projectId: number) => invoke<boolean>("cancel_run", { projectId });
 
 // Harness sessions (SPEC 5.1): independent chats sharing only global memory.
-export const harnessCreateSession = (title?: string) =>
-  invoke<SessionDto>("harness_create_session", { title: title ?? null });
+// `greeting` seeds the chat with one persisted static assistant message (no
+// LLM call) — used by the schedules panel «+» to open a schedule-creation chat.
+export const harnessCreateSession = (title?: string, greeting?: string) =>
+  invoke<SessionDto>("harness_create_session", {
+    title: title ?? null,
+    greeting: greeting ?? null,
+  });
 
 export const harnessListSessions = () => invoke<SessionDto[]>("harness_list_sessions");
 
@@ -498,15 +503,8 @@ export const globalSearch = (query: string, limit?: number) =>
 export const indexChatMessages = () => invoke<number>("index_chat_messages");
 
 // Scheduler (SPEC 5.3): run_at / cron / notify over the schedules table.
+// Creation goes through the agent's schedule tools from a chat, not an IPC form.
 export const scheduleList = () => invoke<ScheduleDto[]>("schedule_list");
-
-export const scheduleCreate = (
-  kind: string,
-  spec: string,
-  prompt: string | null,
-  timezone: string | null,
-  sessionId: number | null,
-) => invoke<ScheduleDto>("schedule_create", { kind, spec, prompt, timezone, sessionId });
 
 export const schedulePause = (id: number) => invoke<ScheduleDto>("schedule_pause", { id });
 

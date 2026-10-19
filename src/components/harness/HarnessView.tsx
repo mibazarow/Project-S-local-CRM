@@ -31,6 +31,13 @@ import { IconPin } from "../files/icons";
 
 const UNTITLED = "Новая сессия";
 
+// The schedules panel «+»: a dedicated Harness chat seeded with a static
+// assistant greeting (persisted by the backend, no LLM call) — the schedule
+// itself is then created by the agent's schedule tools from the user's words.
+const SCHEDULE_CHAT_TITLE = "Новое расписание";
+const SCHEDULE_CHAT_GREETING =
+  "Помогу создать расписание. Что нужно делать, в какое время и как часто — разово или регулярно?";
+
 const PencilIcon = () => (
   <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
     <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
@@ -334,6 +341,16 @@ export default function HarnessView() {
   const createSession = async () => {
     try {
       const dto = await ipc.harnessCreateSession();
+      await loadSessions();
+      setActiveId(dto.id);
+    } catch (e) {
+      setSessionsError(toMessage(e));
+    }
+  };
+
+  const createScheduleChat = async () => {
+    try {
+      const dto = await ipc.harnessCreateSession(SCHEDULE_CHAT_TITLE, SCHEDULE_CHAT_GREETING);
       await loadSessions();
       setActiveId(dto.id);
     } catch (e) {
@@ -712,12 +729,10 @@ export default function HarnessView() {
       <SchedulePanel
         schedules={schedules}
         schedulesError={schedulesError}
-        activeId={activeId}
-        activeSessionTitle={activeSession ? activeSession.title ?? UNTITLED : null}
         onToggle={(s) => void toggleSchedule(s)}
         onDelete={(s) => void deleteSchedule(s)}
         onOpen={(s) => void openSchedule(s)}
-        onReload={loadSchedules}
+        onCreate={() => void createScheduleChat()}
       />
     </main>
   );

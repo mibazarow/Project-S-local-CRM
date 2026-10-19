@@ -15,6 +15,7 @@ vi.mock("../../api/ipc", async (importOriginal) => ({
   harnessPinSession: vi.fn(async () => []),
   harnessSessionHistory: vi.fn(async () => []),
   harnessCreateSession: vi.fn(async () => ({ id: 1, title: null, lastActiveAt: 0 })),
+  sendSessionMessage: vi.fn(async () => 1),
   indexChatMessages: vi.fn(async () => 0),
   getVisionStatus: vi.fn(async () => ({ supported: true })),
   onSessionsChanged: vi.fn(async () => () => {}),
@@ -35,7 +36,6 @@ vi.mock("../../state/AppStore", () => ({
 
 vi.mock("../chat/ChatComposer", () => ({ ChatComposer: () => null }));
 vi.mock("../chat/TodoPanel", () => ({ default: () => null }));
-vi.mock("./SchedulePanel", () => ({ default: () => null }));
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -128,5 +128,45 @@ describe("HarnessView session pinning (Q.md pin slice)", () => {
     const after = container.querySelectorAll<HTMLElement>(".session-item");
     expect(after[1].classList.contains("active")).toBe(false);
     expect(after[0].classList.contains("active")).toBe(true);
+  });
+});
+
+describe("HarnessView schedules «+» opens a greeting chat (Q.md schedules slice)", () => {
+  const GREETING =
+    "Помогу создать расписание. Что нужно делать, в какое время и как часто — разово или регулярно?";
+
+  it("creates a session with the static greeting, opens it, and makes no LLM call", async () => {
+    const created = {
+      id: 7,
+      title: "Новое расписание",
+      createdAt: "",
+      updatedAt: "",
+      lastActiveAt: "2026-01-01",
+      pinned: false,
+      pinnedAt: null,
+    };
+    vi.mocked(ipc.harnessCreateSession).mockResolvedValue(created as never);
+    vi.mocked(ipc.harnessListSessions).mockResolvedValue([created] as never);
+    await mount();
+
+    // The old creation form is gone: no form markup anywhere in the panel.
+    expect(container.querySelector(".schedule-form")).toBeNull();
+
+    const btn = container.querySelector<HTMLButtonElement>(".schedule-add-btn")!;
+    expect(btn.getAttribute("title")).toBe("Создать расписание в чате");
+    await act(async () => {
+      btn.click();
+    });
+
+    expect(ipc.harnessCreateSession).toHaveBeenCalledTimes(1);
+    expect(ipc.harnessCreateSession).toHaveBeenCalledWith("Новое расписание", GREETING);
+    // The greeting is seeded by the backend: no message is sent, no run starts.
+    expect(ipc.sendSessionMessage).not.toHaveBeenCalled();
+
+    // The new chat opens: its row is the active session.
+    const rows = container.querySelectorAll<HTMLElement>(".session-item");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].classList.contains("active")).toBe(true);
+    expect(rows[0].textContent).toContain("Новое расписание");
   });
 });

@@ -342,7 +342,6 @@ pub fn run() {
             commands::harness::cancel_session_run,
             commands::harness::purge_sessions,
             commands::schedules::schedule_list,
-            commands::schedules::schedule_create,
             commands::schedules::schedule_pause,
             commands::schedules::schedule_resume,
             commands::schedules::schedule_delete,

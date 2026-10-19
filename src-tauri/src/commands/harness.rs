@@ -10,8 +10,11 @@ use tauri::{AppHandle, State};
 pub(crate) fn harness_create_session(
     state: State<AppState>,
     title: Option<String>,
+    greeting: Option<String>,
 ) -> Result<harness::SessionDto> {
-    with_db(&state, |conn| harness::create_session(conn, title.as_deref()))
+    with_db(&state, |conn| {
+        harness::create_session_with_greeting(conn, title.as_deref(), greeting.as_deref())
+    })
 }
 
 #[tauri::command]
