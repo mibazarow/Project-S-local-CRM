@@ -12,6 +12,13 @@
   --accent-hover: #2e5a88;
   --accent-soft: #e9eff6;
   --toolbar: #182533;
+  --canvas: #fcf8ef;
+  --panel: #f2f2f2;
+  --sidebar-text: rgba(255, 255, 255, .90);
+  --sidebar-muted: rgba(255, 255, 255, .55);
+  --sidebar-hover: rgba(255, 255, 255, .07);
+  --sidebar-selected: rgba(255, 255, 255, .14);
+  --sidebar-border: rgba(255, 255, 255, .10);
   --danger: #ff3b30;
   --danger-soft: #fff5f5;
   --danger-tint: #ffd7d4;
