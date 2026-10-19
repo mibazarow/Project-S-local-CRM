@@ -1,11 +1,4 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type FormEvent,
-  type KeyboardEvent,
-} from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import * as ipc from "../../api/ipc";
 import type { ConnectionTest, LlmConfig, LlmProviderDto, VisionStatus } from "../../api/types";
 import { toMessage as errMsg } from "../../shared/errors";
@@ -23,135 +16,71 @@ import {
   type ProviderForm,
 } from "./forms";
 
-// Searchable model combobox: free-text id + filtered dropdown of ids loaded
-// from the endpoint. ↑/↓ move the highlight, Enter picks it, Esc closes.
-interface ModelComboboxProps {
+const NO_MODELS_MESSAGE =
+  "К сожалению, ваш endpoint не вернул список доступных моделей. Внесите название вручную. Уточните у провайдера.";
+
+interface ModelPickerProps {
   value: string;
   models: string[] | null;
+  error: string | null;
+  busy: boolean;
   onChange: (value: string) => void;
   onFocus: () => void;
   onBlur: () => void;
 }
 
-function ModelCombobox({ value, models, onChange, onFocus, onBlur }: ModelComboboxProps) {
-  const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(-1);
-  const [query, setQuery] = useState("");
-  const listRef = useRef<HTMLDivElement | null>(null);
+// Loaded models are a closed list: the user picks one with a native select.
+// Only an empty or failed model-list response falls back to a manual id.
+function ModelPicker({ value, models, error, busy, onChange, onFocus, onBlur }: ModelPickerProps) {
+  if (models === null && !error) {
+    return (
+      <select className="model-picker" disabled value="">
+        <option value="">{busy ? "Загрузка моделей…" : "Модели не загружены"}</option>
+      </select>
+    );
+  }
 
-  const needle = query.trim().toLowerCase();
-  const filtered = needle
-    ? (models ?? []).filter((id) => id.toLowerCase().includes(needle))
-    : (models ?? []);
-  const valueMissing =
-    models !== null && value.trim() !== "" && !models.includes(value.trim());
+  if (models === null || models.length === 0) {
+    return (
+      <div className="model-picker">
+        <input
+          type="text"
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="Название модели"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onFocus={onFocus}
+          onBlur={onBlur}
+        />
+        <div className="set-field-hint">{NO_MODELS_MESSAGE}</div>
+      </div>
+    );
+  }
 
-  useEffect(() => {
-    if (!open || active < 0) return;
-    const node = listRef.current?.children[active] as HTMLElement | undefined;
-    node?.scrollIntoView({ block: "nearest" });
-  }, [open, active]);
-
-  const close = () => {
-    setOpen(false);
-    setActive(-1);
-    setQuery("");
-  };
-
-  const pick = (id: string) => {
-    onChange(id);
-    close();
-  };
-
-  const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      e.preventDefault();
-      if (!open) {
-        setOpen(true);
-        setActive(-1);
-        return;
-      }
-      if (filtered.length === 0) return;
-      const next =
-        e.key === "ArrowDown"
-          ? (active + 1) % filtered.length
-          : (active - 1 + filtered.length) % filtered.length;
-      setActive(next);
-    } else if (e.key === "Enter") {
-      if (open && active >= 0 && active < filtered.length) {
-        e.preventDefault();
-        pick(filtered[active]);
-      } else {
-        close();
-      }
-    } else if (e.key === "Escape") {
-      e.stopPropagation();
-      close();
-    }
-  };
+  const current = value.trim();
+  const missing = current !== "" && !models.includes(current);
 
   return (
-    <div className="model-combobox">
-      <input
-        type="text"
-        role="combobox"
-        aria-expanded={open}
-        autoComplete="off"
-        spellCheck={false}
-        placeholder="Выбери модель или впиши вручную"
-        value={query || value}
-        onChange={(e) => {
-          setQuery(e.target.value);
-          onChange(e.target.value);
-          setOpen(true);
-          setActive(-1);
-        }}
-        onFocus={() => {
-          onFocus();
-          setOpen(true);
-          setActive(-1);
-          setQuery("");
-        }}
-        onBlur={() => {
-          onBlur();
-          close();
-        }}
-        onKeyDown={onKeyDown}
-      />
-      <span className="model-caret" aria-hidden="true">
-        ▾
-      </span>
-      {open && (
-        <div className="model-dropdown" ref={listRef}>
-          {filtered.length === 0 ? (
-            <div className="model-empty">
-              {models && models.length > 0
-                ? "Ничего не найдено — можно вписать вручную"
-                : "Список моделей ещё не загружен"}
-            </div>
-          ) : (
-            filtered.map((id, i) => (
-              <div
-                key={id}
-                className={i === active ? "model-option active" : "model-option"}
-                // mousedown keeps focus in the input so blur does not close
-                // the dropdown before click lands
-                onMouseDown={(e) => e.preventDefault()}
-                onMouseEnter={() => setActive(i)}
-                onClick={() => pick(id)}
-              >
-                {id}
-              </div>
-            ))
-          )}
-          {valueMissing && !needle && (
-            <div className="model-note">
-              Текущая модель не в списке — выбери другую или оставь вручную
-            </div>
-          )}
-        </div>
+    <select
+      className="model-picker"
+      value={current}
+      onChange={(e) => onChange(e.target.value)}
+      onFocus={onFocus}
+      onBlur={onBlur}
+    >
+      {current === "" && (
+        <option value="" disabled>
+          Выбери модель
+        </option>
       )}
-    </div>
+      {missing && <option value={current}>{current} (текущая)</option>}
+      {models.map((id) => (
+        <option key={id} value={id}>
+          {id}
+        </option>
+      ))}
+    </select>
   );
 }
 
@@ -649,13 +578,14 @@ export default function LlmTab({
         <Field
           label="Модель"
           wide
-          hint="Список подтягивается с endpoint’а активного провайдера; можно вписать любое название вручную."
-          error={llmModelsError}
+          hint="Список подтягивается с endpoint’а активного провайдера."
         >
           <div className="model-row">
-            <ModelCombobox
+            <ModelPicker
               value={llmForm?.model ?? ""}
               models={llmModels}
+              error={llmModelsError}
+              busy={llmBusy === "models"}
               onChange={(model) => updateLlmForm({ model })}
               onFocus={focusLlmField("model")}
               onBlur={blurLlmField}

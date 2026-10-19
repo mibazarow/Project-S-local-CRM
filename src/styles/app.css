@@ -1296,49 +1296,8 @@ details.set-card code {
 .llm-key-row { display: flex; gap: 6px; align-items: center; max-width: 380px; }
 .llm-key-row input { max-width: none; flex: 1; }
 .model-row { display: flex; gap: 6px; align-items: flex-start; max-width: 480px; }
-.model-combobox { position: relative; flex: 1; min-width: 0; }
-.model-combobox input { max-width: none; width: 100%; padding-right: 26px; }
-.model-caret {
-  position: absolute;
-  top: 50%;
-  right: 9px;
-  transform: translateY(-50%);
-  pointer-events: none;
-  color: var(--text-muted);
-  font-size: 10px;
-  line-height: 1;
-}
-.model-dropdown {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  z-index: 40;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, .14);
-  max-height: 220px;
-  overflow-y: auto;
-  padding: 4px;
-}
-.model-option {
-  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
-  font-size: 12.5px;
-  padding: 6px 8px;
-  border-radius: 5px;
-  cursor: pointer;
-  color: var(--text);
-}
-.model-option:hover, .model-option.active { background: var(--accent-soft); }
-.model-empty { font-size: 12px; color: var(--text-muted); padding: 6px 8px; }
-.model-note {
-  font-size: 11px;
-  color: var(--text-muted);
-  padding: 6px 8px 4px;
-  border-top: 1px solid var(--border);
-  margin-top: 4px;
-}
+.model-picker { flex: 1; min-width: 0; }
+.model-picker:is(input, select), .model-picker > input { max-width: none; width: 100%; }
 .spinner {
   display: inline-block;
   width: 11px;

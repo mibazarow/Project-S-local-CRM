@@ -26,15 +26,19 @@ const argsOf = (cmd: string) => invoked(cmd).at(-1)?.[1] as Record<string, unkno
 let container: HTMLDivElement;
 let root: Root;
 let listModelsResult: { id: string }[];
+let listModelsFails: boolean;
+let configModel: string;
 
 beforeEach(() => {
   listModelsResult = [{ id: "deepseek-chat" }];
+  listModelsFails = false;
+  configModel = "deepseek-chat";
   invokeMock.mockReset();
   invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
     switch (cmd) {
       case "read_config":
         return {
-          model: "deepseek-chat",
+          model: configModel,
           contextWindow: 65536,
           maxTokens: null,
           vision: null,
@@ -64,6 +68,7 @@ beforeEach(() => {
       case "test_connection":
         return { ok: true, message: "ok", modelCount: 2 };
       case "list_models":
+        if (listModelsFails) throw new Error("models failed");
         return listModelsResult;
       case "get_vision_status":
         return { supported: null, overridden: false, reason: null };
@@ -184,11 +189,15 @@ describe("LlmTab providers", () => {
     const url = container.querySelector<HTMLInputElement>(
       'input[placeholder="https://api.example.com/v1"]',
     )!;
-    const model = container.querySelector<HTMLInputElement>('[role="combobox"]')!;
     expect(name.value).toBe("DeepSeek");
     expect(url.value).toBe("https://api.deepseek.com/v1");
-    expect(model.value).toBe("deepseek-chat");
     expect(template.value).toBe("");
+    typeInput(container.querySelector<HTMLInputElement>(".llm-key-row input")!, "sk-x");
+    await click(btn("Загрузить модели"));
+    await act(async () => {});
+    await act(async () => {});
+    const model = container.querySelector<HTMLSelectElement>(".model-row select")!;
+    expect(model.value).toBe("deepseek-chat");
   });
 
   it("adds a provider with trimmed fields", async () => {
@@ -218,9 +227,9 @@ describe("LlmTab providers", () => {
     confirmSpy.mockRestore();
   });
 
-  it("keeps the model combobox and vision control working", async () => {
+  it("keeps the model picker and vision control working", async () => {
     await mount();
-    expect(container.querySelector('[role="combobox"]')).not.toBeNull();
+    expect(container.querySelector(".model-row select")).not.toBeNull();
     const selects = Array.from(container.querySelectorAll("select"));
     const values = selects.map((s) => (s as HTMLSelectElement).value);
     expect(values).toContain("medium");
@@ -228,12 +237,11 @@ describe("LlmTab providers", () => {
   });
 });
 
-describe("LlmTab model combobox", () => {
-  const combobox = () => container.querySelector<HTMLInputElement>('[role="combobox"]')!;
-  const options = () =>
-    Array.from(container.querySelectorAll<HTMLElement>(".model-option")).map(
-      (o) => o.textContent,
-    );
+describe("LlmTab model picker", () => {
+  const modelRow = () => container.querySelector<HTMLElement>(".model-row")!;
+  const modelSelect = () => modelRow().querySelector<HTMLSelectElement>("select");
+  const modelInput = () => modelRow().querySelector<HTMLInputElement>("input");
+  const options = () => Array.from(modelSelect()?.options ?? []);
 
   async function loadModels(ids: string[]) {
     listModelsResult = ids.map((id) => ({ id }));
@@ -243,36 +251,61 @@ describe("LlmTab model combobox", () => {
     await act(async () => {});
   }
 
-  async function focusCombobox() {
-    await act(async () => {
-      combobox().focus();
-    });
-  }
-
-  it("shows all loaded models even when the current value is absent", async () => {
+  it("shows loaded models in a select and no manual input", async () => {
+    configModel = "";
     await loadModels(["deepseek-flash", "deepseek-v4-pro"]);
-    expect(combobox().value).toBe("deepseek-chat");
-    await focusCombobox();
-    expect(options()).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
+    expect(modelInput()).toBeNull();
+    expect(options().filter((o) => !o.disabled).map((o) => o.value)).toEqual([
+      "deepseek-flash",
+      "deepseek-v4-pro",
+    ]);
+    expect(options()[0].textContent).toBe("Выбери модель");
+    expect(options()[0].disabled).toBe(true);
   });
 
-  it("picks a model from the dropdown", async () => {
+  it("keeps an out-of-list current model as a current option", async () => {
     await loadModels(["deepseek-flash", "deepseek-v4-pro"]);
-    await focusCombobox();
-    const option = Array.from(
-      container.querySelectorAll<HTMLElement>(".model-option"),
-    ).find((o) => o.textContent === "deepseek-flash")!;
-    await click(option);
-    expect(combobox().value).toBe("deepseek-flash");
-    expect(container.querySelector(".model-dropdown")).toBeNull();
+    expect(modelSelect()!.value).toBe("deepseek-chat");
+    expect(options().map((o) => o.textContent)).toEqual([
+      "deepseek-chat (текущая)",
+      "deepseek-flash",
+      "deepseek-v4-pro",
+    ]);
+    expect(modelInput()).toBeNull();
   });
 
-  it("filters models by the typed text", async () => {
+  it("selects a model and saves it through the debounced config", async () => {
     await loadModels(["deepseek-flash", "deepseek-v4-pro"]);
-    await focusCombobox();
+    const select = modelSelect()!;
     await act(async () => {
-      typeInput(combobox(), "v4");
+      select.focus();
+      selectValue(select, "deepseek-flash");
+      select.blur();
     });
-    expect(options()).toEqual(["deepseek-v4-pro"]);
+    await act(async () => {});
+    expect(select.value).toBe("deepseek-flash");
+    expect((argsOf("write_config")?.value as { model?: string }).model).toBe("deepseek-flash");
+  });
+
+  it("falls back to manual entry when the endpoint returns no models", async () => {
+    await loadModels([]);
+    expect(modelSelect()).toBeNull();
+    expect(modelInput()).not.toBeNull();
+    expect(text()).toContain(
+      "К сожалению, ваш endpoint не вернул список доступных моделей. Внесите название вручную. Уточните у провайдера.",
+    );
+  });
+
+  it("falls back to manual entry when the model list request fails", async () => {
+    listModelsFails = true;
+    await mount();
+    await click(btn("Загрузить модели"));
+    await act(async () => {});
+    await act(async () => {});
+    expect(modelSelect()).toBeNull();
+    expect(modelInput()).not.toBeNull();
+    expect(text()).toContain(
+      "К сожалению, ваш endpoint не вернул список доступных моделей. Внесите название вручную. Уточните у провайдера.",
+    );
   });
 });
