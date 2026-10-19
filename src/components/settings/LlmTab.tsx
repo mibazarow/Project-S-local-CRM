@@ -36,10 +36,15 @@ interface ModelComboboxProps {
 function ModelCombobox({ value, models, onChange, onFocus, onBlur }: ModelComboboxProps) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(-1);
+  const [query, setQuery] = useState("");
   const listRef = useRef<HTMLDivElement | null>(null);
 
-  const query = value.trim().toLowerCase();
-  const filtered = (models ?? []).filter((id) => id.toLowerCase().includes(query));
+  const needle = query.trim().toLowerCase();
+  const filtered = needle
+    ? (models ?? []).filter((id) => id.toLowerCase().includes(needle))
+    : (models ?? []);
+  const valueMissing =
+    models !== null && value.trim() !== "" && !models.includes(value.trim());
 
   useEffect(() => {
     if (!open || active < 0) return;
@@ -47,35 +52,41 @@ function ModelCombobox({ value, models, onChange, onFocus, onBlur }: ModelCombob
     node?.scrollIntoView({ block: "nearest" });
   }, [open, active]);
 
-  const pick = (id: string) => {
-    onChange(id);
+  const close = () => {
     setOpen(false);
     setActive(-1);
+    setQuery("");
+  };
+
+  const pick = (id: string) => {
+    onChange(id);
+    close();
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") {
       e.preventDefault();
       if (!open) {
-        if (filtered.length > 0) setOpen(true);
+        setOpen(true);
+        setActive(-1);
         return;
       }
+      if (filtered.length === 0) return;
       const next =
         e.key === "ArrowDown"
           ? (active + 1) % filtered.length
           : (active - 1 + filtered.length) % filtered.length;
-      setActive(filtered.length ? next : -1);
+      setActive(next);
     } else if (e.key === "Enter") {
       if (open && active >= 0 && active < filtered.length) {
         e.preventDefault();
         pick(filtered[active]);
       } else {
-        setOpen(false);
+        close();
       }
     } else if (e.key === "Escape") {
       e.stopPropagation();
-      setOpen(false);
-      setActive(-1);
+      close();
     }
   };
 
@@ -87,9 +98,10 @@ function ModelCombobox({ value, models, onChange, onFocus, onBlur }: ModelCombob
         aria-expanded={open}
         autoComplete="off"
         spellCheck={false}
-        placeholder="gpt-4o-mini или впиши название вручную"
-        value={value}
+        placeholder="Выбери модель или впиши вручную"
+        value={query || value}
         onChange={(e) => {
+          setQuery(e.target.value);
           onChange(e.target.value);
           setOpen(true);
           setActive(-1);
@@ -98,14 +110,17 @@ function ModelCombobox({ value, models, onChange, onFocus, onBlur }: ModelCombob
           onFocus();
           setOpen(true);
           setActive(-1);
+          setQuery("");
         }}
         onBlur={() => {
           onBlur();
-          setOpen(false);
-          setActive(-1);
+          close();
         }}
         onKeyDown={onKeyDown}
       />
+      <span className="model-caret" aria-hidden="true">
+        ▾
+      </span>
       {open && (
         <div className="model-dropdown" ref={listRef}>
           {filtered.length === 0 ? (
@@ -128,6 +143,11 @@ function ModelCombobox({ value, models, onChange, onFocus, onBlur }: ModelCombob
                 {id}
               </div>
             ))
+          )}
+          {valueMissing && !needle && (
+            <div className="model-note">
+              Текущая модель не в списке — выбери другую или оставь вручную
+            </div>
           )}
         </div>
       )}

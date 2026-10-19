@@ -1297,7 +1297,17 @@ details.set-card code {
 .llm-key-row input { max-width: none; flex: 1; }
 .model-row { display: flex; gap: 6px; align-items: flex-start; max-width: 480px; }
 .model-combobox { position: relative; flex: 1; min-width: 0; }
-.model-combobox input { max-width: none; width: 100%; }
+.model-combobox input { max-width: none; width: 100%; padding-right: 26px; }
+.model-caret {
+  position: absolute;
+  top: 50%;
+  right: 9px;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1;
+}
 .model-dropdown {
   position: absolute;
   top: calc(100% + 4px);
@@ -1322,6 +1332,13 @@ details.set-card code {
 }
 .model-option:hover, .model-option.active { background: var(--accent-soft); }
 .model-empty { font-size: 12px; color: var(--text-muted); padding: 6px 8px; }
+.model-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  padding: 6px 8px 4px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
 .spinner {
   display: inline-block;
   width: 11px;

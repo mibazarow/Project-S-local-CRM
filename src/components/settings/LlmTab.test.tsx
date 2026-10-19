@@ -25,8 +25,10 @@ const argsOf = (cmd: string) => invoked(cmd).at(-1)?.[1] as Record<string, unkno
 
 let container: HTMLDivElement;
 let root: Root;
+let listModelsResult: { id: string }[];
 
 beforeEach(() => {
+  listModelsResult = [{ id: "deepseek-chat" }];
   invokeMock.mockReset();
   invokeMock.mockImplementation(async (cmd: string, args?: unknown) => {
     switch (cmd) {
@@ -62,7 +64,7 @@ beforeEach(() => {
       case "test_connection":
         return { ok: true, message: "ok", modelCount: 2 };
       case "list_models":
-        return [{ id: "deepseek-chat" }];
+        return listModelsResult;
       case "get_vision_status":
         return { supported: null, overridden: false, reason: null };
       case "write_config":
@@ -223,5 +225,54 @@ describe("LlmTab providers", () => {
     const values = selects.map((s) => (s as HTMLSelectElement).value);
     expect(values).toContain("medium");
     expect(values).toContain("auto");
+  });
+});
+
+describe("LlmTab model combobox", () => {
+  const combobox = () => container.querySelector<HTMLInputElement>('[role="combobox"]')!;
+  const options = () =>
+    Array.from(container.querySelectorAll<HTMLElement>(".model-option")).map(
+      (o) => o.textContent,
+    );
+
+  async function loadModels(ids: string[]) {
+    listModelsResult = ids.map((id) => ({ id }));
+    await mount();
+    await click(btn("Загрузить модели"));
+    await act(async () => {});
+    await act(async () => {});
+  }
+
+  async function focusCombobox() {
+    await act(async () => {
+      combobox().focus();
+    });
+  }
+
+  it("shows all loaded models even when the current value is absent", async () => {
+    await loadModels(["deepseek-flash", "deepseek-v4-pro"]);
+    expect(combobox().value).toBe("deepseek-chat");
+    await focusCombobox();
+    expect(options()).toEqual(["deepseek-flash", "deepseek-v4-pro"]);
+  });
+
+  it("picks a model from the dropdown", async () => {
+    await loadModels(["deepseek-flash", "deepseek-v4-pro"]);
+    await focusCombobox();
+    const option = Array.from(
+      container.querySelectorAll<HTMLElement>(".model-option"),
+    ).find((o) => o.textContent === "deepseek-flash")!;
+    await click(option);
+    expect(combobox().value).toBe("deepseek-flash");
+    expect(container.querySelector(".model-dropdown")).toBeNull();
+  });
+
+  it("filters models by the typed text", async () => {
+    await loadModels(["deepseek-flash", "deepseek-v4-pro"]);
+    await focusCombobox();
+    await act(async () => {
+      typeInput(combobox(), "v4");
+    });
+    expect(options()).toEqual(["deepseek-v4-pro"]);
   });
 });
