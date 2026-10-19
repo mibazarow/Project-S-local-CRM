@@ -64,8 +64,8 @@ const MUTATING_SKIP_ALLOWLIST: &[&str] = &[
     // Chat bookkeeping that only renames/creates the model's own chats.
     "rename_chat",
     "new_chat",
-    // Skill authoring writes a new skill file under the skills dir.
-    "create_skill",
+    // Skill authoring is NOT allowlisted: since Q20 create_skill runs under
+    // the Check policy, every agent-initiated skill creation confirms.
     // Attaching a project/vault file to the chat the run is already writing.
     "send_file",
     // Clipboard write hits the general pasteboard (no user file touched).

@@ -5,6 +5,7 @@ import type {
   AgentEventPayload,
   AgentFileEvent,
   ConfirmationRequestPayload,
+  SkillProposalEvent,
 } from "../../api/types";
 import {
   chatReducer,
@@ -16,12 +17,13 @@ import {
 } from "./chatShared";
 
 // Shared chat-run plumbing for the three chats (project / notes / harness):
-// the transcript reducer, the four backend subscriptions (agent-event,
-// agent-confirmation, agent-file, agent-context-compacted), confirmation
-// bookkeeping and the per-chat message queue + its flush timing. The three
-// views differ only in how an event maps to a slice key and what side effects
-// a finished run triggers, so those are injected through the config; the event
-// order, the reducer actions and the 400 ms flush delay are identical here.
+// the transcript reducer, the five backend subscriptions (agent-event,
+// agent-confirmation, agent-file, agent-context-compacted,
+// agent-skill-proposal), confirmation bookkeeping and the per-chat message
+// queue + its flush timing. The three views differ only in how an event maps
+// to a slice key and what side effects a finished run triggers, so those are
+// injected through the config; the event order, the reducer actions and the
+// 400 ms flush delay are identical here.
 
 export interface ChatRunConfig {
   // Map a payload to its slice key, or null to ignore it (the per-view routing:
@@ -31,6 +33,7 @@ export interface ChatRunConfig {
   routeAgentEvent: (p: AgentEventPayload) => number | null;
   routeConfirmation: (p: ConfirmationRequestPayload) => number | null;
   routeAgentFile: (p: AgentFileEvent) => number | null;
+  routeSkillProposal: (p: SkillProposalEvent) => number | null;
   routeCompaction: (p: AgentCompactionEvent) => number | null;
   // Fires right after the done/runError dispatch and before the queue flush.
   // `run` is the slice's run as it was before the dispatch (null when none),
@@ -84,6 +87,7 @@ export function useChatRun(config: ChatRunConfig, subscribeDeps: unknown[]): Use
     let unConfirm: (() => void) | undefined;
     let unFile: (() => void) | undefined;
     let unCompaction: (() => void) | undefined;
+    let unProposal: (() => void) | undefined;
     const onEvent = (p: AgentEventPayload) => {
       const key = configRef.current.routeAgentEvent(p);
       if (key == null) return;
@@ -146,12 +150,20 @@ export function useChatRun(config: ChatRunConfig, subscribeDeps: unknown[]): Use
         dispatch({ type: "compaction", key, summary: p.summary });
       })
       .then((u) => (cancelled ? u() : (unCompaction = u)));
+    void ipc
+      .onSkillProposal((p) => {
+        const key = configRef.current.routeSkillProposal(p);
+        if (key == null) return;
+        dispatch({ type: "skillProposal", key, messageId: p.messageId, text: p.text });
+      })
+      .then((u) => (cancelled ? u() : (unProposal = u)));
     return () => {
       cancelled = true;
       unEvent?.();
       unConfirm?.();
       unFile?.();
       unCompaction?.();
+      unProposal?.();
     };
     // The subscriptions are re-established only when the view's own stable
     // deps change (actions / loadSessions / loadSchedules), exactly as before;

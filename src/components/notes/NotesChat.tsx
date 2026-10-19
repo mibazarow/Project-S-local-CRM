@@ -46,6 +46,7 @@ export default function NotesChat() {
       routeAgentEvent: (p: AgentEventPayload) => (p.notes === true ? p.chatId : null),
       routeConfirmation: (p) => (p.notes === true ? chatIdRef.current : null),
       routeAgentFile: (p) => (p.chatId === chatIdRef.current ? p.chatId : null),
+      routeSkillProposal: (p) => (p.chatId === chatIdRef.current ? p.chatId : null),
       routeCompaction: (p) => (p.chatId === chatIdRef.current ? p.chatId : null),
       onRunEnd: (key, run, dispatch) => {
         if (!run || !run.local) reloadHistory(key, dispatch);

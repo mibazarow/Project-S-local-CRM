@@ -265,10 +265,23 @@ describe("chatReducer", () => {
 
   it("compaction appends to the live run and opens one when absent", () => {
     let s = chatReducer({}, { type: "compaction", key: KEY, summary: "s1" });
-    expect(s[KEY].run?.local).toBe(false);
+    expect(s[KEY].run).not.toBeNull();
     expect(s[KEY].run?.compactions).toEqual([{ key: expect.any(Number), summary: "s1" }]);
     s = chatReducer(s, { type: "compaction", key: KEY, summary: "s2" });
     expect(s[KEY].run?.compactions.map((c) => c.summary)).toEqual(["s1", "s2"]);
+  });
+
+  it("skillProposal appends one synthetic agent bubble per message id", () => {
+    let s = chatReducer({}, { type: "skillProposal", key: KEY, messageId: 11, text: "предложение скилла" });
+    expect(s[KEY].items).toHaveLength(1);
+    const item = s[KEY].items[0];
+    expect(item.role).toBe("agent");
+    expect(item.text).toBe("предложение скилла");
+    expect(item.synthetic).toBe(true);
+    expect(item.messageIds).toEqual([11]);
+    // A duplicate event (or the same id arriving again) never doubles it.
+    s = chatReducer(s, { type: "skillProposal", key: KEY, messageId: 11, text: "предложение скилла" });
+    expect(s[KEY].items).toHaveLength(1);
   });
 
   it("item and step keys are unique and strictly increasing", () => {

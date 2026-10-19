@@ -351,6 +351,7 @@ pub fn run_session_on(
             run: RunKey::Session(session_id),
             kind,
             chat_id,
+            user_text: text.to_string(),
             system_prompt,
             volatile_block,
             catalog,

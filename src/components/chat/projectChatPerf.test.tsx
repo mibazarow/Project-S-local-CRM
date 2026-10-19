@@ -144,6 +144,7 @@ vi.mock("../../api/ipc", () => ({
   onAgentConfirmation: vi.fn(async () => () => {}),
   onAgentFile: vi.fn(async () => () => {}),
   onAgentCompaction: vi.fn(async () => () => {}),
+  onSkillProposal: vi.fn(async () => () => {}),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));

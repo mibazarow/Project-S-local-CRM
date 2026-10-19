@@ -470,6 +470,7 @@ pub fn run_notes_chat(
             run: crate::state::RunKey::Notes,
             kind: "notes",
             chat_id,
+            user_text: text.to_string(),
             system_prompt,
             volatile_block,
             catalog,

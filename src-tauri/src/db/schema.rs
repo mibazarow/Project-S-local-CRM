@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::{params, Connection};
 
-pub const SCHEMA_VERSION: i64 = 34;
+pub const SCHEMA_VERSION: i64 = 35;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -596,6 +596,29 @@ const MIGRATION_33_TASK_STARTED_AT_BACKFILL: &str =
 const MIGRATION_34_PROJECT_FILES_VIEW: &str =
     "ALTER TABLE projects ADD COLUMN files_view TEXT NOT NULL DEFAULT 'list' CHECK (files_view IN ('list','grid'))";
 
+// Repeat detector for skill proposals (SPEC 6.2 Q20): one row per complex-run
+// signature (normalized user request + sorted tool names + tool count).
+// `occurrences` counts complex completed runs; `status` drives the proposal
+// lifecycle: 'seen' (counted, not yet proposed) → 'proposed' (the one-time
+// chat proposal was posted; also suppresses any further proposal, which is
+// how a declined or ignored proposal stays silent) → 'skipped' (a skill with
+// the candidate name already exists). The scope ids point at the chat of the
+// latest occurrence; no FK: a deleted chat must not erase repeat statistics.
+const MIGRATION_35_SKILL_PROPOSALS: &str = "
+CREATE TABLE IF NOT EXISTS skill_proposals (
+    signature TEXT PRIMARY KEY,
+    occurrences INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'seen' CHECK (status IN ('seen','proposed','skipped')),
+    last_text TEXT NOT NULL,
+    tool_names TEXT NOT NULL,
+    tool_count INTEGER NOT NULL,
+    chat_id INTEGER,
+    project_id INTEGER,
+    session_id INTEGER,
+    updated_at TEXT NOT NULL
+);
+";
+
 fn migrate_v1(conn: &Connection) -> Result<()> {
     conn.execute_batch(MIGRATION_1)?;
     Ok(())
@@ -947,6 +970,12 @@ fn migrate_v34(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v35(conn: &Connection) -> Result<()> {
+    // CREATE TABLE IF NOT EXISTS: idempotent across interrupted re-runs.
+    conn.execute_batch(MIGRATION_35_SKILL_PROPOSALS)?;
+    Ok(())
+}
+
 // Ordered (user_version target, migration body) table: each body runs when
 // the stored user_version is below its target, then the runner bumps
 // user_version to the target, exactly like the previous hand-rolled
@@ -988,7 +1017,8 @@ const MIGRATIONS: &[(u32, Migration)] = &[
     (31, migrate_v31),
     (32, migrate_v32),
     (33, migrate_v33),
-    (SCHEMA_VERSION as u32, migrate_v34),
+    (34, migrate_v34),
+    (SCHEMA_VERSION as u32, migrate_v35),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
@@ -1044,12 +1074,12 @@ mod tests {
                     'chats','messages','summaries','sessions','schedules','memory','memory_fts',
                     'tasks_fts','message_attachments','todos','messages_fts','message_vectors',
                     'vec_messages','processes','trash','versions','undo_log','objectives',
-                    'objective_steps','links','memory_vectors','vec_memory')",
+                    'objective_steps','links','memory_vectors','vec_memory','skill_proposals')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(tables, 28);
+        assert_eq!(tables, 29);
     }
 
     #[test]
@@ -2598,5 +2628,36 @@ CREATE UNIQUE INDEX uniq_chats_one_project_chat ON chats(project_id) WHERE kind 
         run_migrations(&conn).unwrap();
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_v35_adds_skill_proposals_with_status_domain() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        // A pre-v35 database: drop the table, roll the version back, upgrade.
+        conn.execute("DROP TABLE skill_proposals", []).unwrap();
+        conn.pragma_update(None, "user_version", 34).unwrap();
+        run_migrations(&conn).unwrap();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+
+        conn.execute(
+            "INSERT INTO skill_proposals (signature, occurrences, status, last_text, tool_names, tool_count, updated_at)
+             VALUES ('sig1', 2, 'proposed', 'task text', '[\"webfetch\",\"websearch\"]', 4, '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        // Signature is the dedupe key: a second row for it is rejected.
+        let dup = conn.execute(
+            "INSERT INTO skill_proposals (signature, occurrences, status, last_text, tool_names, tool_count, updated_at)
+             VALUES ('sig1', 1, 'seen', 'x', '[]', 0, '2026-01-01')",
+            [],
+        );
+        assert!(dup.is_err(), "duplicate signature accepted");
+        // CHECK keeps the status domain closed.
+        let bad = conn.execute("UPDATE skill_proposals SET status = 'bogus' WHERE signature = 'sig1'", []);
+        assert!(bad.is_err(), "unknown status accepted");
     }
 }

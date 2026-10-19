@@ -452,6 +452,20 @@ export interface AgentCompactionEvent {
   summary: string;
 }
 
+// skills::proposals — payload of the "agent-skill-proposal" event emitted
+// when the repeat detector posts its one-time skill proposal into a chat
+// (SPEC 6.2 Q20). The text is already persisted as the assistant message
+// (messageId); an open chat appends it live and a later history reload owns
+// the same id, so it never renders twice.
+export interface SkillProposalEvent {
+  chatId: number;
+  messageId: number;
+  text: string;
+  projectId?: number;
+  sessionId?: number;
+  notes?: boolean;
+}
+
 // chat::AgentEventPayload — project chats carry projectId, harness sessions
 // carry sessionId, notes-chat runs carry notes: true (chatId only).
 export interface AgentEventPayload {

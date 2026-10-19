@@ -131,6 +131,7 @@ export type ChatAction =
   | { type: "confirm"; key: number; payload: ConfirmationRequestPayload }
   | { type: "confirmResolved"; key: number; id: number }
   | { type: "agentFile"; key: number; payload: AgentFileEvent }
+  | { type: "skillProposal"; key: number; messageId: number; text: string }
   | { type: "compaction"; key: number; summary: string }
   | { type: "enqueue"; key: number; text: string }
   | { type: "clearQueue"; key: number }
@@ -323,6 +324,37 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
                     },
                   ],
                   messageIds: [p.messageId],
+                  pinned: false,
+                  synthetic: true,
+                  steps: [],
+                  compactions: [],
+                  note: null,
+                  error: null,
+                },
+              ],
+            },
+      );
+    }
+    case "skillProposal": {
+      // The one-time skill proposal from the repeat detector (SPEC 6.2 Q20):
+      // append it as its own agent item so an open chat shows it without a
+      // history reload. Dedupe by the DB message id: a duplicate event or a
+      // later history reload (which owns the same id) never renders it twice.
+      const { messageId, text } = action;
+      return withSlice(state, action.key, (s) =>
+        s.items.some((it) => it.messageIds.includes(messageId))
+          ? s
+          : {
+              ...s,
+              items: [
+                ...s.items,
+                {
+                  key: nextKey++,
+                  role: "agent",
+                  text,
+                  reasoning: "",
+                  attachments: [],
+                  messageIds: [messageId],
                   pinned: false,
                   synthetic: true,
                   steps: [],

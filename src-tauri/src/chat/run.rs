@@ -172,6 +172,7 @@ pub fn start_project_run(
             run: RunKey::Project(project_id),
             kind: "project",
             chat_id,
+            user_text: text.to_string(),
             system_prompt,
             volatile_block,
             catalog,
@@ -202,6 +203,9 @@ pub(crate) struct RunBridge {
     // Journal run kind (SPEC 3.3): "project" | "harness" | "schedule".
     pub kind: &'static str,
     pub chat_id: i64,
+    // The fresh user turn that started this run: the repeat detector's
+    // signature input (SPEC 6.2 Q20 skill proposals).
+    pub user_text: String,
     // Stable system prompt: identical bytes across the turns of a chat, so
     // the provider's prompt cache keeps its prefix (system + history).
     pub system_prompt: String,
@@ -283,11 +287,15 @@ fn run_agent_inner(
         run,
         kind,
         chat_id,
+        user_text,
         mut system_prompt,
         volatile_block,
         mut catalog,
         notes_root,
     } = bridge;
+    // Wall clock of the whole run: the repeat detector's complexity input
+    // (SPEC 6.2 Q20); a run of 2+ minutes is complex whatever its tool mix.
+    let started = std::time::Instant::now();
     // The run thread owns its DB connection: a long agent turn must not
     // hold the UI connection's mutex; WAL + busy_timeout keeps both safe.
     let thread_state = Arc::new(AppState::new());
@@ -397,7 +405,18 @@ fn run_agent_inner(
     };
     let mut tool_seq: usize = 0;
     let mut tool_started: Option<(std::time::Instant, Value)> = None;
+    // Completed tool call names in order (finish_task excluded): the other
+    // half of the repeat-detector signature (SPEC 6.2 Q20). The closure
+    // captures the borrow, not the Vec, so the names are readable after the
+    // run once the closure is dropped.
+    let mut tool_names: Vec<String> = Vec::new();
+    let collected = &mut tool_names;
     let mut emit = move |event: agent_loop::AgentEvent| {
+        if let agent_loop::AgentEvent::ToolCallFinished { name, .. } = &event {
+            if name != "finish_task" {
+                collected.push(name.clone());
+            }
+        }
         if let Some(journal) = &journal {
             match &event {
                 agent_loop::AgentEvent::ToolCallStarted { args, .. } => {
@@ -438,6 +457,8 @@ fn run_agent_inner(
     };
 
     let result = agent_loop::run_with(&mut agent_state, &config, &confirmer, &mut emit, &mut on_message);
+    // Release the closure's borrow of tool_names before reading them below.
+    drop(emit);
     registry.clear_cancel(run);
     let result = result?;
     let guard = lock_recover(&thread_state.db);
@@ -457,6 +478,30 @@ fn run_agent_inner(
             .unwrap_or(false);
         if chat_exists {
             persist_final_answer(conn, chat_id, &result)?;
+            // Repeat detector (SPEC 6.2 Q20): only successfully completed
+            // runs count; a detector failure never fails a finished run.
+            if matches!(result.finish_reason.as_str(), "finish" | "stop") {
+                let summary = crate::skills::RunSummary {
+                    chat_id,
+                    project_id: run.project_id(),
+                    session_id: run.session_id(),
+                    user_text: &user_text,
+                    tool_names: &tool_names,
+                    duration_secs: started.elapsed().as_secs(),
+                };
+                if let Ok(Some(proposal)) = crate::skills::record_run(conn, wd, &summary) {
+                    let _ = app.emit(
+                        "agent-skill-proposal",
+                        crate::skills::proposal_event_payload(
+                            chat_id,
+                            run.project_id(),
+                            run.session_id(),
+                            run.is_notes(),
+                            &proposal,
+                        ),
+                    );
+                }
+            }
         }
     }
     Ok(())

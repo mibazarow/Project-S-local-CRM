@@ -1604,7 +1604,6 @@ mod tests {
             "task_update",
             "task_move",
             "datas_add",
-            "create_skill",
             "remember",
             "set_user_gender",
             "todowrite",
@@ -1612,7 +1611,7 @@ mod tests {
             assert_eq!(tool(name).policy(), PermissionPolicy::Skip, "{name} policy");
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
         }
-        for name in ["rename_path", "delete_path", "task_delete", "forget", "git_commit", "git_pull", "git_push", "apply_patch", "skill_exec"] {
+        for name in ["rename_path", "delete_path", "task_delete", "forget", "git_commit", "git_pull", "git_push", "apply_patch", "skill_exec", "create_skill"] {
             assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
         }
         assert_eq!(tool("git_branch").class(), ToolClass::Mutating);

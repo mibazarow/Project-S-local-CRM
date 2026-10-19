@@ -41,6 +41,7 @@ import type {
   SearchHit,
   SessionDto,
   SkillInfo,
+  SkillProposalEvent,
   TaskDto,
   TaskPatch,
   TasksChanged,
@@ -591,6 +592,11 @@ export const onAgentFile = (handler: (payload: AgentFileEvent) => void) =>
 // checkpoint summary was written (the summary rides the event only).
 export const onAgentCompaction = (handler: (payload: AgentCompactionEvent) => void) =>
   listen<AgentCompactionEvent>("agent-context-compacted", (e) => handler(e.payload));
+
+// Emitted by the repeat detector after a run completed the same complex
+// task for the second time (SPEC 6.2 Q20 skill proposal).
+export const onSkillProposal = (handler: (payload: SkillProposalEvent) => void) =>
+  listen<SkillProposalEvent>("agent-skill-proposal", (e) => handler(e.payload));
 
 export const onSchedulesChanged = (handler: () => void) =>
   listen<unknown>("schedules-changed", () => handler());

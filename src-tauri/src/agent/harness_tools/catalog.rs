@@ -254,7 +254,8 @@ mod tests {
         assert_eq!(tool("fs_move").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("fs_rename").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("fs_mkdir").policy(), PermissionPolicy::CheckConditional);
-        assert_eq!(tool("create_skill").policy(), PermissionPolicy::Skip);
+        // Q20: skill creation always confirms (no silent skill authoring).
+        assert_eq!(tool("create_skill").policy(), PermissionPolicy::Check);
         // Adding an MCP server can spawn an arbitrary local process: the
         // confirmation is the guard (SPEC 6.2 chat-driven MCP).
         assert_eq!(tool("mcp_add").class(), ToolClass::Mutating);

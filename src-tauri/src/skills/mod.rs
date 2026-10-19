@@ -12,6 +12,7 @@
 mod exec;
 mod import;
 mod manifest;
+mod proposals;
 
 // Re-exported only for the external call sites that use them (lib.rs,
 // commands/skills.rs, onboarding, chat/harness/notes prompts, the agent
@@ -21,6 +22,9 @@ pub use import::{
     create, import, install_builtin, sync_builtin, CreateSkillTool, ImportResult,
 };
 pub use manifest::{list, set_enabled, short_list, SkillInfo, SkillTool};
+// The repeat detector the run path calls after every completed agent run
+// (SPEC 6.2 Q20 skill proposals).
+pub use proposals::{proposal_event_payload, record_run, RunSummary};
 // Only the skills submodule tests call these through `skills::…`.
 #[cfg(test)]
 pub use manifest::{find, load_full};

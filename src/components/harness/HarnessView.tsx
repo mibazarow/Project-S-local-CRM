@@ -223,6 +223,10 @@ export default function HarnessView() {
         const entry = Object.entries(sessionChatIdsRef.current).find(([, chat]) => chat === p.chatId);
         return entry ? Number(entry[0]) : null;
       },
+      routeSkillProposal: (p) => {
+        const entry = Object.entries(sessionChatIdsRef.current).find(([, chat]) => chat === p.chatId);
+        return entry ? Number(entry[0]) : null;
+      },
       routeCompaction: (p) => {
         const entry = Object.entries(sessionChatIdsRef.current).find(([, chat]) => chat === p.chatId);
         return entry ? Number(entry[0]) : null;

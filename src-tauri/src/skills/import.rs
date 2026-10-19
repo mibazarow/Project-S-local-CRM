@@ -491,9 +491,12 @@ pub fn create(
 }
 
 // The `create_skill` agent tool: creates a user skill through the same
-// `create` logic the UI uses. Mutating but Skip: it only ever writes inside
-// Settings/skills/user/. An existing user skill is replaced only with an
-// explicit overwrite=true; builtin names are always refused.
+// `create` logic the UI uses. Mutating with the Check policy (SPEC 6.2 Q20):
+// every agent-initiated skill creation goes through the standard
+// confirmation dialog — no silent skill creation, whether the user asked
+// for a skill in chat or accepted a repeat-detector proposal. It only ever
+// writes inside Settings/skills/user/. An existing user skill is replaced
+// only with an explicit overwrite=true; builtin names are always refused.
 pub struct CreateSkillTool;
 
 impl Tool for CreateSkillTool {
@@ -521,7 +524,13 @@ impl Tool for CreateSkillTool {
         ToolClass::Mutating
     }
     fn policy(&self) -> PermissionPolicy {
-        PermissionPolicy::Skip
+        PermissionPolicy::Check
+    }
+    fn danger_reason(&self, args: &Value, _ctx: &ToolCtx) -> Option<String> {
+        let name = args["name"].as_str().unwrap_or("?");
+        Some(format!(
+            "Создание скилла «{name}» в Settings/skills/user/ — агент пишет новый SKILL.md"
+        ))
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let wd = ctx.working_dir.clone().ok_or(AppError::NotConfigured)?;
@@ -712,6 +721,117 @@ mod tests {
         let err = create(&wd, "builtin-one", "x", None, None, true).unwrap_err().to_string();
         assert!(err.contains("conflicts with a builtin"), "{err}");
         assert!(create(&wd, "other", "d", Some("magic"), None, false).is_err());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // Q20 end-to-end policy check: a run that calls create_skill must pass
+    // the confirmation gate (Check policy). Allow → the skill is created and
+    // listed; deny → nothing is written.
+    struct ScriptedBackend {
+        rounds: std::sync::Mutex<std::collections::VecDeque<crate::llm::ChatOutcome>>,
+    }
+
+    impl crate::agent::r#loop::ChatBackend for ScriptedBackend {
+        fn chat_stream(
+            &self,
+            _messages: &[crate::llm::ChatMessage],
+            _tools: Option<&[crate::llm::ToolSpec]>,
+            _params: &crate::llm::ChatParams,
+            _on_event: &mut dyn FnMut(crate::llm::ChatEvent),
+        ) -> Result<crate::llm::ChatOutcome> {
+            self.rounds
+                .lock()
+                .unwrap()
+                .pop_front()
+                .ok_or_else(|| AppError::Invalid("scripted backend exhausted".into()))
+        }
+    }
+
+    fn create_skill_run(wd: &Path, confirmer: &dyn crate::confirm::Confirmer) -> String {
+        use crate::agent::catalog::Catalog;
+        use crate::agent::finish::FinishTaskTool;
+        use crate::agent::r#loop as agent_loop;
+        use crate::llm::{ChatMessage, ChatOutcome, ChatParams, ToolCall};
+        use std::sync::Arc;
+
+        let backend = ScriptedBackend {
+            rounds: std::sync::Mutex::new(
+                vec![
+                    ChatOutcome {
+                        content: None,
+                        reasoning: None,
+                        tool_calls: vec![ToolCall::new(
+                            "c1".into(),
+                            "create_skill".into(),
+                            json!({ "name": "repeat-task", "description": "Repeated workflow", "body": "Steps." })
+                                .to_string(),
+                        )],
+                        finish_reason: Some("tool_calls".into()),
+                        usage: None,
+                    },
+                    ChatOutcome {
+                        content: None,
+                        reasoning: None,
+                        tool_calls: vec![ToolCall::new(
+                            "c2".into(),
+                            "finish_task".into(),
+                            json!({ "action": "finish", "answer": "готово" }).to_string(),
+                        )],
+                        finish_reason: Some("tool_calls".into()),
+                        usage: None,
+                    },
+                ]
+                .into(),
+            ),
+        };
+        let mut catalog = Catalog::new();
+        catalog.register(Arc::new(FinishTaskTool), true).unwrap();
+        catalog.register(Arc::new(CreateSkillTool), true).unwrap();
+        let mut state = agent_loop::AgentState {
+            backend: &backend,
+            catalog: &mut catalog,
+        };
+        let config = agent_loop::AgentRunConfig {
+            messages: vec![ChatMessage::system("sys"), ChatMessage::user("да, создай скилл")],
+            max_steps: 8,
+            limits: agent_loop::RunLimits::default(),
+            allow_all: false,
+            project_id: None,
+            session_id: None,
+            chat_id: None,
+            params: ChatParams {
+                model: "test-model".into(),
+                temperature: None,
+                max_tokens: None,
+                reasoning_effort: None,
+            },
+            cancel: None,
+            state: None,
+            working_dir: Some(wd.to_path_buf()),
+            notes_root: None,
+        };
+        let result = agent_loop::run(&mut state, &config, confirmer, |_| {}).unwrap();
+        result.answer
+    }
+
+    #[test]
+    fn confirmed_create_skill_run_creates_and_lists_the_skill() {
+        let wd = scaffold("skills-create-confirmed");
+        let answer = create_skill_run(&wd, &crate::confirm::AutoConfirmer::allowing(true));
+        assert_eq!(answer, "готово");
+        assert!(paths::skills_user_dir(&wd).join("repeat-task/SKILL.md").is_file());
+        assert!(short_list(&wd)
+            .contains(&("repeat-task".to_string(), "Repeated workflow".to_string())));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn denied_create_skill_run_writes_nothing() {
+        let wd = scaffold("skills-create-denied");
+        let answer = create_skill_run(&wd, &crate::confirm::DenyAllConfirmer);
+        assert_eq!(answer, "готово");
+        assert!(!paths::skills_user_dir(&wd).join("repeat-task/SKILL.md").exists());
+        assert!(short_list(&wd).is_empty());
         fs::remove_dir_all(&wd).unwrap();
     }
 
