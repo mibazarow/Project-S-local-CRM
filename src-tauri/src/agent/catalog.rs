@@ -12,10 +12,10 @@ pub const LIST_TOOLS: &str = "list_available_tools";
 pub const ENABLE_TOOLS: &str = "enable_tools";
 pub const DEFAULT_SCHEMA_CAP: usize = 128;
 // Max size of the generated tool-list prompt block (chars). Sized so the real
-// project and harness tool blocks (incl. image_transform, forget and the
-// objective tools) fit in full without truncation; only a runaway MCP set
-// would ever hit it.
-pub const SUMMARY_BLOCK_CAP: usize = 22_000;
+// project and harness tool blocks (incl. image_transform, forget, the
+// objective tools and mcp_add) fit in full without truncation; only a
+// runaway MCP set would ever hit it.
+pub const SUMMARY_BLOCK_CAP: usize = 24_000;
 
 pub enum Resolution<'a> {
     Found(&'a Arc<dyn Tool>),

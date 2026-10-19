@@ -20,6 +20,7 @@ mod catalog;
 mod chat_tools;
 mod crm_tools;
 mod fs_tools;
+mod mcp_tools;
 mod schedule_tools;
 mod shell_tools;
 mod transfer;

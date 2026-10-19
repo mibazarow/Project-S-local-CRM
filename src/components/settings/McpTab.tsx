@@ -39,6 +39,19 @@ export default function McpTab({ active }: { active: boolean }) {
 
   useEffect(() => {
     loadMcp();
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    // mcp.json written elsewhere (agent's mcp_add, hand edits) lands through
+    // the watcher's config-changed event, so the list refreshes on its own.
+    void ipc
+      .onConfigChanged(({ which }) => {
+        if (which === "mcp") loadMcp();
+      })
+      .then((u) => (cancelled ? u() : (unlisten = u)));
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, [loadMcp]);
 
   const toggleMcp = async (name: string, enabled: boolean) => {

@@ -85,6 +85,10 @@ pub fn harness_catalog() -> Catalog {
         // see screenshot_tool.rs for the safety rules.
         Arc::new(super::super::screenshot_tool::ScreenshotTool::default()),
         Arc::new(crate::skills::CreateSkillTool),
+        // Chat-driven MCP server management (SPEC 6.2): writes mcp.json
+        // through the shared config layer and restarts the live registry;
+        // always confirmed. See mcp_tools.rs.
+        Arc::new(super::mcp_tools::McpAddTool),
         Arc::new(BashTool::default()),
         // Background process control (dev servers, installs): the background
         // twin of bash, lazy-discovered together with it; see process_tools.rs.
@@ -157,7 +161,7 @@ mod tests {
     use serde_json::json;
     use std::fs;
 
-    const DEFERRED_NAMES: [&str; 56] = [
+    const DEFERRED_NAMES: [&str; 57] = [
         "fs_read",
         "fs_list",
         "fs_write",
@@ -178,6 +182,7 @@ mod tests {
         "image_transform",
         "screenshot",
         "create_skill",
+        "mcp_add",
         "bash",
         "process_start",
         "process_logs",
@@ -250,6 +255,13 @@ mod tests {
         assert_eq!(tool("fs_rename").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("fs_mkdir").policy(), PermissionPolicy::CheckConditional);
         assert_eq!(tool("create_skill").policy(), PermissionPolicy::Skip);
+        // Adding an MCP server can spawn an arbitrary local process: the
+        // confirmation is the guard (SPEC 6.2 chat-driven MCP).
+        assert_eq!(tool("mcp_add").class(), ToolClass::Mutating);
+        assert_eq!(tool("mcp_add").policy(), PermissionPolicy::Check);
+        assert!(tool("mcp_add")
+            .danger_reason(&json!({ "name": "x", "transport": "stdio", "command": "npx" }), &ToolCtx::default())
+            .is_some());
         for name in ["fs_delete", "bash", "skill_exec", "crm_task_delete", "forget", "git_commit", "git_pull", "git_push", "apply_patch", "ssh_upload", "ssh_download", "ssh_generate_key", "ssh_install_key", "screenshot"] {
             assert_eq!(tool(name).class(), ToolClass::Mutating, "{name} class");
             assert_eq!(tool(name).policy(), PermissionPolicy::Check, "{name} policy");
