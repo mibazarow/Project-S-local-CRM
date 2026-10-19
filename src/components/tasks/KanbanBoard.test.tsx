@@ -181,7 +181,7 @@ describe("KanbanBoard add task form", () => {
 });
 
 describe("KanbanBoard priority toggle", () => {
-  it("sets priority via the card details editor and keeps it after save and reload", async () => {
+  it("sets priority via the full card editor and keeps it after save and reload", async () => {
     task.isPriority = false;
     await act(async () => {
       root.render(
@@ -194,15 +194,24 @@ describe("KanbanBoard priority toggle", () => {
     let card = container.querySelector(".task-card")!;
     expect(card.className).not.toContain("priority");
 
-    await click(container.querySelector('button[title="Приоритет, повтор, чек-лист"]')!);
-    const checkbox = container.querySelector<HTMLInputElement>(
-      ".task-details .td-priority input[type='checkbox']",
+    const openEditor = async () => {
+      await click(container.querySelector('button[title="Редактировать"]')!);
+      return container.querySelector(".task-edit")!;
+    };
+    const save = async (editor: Element) => {
+      await click(editor.querySelector('button[title="Сохранить"]')!);
+      await settle();
+    };
+
+    let editor = await openEditor();
+    const checkbox = editor.querySelector<HTMLInputElement>(
+      ".td-priority input[type='checkbox']",
     )!;
     expect(checkbox.checked).toBe(false);
     await click(checkbox);
-    await settle();
+    await save(editor);
 
-    expect(taskUpdate).toHaveBeenCalledWith(1, { isPriority: true });
+    expect(taskUpdate).toHaveBeenCalledWith(1, expect.objectContaining({ isPriority: true }));
     // The upserted DTO re-renders the card with priority styling.
     card = container.querySelector(".task-card")!;
     expect(card.className).toContain("priority");
@@ -220,14 +229,17 @@ describe("KanbanBoard priority toggle", () => {
     expect(container.querySelector(".task-card")!.className).toContain("priority");
 
     // Clear it back through the same editor.
-    await click(container.querySelector('button[title="Приоритет, повтор, чек-лист"]')!);
-    const off = container.querySelector<HTMLInputElement>(
-      ".task-details .td-priority input[type='checkbox']",
+    editor = await openEditor();
+    const off = editor.querySelector<HTMLInputElement>(
+      ".td-priority input[type='checkbox']",
     )!;
     expect(off.checked).toBe(true);
     await click(off);
-    await settle();
-    expect(taskUpdate).toHaveBeenLastCalledWith(1, { isPriority: false });
+    await save(editor);
+    expect(taskUpdate).toHaveBeenLastCalledWith(
+      1,
+      expect.objectContaining({ isPriority: false }),
+    );
     expect(container.querySelector(".task-card")!.className).not.toContain("priority");
 
     task.isPriority = false;

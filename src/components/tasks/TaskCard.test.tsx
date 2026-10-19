@@ -73,6 +73,20 @@ const setInputValue = (input: HTMLInputElement, value: string) => {
   });
 };
 
+const findButton = (scope: ParentNode, title: string) =>
+  Array.from(scope.querySelectorAll("button")).find(
+    (b) => (b as HTMLButtonElement).title === title,
+  )!;
+
+const openEditor = async () => {
+  await click(findButton(container, "Редактировать"));
+  return container.querySelector(".task-edit")!;
+};
+
+const clickSave = async (editor: Element) => {
+  await click(findButton(editor, "Сохранить"));
+};
+
 describe("TaskCard due time", () => {
   it("shows the due time next to the date", async () => {
     await mount(makeTask());
@@ -90,54 +104,41 @@ describe("TaskCard due time", () => {
 
   it("the due editor edits the due time and patches it", async () => {
     const onPatch = await mount(makeTask());
-    const dueBtn = Array.from(container.querySelectorAll("button.mini-btn")).find(
-      (b) => (b as HTMLButtonElement).title === "Срок и напоминание",
-    )!;
-    await click(dueBtn);
-    const row = container.querySelector(".task-due-row")!;
-    const times = row.querySelectorAll<HTMLInputElement>('input[type="time"]');
+    const editor = await openEditor();
+    const times = editor.querySelectorAll<HTMLInputElement>('input[type="time"]');
     expect(times).toHaveLength(2);
     expect(times[0].value).toBe("10:30");
     setInputValue(times[0], "18:45");
-    const save = Array.from(row.querySelectorAll("button")).find(
-      (b) => (b as HTMLButtonElement).title === "Сохранить дату",
-    )!;
-    await click(save);
-    expect(onPatch).toHaveBeenCalledWith({
-      dueDate: "2099-01-02",
-      dueTime: "18:45",
-      remindAt: null,
-    });
+    await clickSave(editor);
+    expect(onPatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dueDate: "2099-01-02",
+        dueTime: "18:45",
+        remindAt: null,
+      }),
+    );
   });
 
   it("an empty due time in the editor falls back to 07:00", async () => {
     const onPatch = await mount(makeTask({ dueTime: "" }));
-    const dueBtn = Array.from(container.querySelectorAll("button.mini-btn")).find(
-      (b) => (b as HTMLButtonElement).title === "Срок и напоминание",
-    )!;
-    await click(dueBtn);
-    const row = container.querySelector(".task-due-row")!;
-    const times = row.querySelectorAll<HTMLInputElement>('input[type="time"]');
+    const editor = await openEditor();
+    const times = editor.querySelectorAll<HTMLInputElement>('input[type="time"]');
     expect(times[0].value).toBe("07:00");
-    const save = Array.from(row.querySelectorAll("button")).find(
-      (b) => (b as HTMLButtonElement).title === "Сохранить дату",
-    )!;
-    await click(save);
-    expect(onPatch).toHaveBeenCalledWith({
-      dueDate: "2099-01-02",
-      dueTime: "07:00",
-      remindAt: null,
-    });
+    await clickSave(editor);
+    expect(onPatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        dueDate: "2099-01-02",
+        dueTime: "07:00",
+        remindAt: null,
+      }),
+    );
   });
 });
 
 describe("TaskCard priority toggle", () => {
-  const openDetails = async () => {
-    const btn = Array.from(container.querySelectorAll("button.mini-btn")).find(
-      (b) => (b as HTMLButtonElement).title === "Приоритет, повтор, чек-лист",
-    )!;
-    await click(btn);
-    return container.querySelector(".task-details .td-priority input[type='checkbox']") as HTMLInputElement;
+  const openPriority = async () => {
+    const editor = await openEditor();
+    return editor.querySelector(".td-priority input[type='checkbox']") as HTMLInputElement;
   };
 
   it("marks the card with the priority class only when the flag is set", async () => {
@@ -151,24 +152,91 @@ describe("TaskCard priority toggle", () => {
     expect(container.querySelector(".task-card")!.className).not.toContain("priority");
   });
 
-  it("the details editor shows the checkbox reflecting the current flag", async () => {
+  it("the full editor shows the checkbox reflecting the current flag", async () => {
     await mount(makeTask({ isPriority: true }));
-    const checkbox = await openDetails();
+    const checkbox = await openPriority();
     expect(checkbox.checked).toBe(true);
   });
 
-  it("checking the box in the details editor patches isPriority: true", async () => {
+  it("checking the box in the editor saves isPriority: true", async () => {
     const onPatch = await mount(makeTask({ isPriority: false }));
-    const checkbox = await openDetails();
+    const checkbox = await openPriority();
     await click(checkbox);
-    expect(onPatch).toHaveBeenCalledWith({ isPriority: true });
+    await clickSave(container.querySelector(".task-edit")!);
+    expect(onPatch).toHaveBeenCalledWith(expect.objectContaining({ isPriority: true }));
   });
 
-  it("unchecking the box in the details editor patches isPriority: false", async () => {
+  it("unchecking the box in the editor saves isPriority: false", async () => {
     const onPatch = await mount(makeTask({ isPriority: true }));
-    const checkbox = await openDetails();
+    const checkbox = await openPriority();
     await click(checkbox);
-    expect(onPatch).toHaveBeenCalledWith({ isPriority: false });
+    await clickSave(container.querySelector(".task-edit")!);
+    expect(onPatch).toHaveBeenCalledWith(expect.objectContaining({ isPriority: false }));
+  });
+});
+
+describe("TaskCard checklist", () => {
+  const checklist = [
+    { text: "Первый пункт", done: false },
+    { text: "Второй пункт", done: true },
+  ];
+
+  it("renders checklist rows in view mode when the checklist is non-empty", async () => {
+    await mount(makeTask({ checklist }));
+    const head = container.querySelector(".task-checklist .task-checklist-head")!;
+    expect(head.textContent).toContain("Чек-лист");
+    expect(head.querySelector(".check-count")!.textContent).toBe("1/2");
+    expect(container.querySelectorAll(".task-checklist .td-check-row")).toHaveLength(2);
+  });
+
+  it("clicking a checklist checkbox in view mode patches the toggled list immediately", async () => {
+    const onPatch = await mount(makeTask({ checklist }));
+    const box = container.querySelector<HTMLInputElement>(
+      ".task-checklist .td-check-row input[type='checkbox']",
+    )!;
+    await click(box);
+    expect(onPatch).toHaveBeenCalledWith({
+      checklist: [
+        { text: "Первый пункт", done: true },
+        { text: "Второй пункт", done: true },
+      ],
+    });
+  });
+
+  it("the full editor adds a checklist item and Save includes it", async () => {
+    const onPatch = await mount(makeTask());
+    const editor = await openEditor();
+    const input = editor.querySelector<HTMLInputElement>(".td-check-add input")!;
+    setInputValue(input, "Новый пункт");
+    await click(findButton(editor, "Добавить пункт"));
+    await clickSave(editor);
+    expect(onPatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        checklist: [{ text: "Новый пункт", done: false }],
+      }),
+    );
+  });
+});
+
+describe("TaskCard action row", () => {
+  it("no longer renders the calendar and old details buttons", async () => {
+    await mount(makeTask());
+    expect(findButton(container, "Срок и напоминание")).toBeUndefined();
+    expect(findButton(container, "Приоритет, повтор, чек-лист")).toBeUndefined();
+  });
+
+  it("opens the full editor from the pencil and from a title double-click", async () => {
+    await mount(makeTask());
+    await click(findButton(container, "Редактировать"));
+    expect(container.querySelector(".task-edit")).not.toBeNull();
+    await click(findButton(container, "Отменить"));
+    expect(container.querySelector(".task-edit")).toBeNull();
+    await act(() =>
+      container
+        .querySelector(".task-card .t")!
+        .dispatchEvent(new MouseEvent("dblclick", { bubbles: true })),
+    );
+    expect(container.querySelector(".task-edit")).not.toBeNull();
   });
 });
 

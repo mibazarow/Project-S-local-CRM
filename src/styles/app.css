@@ -462,9 +462,6 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 .task-card.done .t { color: var(--text-muted); }
 .task-card .t { font-size: 12.5px; font-weight: 500; margin-bottom: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .task-card .overdue-label { color: var(--danger); font-size: 11px; font-weight: 600; margin: -2px 0 6px; }
-.task-title-edit { display: flex; flex-direction: column; gap: 4px; }
-.task-title-edit textarea { width: 100%; box-sizing: border-box; min-height: 46px; font-size: 12.5px; resize: vertical; }
-.task-title-edit-actions { display: flex; justify-content: flex-end; gap: 2px; }
 .task-card .m { font-size: 11px; color: var(--text-muted); display: flex; gap: 8px; }
 .task-card .c { font-size: 11px; color: var(--text-muted); font-style: italic; margin-top: 9px; border-left: 2px solid var(--border-strong); padding-left: 6px; }
 .task-col.drop-over { outline: 2px dashed var(--accent); outline-offset: -4px; background: var(--accent-soft); }
@@ -496,10 +493,16 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 .task-card .m span.red { color: var(--danger); font-weight: 600; }
 .task-card .m .due-time { opacity: 0.75; }
 .task-card .m .rec { display: inline-flex; align-items: center; gap: 4px; }
-.task-card .check-progress { display: flex; align-items: center; gap: 6px; margin-top: 7px; }
 .task-card .check-count { font-size: 10.5px; color: var(--text-muted); flex-shrink: 0; }
-.task-card .check-bar { flex: 1; height: 3px; border-radius: 2px; background: #e4e4e9; overflow: hidden; }
-.task-card .check-bar i { display: block; height: 100%; background: var(--ok); border-radius: 2px; }
+.task-checklist { margin-top: 7px; border-top: 1px solid var(--hairline); padding-top: 6px; }
+.task-checklist-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 10.5px; font-weight: 600; color: var(--text-muted); }
+.task-card .task-checklist .td-check-row { cursor: pointer; }
+.task-edit-title { width: 100%; box-sizing: border-box; min-height: 46px; font-size: 12.5px; resize: vertical; }
+.task-edit-comment { width: 100%; box-sizing: border-box; min-height: 40px; font-size: 11.5px; resize: vertical; }
+.task-edit-actions { display: flex; justify-content: flex-end; gap: 4px; }
+.task-edit-actions .mini-btn { padding: 3px 8px; font-size: 11px; }
+.task-edit-actions .mini-btn:disabled { opacity: .45; cursor: default; }
+.task-edit-actions .mini-btn:disabled:hover { background: transparent; color: var(--text-muted); }
 
 /* Таймер задачи (SPEC 4.3): футер внизу карточки — тонкая отбивка,
    ненавязчивый нежирный текст «Затрачено на задачу: ЧЧ:ММ:СС». */
