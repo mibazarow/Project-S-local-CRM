@@ -31,9 +31,25 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Emitter, Manager};
 
 pub(crate) fn app_config_dir(app: &AppHandle) -> Result<PathBuf> {
-    app.path()
+    if let Some(dir) = std::env::var_os("PROJECT_S_CONFIG_DIR") {
+        return Ok(PathBuf::from(dir));
+    }
+    let base = app
+        .path()
         .app_config_dir()
-        .map_err(|e| AppError::Io(e.to_string()))
+        .map_err(|e| AppError::Io(e.to_string()))?;
+    Ok(config_dir_for(base))
+}
+
+fn config_dir_for(base: PathBuf) -> PathBuf {
+    #[cfg(debug_assertions)]
+    {
+        base.join("dev")
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        base
+    }
 }
 
 pub(crate) fn with_db<T>(state: &AppState, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
@@ -190,4 +206,23 @@ pub(crate) fn open_journal(state: &AppState, wd: &std::path::Path) -> Result<()>
     let _ = journal.prune_old(cfg.log_retention_days);
     *lock_recover(&state.journal) = Some(journal);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(debug_assertions)]
+    #[test]
+    fn config_dir_gets_dev_suffix_in_debug() {
+        let base = PathBuf::from("/tmp/project-s-config");
+        assert_eq!(config_dir_for(base.clone()), base.join("dev"));
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn config_dir_stays_unchanged_in_release() {
+        let base = PathBuf::from("/tmp/project-s-config");
+        assert_eq!(config_dir_for(base.clone()), base);
+    }
 }

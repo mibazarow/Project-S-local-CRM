@@ -67,6 +67,15 @@ npm run app:install   # сборка + установка в /Applications/Proje
 npm run app:update    # установить уже собранный бандл
 ```
 
+## Конфиг приложения: dev и release
+
+Выбранная рабочая директория хранится в `working_dir.txt` в папке конфига приложения. Dev- и release-сборки используют разные папки, чтобы онбординг одной не перезаписывал другую:
+
+- debug из репозитория (`npm run tauri dev`): `~/Library/Application Support/app.project-s.ru/dev/working_dir.txt` — демо-хранилище.
+- release-сборка: `~/Library/Application Support/app.project-s.ru/working_dir.txt` — хранилище, выбранное в онбординге.
+
+Переменная окружения `PROJECT_S_CONFIG_DIR` задаёт папку конфига приложения явно.
+
 ## Документация
 
 Вся документация — в [`DOCS/`](DOCS/). В корне остаются только `README.md` и `AGENTS.md`. Отдельного ТЗ нет: требования и очередь работ живут в `DOCS/Q.md` и фиксируются по ходу.
