@@ -10,7 +10,7 @@ import * as ipc from "../../api/ipc";
 import type { ProjectDto, TaskDto, TaskPatch } from "../../api/types";
 import { toMessage } from "../files/fileOps";
 import RenameInput from "../files/RenameInput";
-import { IconCheck, IconClose, IconPencil, IconPlus, IconSearch } from "../files/icons";
+import { IconCheck, IconClose, IconPencil, IconPlus } from "../files/icons";
 import TaskCard from "./TaskCard";
 import { usePointerDrag, type DropTarget } from "../../hooks/usePointerDrag";
 import { useAppActions } from "../../state/AppStore";
@@ -21,13 +21,12 @@ const STATUSES = ["new", "progress", "done"] as const;
 const DEFAULT_COLUMNS = ["Новые", "В работе", "Готово"];
 
 interface Filters {
-  query: string;
   overdueOnly: boolean;
 }
 
-const EMPTY_FILTERS: Filters = { query: "", overdueOnly: false };
+const EMPTY_FILTERS: Filters = { overdueOnly: false };
 
-const isDefaultFilters = (f: Filters) => !f.query.trim() && !f.overdueOnly;
+const isDefaultFilters = (f: Filters) => !f.overdueOnly;
 
 interface NewTaskDraft {
   title: string;
@@ -159,9 +158,7 @@ export default function KanbanBoard({ project, tasksVersion, highlightTaskId }: 
   };
 
   const visible = useMemo(() => {
-    const q = filters.query.trim().toLowerCase();
     return (tasks ?? []).filter((t) => {
-      if (q && !t.title.toLowerCase().includes(q)) return false;
       if (filters.overdueOnly && !t.overdue) return false;
       return true;
     });
@@ -328,24 +325,6 @@ export default function KanbanBoard({ project, tasksVersion, highlightTaskId }: 
     <div className="center-body">
       {error && <div className="tree-error">{error}</div>}
       <div className="task-filters">
-        <div className="tf-search">
-          <IconSearch />
-          <input
-            type="text"
-            placeholder="Поиск по названию…"
-            value={filters.query}
-            onChange={(e) => setFilters((prev) => ({ ...prev, query: e.target.value }))}
-          />
-          {filters.query && (
-            <button
-              className="mini-btn"
-              title="Очистить поиск"
-              onClick={() => setFilters((prev) => ({ ...prev, query: "" }))}
-            >
-              <IconClose />
-            </button>
-          )}
-        </div>
         <label className="tf-check">
           <input
             type="checkbox"

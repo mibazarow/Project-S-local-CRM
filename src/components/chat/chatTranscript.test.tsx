@@ -69,7 +69,7 @@ const slice: Slice = {
   queue: [],
 };
 
-function Transcript({ search }: { search: string }) {
+function Transcript() {
   const listRef = useRef<HTMLDivElement>(null);
   return (
     <ChatTranscript
@@ -84,7 +84,6 @@ function Transcript({ search }: { search: string }) {
         onToNote: () => {},
         onToTask: () => {},
       }}
-      search={search}
     />
   );
 }
@@ -106,14 +105,7 @@ afterEach(() => {
 describe("ChatTranscript DOM", () => {
   it("renders the representative conversation with a stable markup", async () => {
     await act(async () => {
-      root.render(<Transcript search="" />);
-    });
-    expect(container.innerHTML).toMatchSnapshot();
-  });
-
-  it("renders the search-filtered transcript with <mark> highlights", async () => {
-    await act(async () => {
-      root.render(<Transcript search="пример" />);
+      root.render(<Transcript />);
     });
     expect(container.innerHTML).toMatchSnapshot();
   });
@@ -169,7 +161,6 @@ describe("provider-silence retry (SPEC 6.0.1, Q23)", () => {
         projectId={1}
         chatId={10}
         actions={{ onRetry }}
-        search=""
       />
     );
   }

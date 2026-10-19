@@ -1,11 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import * as ipc from "../api/ipc";
 import type { FsEntry, GlobalHit, SessionDto } from "../api/types";
 import { useApp } from "../state/AppStore";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import { useSearchHits } from "../hooks/useSearchHits";
 import type { Tab } from "./TopBar";
-import { renderSnippet } from "./files/SearchResults";
 import { IconSearch } from "./files/icons";
 
 interface PaletteItem {
@@ -27,6 +26,20 @@ const KIND_LABELS: Record<GlobalHit["kind"], string> = {
   note: "Заметка",
   chat: "Чат",
 };
+
+function renderSnippet(snippet: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const re = /<<([^>]*)>>/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(snippet))) {
+    if (m.index > last) nodes.push(snippet.slice(last, m.index));
+    nodes.push(<mark key={m.index}>{m[1]}</mark>);
+    last = m.index + m[0].length;
+  }
+  nodes.push(snippet.slice(last));
+  return nodes;
+}
 
 // Case-insensitive scoring: prefix beats substring, substring beats a fuzzy
 // subsequence; null means no match.

@@ -8,7 +8,6 @@ import type {
   BackupInfo,
   BackupStatus,
   ChatBranchResult,
-  ChatHit,
   ConfigChanged,
   ConfigKind,
   ConnectionTest,
@@ -37,7 +36,6 @@ import type {
   ReindexProgress,
   ReindexStatus,
     ScheduleDto,
-  SearchHit,
   SessionDto,
   SkillInfo,
   SkillProposalEvent,
@@ -274,9 +272,6 @@ export const openWith = (
     appPath: appPath ?? null,
   });
 
-export const searchProject = (projectId: number, query: string, limit?: number) =>
-  invoke<SearchHit[]>("search_project", { projectId, query, limit });
-
 export const fsReadBinaryDataUrl = (projectId: number, relPath: string, maxBytes: number) =>
   invoke<string>("fs_read_binary_data_url", { projectId, relPath, maxBytes });
 
@@ -324,9 +319,6 @@ export const quickCapture = (
   target: "note" | "task",
   projectId?: number | null,
 ) => invoke<QuickCaptureResult>("quick_capture", { text, target, projectId: projectId ?? null });
-
-export const searchNotes = (query: string, limit?: number) =>
-  invoke<SearchHit[]>("search_notes", { query, limit: limit ?? null });
 
 // Reusable templates (Settings/config/templates.json, seeded on first use):
 // the create command instantiates one template as a project. Note templates
@@ -490,12 +482,6 @@ export const sendSessionMessage = (
 
 export const cancelSessionRun = (sessionId: number) =>
   invoke<boolean>("cancel_session_run", { sessionId });
-
-// Full-text + semantic search over harness session messages (FTS markers
-// "<<…>>" in the snippet). indexChatMessages backfills the message index and
-// returns the number of newly indexed rows.
-export const searchChats = (query: string, limit?: number) =>
-  invoke<ChatHit[]>("search_chats", { query, limit: limit ?? null });
 
 // Global cross-entity search (⌘K palette): projects, files, tasks, notes and
 // harness chats in one merged, ranked list.

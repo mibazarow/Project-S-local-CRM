@@ -6,9 +6,7 @@ import {
   historyToItems,
   toMessage,
   ChatTranscript,
-  ChatHeaderTools,
   ConfirmCard,
-  countMatches,
   resolvePinMessageId,
   resolveRegenerateTurn,
   type ChatItem,
@@ -24,7 +22,6 @@ export default function NotesChat() {
   const [chatId, setChatId] = useState<number | null>(null);
   const chatIdRef = useRef<number | null>(null);
   const [text, setText] = useState("");
-  const [chatQuery, setChatQuery] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
 
   const reloadHistory = (key: number, dispatch: ReturnType<typeof useChatRun>["dispatch"]) => {
@@ -180,11 +177,6 @@ export default function NotesChat() {
       <div className="chat-head">
         <span className="chat-title">Чат с заметками</span>
         {running && <span className="chat-sub">агент работает…</span>}
-        <ChatHeaderTools
-          query={chatQuery}
-          onQuery={setChatQuery}
-          matchCount={countMatches(slice?.items ?? [], chatQuery)}
-        />
       </div>
 
       <ChatTranscript
@@ -194,7 +186,6 @@ export default function NotesChat() {
         projectId={null}
         chatId={chatId}
         actions={transcriptActions}
-        search={chatQuery}
       />
 
       {slice?.sendError && (

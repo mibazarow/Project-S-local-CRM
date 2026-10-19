@@ -131,22 +131,20 @@ const click = (el: Element) =>
   });
 
 describe("FilesPanel segmented tab switch", () => {
-  it("renders files/tasks segments with files active and the search box shown", async () => {
+  it("renders files/tasks segments with files active", async () => {
     await mount(projects[0]);
     expect(segs()).toHaveLength(2);
     expect(segs()[0].className).toBe("seg active");
     expect(segs()[0].textContent).toBe("Файлы");
     expect(segs()[1].className).toBe("seg");
     expect(segs()[1].textContent).toBe("Задачи");
-    expect(container.querySelector(".center-head .search input")).not.toBeNull();
   });
 
-  it("clicking the tasks segment activates it, hides the search box and renders the board", async () => {
+  it("clicking the tasks segment activates it and renders the board", async () => {
     await mount(projects[0]);
     await click(segs()[1]);
     expect(segs()[0].className).toBe("seg");
     expect(segs()[1].className).toBe("seg active");
-    expect(container.querySelector(".center-head .search input")).toBeNull();
     expect(container.querySelector(".task-filters")).not.toBeNull();
   });
 });

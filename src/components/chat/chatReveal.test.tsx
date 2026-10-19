@@ -86,7 +86,6 @@ function Transcript({ slice }: { slice: Slice }) {
       empty="Пусто"
       projectId={1}
       chatId={10}
-      search=""
     />
   );
 }

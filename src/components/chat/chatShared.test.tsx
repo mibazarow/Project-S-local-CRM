@@ -6,7 +6,6 @@ vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) })
 import {
   chatReducer,
   combineQueued,
-  countMatches,
   historyToItems,
   LLM_TIMEOUT_CODE,
   summarizeArgs,
@@ -486,16 +485,5 @@ describe("chat UX helpers", () => {
     expect(summarizeArgs("x".repeat(200))).toBe("x".repeat(120));
     const many = summarizeArgs({ a: "1", b: "2", c: "3", d: "4", e: "5" });
     expect(many).toBe("a=1, b=2, c=3, d=4");
-  });
-
-  it("countMatches counts case-insensitive occurrences across item texts", () => {
-    const items = historyToItems([
-      dto({ id: 1, role: "user", content: "Ab ab AB" }),
-      dto({ id: 2, role: "assistant", content: "xx ab yy" }),
-    ]);
-    expect(countMatches(items, " ab ")).toBe(4);
-    expect(countMatches(items, "ab")).toBe(4);
-    expect(countMatches(items, "  ")).toBe(0);
-    expect(countMatches(items, "")).toBe(0);
   });
 });

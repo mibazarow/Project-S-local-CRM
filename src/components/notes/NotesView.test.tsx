@@ -17,7 +17,6 @@ vi.mock("../shared/toast", () => ({ toast: (...args: unknown[]) => toast(...args
 vi.mock("./NoteEditor", () => ({ default: () => null }));
 vi.mock("./NotesChat", () => ({ default: () => null }));
 vi.mock("./NotesTree", () => ({ default: () => null }));
-vi.mock("./NotesSearchResults", () => ({ default: () => null }));
 
 let pendingPath: string | null = null;
 vi.mock("../../state/AppStore", () => {

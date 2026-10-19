@@ -6,11 +6,9 @@ import {
   historyToItems,
   toMessage,
   ChatTranscript,
-  ChatHeaderTools,
   ConfirmCard,
   AttachFileIcon,
   AttachXIcon,
-  countMatches,
   resolvePinMessageId,
   resolveRegenerateTurn,
   useVisionSupport,
@@ -42,7 +40,6 @@ export default function ProjectChat({ projectId, projectName }: Props) {
     [],
   );
   const [text, setText] = useState("");
-  const [chatQuery, setChatQuery] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
   const chatRootRef = useRef<HTMLElement | null>(null);
   const att = useChatAttachments(chatRootRef);
@@ -278,11 +275,6 @@ export default function ProjectChat({ projectId, projectName }: Props) {
       <div className="chat-head">
         <span className="chat-title">Чат проекта «{projectName ?? "—"}»</span>
         {running && <span className="chat-sub">агент работает…</span>}
-        <ChatHeaderTools
-          query={chatQuery}
-          onQuery={setChatQuery}
-          matchCount={countMatches(slice?.items ?? [], chatQuery)}
-        />
       </div>
 
       <TodoPanel scopeKind="project" scopeId={projectId} />
@@ -294,7 +286,6 @@ export default function ProjectChat({ projectId, projectName }: Props) {
         projectId={projectId}
         chatId={projectId != null ? (chatIds[projectId] ?? null) : null}
         actions={transcriptActions}
-        search={chatQuery}
       />
 
       {att.pending.length > 0 && (

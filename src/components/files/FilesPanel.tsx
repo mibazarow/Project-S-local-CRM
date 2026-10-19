@@ -2,14 +2,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry, ProjectDto } from "../../api/types";
 import { useApp } from "../../state/AppStore";
-import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { resolveEntry } from "../../shared/resolveEntry";
 import Breadcrumbs from "./Breadcrumbs";
 import FileGrid from "./FileGrid";
 import FilePreview from "./FilePreview";
 import FileTree from "./FileTree";
-import SearchResults from "./SearchResults";
-import { IconClose, IconSearch } from "./icons";
 import KanbanBoard from "../tasks/KanbanBoard";
 import Segmented from "../shared/Segmented";
 
@@ -27,8 +24,6 @@ export default function FilesPanel({ project }: Props) {
   // Grid navigation: the folder currently shown by the grid ("" = project root).
   const [currentDir, setCurrentDir] = useState("");
   const [selected, setSelected] = useState<FsEntry | null>(null);
-  const [query, setQuery] = useState("");
-  const activeQuery = useDebouncedValue(query.trim(), 250);
   const [highlightTaskId, setHighlightTaskId] = useState<number | null>(null);
   const dirtyRef = useRef(false);
   const setDirty = useCallback((dirty: boolean) => {
@@ -108,13 +103,6 @@ export default function FilesPanel({ project }: Props) {
     });
   };
 
-  // SearchResults only renders on the files tab, so this always switches tabs.
-  const openTaskFromSearch = (taskId: number | null) => {
-    if (!confirmDiscard()) return;
-    setTab("tasks");
-    setHighlightTaskId(taskId);
-  };
-
   return (
     <section className="center">
       <div className="center-head">
@@ -127,28 +115,6 @@ export default function FilesPanel({ project }: Props) {
           ]}
           onChange={switchTab}
         />
-        {tab === "files" && (
-          <>
-            <div className="search">
-              <IconSearch />
-              <input
-                type="text"
-                placeholder="Поиск по проекту…"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
-              {query && (
-                <button
-                  className="icon-btn small"
-                  title="Очистить поиск"
-                  onClick={() => setQuery("")}
-                >
-                  <IconClose />
-                </button>
-              )}
-            </div>
-          </>
-        )}
       </div>
 
       {tab === "tasks" ? (
@@ -165,14 +131,7 @@ export default function FilesPanel({ project }: Props) {
           />
 
           <div className="center-body">
-            {activeQuery ? (
-              <SearchResults
-                projectId={project.id}
-                query={activeQuery}
-                onSelect={handleSelect}
-                onOpenTask={openTaskFromSearch}
-              />
-            ) : view === "list" ? (
+            {view === "list" ? (
               <FileTree
                 projectId={project.id}
                 treeVersion={state.treeVersion}

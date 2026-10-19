@@ -2,13 +2,10 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { useApp } from "../../state/AppStore";
-import { useDebouncedValue } from "../../hooks/useDebouncedValue";
 import { resolveEntry } from "../../shared/resolveEntry";
 import NoteEditor from "./NoteEditor";
 import NotesChat from "./NotesChat";
-import NotesSearchResults from "./NotesSearchResults";
 import NotesTree from "./NotesTree";
-import { IconClose, IconSearch } from "../files/icons";
 import { toast } from "../shared/toast";
 
 // NOTES_SCOPE_ID in index/mod.rs: "index-changed" rows for the Notes/ vault
@@ -19,8 +16,6 @@ export default function NotesView() {
   const { state, actions } = useApp();
   const [treeVersion, setTreeVersion] = useState(0);
   const [selected, setSelected] = useState<FsEntry | null>(null);
-  const [query, setQuery] = useState("");
-  const activeQuery = useDebouncedValue(query.trim(), 250);
   const [createTick, setCreateTick] = useState(0);
   const dirtyRef = useRef(false);
   const setDirty = useCallback((dirty: boolean) => {
@@ -122,42 +117,16 @@ export default function NotesView() {
         <div className="sidebar-head">
           <span className="sidebar-title">Заметки и файлы</span>
         </div>
-        <div className="search notes-search">
-          <IconSearch />
-          <input
-            type="text"
-            placeholder="Поиск по заметкам и файлам…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-          {query && (
-            <button
-              className="icon-btn small"
-              title="Очистить поиск"
-              onClick={() => setQuery("")}
-            >
-              <IconClose />
-            </button>
-          )}
-        </div>
-        {activeQuery ? (
-          <NotesSearchResults
-            query={activeQuery}
-            treeVersion={treeVersion}
-            onOpen={handleSelect}
-          />
-        ) : (
-          <NotesTree
-            treeVersion={treeVersion}
-            selectedRelPath={selected?.relPath ?? null}
-            selectedDirRel={selected && selected.kind === "dir" ? selected.relPath : ""}
-            createTick={createTick}
-            onSelect={handleSelect}
-            onDeleted={handleDeleted}
-            onRenamed={handleRenamed}
-            onMoved={handleMoved}
-          />
-        )}
+        <NotesTree
+          treeVersion={treeVersion}
+          selectedRelPath={selected?.relPath ?? null}
+          selectedDirRel={selected && selected.kind === "dir" ? selected.relPath : ""}
+          createTick={createTick}
+          onSelect={handleSelect}
+          onDeleted={handleDeleted}
+          onRenamed={handleRenamed}
+          onMoved={handleMoved}
+        />
       </aside>
 
       <NoteEditor entry={selected} onDirtyChange={setDirty} />

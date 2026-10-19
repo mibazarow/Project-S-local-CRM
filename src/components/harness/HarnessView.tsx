@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
 import { useApp } from "../../state/AppStore";
-import { useDebouncedValue } from "../../hooks/useDebouncedValue";
-import { useSearchHits } from "../../hooks/useSearchHits";
 import type {
   AgentEventPayload,
   MessageAttachmentDto,
@@ -13,11 +11,9 @@ import {
   historyToItems,
   toMessage,
   ChatTranscript,
-  ChatHeaderTools,
   ConfirmCard,
   AttachFileIcon,
   AttachXIcon,
-  countMatches,
   resolvePinMessageId,
   resolveRegenerateTurn,
   useVisionSupport,
@@ -28,8 +24,6 @@ import { ChatComposer } from "../chat/ChatComposer";
 import { useChatAttachments } from "../chat/useChatAttachments";
 import { formatActivity } from "../../shared/format";
 import TodoPanel from "../chat/TodoPanel";
-import { renderSnippet } from "../files/SearchResults";
-import { IconClose, IconSearch } from "../files/icons";
 import SchedulePanel from "./SchedulePanel";
 import { TrashIcon } from "./shared";
 
@@ -137,7 +131,6 @@ export default function HarnessView() {
   const [activeId, setActiveId] = useState<number | null>(null);
   const [sessionsError, setSessionsError] = useState<string | null>(null);
 
-  const [query, setQuery] = useState("");
   const [indexNote, setIndexNote] = useState<string | null>(null);
 
   // session id -> chat id, learned from history loads and send returns: the
@@ -154,7 +147,6 @@ export default function HarnessView() {
   const activeIdRef = useRef(activeId);
   activeIdRef.current = activeId;
   const [text, setText] = useState("");
-  const [chatQuery, setChatQuery] = useState("");
   const [branchNote, setBranchNote] = useState<string | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const chatRootRef = useRef<HTMLElement | null>(null);
@@ -288,17 +280,6 @@ export default function HarnessView() {
     actions.clearPendingSession();
     setActiveId(id);
   }, [state.pendingSessionId, actions]);
-
-  // Chat search: the query is debounced into activeQuery (one request per
-  // pause, no polling); an empty query restores the plain session list.
-  const activeQuery = useDebouncedValue(query.trim(), 250);
-  const {
-    hits,
-    loading: searchLoading,
-    error: searchError,
-  } = useSearchHits(() => ipc.searchChats(activeQuery, 10), [activeQuery], {
-    skip: !activeQuery,
-  });
 
   // Chat message index: backfill once on mount (best-effort, silent), on
   // demand via the toolbar button; failures never surface.
@@ -593,71 +574,24 @@ export default function HarnessView() {
             </button>
           </span>
         </div>
-        <div className="search harness-search">
-          <IconSearch />
-          <input
-            type="text"
-            placeholder="Поиск по чатам…"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-          {query && (
-            <button className="icon-btn small" type="button" title="Очистить поиск" onClick={() => setQuery("")}>
-              <IconClose />
-            </button>
+        {indexNote && <div className="set-hint harness-index-note">{indexNote}</div>}
+        <div className="session-list">
+          {sessions.map((s) => (
+            <SessionItem
+              key={s.id}
+              session={s}
+              active={s.id === activeId}
+              onOpen={() => setActiveId(s.id)}
+              onRename={(id, title) => void renameSession(id, title)}
+              onDelete={() => void deleteSession(s)}
+            />
+          ))}
+          {sessions.length === 0 && (
+            <div className="empty-note">
+              Сессий пока нет. Напишите сообщение или нажмите «+», чтобы создать первую.
+            </div>
           )}
         </div>
-        {indexNote && <div className="set-hint harness-index-note">{indexNote}</div>}
-        {activeQuery ? (
-          <div className="session-list harness-search-results">
-            {searchLoading && <div className="empty-note">Поиск…</div>}
-            {searchError && <div className="tree-error">{searchError}</div>}
-            {!searchLoading && !searchError && hits.length === 0 && (
-              <div className="empty-note">Ничего не найдено</div>
-            )}
-            {hits.map((hit) => (
-              <div
-                className={hit.sessionId === activeId ? "search-hit active" : "search-hit"}
-                key={hit.sessionId}
-                role="button"
-                tabIndex={0}
-                onClick={() => setActiveId(hit.sessionId)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") setActiveId(hit.sessionId);
-                }}
-              >
-                <div className="search-hit-head">
-                  <span className="search-hit-name">{hit.title ?? UNTITLED}</span>
-                  <span className="search-hit-path">{formatActivity(hit.lastActive)}</span>
-                  <span className="search-hit-badges">
-                    <span className="badge" title="Релевантность совпадения">
-                      {hit.score.toFixed(3)}
-                    </span>
-                  </span>
-                </div>
-                {hit.snippet && <div className="search-snippet">{renderSnippet(hit.snippet)}</div>}
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="session-list">
-            {sessions.map((s) => (
-              <SessionItem
-                key={s.id}
-                session={s}
-                active={s.id === activeId}
-                onOpen={() => setActiveId(s.id)}
-                onRename={(id, title) => void renameSession(id, title)}
-                onDelete={() => void deleteSession(s)}
-              />
-            ))}
-            {sessions.length === 0 && (
-              <div className="empty-note">
-                Сессий пока нет. Напишите сообщение или нажмите «+», чтобы создать первую.
-              </div>
-            )}
-          </div>
-        )}
         <div className="sidebar-foot muted-note">
           Сессии без активности 30 дней удаляются автоматически
         </div>
@@ -671,11 +605,6 @@ export default function HarnessView() {
         <div className="center-head">
           <h2>{activeSession ? activeSession.title ?? UNTITLED : "Харнес"}</h2>
           {running && <span className="chat-sub">агент работает…</span>}
-          <ChatHeaderTools
-            query={chatQuery}
-            onQuery={setChatQuery}
-            matchCount={countMatches(slice?.items ?? [], chatQuery)}
-          />
         </div>
 
         {branchNote && <div className="set-hint harness-branch-note">{branchNote}</div>}
@@ -701,7 +630,6 @@ export default function HarnessView() {
           projectId={null}
           chatId={activeId != null ? (sessionChatIds[activeId] ?? null) : null}
           actions={transcriptActions}
-          search={chatQuery}
         />
 
         {att.pending.length > 0 && (

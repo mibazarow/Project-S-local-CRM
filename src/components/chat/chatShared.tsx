@@ -601,41 +601,6 @@ export async function resolveRegenerateTurn(
   return { messageId, userText };
 }
 
-// Case-insensitive occurrence count of the query across item texts (the
-// header shows the total; the transcript filters by it).
-export function countMatches(items: ChatItem[], query: string): number {
-  const q = query.trim().toLowerCase();
-  if (!q) return 0;
-  let n = 0;
-  for (const it of items) {
-    const lower = it.text.toLowerCase();
-    let i = 0;
-    while ((i = lower.indexOf(q, i)) >= 0) {
-      n++;
-      i += q.length;
-    }
-  }
-  return n;
-}
-
-// Wraps every occurrence of the (already lowercased) query in <mark>.
-function highlight(text: string, q: string): ReactNode {
-  if (!q) return text;
-  const lower = text.toLowerCase();
-  const parts: ReactNode[] = [];
-  let i = 0;
-  let mark = 0;
-  while (i < text.length) {
-    const j = lower.indexOf(q, i);
-    if (j < 0) break;
-    if (j > i) parts.push(text.slice(i, j));
-    parts.push(<mark key={mark++}>{text.slice(j, j + q.length)}</mark>);
-    i = j + q.length;
-  }
-  parts.push(text.slice(i));
-  return parts;
-}
-
 export const PinIcon = () => (
   <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
     <path d="M12 16.5V22" />
@@ -672,36 +637,6 @@ export const TaskIcon = () => (
     <path d="m8.5 12 2.5 2.5 5-5" />
   </svg>
 );
-
-// Search controls shared by the headers of all three chats.
-export function ChatHeaderTools({
-  query,
-  onQuery,
-  matchCount,
-}: {
-  query: string;
-  onQuery: (q: string) => void;
-  matchCount: number;
-}) {
-  return (
-    <span className="chat-head-tools">
-      {query.trim() !== "" && <span className="chat-search-count">{matchCount}</span>}
-      <input
-        className="chat-search"
-        type="text"
-        placeholder="Поиск в чате…"
-        value={query}
-        onChange={(e) => onQuery(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            e.stopPropagation();
-            onQuery("");
-          }
-        }}
-      />
-    </span>
-  );
-}
 
 function StepRow({ step }: { step: Step }) {
   return (
@@ -906,8 +841,7 @@ export function MessageAttachments({
 // the persisted items plus the live run bubble, with the caller-provided
 // empty state and an optional header block (e.g. a list-load error).
 // Optional per-message actions (pin / regenerate / branch) appear on hover,
-// a compact bar keeps pinned messages reachable, and `search` filters the
-// transcript client-side with <mark> highlights.
+// a compact bar keeps pinned messages reachable.
 export interface TranscriptActions {
   onPin?: (item: ChatItem, pinned: boolean) => void;
   onRegenerate?: (item: ChatItem) => void;
@@ -998,7 +932,6 @@ function RevealAnswer({
 // view-stable actions object.
 const MessageRow = memo(function MessageRow({
   item,
-  q,
   isLast,
   hasRun,
   projectId,
@@ -1007,7 +940,6 @@ const MessageRow = memo(function MessageRow({
   reveal,
 }: {
   item: ChatItem;
-  q: string;
   isLast: boolean;
   hasRun: boolean;
   projectId: number | null;
@@ -1093,9 +1025,7 @@ const MessageRow = memo(function MessageRow({
       )}
       <ReasoningBlock text={item.reasoning} />
       {item.text &&
-        (q ? (
-          <div className="bubble">{highlight(item.text, q)}</div>
-        ) : item.role === "agent" ? (
+        (item.role === "agent" ? (
           reveal ? (
             <RevealAnswer key={item.key} text={item.text} seed={reveal.seed} enabled={reveal.enabled} />
           ) : (
@@ -1151,7 +1081,6 @@ export function ChatTranscript({
   projectId,
   chatId,
   actions,
-  search,
 }: {
   slice: Slice | null;
   listRef: RefObject<HTMLDivElement | null>;
@@ -1163,11 +1092,8 @@ export function ChatTranscript({
   // attachments are read/opened through the chat-scoped commands.
   chatId: number | null;
   actions?: TranscriptActions;
-  search?: string;
 }) {
-  const q = (search ?? "").trim().toLowerCase();
   const items = slice?.items ?? [];
-  const visible = q ? items.filter((it) => countMatches([it], q) > 0) : items;
   const pinned = items.filter((it) => it.pinned);
 
   // Progressive reveal (SPEC 6.0): the live run bubble and the answer it just
@@ -1225,15 +1151,12 @@ export function ChatTranscript({
       )}
       {!slice || (items.length === 0 && !slice.run) ? (
         <div className="chat-empty">{empty}</div>
-      ) : q && visible.length === 0 ? (
-        <div className="chat-empty">Ничего не найдено</div>
       ) : (
         <>
-          {visible.map((item) => (
+          {items.map((item) => (
             <MessageRow
               key={item.key}
               item={item}
-              q={q}
               isLast={items[items.length - 1]?.key === item.key}
               hasRun={slice.run != null}
               projectId={projectId}
