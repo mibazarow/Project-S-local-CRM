@@ -106,7 +106,12 @@ vi.mock("@tauri-apps/api/webview", () => ({
 
 import * as ipc from "../../api/ipc";
 import FilesPanel from "./FilesPanel";
-import { AppProvider } from "../../state/AppStore";
+import { AppProvider, useApp } from "../../state/AppStore";
+
+function RootNavTrigger({ projectId }: { projectId: number }) {
+  const { actions } = useApp();
+  return <button className="test-root-nav" onClick={() => actions.requestProjectRoot(projectId)} />;
+}
 
 let container: HTMLDivElement;
 let root: Root;
@@ -400,5 +405,63 @@ describe("FilesPanel file drag (list mode)", () => {
     });
     expect(vi.mocked(ipc.fsMove)).not.toHaveBeenCalled();
     expect(document.querySelector(".drag-ghost")).toBeNull();
+  });
+});
+
+describe("FilesPanel active-project root nav (Q.md item 7)", () => {
+  async function mountWithTrigger(project: ProjectDto) {
+    await act(async () => {
+      root.render(
+        <AppProvider>
+          <FilesPanel key={project.id} project={project} />
+          <RootNavTrigger projectId={project.id} />
+        </AppProvider>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+
+  const trigger = () => container.querySelector<HTMLButtonElement>(".test-root-nav")!;
+  const homeCrumb = () => container.querySelector(".crumbs .crumb-home")!;
+  const rowByLabel = (name: string) =>
+    Array.from(container.querySelectorAll(".tree-row")).find(
+      (r) => r.querySelector(".label")?.textContent === name,
+    )!;
+
+  it("a root-nav request after opening a file closes the preview and returns to root", async () => {
+    await mountWithTrigger(projects[0]);
+    await click(rowByLabel("a.txt"));
+    expect(container.querySelector(".file-preview")).not.toBeNull();
+    await click(trigger());
+    expect(container.querySelector(".file-preview")).toBeNull();
+    expect(homeCrumb().tagName).toBe("SPAN");
+  });
+
+  it("a root-nav request while already at root is a no-op with no errors", async () => {
+    await mountWithTrigger(projects[0]);
+    await click(trigger());
+    expect(container.querySelector(".file-preview")).toBeNull();
+    expect(homeCrumb().tagName).toBe("SPAN");
+  });
+
+  it("a root-nav request for another project leaves this panel untouched", async () => {
+    await mountWithTrigger(projects[0]);
+    await click(rowByLabel("a.txt"));
+    expect(container.querySelector(".file-preview")).not.toBeNull();
+    await act(async () => {
+      root.render(
+        <AppProvider>
+          <FilesPanel key={projects[0].id} project={projects[0]} />
+          <RootNavTrigger projectId={999} />
+        </AppProvider>,
+      );
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await click(container.querySelector<HTMLButtonElement>(".test-root-nav")!);
+    expect(container.querySelector(".file-preview")).not.toBeNull();
   });
 });

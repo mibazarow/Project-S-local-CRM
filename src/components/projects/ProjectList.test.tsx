@@ -9,6 +9,7 @@ const actions = vi.hoisted(() => ({
   createProject: vi.fn(async () => {}),
   moveProject: vi.fn(async () => {}),
   openProject: vi.fn(async () => {}),
+  requestProjectRoot: vi.fn(),
   renameProject: vi.fn(async () => {}),
   archiveProject: vi.fn(async () => {}),
   clearNewProject: vi.fn(),
@@ -160,5 +161,45 @@ describe("ProjectList current/archive tabs (Q.md item 5)", () => {
     await click(btns[1]);
     expect(actions.archiveProject).toHaveBeenCalledWith(2, true);
     expect(segs()[0].className).toBe("seg active");
+  });
+});
+
+describe("ProjectList active-project name click (Q.md item 7)", () => {
+  const click = (el: Element) =>
+    act(async () => {
+      el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  const row = (name: string) =>
+    Array.from(container.querySelectorAll<HTMLElement>(".project-item")).find(
+      (el) => el.querySelector(".name")?.textContent === name,
+    )!;
+
+  it("clicking the active project's row requests a root navigation, not a re-open", async () => {
+    listState.activeProjectId = 1;
+    projects.push(makeProject(1, "Alpha", false));
+    await mount();
+    await click(row("Alpha"));
+    expect(actions.requestProjectRoot).toHaveBeenCalledWith(1);
+    expect(actions.openProject).not.toHaveBeenCalled();
+  });
+
+  it("clicking an inactive project's row opens it at its root", async () => {
+    listState.activeProjectId = 2;
+    projects.push(makeProject(1, "Alpha", false), makeProject(2, "Beta", false));
+    await mount();
+    await click(row("Alpha"));
+    expect(actions.openProject).toHaveBeenCalledWith(1);
+    expect(actions.requestProjectRoot).not.toHaveBeenCalled();
+  });
+
+  it("the archive action on the active row still works and does not trigger root nav", async () => {
+    listState.activeProjectId = 1;
+    projects.push(makeProject(1, "Alpha", false));
+    await mount();
+    const btn = container.querySelector<HTMLButtonElement>(".project-item .archive-toggle-btn")!;
+    await click(btn);
+    expect(actions.archiveProject).toHaveBeenCalledWith(1, true);
+    expect(actions.requestProjectRoot).not.toHaveBeenCalled();
+    expect(actions.openProject).not.toHaveBeenCalled();
   });
 });

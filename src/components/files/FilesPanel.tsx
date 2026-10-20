@@ -81,6 +81,18 @@ export default function FilesPanel({ project }: Props) {
     })();
   }, [state.pendingTaskId, actions]);
 
+  // Sidebar shortcut: clicking the already-active project's name returns to the
+  // project root (path "") and closes the preview, exactly like the home crumb.
+  useEffect(() => {
+    if (state.rootNavProjectId !== project.id) return;
+    actions.clearProjectRoot();
+    void (async () => {
+      if (!(await confirmDiscard())) return;
+      setCurrentDir("");
+      setSelected(null);
+    })();
+  }, [state.rootNavProjectId, actions, project.id]);
+
   const confirmDiscard = async () =>
     !dirtyRef.current ||
     (await confirmAction({

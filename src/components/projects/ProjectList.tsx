@@ -71,6 +71,12 @@ export default function ProjectList() {
   const handleOpen = (id: number) => {
     // A drag must not open the project it ended on.
     if (consumeSuppressedClick()) return;
+    // Already-active project: clicking its name acts like the home crumb and
+    // returns the file view to the project root instead of re-opening it.
+    if (id === state.activeProjectId) {
+      actions.requestProjectRoot(id);
+      return;
+    }
     void actions.openProject(id);
   };
 
