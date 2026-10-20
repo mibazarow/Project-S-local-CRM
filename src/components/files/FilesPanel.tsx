@@ -15,6 +15,8 @@ interface Props {
   project: ProjectDto;
 }
 
+const tasksViewKey = (projectId: number) => `project-s.tasks.view.${projectId}`;
+
 export default function FilesPanel({ project }: Props) {
   const { state, actions } = useApp();
   const [tab, setTab] = useState<"files" | "tasks">("files");
@@ -27,6 +29,12 @@ export default function FilesPanel({ project }: Props) {
   const [selected, setSelected] = useState<FsEntry | null>(null);
   const [highlightTaskId, setHighlightTaskId] = useState<number | null>(null);
   const [overdueOnly, setOverdueOnly] = useState(false);
+  // Per-project tasks view mode (Канбан ↔ Список): remembered in localStorage,
+  // fallback «Канбан». The panel is keyed by project id in App, so switching
+  // projects remounts and rehydrates each project's remembered mode.
+  const [tasksView, setTasksView] = useState<"kanban" | "list">(() =>
+    localStorage.getItem(tasksViewKey(project.id)) === "list" ? "list" : "kanban",
+  );
   const dirtyRef = useRef(false);
   const setDirty = useCallback((dirty: boolean) => {
     dirtyRef.current = dirty;
@@ -148,6 +156,15 @@ export default function FilesPanel({ project }: Props) {
     });
   };
 
+  const changeTasksView = (next: "kanban" | "list") => {
+    setTasksView(next);
+    try {
+      localStorage.setItem(tasksViewKey(project.id), next);
+    } catch {
+      // localStorage unavailable: the local mode stays valid until the next mount.
+    }
+  };
+
   return (
     <section className="center">
       <div className="center-head">
@@ -161,14 +178,26 @@ export default function FilesPanel({ project }: Props) {
           onChange={switchTab}
         />
         {tab === "tasks" && (
-          <label className={overdueOnly ? "seg-filter active" : "seg-filter"}>
-            <input
-              type="checkbox"
-              checked={overdueOnly}
-              onChange={(e) => setOverdueOnly(e.target.checked)}
+          <>
+            <Segmented
+              value={tasksView}
+              options={[
+                { value: "kanban", label: "Канбан" },
+                { value: "list", label: "Список" },
+              ]}
+              onChange={changeTasksView}
+              wrapperClassName="segmented task-view-seg"
+              title="Вид задач"
             />
-            Просроченные
-          </label>
+            <label className={overdueOnly ? "seg-filter active" : "seg-filter"}>
+              <input
+                type="checkbox"
+                checked={overdueOnly}
+                onChange={(e) => setOverdueOnly(e.target.checked)}
+              />
+              Просроченные
+            </label>
+          </>
         )}
       </div>
 
@@ -178,6 +207,7 @@ export default function FilesPanel({ project }: Props) {
           tasksVersion={state.tasksVersion}
           highlightTaskId={highlightTaskId}
           overdueOnly={overdueOnly}
+          view={tasksView}
         />
       ) : (
         <>

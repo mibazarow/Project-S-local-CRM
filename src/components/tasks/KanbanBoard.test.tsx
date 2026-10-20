@@ -506,3 +506,62 @@ describe("KanbanBoard focus from Today", () => {
     expect(taskMove).toHaveBeenCalledWith(1, "new", 4);
   });
 });
+
+describe("KanbanBoard view switch (list view over the same tasks)", () => {
+  it("keeps the kanban board DOM when view is kanban", async () => {
+    await act(async () => {
+      root.render(
+        <AppProvider>
+          <KanbanBoard project={project} tasksVersion={0} highlightTaskId={null} view="kanban" />
+        </AppProvider>,
+      );
+    });
+    await settle();
+    expect(container.querySelector(".task-board")).not.toBeNull();
+    expect(container.querySelectorAll(".task-col")).toHaveLength(3);
+    expect(container.querySelectorAll(".task-card")).toHaveLength(1);
+    expect(container.querySelector(".task-list-view")).toBeNull();
+  });
+
+  it("renders the list view instead of the board when view is list", async () => {
+    await act(async () => {
+      root.render(
+        <AppProvider>
+          <KanbanBoard project={project} tasksVersion={0} highlightTaskId={null} view="list" />
+        </AppProvider>,
+      );
+    });
+    await settle();
+    expect(container.querySelector(".task-board")).toBeNull();
+    expect(container.querySelector(".task-col")).toBeNull();
+    expect(container.querySelector(".task-list-view")).not.toBeNull();
+    const row = container.querySelector('.task-list-row[data-id="1"]')!;
+    expect(row.textContent).toContain("Отчёт");
+    expect(row.textContent).toContain("Новые");
+  });
+
+  it("applies the overdue filter in the list view too", async () => {
+    taskHolder.tasks = [
+      makeTask({ id: 1, position: 1 }),
+      makeTask({ id: 2, position: 2, overdue: true }),
+    ];
+    await act(async () => {
+      root.render(
+        <AppProvider>
+          <KanbanBoard
+            project={project}
+            tasksVersion={0}
+            highlightTaskId={null}
+            overdueOnly
+            view="list"
+          />
+        </AppProvider>,
+      );
+    });
+    await settle();
+    const ids = Array.from(container.querySelectorAll<HTMLElement>(".task-list-row")).map(
+      (el) => el.dataset.id,
+    );
+    expect(ids).toEqual(["2"]);
+  });
+});

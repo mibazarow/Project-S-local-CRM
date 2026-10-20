@@ -465,3 +465,75 @@ describe("FilesPanel active-project root nav (Q.md item 7)", () => {
     expect(container.querySelector(".file-preview")).not.toBeNull();
   });
 });
+
+describe("FilesPanel tasks view switch (Канбан/Список)", () => {
+  const viewSegs = () => Array.from(container.querySelectorAll(".center-head .task-view-seg .seg"));
+  const settle = async (ms = 250) => {
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, ms));
+    });
+  };
+
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  it("shows the switch only on the tasks tab, kanban active by default", async () => {
+    await mount(projects[0]);
+    expect(container.querySelector(".task-view-seg")).toBeNull();
+    await click(segs()[1]);
+    expect(viewSegs()).toHaveLength(2);
+    expect(viewSegs()[0].textContent).toBe("Канбан");
+    expect(viewSegs()[0].className).toBe("seg active");
+    expect(viewSegs()[1].textContent).toBe("Список");
+    expect(viewSegs()[1].className).toBe("seg");
+    await settle();
+    expect(container.querySelector(".task-board")).not.toBeNull();
+    expect(container.querySelector(".task-list-view")).toBeNull();
+  });
+
+  it("switches to the list view and persists the choice per project in localStorage", async () => {
+    await mount(projects[0]);
+    await click(segs()[1]);
+    await click(viewSegs()[1]);
+    expect(localStorage.getItem("project-s.tasks.view.1")).toBe("list");
+    expect(viewSegs()[1].className).toBe("seg active");
+    await settle();
+    expect(container.querySelector(".task-board")).toBeNull();
+    expect(container.querySelector(".task-list-view")).not.toBeNull();
+    // The tasks tab and the overdue filter survive the view switch.
+    expect(segs()[1].className).toBe("seg active");
+    expect(container.querySelector(".seg-filter")).not.toBeNull();
+  });
+
+  it("hydrates the saved view from localStorage on mount", async () => {
+    localStorage.setItem("project-s.tasks.view.1", "list");
+    await mount(projects[0]);
+    await click(segs()[1]);
+    expect(viewSegs()[1].className).toBe("seg active");
+    await settle();
+    expect(container.querySelector(".task-list-view")).not.toBeNull();
+    expect(container.querySelector(".task-board")).toBeNull();
+  });
+
+  it("falls back to kanban for an unknown stored value", async () => {
+    localStorage.setItem("project-s.tasks.view.1", "bogus");
+    await mount(projects[0]);
+    await click(segs()[1]);
+    expect(viewSegs()[0].className).toBe("seg active");
+    await settle();
+    expect(container.querySelector(".task-board")).not.toBeNull();
+  });
+
+  it("keeps the view per project", async () => {
+    await mount(projects[0]);
+    await click(segs()[1]);
+    await click(viewSegs()[1]);
+    await switchTo(projects[1]);
+    await click(segs()[1]);
+    expect(viewSegs()[0].className).toBe("seg active");
+    await settle();
+    expect(container.querySelector(".task-board")).not.toBeNull();
+    expect(localStorage.getItem("project-s.tasks.view.2")).toBeNull();
+  });
+});

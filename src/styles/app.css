@@ -491,6 +491,45 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
    справа иконки действий. */
 .task-card .task-spent { margin: 0; padding: 0; border: 0; flex: 1; min-width: 0; font-size: 10.5px; color: var(--text-muted); }
 
+/* ---------- Список задач (второе представление тех же задач, read-only каркас) ---------- */
+
+.task-list-view { display: flex; flex-direction: column; gap: 14px; max-width: 860px; }
+.task-list-now { display: flex; flex-direction: column; gap: 4px; }
+.task-list-now-head { display: flex; align-items: center; gap: 8px; font-size: 11.5px; font-weight: 600; color: var(--text-muted); padding: 0 4px; }
+.task-list-group { display: flex; flex-direction: column; gap: 4px; }
+.task-list-group-head { display: flex; align-items: center; gap: 8px; border: none; background: none; padding: 2px 4px; font-size: 11.5px; font-weight: 600; color: var(--text-muted); cursor: pointer; border-radius: var(--radius-sm); text-align: left; }
+.task-list-group-head:hover { background: rgba(0, 0, 0, .045); }
+.task-list-caret { width: 0; height: 0; border-left: 5px solid var(--text-muted); border-top: 4px solid transparent; border-bottom: 4px solid transparent; transition: transform .12s; }
+.task-list-group-head:not(.collapsed) .task-list-caret { transform: rotate(90deg); }
+.task-list-group-label { letter-spacing: .01em; }
+.task-list-rows { display: flex; flex-direction: column; gap: 4px; }
+.task-list-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; background: #fff; border: 1px solid var(--border); border-radius: 7px; box-shadow: 0 .5px 1px rgba(0, 0, 0, .04); }
+.task-list-row.active { background: var(--accent-soft); border-color: var(--accent); }
+.task-list-row.priority { box-shadow: inset 3px 0 0 var(--danger); }
+.task-list-row.overdue { border-color: var(--danger); }
+.task-list-row.done { background: var(--surface-2); }
+.task-list-row.done .task-list-title { color: var(--text-muted); text-decoration: line-through; }
+.task-list-dot { flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; background: #9a9aa2; }
+.task-list-dot.progress { background: var(--accent); }
+.task-list-dot.done { background: var(--ok); }
+.task-list-row.active .task-list-dot { animation: task-list-pulse 1.6s ease-in-out infinite; }
+@keyframes task-list-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(55, 106, 159, .45); }
+  50% { box-shadow: 0 0 0 4px rgba(55, 106, 159, 0); }
+}
+.task-list-status { flex-shrink: 0; min-width: 56px; font-size: 10.5px; color: var(--text-muted); }
+.task-list-title { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 500; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.task-list-flag { flex-shrink: 0; color: var(--danger); font-size: 12px; }
+.task-list-due { flex-shrink: 0; font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.task-list-due.overdue { color: var(--danger); font-weight: 600; }
+.task-list-check { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; }
+.task-list-check-bar { width: 48px; height: 4px; border-radius: 999px; background: #e4e4e9; overflow: hidden; }
+.task-list-check-fill { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.task-list-check-count { font-size: 10.5px; color: var(--text-muted); }
+.task-list-spent { flex-shrink: 0; font-size: 10.5px; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.task-list-row.active .task-list-spent { color: var(--accent); font-weight: 600; }
+.task-list-empty { padding: 18px 4px; font-size: 12.5px; color: var(--text-muted); }
+
 /* ---------- Редактор деталей задачи ---------- */
 
 .task-details { display: flex; flex-direction: column; gap: 8px; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--hairline); }
@@ -2075,6 +2114,7 @@ details.set-form-details[open] > summary::before { content: "▾ "; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
   .task-card.highlight { animation: none !important; }
+  .task-list-row.active .task-list-dot { animation: none !important; }
   .chat-status.running { animation: none !important; }
   .schedule-item.unread { animation: none !important; }
 }

@@ -6,6 +6,7 @@ import { confirmRemove } from "../../shared/confirm";
 import RenameInput from "../files/RenameInput";
 import { IconPencil, IconPlus } from "../files/icons";
 import TaskCard, { TaskEditor } from "./TaskCard";
+import TaskListView from "./TaskListView";
 import { usePointerDrag, type DropTarget } from "../../hooks/usePointerDrag";
 import { useAppActions } from "../../state/AppStore";
 
@@ -39,6 +40,7 @@ interface Props {
   tasksVersion: number;
   highlightTaskId: number | null;
   overdueOnly?: boolean;
+  view?: "kanban" | "list";
 }
 
 export default function KanbanBoard({
@@ -46,6 +48,7 @@ export default function KanbanBoard({
   tasksVersion,
   highlightTaskId,
   overdueOnly = false,
+  view = "kanban",
 }: Props) {
   const projectId = project.id;
   const [tasks, setTasks] = useState<TaskDto[] | null>(null);
@@ -261,7 +264,16 @@ export default function KanbanBoard({
   return (
     <div className="center-body">
       {error && <div className="tree-error">{error}</div>}
-      {tasks && (
+      {view === "list" ? (
+        tasks && (
+          <TaskListView
+            tasks={visible}
+            columns={columns}
+            overdueOnly={overdueOnly}
+          />
+        )
+      ) : (
+        tasks && (
         <div className="task-board" ref={boardRef}>
           {STATUSES.map((status, i) => {
             const cards = displayByStatus[status];
@@ -344,6 +356,7 @@ export default function KanbanBoard({
             );
           })}
         </div>
+        )
       )}
     </div>
   );
