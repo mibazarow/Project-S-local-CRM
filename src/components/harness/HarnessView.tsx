@@ -1,12 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
 import { useApp } from "../../state/AppStore";
-import type {
-  AgentEventPayload,
-  MessageAttachmentDto,
-  ScheduleDto,
-  SessionDto,
-} from "../../api/types";
+import type { MessageAttachmentDto, ScheduleDto, SessionDto } from "../../api/types";
 import {
   historyToItems,
   toMessage,
@@ -19,7 +14,19 @@ import {
   useVisionSupport,
   type ChatItem,
 } from "../chat/chatShared";
-import { useChatRun } from "../chat/useChatRun";
+import {
+  dispatch,
+  ensureSubscribed,
+  getSlice,
+  openChat,
+  closeChat,
+  onRunEnd,
+  onSent,
+  rememberChatId as storeRememberChatId,
+  send as storeSend,
+  sessionKey,
+  useChatSnapshot,
+} from "../../state/chatRunStore";
 import { ChatComposer } from "../chat/ChatComposer";
 import { useChatAttachments } from "../chat/useChatAttachments";
 import { formatActivity } from "../../shared/format";
@@ -61,6 +68,8 @@ const RefreshIcon = () => (
 function SessionItem({
   session,
   active,
+  running,
+  ready,
   onOpen,
   onRename,
   onDelete,
@@ -68,6 +77,8 @@ function SessionItem({
 }: {
   session: SessionDto;
   active: boolean;
+  running: boolean;
+  ready: boolean;
   onOpen: () => void;
   onRename: (id: number, title: string) => void;
   onDelete: () => void;
@@ -113,7 +124,11 @@ function SessionItem({
           }}
         />
       ) : (
-        <span className="name">{session.title ?? UNTITLED}</span>
+        <span className="name">
+          {running && <span className="chat-status running" title="Агент работает" />}
+          {!running && ready && <span className="chat-status ready" title="Ответ готов" />}
+          {session.title ?? UNTITLED}
+        </span>
       )}
       <span className="meta">{formatActivity(session.lastActiveAt)}</span>
       <button
@@ -172,8 +187,10 @@ export default function HarnessView() {
   const sessionChatIdsRef = useRef(sessionChatIds);
   sessionChatIdsRef.current = sessionChatIds;
   const rememberChatId = useCallback(
-    (session: number, chatId: number) =>
-      setSessionChatIds((prev) => (prev[session] === chatId ? prev : { ...prev, [session]: chatId })),
+    (session: number, chatId: number) => {
+      storeRememberChatId(sessionKey(session), chatId);
+      setSessionChatIds((prev) => (prev[session] === chatId ? prev : { ...prev, [session]: chatId }));
+    },
     [],
   );
   const activeIdRef = useRef(activeId);
@@ -221,59 +238,56 @@ export default function HarnessView() {
     }
   }, []);
 
-  const reloadHistory = (key: number, dispatch: ReturnType<typeof useChatRun>["dispatch"]) => {
+  const reloadHistory = (sessionId: number) => {
+    const key = sessionKey(sessionId);
     void ipc
-      .harnessSessionHistory(key)
+      .harnessSessionHistory(sessionId)
       .then((dtos) => {
         const chatId = dtos[0]?.chatId;
-        if (chatId != null) rememberChatId(key, chatId);
+        if (chatId != null) rememberChatId(sessionId, chatId);
         dispatch({ type: "loaded", key, items: historyToItems(dtos) });
       })
       .catch(() => {});
   };
 
-  // Harness sessions key by sessionId; agent-file/compaction events carry only
-  // a chatId, so they route back through the remembered session -> chat map. A
-  // run started outside this view (a fired schedule) streams live too; its
-  // done/error pulls the persisted transcript for the open session and refreshes
-  // the session and schedule lists (titles / last_active / touched schedules).
-  const { state: chat, stateRef, dispatch } = useChatRun(
-    {
-      routeAgentEvent: (p: AgentEventPayload) => (p.sessionId == null ? null : p.sessionId),
-      routeConfirmation: (p) => (p.sessionId == null ? null : p.sessionId),
-      routeAgentFile: (p) => {
-        const entry = Object.entries(sessionChatIdsRef.current).find(([, chat]) => chat === p.chatId);
-        return entry ? Number(entry[0]) : null;
-      },
-      routeSkillProposal: (p) => {
-        const entry = Object.entries(sessionChatIdsRef.current).find(([, chat]) => chat === p.chatId);
-        return entry ? Number(entry[0]) : null;
-      },
-      routeCompaction: (p) => {
-        const entry = Object.entries(sessionChatIdsRef.current).find(([, chat]) => chat === p.chatId);
-        return entry ? Number(entry[0]) : null;
-      },
-      onRunEnd: (key, run, dispatch) => {
-        if (!run || !run.local) {
-          if (key === activeIdRef.current) reloadHistory(key, dispatch);
+  // Harness sessions key by sessionId in the global store; the store owns the
+  // five backend subscriptions and event routing, so a run keeps streaming when
+  // this view unmounts and several sessions run in parallel. A run started
+  // outside this view (a fired schedule) streams live too; its done/error pulls
+  // the persisted transcript for the open session and refreshes the lists.
+  const chat = useChatSnapshot();
+  const key = activeId != null ? sessionKey(activeId) : "";
+
+  useEffect(() => {
+    ensureSubscribed();
+  }, []);
+
+  useEffect(() => {
+    if (key === "") return;
+    openChat(key);
+    return () => closeChat(key);
+  }, [key]);
+
+  useEffect(
+    () =>
+      onRunEnd((endedKey, wasLocal) => {
+        if (!wasLocal) {
+          const sessionId = Number(endedKey.slice(2));
+          if (endedKey === sessionKey(activeIdRef.current ?? -1)) reloadHistory(sessionId);
         }
         void loadSessions();
         void loadSchedules();
-      },
-      sendQueued: (key, combined, dispatch) => {
-        void ipc
-          .sendSessionMessage(key, combined)
-          .then((chatId) => {
-            rememberChatId(key, chatId);
-            return loadSessions();
-          })
-          .catch((e) => dispatch({ type: "sendFailed", key, message: toMessage(e) }));
-      },
-    },
+      }),
+    // loadSessions/loadSchedules are stable; reloadHistory reads current refs.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [loadSessions, loadSchedules],
   );
 
-  const slice = activeId != null ? (chat[activeId] ?? null) : null;
+  // A send started from this view touches the session: reload the list right
+  // after the command lands so the active chat rises to the top immediately.
+  useEffect(() => onSent(() => void loadSessions()), [loadSessions]);
+
+  const slice = activeId != null ? (chat[key] ?? null) : null;
   const running = slice?.run != null;
   const confirmation = slice?.confirmations[0] ?? null;
 
@@ -330,16 +344,17 @@ export default function HarnessView() {
 
   useEffect(() => {
     if (activeId == null) return;
-    if (stateRef.current[activeId]?.loaded) return;
+    const k = sessionKey(activeId);
+    if (getSlice(k)?.loaded) return;
     void ipc
       .harnessSessionHistory(activeId)
       .then((dtos) => {
         const chatId = dtos[0]?.chatId;
         if (chatId != null) rememberChatId(activeId, chatId);
-        dispatch({ type: "loaded", key: activeId, items: historyToItems(dtos) });
+        dispatch({ type: "loaded", key: k, items: historyToItems(dtos) });
       })
-      .catch(() => dispatch({ type: "loaded", key: activeId, items: [] }));
-  }, [activeId]);
+      .catch(() => dispatch({ type: "loaded", key: k, items: [] }));
+  }, [activeId, rememberChatId]);
 
   useEffect(() => {
     const el = listRef.current;
@@ -438,26 +453,17 @@ export default function HarnessView() {
             isImage: a.isImage,
           }));
         } catch (e) {
-          dispatch({ type: "sendFailed", key: sessionId, message: toMessage(e) });
+          dispatch({ type: "sendFailed", key: sessionKey(sessionId), message: toMessage(e) });
           return;
         }
       }
       setText("");
       att.clear();
-      dispatch({ type: "send", key: sessionId, text: trimmed, attachments: refs });
-      // send_session_message touches the session before it returns: reload
-      // the list right after the command lands so the active chat visibly
-      // rises to the top immediately, not only when the answer completes.
-      // Auto-titles and rename_chat arrive later via "sessions-changed".
-      // The command returns the session chat id: remember it for agent-file
-      // routing and agent attachment reads before any send_file event lands.
-      void ipc
-        .sendSessionMessage(sessionId, trimmed, refs)
-        .then((chatId) => {
-          rememberChatId(sessionId, chatId);
-          return loadSessions();
-        })
-        .catch((e) => dispatch({ type: "sendFailed", key: sessionId, message: toMessage(e) }));
+      // storeSend opens the run, issues send_session_message and remembers the
+      // returned chat id; the onSent subscription reloads the session list so
+      // the active chat rises to the top immediately. Auto-titles and
+      // rename_chat arrive later via "sessions-changed".
+      storeSend(sessionKey(sessionId), trimmed, refs);
     })();
   };
 
@@ -468,7 +474,7 @@ export default function HarnessView() {
     const trimmed = text.trim();
     if (!trimmed) return;
     if (running && activeId != null) {
-      dispatch({ type: "enqueue", key: activeId, text: trimmed });
+      dispatch({ type: "enqueue", key: sessionKey(activeId), text: trimmed });
       setText("");
       return;
     }
@@ -478,7 +484,7 @@ export default function HarnessView() {
   const resolve = (decision: "allow" | "deny" | "allowAlways") => {
     if (!confirmation || activeId == null) return;
     void ipc.resolveConfirmation(confirmation.id, decision).catch(() => {});
-    dispatch({ type: "confirmResolved", key: activeId, id: confirmation.id });
+    dispatch({ type: "confirmResolved", key: sessionKey(activeId), id: confirmation.id });
   };
 
   const stop = () => {
@@ -494,24 +500,25 @@ export default function HarnessView() {
       if (chatId == null) return;
       const messageId = await resolvePinMessageId(
         () => ipc.harnessSessionHistory(activeId),
-        stateRef.current[activeId]?.items ?? [],
+        getSlice(sessionKey(activeId))?.items ?? [],
         item.key,
       );
       if (!messageId) return;
       try {
         await ipc.chatPin(chatId, messageId, pinned);
-        dispatch({ type: "pin", key: activeId, itemKey: item.key, pinned });
+        dispatch({ type: "pin", key: sessionKey(activeId), itemKey: item.key, pinned });
       } catch {
         // The pin flag simply stays as it was.
       }
     },
-    [activeId, stateRef, dispatch],
+    [activeId, dispatch],
   );
 
   const regenerateItem = useCallback(
     async (item: ChatItem) => {
       if (activeId == null) return;
-      const sliceNow = stateRef.current[activeId];
+      const k = sessionKey(activeId);
+      const sliceNow = getSlice(k);
       if (sliceNow?.run != null) return;
       const chatId = sessionChatIdsRef.current[activeId];
       if (chatId == null) return;
@@ -523,19 +530,16 @@ export default function HarnessView() {
       if (!turn) return;
       try {
         await ipc.chatTruncateAfter(chatId, turn.messageId);
-        dispatch({ type: "regenerate", key: activeId, itemKey: item.key });
-        await ipc
+        dispatch({ type: "regenerate", key: k, itemKey: item.key });
+        void ipc
           .sendSessionMessage(activeId, turn.userText)
-          .then((chat) => {
-            rememberChatId(activeId, chat);
-            return loadSessions();
-          })
-          .catch((e) => dispatch({ type: "sendFailed", key: activeId, message: toMessage(e) }));
+          .then((chat) => rememberChatId(activeId, chat))
+          .catch((e) => dispatch({ type: "sendFailed", key: k, message: toMessage(e) }));
       } catch (e) {
-        dispatch({ type: "sendFailed", key: activeId, message: toMessage(e) });
+        dispatch({ type: "sendFailed", key: k, message: toMessage(e) });
       }
     },
-    [activeId, stateRef, dispatch, rememberChatId, loadSessions],
+    [activeId, dispatch, rememberChatId],
   );
 
   // Branching forks the session at a message: the fresh session opens through
@@ -548,7 +552,7 @@ export default function HarnessView() {
       if (chatId == null) return;
       const messageId = await resolvePinMessageId(
         () => ipc.harnessSessionHistory(activeId),
-        stateRef.current[activeId]?.items ?? [],
+        getSlice(sessionKey(activeId))?.items ?? [],
         item.key,
       );
       if (!messageId) return;
@@ -561,7 +565,7 @@ export default function HarnessView() {
         setBranchNote(toMessage(e));
       }
     },
-    [activeId, stateRef, rememberChatId, actions],
+    [activeId, rememberChatId, actions],
   );
 
   const transcriptActions = useMemo(
@@ -604,22 +608,16 @@ export default function HarnessView() {
       const { sessionId } = await ipc.scheduleOpen(s.id);
       setActiveId(sessionId);
       await loadSessions();
-      if (stateRef.current[sessionId]?.run) return; // a run is already live there
+      const k = sessionKey(sessionId);
+      if (getSlice(k)?.run) return; // a run is already live there
       const dtos = await ipc.harnessSessionHistory(sessionId).catch(() => []);
       const firstChatId = dtos[0]?.chatId;
       if (firstChatId != null) rememberChatId(sessionId, firstChatId);
       const items = historyToItems(dtos);
-      dispatch({ type: "loaded", key: sessionId, items });
+      dispatch({ type: "loaded", key: k, items });
       if (items.length > 0) return;
       const question = `Коротко (1–2 предложения) объясни, что это за задача по расписанию: «${s.title ?? s.spec}» (id ${s.id}).`;
-      dispatch({ type: "send", key: sessionId, text: question, attachments: [] });
-      void ipc
-        .sendSessionMessage(sessionId, question)
-        .then((chatId) => {
-          rememberChatId(sessionId, chatId);
-          return loadSessions();
-        })
-        .catch((e) => dispatch({ type: "sendFailed", key: sessionId, message: toMessage(e) }));
+      storeSend(k, question, []);
     } catch (e) {
       setSchedulesError(toMessage(e));
     }
@@ -652,6 +650,8 @@ export default function HarnessView() {
               key={s.id}
               session={s}
               active={s.id === activeId}
+              running={chat[sessionKey(s.id)]?.run != null}
+              ready={chat[sessionKey(s.id)]?.ready === true}
               onOpen={() => setActiveId(s.id)}
               onRename={(id, title) => void renameSession(id, title)}
               onDelete={() => void deleteSession(s)}

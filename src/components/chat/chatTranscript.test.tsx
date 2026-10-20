@@ -67,6 +67,7 @@ const slice: Slice = {
   confirmations: [],
   sendError: null,
   queue: [],
+  ready: false,
 };
 
 function Transcript() {
@@ -148,6 +149,7 @@ describe("provider-silence retry (SPEC 6.0.1, Q23)", () => {
       confirmations: [],
       sendError: null,
       queue: [],
+      ready: false,
     };
   }
 

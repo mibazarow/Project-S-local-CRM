@@ -1,5 +1,6 @@
 import { useState, type PointerEvent } from "react";
 import type { ProjectDto } from "../../api/types";
+import { projectKey, useChatReady, useChatRunning } from "../../state/chatRunStore";
 
 interface Props {
   project: ProjectDto;
@@ -22,6 +23,8 @@ export default function ProjectItem({
 }: Props) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(project.name);
+  const running = useChatRunning(projectKey(project.id));
+  const ready = useChatReady(projectKey(project.id));
 
   const startRename = () => {
     setDraft(project.name);
@@ -70,7 +73,11 @@ const classes = ["project-item"];
           }}
         />
       ) : (
-        <span className="name">{project.name}</span>
+        <span className="name">
+          {running && <span className="chat-status running" title="Агент работает" />}
+          {!running && ready && <span className="chat-status ready" title="Ответ готов" />}
+          {project.name}
+        </span>
       )}
       <span className="meta">
         {project.fileCount} файлов · {project.taskCount} задач

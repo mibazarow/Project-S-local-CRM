@@ -42,6 +42,7 @@ vi.mock("../chat/TodoPanel", () => ({ default: () => null }));
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import * as ipc from "../../api/ipc";
+import { resetChatRunStore } from "../../state/chatRunStore";
 import { registerConfirmHost, type ConfirmOptions } from "../../shared/confirm";
 import HarnessView from "./HarnessView";
 
@@ -59,6 +60,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  resetChatRunStore();
   vi.clearAllMocks();
 });
 

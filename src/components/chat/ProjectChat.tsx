@@ -1,7 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
 import { useApp } from "../../state/AppStore";
-import type { AgentEventPayload, MessageAttachmentDto } from "../../api/types";
+import {
+  dispatch,
+  ensureSubscribed,
+  getSlice,
+  openChat,
+  closeChat,
+  onRunEnd,
+  projectKey,
+  rememberChatId,
+  send as storeSend,
+  useChatSlice,
+} from "../../state/chatRunStore";
+import type { MessageAttachmentDto } from "../../api/types";
 import {
   historyToItems,
   toMessage,
@@ -14,7 +26,6 @@ import {
   useVisionSupport,
   type ChatItem,
 } from "./chatShared";
-import { useChatRun } from "./useChatRun";
 import { ChatComposer } from "./ChatComposer";
 import { useChatAttachments } from "./useChatAttachments";
 import TodoPanel from "./TodoPanel";
@@ -28,15 +39,19 @@ interface Props {
 
 export default function ProjectChat({ projectId, projectName }: Props) {
   const { state: appState, actions } = useApp();
-  // project id -> chat id, learned from history loads and send returns: the
-  // "agent-file" event carries only chatId, so the view maps it back to the
-  // project key, and ChatTranscript needs the chat id for agent attachments.
+  const key = projectId != null ? projectKey(projectId) : "";
+  // project id -> chat id, learned from history loads and send returns:
+  // ChatTranscript needs the chat id for agent attachments, and pin/regenerate
+  // address the chat by it. The store keeps its own chatId->key map for event
+  // routing; this local mirror only serves the transcript and message actions.
   const [chatIds, setChatIds] = useState<Record<number, number>>({});
   const chatIdsRef = useRef(chatIds);
   chatIdsRef.current = chatIds;
-  const rememberChatId = useCallback(
-    (project: number, chat: number) =>
-      setChatIds((prev) => (prev[project] === chat ? prev : { ...prev, [project]: chat })),
+  const remember = useCallback(
+    (project: number, chat: number) => {
+      rememberChatId(projectKey(project), chat);
+      setChatIds((prev) => (prev[project] === chat ? prev : { ...prev, [project]: chat }));
+    },
     [],
   );
   const [text, setText] = useState("");
@@ -45,52 +60,38 @@ export default function ProjectChat({ projectId, projectName }: Props) {
   const att = useChatAttachments(chatRootRef);
   const visionSupported = useVisionSupport();
 
-  // Project chats key by projectId; agent-file/compaction events carry only a
-  // chatId, so they route back through the remembered project -> chat map. A
-  // finished run only bumps the kanban defensively (no history reload here).
-  const { state, stateRef, dispatch } = useChatRun(
-    {
-      routeAgentEvent: (p: AgentEventPayload) => (p.projectId == null ? null : p.projectId),
-      routeConfirmation: (p) => (p.projectId == null ? null : p.projectId),
-      routeAgentFile: (p) => {
-        const entry = Object.entries(chatIdsRef.current).find(([, chat]) => chat === p.chatId);
-        return entry ? Number(entry[0]) : null;
-      },
-      routeSkillProposal: (p) => {
-        const entry = Object.entries(chatIdsRef.current).find(([, chat]) => chat === p.chatId);
-        return entry ? Number(entry[0]) : null;
-      },
-      routeCompaction: (p) => {
-        const entry = Object.entries(chatIdsRef.current).find(([, chat]) => chat === p.chatId);
-        return entry ? Number(entry[0]) : null;
-      },
-      onRunEnd: () => actions.notifyTasksChanged(),
-      sendQueued: (key, combined, dispatch) => {
-        void ipc
-          .sendProjectMessage(key, combined)
-          .then((chat) => rememberChatId(key, chat))
-          .catch((e) => dispatch({ type: "sendFailed", key, message: toMessage(e) }));
-      },
-    },
-    [actions],
-  );
-
-  const slice = projectId != null ? (state[projectId] ?? null) : null;
+  const slice = useChatSlice(key);
   const running = slice?.run != null;
   const confirmation = slice?.confirmations[0] ?? null;
 
   useEffect(() => {
+    ensureSubscribed();
+  }, []);
+
+  // Track the open chat so a background run finishing elsewhere shows a "ready"
+  // dot instead, and clear this chat's ready flag when the user opens it.
+  useEffect(() => {
+    if (key === "") return;
+    openChat(key);
+    return () => closeChat(key);
+  }, [key]);
+
+  // A finished run may have touched tasks without a matching event: refresh the
+  // kanban defensively while this chat is mounted.
+  useEffect(() => onRunEnd(() => actions.notifyTasksChanged()), [actions]);
+
+  useEffect(() => {
     if (projectId == null) return;
-    if (stateRef.current[projectId]?.loaded) return;
+    if (getSlice(key)?.loaded) return;
     void ipc
       .projectChatHistory(projectId)
       .then((dtos) => {
         const chat = dtos[0]?.chatId;
-        if (chat != null) rememberChatId(projectId, chat);
-        dispatch({ type: "loaded", key: projectId, items: historyToItems(dtos) });
+        if (chat != null) remember(projectId, chat);
+        dispatch({ type: "loaded", key, items: historyToItems(dtos) });
       })
-      .catch(() => dispatch({ type: "loaded", key: projectId, items: [] }));
-  }, [projectId]);
+      .catch(() => dispatch({ type: "loaded", key, items: [] }));
+  }, [projectId, key, remember]);
 
   useEffect(() => {
     const el = listRef.current;
@@ -117,17 +118,13 @@ export default function ProjectChat({ projectId, projectName }: Props) {
             isImage: a.isImage,
           }));
         } catch (e) {
-          dispatch({ type: "sendFailed", key: projectId, message: toMessage(e) });
+          dispatch({ type: "sendFailed", key, message: toMessage(e) });
           return;
         }
       }
       setText("");
       att.clear();
-      dispatch({ type: "send", key: projectId, text: trimmed, attachments: refs });
-      void ipc
-        .sendProjectMessage(projectId, trimmed, refs)
-        .then((chat) => rememberChatId(projectId, chat))
-        .catch((e) => dispatch({ type: "sendFailed", key: projectId, message: toMessage(e) }));
+      storeSend(key, trimmed, refs);
     })();
   };
 
@@ -139,7 +136,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
     const trimmed = text.trim();
     if (!trimmed) return;
     if (running) {
-      dispatch({ type: "enqueue", key: projectId, text: trimmed });
+      dispatch({ type: "enqueue", key, text: trimmed });
       setText("");
       return;
     }
@@ -155,9 +152,9 @@ export default function ProjectChat({ projectId, projectName }: Props) {
     sendText(ask.text);
   }, [appState.pendingAsk, projectId, running, actions, sendText]);
 
-  // Message quick actions: the text becomes a Notes/ note (name from its first
-  // line) or a task in this project (first line as title, full text as comment).
-  // Both record a background link to this chat (links slice), best-effort.
+  // Cross-entity quick action: the text becomes a Notes/ note (name from its
+  // first line) or a task in this project (first line as title, full text as
+  // comment). Both record a background link to this chat, best-effort.
   const messageToNote = useCallback(
     (item: ChatItem) => {
       const full = item.text.trim();
@@ -198,7 +195,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
   const resolve = (decision: "allow" | "deny" | "allowAlways") => {
     if (!confirmation || projectId == null) return;
     void ipc.resolveConfirmation(confirmation.id, decision).catch(() => {});
-    dispatch({ type: "confirmResolved", key: projectId, id: confirmation.id });
+    dispatch({ type: "confirmResolved", key, id: confirmation.id });
   };
 
   const stop = () => {
@@ -214,24 +211,24 @@ export default function ProjectChat({ projectId, projectName }: Props) {
       if (chatId == null) return;
       const messageId = await resolvePinMessageId(
         () => ipc.projectChatHistory(projectId),
-        stateRef.current[projectId]?.items ?? [],
+        getSlice(key)?.items ?? [],
         item.key,
       );
       if (!messageId) return;
       try {
         await ipc.chatPin(chatId, messageId, pinned);
-        dispatch({ type: "pin", key: projectId, itemKey: item.key, pinned });
+        dispatch({ type: "pin", key, itemKey: item.key, pinned });
       } catch {
         // The pin flag simply stays as it was.
       }
     },
-    [projectId, stateRef, dispatch],
+    [projectId, key],
   );
 
   const regenerateItem = useCallback(
     async (item: ChatItem) => {
       if (projectId == null) return;
-      const sliceNow = stateRef.current[projectId];
+      const sliceNow = getSlice(key);
       if (sliceNow?.run != null) return;
       const chatId = chatIdsRef.current[projectId];
       if (chatId == null) return;
@@ -243,16 +240,16 @@ export default function ProjectChat({ projectId, projectName }: Props) {
       if (!turn) return;
       try {
         await ipc.chatTruncateAfter(chatId, turn.messageId);
-        dispatch({ type: "regenerate", key: projectId, itemKey: item.key });
-        await ipc
+        dispatch({ type: "regenerate", key, itemKey: item.key });
+        void ipc
           .sendProjectMessage(projectId, turn.userText)
-          .then((chat) => rememberChatId(projectId, chat))
-          .catch((e) => dispatch({ type: "sendFailed", key: projectId, message: toMessage(e) }));
+          .then((chat) => remember(projectId, chat))
+          .catch((e) => dispatch({ type: "sendFailed", key, message: toMessage(e) }));
       } catch (e) {
-        dispatch({ type: "sendFailed", key: projectId, message: toMessage(e) });
+        dispatch({ type: "sendFailed", key, message: toMessage(e) });
       }
     },
-    [projectId, stateRef, dispatch, rememberChatId],
+    [projectId, key, remember],
   );
 
   const transcriptActions = useMemo(

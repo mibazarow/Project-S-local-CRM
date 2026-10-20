@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { useApp } from "../../state/AppStore";
+import { NOTES_KEY, useChatReady, useChatRunning } from "../../state/chatRunStore";
 import { resolveEntry } from "../../shared/resolveEntry";
 import { confirmAction } from "../../shared/confirm";
 import NoteEditor from "./NoteEditor";
@@ -22,6 +23,8 @@ export default function NotesView() {
   const setDirty = useCallback((dirty: boolean) => {
     dirtyRef.current = dirty;
   }, []);
+  const notesRunning = useChatRunning(NOTES_KEY);
+  const notesReady = useChatReady(NOTES_KEY);
 
   // Seed Notes/ and the welcome note on first open, then load the tree.
   useEffect(() => {
@@ -122,6 +125,8 @@ export default function NotesView() {
       <aside className="sidebar">
         <div className="sidebar-head">
           <span className="sidebar-title">Заметки и файлы</span>
+          {notesRunning && <span className="chat-status running" title="Агент работает" />}
+          {!notesRunning && notesReady && <span className="chat-status ready" title="Ответ готов" />}
         </div>
         <NotesTree
           treeVersion={treeVersion}

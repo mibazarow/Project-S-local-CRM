@@ -1415,6 +1415,22 @@ details.set-card code {
 .sidebar-head-actions { display: flex; gap: 2px; }
 .harness-index-note { margin: 0 12px 6px; }
 
+/* ---------- Chat-run status dots (project / session / notes lists) ---------- */
+.chat-status {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+.chat-status.running { background: var(--accent); animation: chat-status-pulse 1.1s ease-in-out infinite; }
+.chat-status.ready { background: #E0A800; }
+.project-item.active .chat-status.running,
+.session-item.active .chat-status.running { background: #fff; }
+@keyframes chat-status-pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
+
 .sidebar-foot { padding: 10px 12px; border-top: 1px solid var(--hairline); }
 .muted-note { font-size: 11px; color: var(--text-muted); line-height: 1.4; }
 
@@ -1985,4 +2001,5 @@ details.set-card code {
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
   .task-card.highlight { animation: none !important; }
+  .chat-status.running { animation: none !important; }
 }

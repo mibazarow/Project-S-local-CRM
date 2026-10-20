@@ -121,29 +121,34 @@ export interface Slice {
   // Messages typed while a run is live: held per chat and flushed as one
   // combined user turn when the run finishes (done/error/cancelled).
   queue: string[];
+  // A background run finished while this chat was not the open one: the list
+  // shows a "ready" dot until the user opens the chat (cleared by "seen").
+  ready: boolean;
 }
 
-export type ChatState = Record<number, Slice>;
+export type ChatState = Record<string, Slice>;
 
 export type ChatAction =
-  | { type: "loaded"; key: number; items: ChatItem[] }
-  | { type: "send"; key: number; text: string; attachments: MessageAttachmentDto[] }
-  | { type: "sendFailed"; key: number; message: string }
-  | { type: "delta"; key: number; text: string }
-  | { type: "reasoningDelta"; key: number; text: string }
-  | { type: "stepStart"; key: number; name: string; summary: string }
-  | { type: "stepFinish"; key: number; ok: boolean }
-  | { type: "runError"; key: number; message: string; code?: string }
-  | { type: "done"; key: number; answer: string; reason: string; reasoning: string | null }
-  | { type: "confirm"; key: number; payload: ConfirmationRequestPayload }
-  | { type: "confirmResolved"; key: number; id: number }
-  | { type: "agentFile"; key: number; payload: AgentFileEvent }
-  | { type: "skillProposal"; key: number; messageId: number; text: string }
-  | { type: "compaction"; key: number; summary: string }
-  | { type: "enqueue"; key: number; text: string }
-  | { type: "clearQueue"; key: number }
-  | { type: "pin"; key: number; itemKey: number; pinned: boolean }
-  | { type: "regenerate"; key: number; itemKey: number };
+  | { type: "loaded"; key: string; items: ChatItem[] }
+  | { type: "send"; key: string; text: string; attachments: MessageAttachmentDto[] }
+  | { type: "sendFailed"; key: string; message: string }
+  | { type: "delta"; key: string; text: string }
+  | { type: "reasoningDelta"; key: string; text: string }
+  | { type: "stepStart"; key: string; name: string; summary: string }
+  | { type: "stepFinish"; key: string; ok: boolean }
+  | { type: "runError"; key: string; message: string; code?: string }
+  | { type: "done"; key: string; answer: string; reason: string; reasoning: string | null }
+  | { type: "confirm"; key: string; payload: ConfirmationRequestPayload }
+  | { type: "confirmResolved"; key: string; id: number }
+  | { type: "agentFile"; key: string; payload: AgentFileEvent }
+  | { type: "skillProposal"; key: string; messageId: number; text: string }
+  | { type: "compaction"; key: string; summary: string }
+  | { type: "enqueue"; key: string; text: string }
+  | { type: "clearQueue"; key: string }
+  | { type: "pin"; key: string; itemKey: number; pinned: boolean }
+  | { type: "regenerate"; key: string; itemKey: number }
+  | { type: "ready"; key: string }
+  | { type: "seen"; key: string };
 
 let nextKey = 1;
 
@@ -154,9 +159,10 @@ const emptySlice: Slice = {
   confirmations: [],
   sendError: null,
   queue: [],
+  ready: false,
 };
 
-function withSlice(state: ChatState, key: number, fn: (s: Slice) => Slice): ChatState {
+function withSlice(state: ChatState, key: string, fn: (s: Slice) => Slice): ChatState {
   const prev = state[key] ?? emptySlice;
   return { ...state, [key]: fn(prev) };
 }
@@ -391,6 +397,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return withSlice(state, action.key, (s) => ({ ...s, queue: [...s.queue, action.text] }));
     case "clearQueue":
       return withSlice(state, action.key, (s) => ({ ...s, queue: [] }));
+    case "ready":
+      return withSlice(state, action.key, (s) => (s.ready ? s : { ...s, ready: true }));
+    case "seen":
+      return withSlice(state, action.key, (s) => (s.ready ? { ...s, ready: false } : s));
     case "pin":
       return withSlice(state, action.key, (s) => ({
         ...s,

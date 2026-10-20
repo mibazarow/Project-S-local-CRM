@@ -1,7 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
 import { useAppActions } from "../../state/AppStore";
-import type { AgentEventPayload } from "../../api/types";
+import {
+  NOTES_KEY,
+  dispatch,
+  ensureSubscribed,
+  getSlice,
+  openChat,
+  closeChat,
+  onRunEnd,
+  rememberChatId,
+  send as storeSend,
+  useChatSlice,
+} from "../../state/chatRunStore";
 import {
   historyToItems,
   toMessage,
@@ -11,12 +22,13 @@ import {
   resolveRegenerateTurn,
   type ChatItem,
 } from "../chat/chatShared";
-import { useChatRun } from "../chat/useChatRun";
 import { ChatComposer } from "../chat/ChatComposer";
 
 // One continuous notes chat per working dir (SPEC notes chat slice): the
 // backend get-or-creates the singleton chat and routes its runs as
-// "agent-event" / "agent-confirmation" with notes: true, keyed by chatId.
+// "agent-event" / "agent-confirmation" with notes: true. The run state lives
+// in the global store under the fixed NOTES_KEY, so it survives this view
+// unmounting and keeps streaming while another tab is open.
 export default function NotesChat() {
   const actions = useAppActions();
   const [chatId, setChatId] = useState<number | null>(null);
@@ -24,41 +36,33 @@ export default function NotesChat() {
   const [text, setText] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
 
-  const reloadHistory = (key: number, dispatch: ReturnType<typeof useChatRun>["dispatch"]) => {
+  const slice = useChatSlice(NOTES_KEY);
+  const running = slice?.run != null;
+  const confirmation = slice?.confirmations[0] ?? null;
+
+  const reloadHistory = () => {
     void ipc
       .notesChatHistory()
-      .then((dtos) => dispatch({ type: "loaded", key, items: historyToItems(dtos) }))
+      .then((dtos) => dispatch({ type: "loaded", key: NOTES_KEY, items: historyToItems(dtos) }))
       .catch(() => {});
   };
 
-  // The notes chat is a per-working-dir singleton: agent events route by the
-  // notes:true flag (keyed by the event's chatId), while confirmations carry no
-  // chat id so they key by the locally known id; agent-file/compaction events
-  // match that same id. A run that finished while this view was unmounted (a
-  // remote run) finalizes from the persisted transcript.
-  const { state, stateRef, dispatch } = useChatRun(
-    {
-      routeAgentEvent: (p: AgentEventPayload) => (p.notes === true ? p.chatId : null),
-      routeConfirmation: (p) => (p.notes === true ? chatIdRef.current : null),
-      routeAgentFile: (p) => (p.chatId === chatIdRef.current ? p.chatId : null),
-      routeSkillProposal: (p) => (p.chatId === chatIdRef.current ? p.chatId : null),
-      routeCompaction: (p) => (p.chatId === chatIdRef.current ? p.chatId : null),
-      onRunEnd: (key, run, dispatch) => {
-        if (!run || !run.local) reloadHistory(key, dispatch);
+  useEffect(() => {
+    ensureSubscribed();
+    openChat(NOTES_KEY);
+    return () => closeChat(NOTES_KEY);
+  }, []);
+
+  // A run that finished while this view was unmounted (a remote run) finalizes
+  // from the persisted transcript; refresh the kanban defensively either way.
+  useEffect(
+    () =>
+      onRunEnd((_key, wasLocal) => {
+        if (!wasLocal) reloadHistory();
         actions.notifyTasksChanged();
-      },
-      sendQueued: (key, combined, dispatch) => {
-        void ipc
-          .sendNotesMessage(combined)
-          .catch((e) => dispatch({ type: "sendFailed", key, message: toMessage(e) }));
-      },
-    },
+      }),
     [actions],
   );
-
-  const slice = chatId != null ? (state[chatId] ?? null) : null;
-  const running = slice?.run != null;
-  const confirmation = slice?.confirmations[0] ?? null;
 
   useEffect(() => {
     let cancelled = false;
@@ -68,8 +72,9 @@ export default function NotesChat() {
         if (cancelled) return;
         chatIdRef.current = id;
         setChatId(id);
+        rememberChatId(NOTES_KEY, id);
         const dtos = await ipc.notesChatHistory();
-        if (!cancelled) dispatch({ type: "loaded", key: id, items: historyToItems(dtos) });
+        if (!cancelled) dispatch({ type: "loaded", key: NOTES_KEY, items: historyToItems(dtos) });
       } catch {
         // The chat stays unavailable until the next mount; the composer
         // stays disabled and no history is shown.
@@ -83,17 +88,14 @@ export default function NotesChat() {
   useEffect(() => {
     const el = listRef.current;
     if (el) el.scrollTop = el.scrollHeight;
-  }, [state]);
+  }, [slice]);
 
   const sendText = (value: string) => {
     if (chatId == null || running) return;
     const trimmed = value.trim();
     if (!trimmed) return;
     setText("");
-    dispatch({ type: "send", key: chatId, text: trimmed, attachments: [] });
-    void ipc
-      .sendNotesMessage(trimmed)
-      .catch((e) => dispatch({ type: "sendFailed", key: chatId, message: toMessage(e) }));
+    storeSend(NOTES_KEY, trimmed, []);
   };
 
   // While a run is live the composer stays enabled: sending queues the text
@@ -103,7 +105,7 @@ export default function NotesChat() {
     const trimmed = text.trim();
     if (!trimmed) return;
     if (running) {
-      dispatch({ type: "enqueue", key: chatId, text: trimmed });
+      dispatch({ type: "enqueue", key: NOTES_KEY, text: trimmed });
       setText("");
       return;
     }
@@ -111,9 +113,9 @@ export default function NotesChat() {
   };
 
   const resolve = (decision: "allow" | "deny" | "allowAlways") => {
-    if (!confirmation || chatId == null) return;
+    if (!confirmation) return;
     void ipc.resolveConfirmation(confirmation.id, decision).catch(() => {});
-    dispatch({ type: "confirmResolved", key: chatId, id: confirmation.id });
+    dispatch({ type: "confirmResolved", key: NOTES_KEY, id: confirmation.id });
   };
 
   const stop = () => {
@@ -124,29 +126,29 @@ export default function NotesChat() {
   // the history and map the item by position before touching the transcript.
   const pinItem = useCallback(
     async (item: ChatItem, pinned: boolean) => {
-      const chatId = chatIdRef.current;
-      if (chatId == null) return;
+      const id = chatIdRef.current;
+      if (id == null) return;
       const messageId = await resolvePinMessageId(
         () => ipc.notesChatHistory(),
-        stateRef.current[chatId]?.items ?? [],
+        getSlice(NOTES_KEY)?.items ?? [],
         item.key,
       );
       if (!messageId) return;
       try {
-        await ipc.chatPin(chatId, messageId, pinned);
-        dispatch({ type: "pin", key: chatId, itemKey: item.key, pinned });
+        await ipc.chatPin(id, messageId, pinned);
+        dispatch({ type: "pin", key: NOTES_KEY, itemKey: item.key, pinned });
       } catch {
         // The pin flag simply stays as it was.
       }
     },
-    [stateRef, dispatch],
+    [],
   );
 
   const regenerateItem = useCallback(
     async (item: ChatItem) => {
-      const chatId = chatIdRef.current;
-      if (chatId == null) return;
-      const sliceNow = stateRef.current[chatId];
+      const id = chatIdRef.current;
+      if (id == null) return;
+      const sliceNow = getSlice(NOTES_KEY);
       if (sliceNow?.run != null) return;
       const turn = await resolveRegenerateTurn(
         () => ipc.notesChatHistory(),
@@ -155,16 +157,16 @@ export default function NotesChat() {
       );
       if (!turn) return;
       try {
-        await ipc.chatTruncateAfter(chatId, turn.messageId);
-        dispatch({ type: "regenerate", key: chatId, itemKey: item.key });
-        await ipc
+        await ipc.chatTruncateAfter(id, turn.messageId);
+        dispatch({ type: "regenerate", key: NOTES_KEY, itemKey: item.key });
+        void ipc
           .sendNotesMessage(turn.userText)
-          .catch((e) => dispatch({ type: "sendFailed", key: chatId, message: toMessage(e) }));
+          .catch((e) => dispatch({ type: "sendFailed", key: NOTES_KEY, message: toMessage(e) }));
       } catch (e) {
-        dispatch({ type: "sendFailed", key: chatId, message: toMessage(e) });
+        dispatch({ type: "sendFailed", key: NOTES_KEY, message: toMessage(e) });
       }
     },
-    [stateRef, dispatch],
+    [],
   );
 
   const transcriptActions = useMemo(

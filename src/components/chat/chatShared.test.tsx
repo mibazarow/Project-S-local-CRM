@@ -15,7 +15,7 @@ import {
 } from "./chatShared";
 import type { MessageDto } from "../../api/types";
 
-const KEY = 1;
+const KEY = "1";
 
 function dto(over: Partial<MessageDto> & Pick<MessageDto, "id" | "role">): MessageDto {
   return {

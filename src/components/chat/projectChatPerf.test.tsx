@@ -157,6 +157,7 @@ vi.mock("@tauri-apps/api/webview", () => ({
 vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
 
 import { AppProvider } from "../../state/AppStore";
+import { resetChatRunStore } from "../../state/chatRunStore";
 import ProjectChat from "./ProjectChat";
 
 const delta = (text: string) =>
@@ -177,6 +178,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  resetChatRunStore();
 });
 
 describe("ProjectChat re-render isolation", () => {

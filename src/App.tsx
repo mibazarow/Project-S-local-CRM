@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import * as ipc from "./api/ipc";
 import { useApp } from "./state/AppStore";
+import { ensureSubscribed } from "./state/chatRunStore";
 import Onboarding from "./components/onboarding/Onboarding";
 import TopBar, { type Tab } from "./components/TopBar";
 import CommandPalette from "./components/CommandPalette";
@@ -21,6 +22,12 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [paletteOpen, setPaletteOpen] = useState(false);
   const [captureTarget, setCaptureTarget] = useState<"note" | "task" | null>(null);
+
+  // Keep the chat-run event subscriptions alive for the whole app lifetime so
+  // runs keep streaming regardless of which view is mounted.
+  useEffect(() => {
+    ensureSubscribed();
+  }, []);
 
   // Quick capture entry points: the global shortcut opens note mode; the
   // tray menu routes «Быстрая заметка» / «Новая задача» to the matching mode.
