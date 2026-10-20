@@ -565,3 +565,59 @@ describe("KanbanBoard view switch (list view over the same tasks)", () => {
     expect(ids).toEqual(["2"]);
   });
 });
+
+describe("KanbanBoard list view actions", () => {
+  const mountList = async () => {
+    await act(async () => {
+      root.render(
+        <AppProvider>
+          <KanbanBoard project={project} tasksVersion={0} highlightTaskId={null} view="list" />
+        </AppProvider>,
+      );
+    });
+    await settle();
+  };
+
+  const listButton = (id: number, title: string) =>
+    Array.from(container.querySelectorAll(`.task-list-row[data-id="${id}"] button`)).find(
+      (b) => (b as HTMLButtonElement).title === title,
+    )!;
+
+  it("start moves a new task to progress through taskMove", async () => {
+    taskHolder.tasks = [makeTask({ id: 1, status: "new", position: 1 })];
+    await mountList();
+    await click(listButton(1, "Начать"));
+    await settle();
+    expect(taskMove).toHaveBeenCalledWith(1, "progress", 1);
+    expect(container.querySelector('.task-list-row[data-id="1"] .task-list-dot.progress')).not.toBeNull();
+  });
+
+  it("rolls back the optimistic move and shows an error when taskMove fails", async () => {
+    taskHolder.tasks = [makeTask({ id: 1, status: "new", position: 1 })];
+    taskMove.mockRejectedValueOnce(new Error("boom"));
+    await mountList();
+    await click(listButton(1, "Начать"));
+    await settle();
+    expect(container.querySelector(".tree-error")).not.toBeNull();
+    expect(container.querySelector('.task-list-row[data-id="1"] .task-list-dot.progress')).toBeNull();
+  });
+
+  it("creates a task in the selected status and shows it immediately", async () => {
+    taskHolder.tasks = [];
+    taskCreate.mockResolvedValueOnce({ ...task, id: 99, status: "progress", title: "Новое" });
+    await mountList();
+    const select = container.querySelector(".task-list-new-status") as HTMLSelectElement;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!;
+    act(() => {
+      setter.call(select, "progress");
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await click(container.querySelector(".task-list-add-btn")!);
+    const form = container.querySelector(".task-add-form")!;
+    setValue(form.querySelector(".task-edit-title")!, "Новое");
+    await click(form.querySelector('button[title="Сохранить"]')!);
+    await settle();
+    expect(taskCreate).toHaveBeenCalledWith(1, "Новое", "progress", null, "07:00", false, []);
+    expect(container.querySelector('.task-list-row[data-id="99"]')).not.toBeNull();
+  });
+});

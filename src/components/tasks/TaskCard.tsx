@@ -22,7 +22,7 @@ interface Props {
   onDiscuss?: () => void;
 }
 
-function CommentInput({
+export function CommentInput({
   value,
   onCommit,
   onCancel,

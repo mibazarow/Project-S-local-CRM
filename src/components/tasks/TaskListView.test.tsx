@@ -237,3 +237,213 @@ describe("TaskListView empty states and row details", () => {
     expect(due.className).toContain("overdue");
   });
 });
+
+const cb = {
+  onPatch: vi.fn(),
+  onDelete: vi.fn(),
+  onDiscuss: vi.fn(),
+  onCreate: vi.fn(),
+  onMove: vi.fn(),
+};
+
+const resetCb = () => Object.values(cb).forEach((f) => f.mockClear());
+
+const mountWith = async (tasks: TaskDto[], columns = ["Новые", "В работе", "Готово"]) => {
+  await act(async () => {
+    root.render(
+      <TaskListView
+        tasks={tasks}
+        columns={columns}
+        overdueOnly={false}
+        projectId={1}
+        onPatch={cb.onPatch}
+        onDelete={cb.onDelete}
+        onDiscuss={cb.onDiscuss}
+        onCreate={cb.onCreate}
+        onMove={cb.onMove}
+      />,
+    );
+  });
+};
+
+const rowButton = (id: number, title: string) =>
+  Array.from(container.querySelectorAll(`.task-list-row[data-id="${id}"] button`)).find(
+    (b) => (b as HTMLButtonElement).title === title,
+  )!;
+
+const setSelect = (el: HTMLSelectElement, value: string) => {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!;
+  act(() => {
+    setter.call(el, value);
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+};
+
+const setTextarea = (el: HTMLTextAreaElement, value: string) => {
+  const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+  act(() => {
+    setter.call(el, value);
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+};
+
+describe("TaskListView row actions", () => {
+  beforeEach(resetCb);
+
+  it("start moves a new task to progress at the end of the group", async () => {
+    await mountWith([makeTask({ id: 1, status: "new", position: 1 })]);
+    await click(rowButton(1, "Начать"));
+    expect(cb.onMove).toHaveBeenCalledWith(1, "progress", 1);
+  });
+
+  it("complete moves a progress task to done", async () => {
+    await mountWith([makeTask({ id: 1, status: "progress", startedAt: null, position: 1 })]);
+    await click(rowButton(1, "Готово"));
+    expect(cb.onMove).toHaveBeenCalledWith(1, "done", 1);
+  });
+
+  it("reopen moves a done task back to new", async () => {
+    await mountWith([makeTask({ id: 1, status: "done", position: 1 })]);
+    const doneHead = groupHeads().find((h) => groupLabel(h) === "Готово")!;
+    await click(doneHead);
+    await click(rowButton(1, "Вернуть в новые"));
+    expect(cb.onMove).toHaveBeenCalledWith(1, "new", 1);
+  });
+
+  it("agent and delete reuse the passed callbacks", async () => {
+    const task = makeTask({ id: 1, status: "new", position: 1 });
+    await mountWith([task]);
+    await click(rowButton(1, "Обсудить с агентом"));
+    expect(cb.onDiscuss).toHaveBeenCalledWith(task);
+    await click(rowButton(1, "Удалить"));
+    expect(cb.onDelete).toHaveBeenCalledWith(task);
+  });
+});
+
+describe("TaskListView inline editing", () => {
+  beforeEach(resetCb);
+
+  it("expands the shared editor and saves the patch", async () => {
+    await mountWith([makeTask({ id: 1, status: "new", position: 1, title: "До" })]);
+    await click(rowButton(1, "Редактировать"));
+    const editor = container.querySelector(".task-list-rows .task-edit")!;
+    setTextarea(editor.querySelector(".task-edit-title") as HTMLTextAreaElement, "После");
+    await click(
+      Array.from(editor.querySelectorAll("button")).find(
+        (b) => (b as HTMLButtonElement).title === "Сохранить",
+      )!,
+    );
+    expect(cb.onPatch).toHaveBeenCalledWith(1, expect.objectContaining({ title: "После" }));
+    expect(container.querySelector(".task-edit")).toBeNull();
+  });
+
+  it("keeps only one row expanded at a time", async () => {
+    await mountWith([
+      makeTask({ id: 1, status: "new", position: 1 }),
+      makeTask({ id: 2, status: "new", position: 2 }),
+    ]);
+    await click(rowButton(1, "Редактировать"));
+    await click(rowButton(2, "Редактировать"));
+    expect(container.querySelectorAll(".task-list-rows .task-edit")).toHaveLength(1);
+  });
+
+  it("saves an inline comment via taskUpdate patch", async () => {
+    await mountWith([makeTask({ id: 1, status: "new", position: 1 })]);
+    await click(rowButton(1, "Комментарий"));
+    const box = container.querySelector<HTMLTextAreaElement>(
+      ".task-list-rows textarea[placeholder='Комментарий…']",
+    )!;
+    box.value = "Заметка";
+    act(() => box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+    expect(cb.onPatch).toHaveBeenCalledWith(1, { comment: "Заметка" });
+  });
+});
+
+describe("TaskListView creation", () => {
+  beforeEach(resetCb);
+
+  it("creates with the status chosen in the header select", async () => {
+    await mountWith([makeTask({ id: 1, status: "new", position: 1 })]);
+    setSelect(container.querySelector(".task-list-new-status") as HTMLSelectElement, "progress");
+    await click(container.querySelector(".task-list-add-btn")!);
+    const form = container.querySelector(".task-add-form")!;
+    setTextarea(form.querySelector(".task-edit-title") as HTMLTextAreaElement, "Новое");
+    await click(
+      Array.from(form.querySelectorAll("button")).find(
+        (b) => (b as HTMLButtonElement).title === "Сохранить",
+      )!,
+    );
+    expect(cb.onCreate).toHaveBeenCalledWith("progress", expect.objectContaining({ title: "Новое" }));
+  });
+});
+
+describe("TaskListView drag and drop", () => {
+  beforeEach(() => {
+    resetCb();
+  });
+
+  const origRect = HTMLElement.prototype.getBoundingClientRect;
+
+  const rect = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON() {},
+    }) as DOMRect;
+
+  const installRects = (groupTops: Record<string, [number, number]>, rowTops: Record<string, number>) => {
+    HTMLElement.prototype.getBoundingClientRect = function (this: HTMLElement) {
+      const group = this.dataset.group;
+      if (group) {
+        const t = groupTops[group];
+        return t ? rect(0, t[0], 800, t[1]) : rect(0, 0, 0, 0);
+      }
+      const id = this.dataset.id;
+      if (id) return rect(0, rowTops[id], 800, 40);
+      return rect(0, 0, 0, 0);
+    };
+  };
+
+  const fire = (target: EventTarget, type: string, x: number, y: number) =>
+    act(() => {
+      target.dispatchEvent(
+        new MouseEvent(type, { bubbles: true, cancelable: true, button: 0, clientX: x, clientY: y }),
+      );
+    });
+
+  afterEach(() => {
+    HTMLElement.prototype.getBoundingClientRect = origRect;
+  });
+
+  it("reordering inside a group moves at the computed position", async () => {
+    installRects({ news: [0, 100] }, { "1": 0, "2": 40 });
+    await mountWith([
+      makeTask({ id: 1, status: "new", position: 1 }),
+      makeTask({ id: 2, status: "new", position: 2 }),
+    ]);
+    const row = container.querySelector('.task-list-row[data-id="1"]')!;
+    fire(row, "pointerdown", 10, 20);
+    fire(window, "pointermove", 10, 70);
+    fire(window, "pointerup", 10, 70);
+    expect(cb.onMove).toHaveBeenCalledWith(1, "new", 3);
+  });
+
+  it("dragging between groups changes the status", async () => {
+    installRects({ news: [0, 100], progress: [200, 100] }, { "1": 0, "2": 200 });
+    await mountWith([
+      makeTask({ id: 1, status: "new", position: 1 }),
+      makeTask({ id: 2, status: "progress", startedAt: null, position: 2 }),
+    ]);
+    const row = container.querySelector('.task-list-row[data-id="1"]')!;
+    fire(row, "pointerdown", 10, 20);
+    fire(window, "pointermove", 10, 260);
+    fire(window, "pointerup", 10, 260);
+    expect(cb.onMove).toHaveBeenCalledWith(1, "progress", 3);
+  });
+});

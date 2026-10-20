@@ -7,6 +7,7 @@ import RenameInput from "../files/RenameInput";
 import { IconPencil, IconPlus } from "../files/icons";
 import TaskCard, { TaskEditor } from "./TaskCard";
 import TaskListView from "./TaskListView";
+import { blankTask, positionForDrop } from "./taskHelpers";
 import { usePointerDrag, type DropTarget } from "../../hooks/usePointerDrag";
 import { useAppActions } from "../../state/AppStore";
 
@@ -14,26 +15,6 @@ import { useAppActions } from "../../state/AppStore";
 // per-project (ProjectDto.taskColumns).
 const STATUSES = ["new", "progress", "done"] as const;
 const DEFAULT_COLUMNS = ["Новые", "В работе", "Готово"];
-
-const blankTask = (projectId: number, status: string): TaskDto => ({
-  id: -1,
-  projectId,
-  title: "",
-  status,
-  comment: null,
-  dueDate: null,
-  dueTime: "07:00",
-  remindAt: null,
-  position: 0,
-  createdAt: "",
-  closedAt: null,
-  overdue: false,
-  isPriority: false,
-  checklist: [],
-  recurrence: "none",
-  spentMs: 0,
-  startedAt: null,
-});
 
 interface Props {
   project: ProjectDto;
@@ -56,7 +37,12 @@ export default function KanbanBoard({
   const [addingStatus, setAddingStatus] = useState<string | null>(null);
   const [renamingIndex, setRenamingIndex] = useState<number | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
+  const tasksRef = useRef<TaskDto[] | null>(null);
   const actions = useAppActions();
+
+  useEffect(() => {
+    tasksRef.current = tasks;
+  }, [tasks]);
 
   // «Обсудить»: a prebuilt question about the task for the project chat.
   const discussTask = (task: TaskDto) => {
@@ -127,11 +113,7 @@ export default function KanbanBoard({
     // Midpoint between neighbors, first-1 for the top, last+1 for the end.
     onDrop: (id, target) => {
       const others = (byStatus[target.container] ?? []).filter((t) => t.id !== id);
-      let position: number;
-      if (others.length === 0) position = 1;
-      else if (target.index === 0) position = others[0].position - 1;
-      else if (target.index >= others.length) position = others[others.length - 1].position + 1;
-      else position = (others[target.index - 1].position + others[target.index].position) / 2;
+      const position = positionForDrop(others, target.index);
       ipc
         .taskMove(id, target.container, position)
         .then((dto) => {
@@ -248,6 +230,25 @@ export default function KanbanBoard({
       .catch((e) => setError(toMessage(e)));
   };
 
+  // List-only move: optimistic status/position update with rollback on error.
+  // The board's own drag path (onDrop above) stays non-optimistic and untouched.
+  const moveTask = (id: number, status: string, position: number) => {
+    const snapshot = tasksRef.current;
+    setTasks((prev) =>
+      prev?.map((t) => (t.id === id ? { ...t, status, position } : t)) ?? prev,
+    );
+    ipc
+      .taskMove(id, status, position)
+      .then((dto) => {
+        setError(null);
+        upsert(dto);
+      })
+      .catch((e) => {
+        setError(toMessage(e));
+        if (snapshot) setTasks(snapshot);
+      });
+  };
+
   const renderCard = (t: TaskDto, dragging: boolean) => (
     <TaskCard
       key={t.id}
@@ -270,6 +271,12 @@ export default function KanbanBoard({
             tasks={visible}
             columns={columns}
             overdueOnly={overdueOnly}
+            projectId={projectId}
+            onPatch={handlePatch}
+            onDelete={handleDelete}
+            onDiscuss={discussTask}
+            onCreate={handleCreate}
+            onMove={moveTask}
           />
         )
       ) : (
