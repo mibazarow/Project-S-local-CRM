@@ -702,6 +702,11 @@ export default function HarnessView() {
           projectId={null}
           chatId={activeId != null ? (sessionChatIds[activeId] ?? null) : null}
           actions={transcriptActions}
+          onRemoveQueued={
+            activeId != null
+              ? (index) => dispatch({ type: "removeFromQueue", key: sessionKey(activeId), index })
+              : undefined
+          }
         />
 
         {att.pending.length > 0 && (

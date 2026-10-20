@@ -146,6 +146,29 @@ describe("chatRunStore", () => {
     const items = getSlice(projectKey(7))?.items ?? [];
     expect(items.some((it) => it.synthetic && it.messageIds.includes(1))).toBe(true);
   });
+
+  it("flushes a queued message as one sent turn after the run finishes, without duplicating it", async () => {
+    vi.useFakeTimers();
+    try {
+      openChat(projectKey(6));
+      dispatch({ type: "send", key: projectKey(6), text: "first", attachments: [] });
+      dispatch({ type: "enqueue", key: projectKey(6), text: "second" });
+      expect(getSlice(projectKey(6))?.queue).toEqual(["second"]);
+      delta({ projectId: 6, chatId: 60, event: { type: "done", answer: "ans", reason: "finish", reasoning: null } });
+      // The queue empties the moment the run ends; the combined send is deferred.
+      expect(getSlice(projectKey(6))?.queue).toEqual([]);
+      const userTurns = () =>
+        (getSlice(projectKey(6))?.items ?? []).filter((it) => it.role === "user").map((it) => it.text);
+      expect(userTurns()).toEqual(["first"]);
+      await act(async () => {
+        vi.advanceTimersByTime(400);
+      });
+      // The queued text re-arrives as exactly one normal user turn — no duplicate.
+      expect(userTurns()).toEqual(["first", "second"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("chat list indicators", () => {

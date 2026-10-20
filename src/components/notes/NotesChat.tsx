@@ -188,6 +188,7 @@ export default function NotesChat() {
         projectId={null}
         chatId={chatId}
         actions={transcriptActions}
+        onRemoveQueued={(index) => dispatch({ type: "removeFromQueue", key: NOTES_KEY, index })}
       />
 
       {slice?.sendError && (

@@ -307,6 +307,20 @@ describe("chatReducer", () => {
     expect(s[KEY].queue).toEqual([]);
   });
 
+  it("removeFromQueue drops only the item at the given index", () => {
+    let s = apply(
+      {},
+      { type: "enqueue", key: KEY, text: "a" },
+      { type: "enqueue", key: KEY, text: "b" },
+      { type: "enqueue", key: KEY, text: "c" },
+    );
+    s = chatReducer(s, { type: "removeFromQueue", key: KEY, index: 1 });
+    expect(s[KEY].queue).toEqual(["a", "c"]);
+    // An out-of-range index leaves the queue untouched.
+    s = chatReducer(s, { type: "removeFromQueue", key: KEY, index: 9 });
+    expect(s[KEY].queue).toEqual(["a", "c"]);
+  });
+
   it("combineQueued keeps a single message verbatim and joins several with a divider", () => {
     expect(combineQueued([])).toBe("");
     expect(combineQueued(["a"])).toBe("a");

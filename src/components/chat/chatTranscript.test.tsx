@@ -193,3 +193,91 @@ describe("provider-silence retry (SPEC 6.0.1, Q23)", () => {
     expect(container.querySelector(".error")?.textContent).toContain("Проверьте Настройки");
   });
 });
+
+describe("queued messages (Q12)", () => {
+  function queuedSlice(): Slice {
+    return {
+      loaded: true,
+      items: [
+        {
+          key: 1,
+          role: "user",
+          text: "первое",
+          reasoning: "",
+          attachments: [],
+          messageIds: [11],
+          pinned: false,
+          steps: [],
+          compactions: [],
+          note: null,
+          error: null,
+        },
+      ],
+      run: { text: "агент отвечает…", reasoning: "", steps: [], compactions: [], error: null, local: true },
+      confirmations: [],
+      sendError: null,
+      queue: ["второе", "третье"],
+      ready: false,
+    };
+  }
+
+  function renderQueued(onRemoveQueued: (index: number) => void) {
+    const listRef = { current: null } as React.RefObject<HTMLDivElement | null>;
+    return (
+      <ChatTranscript
+        slice={queuedSlice()}
+        listRef={listRef}
+        empty="Пусто"
+        projectId={1}
+        chatId={10}
+        onRemoveQueued={onRemoveQueued}
+      />
+    );
+  }
+
+  it("renders each queued message immediately, labeled and styled, with a remove control", async () => {
+    const onRemoveQueued = vi.fn();
+    await act(async () => {
+      root.render(renderQueued(onRemoveQueued));
+    });
+    const queued = [...container.querySelectorAll<HTMLElement>(".msg.queued")];
+    expect(queued).toHaveLength(2);
+    // Distinct from a normal sent bubble: muted gray bubble, not the accent one.
+    expect(queued[0].querySelector(".bubble.queued-bubble")?.textContent).toBe("второе");
+    expect(queued[0].querySelector(".bubble.queued-bubble")?.className).toContain("queued-bubble");
+    // Small caption above the bubble.
+    const label = queued[0].querySelector(".queued-label")?.textContent ?? "";
+    expect(label).toContain("В очереди");
+    expect(label).toContain("отправится после ответа");
+    // Remove control carries the queue position.
+    const x = queued[1].querySelector<HTMLButtonElement>(".queued-x");
+    expect(x).not.toBeNull();
+    await act(async () => {
+      x?.click();
+    });
+    expect(onRemoveQueued).toHaveBeenCalledTimes(1);
+    expect(onRemoveQueued).toHaveBeenCalledWith(1);
+  });
+
+  it("shows queued messages even when there are no settled items and no run", async () => {
+    const listRef = { current: null } as React.RefObject<HTMLDivElement | null>;
+    const s: Slice = {
+      loaded: true,
+      items: [],
+      run: null,
+      confirmations: [],
+      sendError: null,
+      queue: ["ждёт"],
+      ready: false,
+    };
+    await act(async () => {
+      root.render(
+        <ChatTranscript slice={s} listRef={listRef} empty="Пусто" projectId={1} chatId={10} />,
+      );
+    });
+    expect(container.querySelector(".chat-empty")).toBeNull();
+    expect(container.querySelector(".msg.queued .queued-bubble")?.textContent).toBe("ждёт");
+    // No remove control when the view does not provide a handler.
+    expect(container.querySelector(".queued-x")).toBeNull();
+  });
+});

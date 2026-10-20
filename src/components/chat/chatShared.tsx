@@ -145,6 +145,7 @@ export type ChatAction =
   | { type: "compaction"; key: string; summary: string }
   | { type: "enqueue"; key: string; text: string }
   | { type: "clearQueue"; key: string }
+  | { type: "removeFromQueue"; key: string; index: number }
   | { type: "pin"; key: string; itemKey: number; pinned: boolean }
   | { type: "regenerate"; key: string; itemKey: number }
   | { type: "ready"; key: string }
@@ -397,6 +398,13 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return withSlice(state, action.key, (s) => ({ ...s, queue: [...s.queue, action.text] }));
     case "clearQueue":
       return withSlice(state, action.key, (s) => ({ ...s, queue: [] }));
+    case "removeFromQueue":
+      // Drop one held message by its position; the rest of the queue stays.
+      return withSlice(state, action.key, (s) =>
+        action.index < 0 || action.index >= s.queue.length
+          ? s
+          : { ...s, queue: s.queue.filter((_, i) => i !== action.index) },
+      );
     case "ready":
       return withSlice(state, action.key, (s) => (s.ready ? s : { ...s, ready: true }));
     case "seen":
@@ -1081,6 +1089,37 @@ const MessageRow = memo(function MessageRow({
   );
 });
 
+// A message typed while a run is live: shown in the transcript immediately as a
+// muted, semi-transparent user bubble with a «В очереди» caption and a remove
+// control, so the text is never invisible before it flushes. Once the run ends
+// the queue clears and the same text re-arrives as a normal sent bubble.
+function QueuedMessage({
+  text,
+  index,
+  onRemove,
+}: {
+  text: string;
+  index: number;
+  onRemove?: (index: number) => void;
+}) {
+  return (
+    <div className="msg user queued" data-queued-index={index}>
+      <span className="queued-label">В очереди — отправится после ответа</span>
+      <div className="bubble queued-bubble">{text}</div>
+      {onRemove && (
+        <button
+          className="queued-x"
+          type="button"
+          title="Убрать из очереди"
+          onClick={() => onRemove(index)}
+        >
+          <AttachXIcon />
+        </button>
+      )}
+    </div>
+  );
+}
+
 export function ChatTranscript({
   slice,
   listRef,
@@ -1090,6 +1129,7 @@ export function ChatTranscript({
   projectId,
   chatId,
   actions,
+  onRemoveQueued,
 }: {
   slice: Slice | null;
   listRef: RefObject<HTMLDivElement | null>;
@@ -1101,6 +1141,8 @@ export function ChatTranscript({
   // attachments are read/opened through the chat-scoped commands.
   chatId: number | null;
   actions?: TranscriptActions;
+  // Remove one held (queued) message by its position in the queue.
+  onRemoveQueued?: (index: number) => void;
 }) {
   const items = slice?.items ?? [];
   const pinned = items.filter((it) => it.pinned);
@@ -1158,7 +1200,7 @@ export function ChatTranscript({
           {pinned.length > 1 && <span className="cnt">{pinned.length}</span>}
         </div>
       )}
-      {!slice || (items.length === 0 && !slice.run) ? (
+      {!slice || (items.length === 0 && !slice.run && slice.queue.length === 0) ? (
         <div className="chat-empty">{empty}</div>
       ) : (
         <>
@@ -1202,6 +1244,9 @@ export function ChatTranscript({
                 )}
             </div>
           )}
+          {slice.queue.map((text, i) => (
+            <QueuedMessage key={i} text={text} index={i} onRemove={onRemoveQueued} />
+          ))}
         </>
       )}
     </div>

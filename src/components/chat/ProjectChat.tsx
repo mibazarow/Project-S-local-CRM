@@ -283,6 +283,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
         projectId={projectId}
         chatId={projectId != null ? (chatIds[projectId] ?? null) : null}
         actions={transcriptActions}
+        onRemoveQueued={(index) => dispatch({ type: "removeFromQueue", key, index })}
       />
 
       {att.pending.length > 0 && (
