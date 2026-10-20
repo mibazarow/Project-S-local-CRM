@@ -14,6 +14,7 @@ export interface ChatComposerProps {
   onStop: () => void;
   onClear: () => void;
   running: boolean;
+  stopping?: boolean;
   queueCount: number;
   placeholder: string;
   // Disables the textarea (no chat selected yet).
@@ -32,6 +33,7 @@ export function ChatComposer({
   onStop,
   onClear,
   running,
+  stopping,
   queueCount,
   placeholder,
   disabled,
@@ -96,7 +98,7 @@ export function ChatComposer({
         )}
         {running ? (
           <button className="ghost-btn small stop-btn" type="button" onClick={onStop}>
-            Стоп
+            {stopping ? "Останавливаю…" : "Стоп"}
           </button>
         ) : (
           <button className="icon-btn clear-btn" type="button" title="Очистить" onClick={onClear}>

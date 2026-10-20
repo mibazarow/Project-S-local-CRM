@@ -234,9 +234,20 @@ impl LlmClient {
         params: &ChatParams,
         mut on_event: impl FnMut(ChatEvent),
     ) -> Result<ChatOutcome> {
+        self.chat_stream_with_cancel(messages, tools, params, &mut on_event, None)
+    }
+
+    pub fn chat_stream_with_cancel(
+        &self,
+        messages: &[ChatMessage],
+        tools: Option<&[ToolSpec]>,
+        params: &ChatParams,
+        on_event: &mut dyn FnMut(ChatEvent),
+        cancel: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<ChatOutcome> {
         let body = build_body(messages, tools, params, true);
         let resp = self.post_chat_with_reasoning_retry(&body, |b| self.post_chat_stream_raw(b))?;
-        run_sse(resp.into_reader(), self.stream_timeout, &mut on_event)
+        run_sse(resp.into_reader(), self.stream_timeout, on_event, cancel)
     }
 
     // Non-streaming variant, same request builder (used by tests and fallbacks).
@@ -696,7 +707,7 @@ struct StreamAcc {
 }
 
 impl StreamAcc {
-    fn apply(&mut self, chunk: &Value, on_event: &mut impl FnMut(ChatEvent)) {
+    fn apply(&mut self, chunk: &Value, on_event: &mut dyn FnMut(ChatEvent)) {
         if let Some(u) = chunk.get("usage").filter(|u| !u.is_null()) {
             if let Ok(usage) = serde_json::from_value(u.clone()) {
                 self.usage = Some(usage);
@@ -761,7 +772,7 @@ impl StreamAcc {
         }
     }
 
-    fn finish(self, on_event: &mut impl FnMut(ChatEvent)) -> ChatOutcome {
+    fn finish(self, on_event: &mut dyn FnMut(ChatEvent)) -> ChatOutcome {
         let tool_calls: Vec<ToolCall> = self
             .frags
             .into_iter()
@@ -792,7 +803,8 @@ impl StreamAcc {
 fn run_sse(
     reader: impl std::io::Read,
     inactivity: Duration,
-    on_event: &mut impl FnMut(ChatEvent),
+    on_event: &mut dyn FnMut(ChatEvent),
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<ChatOutcome> {
     let mut acc = StreamAcc::default();
     let mut buf = std::io::BufReader::new(reader);
@@ -813,6 +825,9 @@ fn run_sse(
                 )));
             }
             Err(e) => return Err(e.into()),
+        }
+        if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
+            return Ok(acc.finish(on_event));
         }
         let line = line.trim_end_matches(['\r', '\n']);
         let Some(payload) = line.strip_prefix("data:") else {
@@ -886,9 +901,49 @@ mod tests {
             Cursor::new(text),
             DEFAULT_STREAM_INACTIVITY_TIMEOUT,
             &mut |e| events.push(e),
+            None,
         )
         .unwrap();
         (events, outcome)
+    }
+
+    #[test]
+    fn sse_stream_stops_at_the_cancel_flag_and_keeps_the_partial_round() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // The flag flips after the first chunk: the reader must stop there,
+        // the remaining chunks are never applied, and the partial content is
+        // returned (the loop maps it to the "cancelled" finish reason).
+        let cancel = AtomicBool::new(false);
+        let text = "[DONE]";
+        let lines = [
+            r#"data: {"choices":[{"index":0,"delta":{"content":"Первая "}}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{"content":"вторая"}}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            text,
+        ];
+        let stream: String = lines.iter().map(|l| format!("{l}\n\n")).collect();
+        let mut events = Vec::new();
+        let outcome = run_sse(
+            Cursor::new(stream),
+            DEFAULT_STREAM_INACTIVITY_TIMEOUT,
+            &mut |e| {
+                if matches!(e, ChatEvent::Delta(_)) && !cancel.load(Ordering::Relaxed) {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                events.push(e);
+            },
+            Some(&cancel),
+        )
+        .unwrap();
+        let deltas: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                ChatEvent::Delta(t) => Some(t.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(deltas, ["Первая "]);
+        assert_eq!(outcome.content.as_deref(), Some("Первая "));
     }
 
     #[test]
@@ -1653,6 +1708,7 @@ mod tests {
             },
             DEFAULT_STREAM_INACTIVITY_TIMEOUT,
             &mut |_| {},
+            None,
         )
         .unwrap_err();
         // Distinct, user-readable error the frontend can offer «Повторить» for.
@@ -1716,7 +1772,7 @@ mod tests {
             if let ChatEvent::Delta(t) = e {
                 streamed.push(t);
             }
-        })
+        }, None)
         .expect("slow-but-live stream must not abort");
         assert_eq!(streamed, ["При", "вет", "!"]);
         assert_eq!(outcome.content.as_deref(), Some("Привет!"));

@@ -113,12 +113,33 @@ export function send(key: string, text: string, attachments: MessageAttachmentDt
   }).catch((e) => dispatch({ type: "sendFailed", key, message: toMessage(e) }));
 }
 
+export function requestStop(key: string) {
+  dispatch({ type: "stopping", key });
+  const kind = key[0];
+  const id = Number(key.slice(2));
+  const p =
+    kind === "p"
+      ? ipc.cancelRun(id)
+      : kind === "s"
+        ? ipc.cancelSessionRun(id)
+        : ipc.cancelNotesRun();
+  p.then((ok) => {
+    if (!ok) dispatch({ type: "stopCleared", key });
+  }).catch(() => dispatch({ type: "stopCleared", key }));
+}
+
+export function flushHeldQueue(key: string) {
+  if (slices[key]?.run) return;
+  flushQueue(key);
+}
+
 // A run finished: notify mounted views (history reload / list refresh), mark a
-// chat the user is not looking at as "ready", then flush its queued messages.
-function finishRun(key: string, wasLocal: boolean) {
+// chat the user is not looking at as "ready", then flush its queued messages —
+// except after a cancellation, which holds the queue for an explicit send.
+function finishRun(key: string, wasLocal: boolean, reason?: string) {
   for (const l of runEndListeners) l(key, wasLocal);
   if (key !== openKey) dispatch({ type: "ready", key });
-  flushQueue(key);
+  if (reason !== "cancelled") flushQueue(key);
 }
 
 // Flush the queued messages as one combined user turn once the run is idle.
@@ -171,7 +192,7 @@ function onAgentEvent(p: AgentEventPayload) {
         reason: p.event.reason,
         reasoning: p.event.reasoning,
       });
-      finishRun(key, wasLocal);
+      finishRun(key, wasLocal, p.event.reason);
       break;
     }
     case "error": {

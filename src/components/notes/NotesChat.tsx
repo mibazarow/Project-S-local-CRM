@@ -5,11 +5,13 @@ import {
   NOTES_KEY,
   dispatch,
   ensureSubscribed,
+  flushHeldQueue,
   getSlice,
   openChat,
   closeChat,
   onRunEnd,
   rememberChatId,
+  requestStop,
   send as storeSend,
   useChatSlice,
 } from "../../state/chatRunStore";
@@ -118,9 +120,7 @@ export default function NotesChat() {
     dispatch({ type: "confirmResolved", key: NOTES_KEY, id: confirmation.id });
   };
 
-  const stop = () => {
-    void ipc.cancelNotesRun().catch(() => {});
-  };
+  const stop = () => requestStop(NOTES_KEY);
 
   // Message-level UX: live items carry no DB ids, so both handlers refetch
   // the history and map the item by position before touching the transcript.
@@ -189,6 +189,7 @@ export default function NotesChat() {
         chatId={chatId}
         actions={transcriptActions}
         onRemoveQueued={(index) => dispatch({ type: "removeFromQueue", key: NOTES_KEY, index })}
+        onFlushQueue={() => flushHeldQueue(NOTES_KEY)}
       />
 
       {slice?.sendError && (
@@ -208,6 +209,7 @@ export default function NotesChat() {
         onStop={stop}
         onClear={() => setText("")}
         running={running}
+        stopping={slice?.stopping ?? false}
         queueCount={slice?.queue.length ?? 0}
         placeholder="Спросите агента о заметках…"
         disabled={chatId == null}

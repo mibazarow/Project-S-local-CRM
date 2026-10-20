@@ -665,14 +665,17 @@ struct SshOutput {
 }
 
 // `ssh`/`scp`/`ssh-keygen` with piped output, TMPDIR/TEMP/TMP pointed at
-// Harness/tmp/, a hard timeout (kill) and masked output. `extra_env` carries
-// the askpass variables for password auth (never any secret in argv).
+// Harness/tmp/, a hard timeout (kill), «Стоп» cancel support (the child is
+// killed as soon as the run's cancel flag is set) and masked output.
+// `extra_env` carries the askpass variables for password auth (never any
+// secret in argv).
 fn run_process(
     program: &str,
     argv: &[String],
     wd: &Path,
     timeout: Duration,
     extra_env: &[(String, String)],
+    cancel: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<SshOutput> {
     let tmp = paths::harness_tmp_dir(wd);
     fs::create_dir_all(&tmp)?;
@@ -701,6 +704,11 @@ fn run_process(
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
+        }
+        if cancel.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AppError::Io(format!("{program} was cancelled by user")));
         }
         if Instant::now() >= deadline {
             let _ = child.kill();
@@ -1105,7 +1113,7 @@ impl Tool for SshExecTool {
         let argv = ssh_exec_argv(&target, command, &opts);
         let askpass = askpass_for(&target, &wd)?;
         let envs = askpass.as_ref().map(|a| a.envs()).unwrap_or_default();
-        let out = run_process("ssh", &argv, &wd, opts.timeout, &envs)?;
+        let out = run_process("ssh", &argv, &wd, opts.timeout, &envs, ctx.cancel.as_deref())?;
         Ok(ToolResult::ok(json!({
             "target": target.label(),
             "exitCode": out.code,
@@ -1204,7 +1212,7 @@ impl Tool for SshCopyTool {
         let argv = scp_argv(&target, &src, &dst, recursive);
         let askpass = askpass_for(&target, &wd)?;
         let envs = askpass.as_ref().map(|a| a.envs()).unwrap_or_default();
-        let out = run_process("scp", &argv, &wd, SSH_TIMEOUT, &envs)?;
+        let out = run_process("scp", &argv, &wd, SSH_TIMEOUT, &envs, ctx.cancel.as_deref())?;
         Ok(ToolResult::ok(json!({
             "target": target.label(),
             "exitCode": out.code,
@@ -1306,7 +1314,7 @@ impl Tool for SshGenerateKeyTool {
             argv.push("-C".to_string());
             argv.push(comment.to_string());
         }
-        let out = run_process("ssh-keygen", &argv, &wd, Duration::from_secs(30), &[])?;
+        let out = run_process("ssh-keygen", &argv, &wd, Duration::from_secs(30), &[], ctx.cancel.as_deref())?;
         if out.code != 0 {
             return Ok(ToolResult::err(
                 ToolErrorCode::ExecutionError,
@@ -1408,7 +1416,7 @@ impl Tool for SshInstallKeyTool {
         let argv = ssh_exec_argv(&target, &command, &opts);
         let askpass = askpass_for(&target, &wd)?;
         let envs = askpass.as_ref().map(|a| a.envs()).unwrap_or_default();
-        let out = run_process("ssh", &argv, &wd, SSH_TIMEOUT, &envs)?;
+        let out = run_process("ssh", &argv, &wd, SSH_TIMEOUT, &envs, ctx.cancel.as_deref())?;
         Ok(ToolResult::ok(json!({
             "target": target.label(),
             "exitCode": out.code,
@@ -1528,6 +1536,36 @@ mod tests {
         }
     }
 
+    #[test]
+    fn run_process_cancel_kills_the_child_promptly() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let wd = temp_test_dir("ssh-run-cancel");
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        let setter = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        let err = match run_process(
+            "sh",
+            &["-c".to_string(), "sleep 30".to_string()],
+            &wd,
+            Duration::from_secs(120),
+            &[],
+            Some(&cancel),
+        ) {
+            Err(e) => e,
+            Ok(_) => panic!("cancelled run_process must not succeed"),
+        };
+        let elapsed = started.elapsed();
+        setter.join().unwrap();
+        assert!(err.to_string().contains("cancelled"), "{err}");
+        // The child dies on cancel, not after the full command timeout.
+        assert!(elapsed < Duration::from_secs(5), "cancel took {elapsed:?}");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
     // Project mode: a real CRM project under Projects/.
     fn project_env(tag: &str) -> (PathBuf, ToolCtx) {
         let wd = temp_test_dir(tag);
@@ -1538,6 +1576,7 @@ mod tests {
         *state.working_dir.lock().unwrap() = Some(wd.clone());
         *state.db.lock().unwrap() = Some(conn);
         let ctx = ToolCtx {
+            cancel: None,
             project_id: Some(dto.id),
             session_id: None,
             chat_id: None,

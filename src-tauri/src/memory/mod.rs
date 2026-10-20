@@ -1250,6 +1250,7 @@ mod tests {
         let state = Arc::new(AppState::new());
         *state.db.lock().unwrap() = Some(conn);
         let ctx = ToolCtx {
+            cancel: None,
             project_id: Some(project.id),
             session_id: None,
             chat_id: None,
@@ -1328,6 +1329,7 @@ mod tests {
         *state.db.lock().unwrap() = Some(conn);
         let ctx = ToolCtx {
             project_id: None,
+            cancel: None,
             session_id: None,
             chat_id: None,
             working_dir: None,

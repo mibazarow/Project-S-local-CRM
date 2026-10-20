@@ -4,11 +4,13 @@ import { useApp } from "../../state/AppStore";
 import {
   dispatch,
   ensureSubscribed,
+  flushHeldQueue,
   getSlice,
   openChat,
   closeChat,
   onRunEnd,
   projectKey,
+  requestStop,
   rememberChatId,
   send as storeSend,
   useChatSlice,
@@ -199,7 +201,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
   };
 
   const stop = () => {
-    if (projectId != null) void ipc.cancelRun(projectId).catch(() => {});
+    if (projectId != null) requestStop(key);
   };
 
   // Message-level UX: live items carry no DB ids, so both handlers refetch
@@ -284,6 +286,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
         chatId={projectId != null ? (chatIds[projectId] ?? null) : null}
         actions={transcriptActions}
         onRemoveQueued={(index) => dispatch({ type: "removeFromQueue", key, index })}
+        onFlushQueue={() => flushHeldQueue(key)}
       />
 
       {att.pending.length > 0 && (
@@ -326,6 +329,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
           att.clear();
         }}
         running={running}
+        stopping={slice?.stopping ?? false}
         queueCount={slice?.queue.length ?? 0}
         placeholder="Спроси агента о проекте…"
         disabled={projectId == null}

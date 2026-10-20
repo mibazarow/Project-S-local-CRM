@@ -90,9 +90,18 @@ impl Tool for BashTool {
         let out_thread = std::thread::spawn(move || stdout.map(|r| read_capped(r, BASH_OUTPUT_CAP)));
         let err_thread = std::thread::spawn(move || stderr.map(|r| read_capped(r, BASH_OUTPUT_CAP)));
         let deadline = Instant::now() + self.timeout;
+        let cancel = ctx.cancel.clone();
         let status = loop {
             if let Some(status) = child.try_wait()? {
                 break status;
+            }
+            if cancel.as_ref().is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(ToolResult::err(
+                    ToolErrorCode::ExecutionError,
+                    "command was cancelled by user",
+                ));
             }
             if Instant::now() >= deadline {
                 let _ = child.kill();
@@ -169,6 +178,33 @@ mod tests {
         assert_eq!(err.code, "execution_error");
         assert!(err.message.contains("timed out"), "{}", err.message);
         assert!(elapsed < Duration::from_secs(4), "kill took {elapsed:?}");
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn bash_cancel_kills_the_child_promptly() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let env = setup("ht-bash-cancel");
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let mut ctx = env.ctx.clone();
+        ctx.cancel = Some(std::sync::Arc::clone(&cancel));
+        let flag = std::sync::Arc::clone(&cancel);
+        let setter = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        let r = BashTool::default()
+            .execute(&json!({ "command": "sleep 30" }), &ctx)
+            .unwrap();
+        let elapsed = started.elapsed();
+        setter.join().unwrap();
+        assert!(!r.ok);
+        let err = r.error.unwrap();
+        assert_eq!(err.code, "execution_error");
+        assert!(err.message.contains("cancelled"), "{}", err.message);
+        // The child must die on cancel, not after the 120 s command timeout.
+        assert!(elapsed < Duration::from_secs(5), "cancel took {elapsed:?}");
         fs::remove_dir_all(&env.wd).unwrap();
     }
 }

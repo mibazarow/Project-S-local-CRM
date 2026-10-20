@@ -40,15 +40,21 @@ vi.mock("../api/ipc", () => ({
   sendProjectMessage: vi.fn(async () => 10),
   sendSessionMessage: vi.fn(async () => 20),
   sendNotesMessage: vi.fn(async () => undefined),
+  cancelRun: vi.fn(async () => true),
+  cancelSessionRun: vi.fn(async () => true),
+  cancelNotesRun: vi.fn(async () => true),
 }));
 
+import * as ipc from "../api/ipc";
 import {
   NOTES_KEY,
   dispatch,
   ensureSubscribed,
+  flushHeldQueue,
   getSlice,
   openChat,
   projectKey,
+  requestStop,
   resetChatRunStore,
   sessionKey,
   useChatReady,
@@ -168,6 +174,83 @@ describe("chatRunStore", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("a cancelled run holds the queue and never auto-sends it", async () => {
+    vi.useFakeTimers();
+    try {
+      openChat(projectKey(8));
+      dispatch({ type: "send", key: projectKey(8), text: "first", attachments: [] });
+      dispatch({ type: "enqueue", key: projectKey(8), text: "second" });
+      delta({ projectId: 8, chatId: 80, event: { type: "done", answer: "part", reason: "cancelled", reasoning: null } });
+      expect(getSlice(projectKey(8))?.queue).toEqual(["second"]);
+      const userTurns = () =>
+        (getSlice(projectKey(8))?.items ?? []).filter((it) => it.role === "user").map((it) => it.text);
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(getSlice(projectKey(8))?.queue).toEqual(["second"]);
+      expect(userTurns()).toEqual(["first"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("flushHeldQueue sends the held queue as one turn and is a no-op while a run is live", async () => {
+    vi.useFakeTimers();
+    try {
+      openChat(projectKey(9));
+      dispatch({ type: "send", key: projectKey(9), text: "first", attachments: [] });
+      dispatch({ type: "enqueue", key: projectKey(9), text: "second" });
+      delta({ projectId: 9, chatId: 90, event: { type: "done", answer: "part", reason: "cancelled", reasoning: null } });
+      act(() => flushHeldQueue(projectKey(9)));
+      expect(getSlice(projectKey(9))?.queue).toEqual([]);
+      const userTurns = () =>
+        (getSlice(projectKey(9))?.items ?? []).filter((it) => it.role === "user").map((it) => it.text);
+      await act(async () => {
+        vi.advanceTimersByTime(400);
+      });
+      expect(userTurns()).toEqual(["first", "second"]);
+      // While a run is live the flush does nothing: the text stays queued.
+      dispatch({ type: "enqueue", key: projectKey(9), text: "third" });
+      act(() => flushHeldQueue(projectKey(9)));
+      expect(getSlice(projectKey(9))?.queue).toEqual(["third"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("requestStop marks the run stopping until the backend confirms, then clears it", async () => {
+    openChat(projectKey(11));
+    dispatch({ type: "send", key: projectKey(11), text: "q", attachments: [] });
+    act(() => requestStop(projectKey(11)));
+    expect(ipc.cancelRun).toHaveBeenCalledWith(11);
+    expect(getSlice(projectKey(11))?.stopping).toBe(true);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(getSlice(projectKey(11))?.stopping).toBe(true);
+    delta({ projectId: 11, chatId: 110, event: { type: "done", answer: "a", reason: "cancelled", reasoning: null } });
+    expect(getSlice(projectKey(11))?.stopping).toBe(false);
+  });
+
+  it("requestStop clears stopping right away when no run is active", async () => {
+    vi.mocked(ipc.cancelSessionRun).mockResolvedValueOnce(false);
+    openChat(sessionKey(12));
+    act(() => requestStop(sessionKey(12)));
+    expect(ipc.cancelSessionRun).toHaveBeenCalledWith(12);
+    expect(getSlice(sessionKey(12))?.stopping).toBe(true);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(getSlice(sessionKey(12))?.stopping).toBe(false);
+  });
+
+  it("requestStop on the notes chat cancels the notes run", async () => {
+    openChat(NOTES_KEY);
+    act(() => requestStop(NOTES_KEY));
+    expect(ipc.cancelNotesRun).toHaveBeenCalledTimes(1);
+    expect(getSlice(NOTES_KEY)?.stopping).toBe(true);
   });
 });
 

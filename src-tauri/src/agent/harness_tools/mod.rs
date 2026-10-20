@@ -136,6 +136,7 @@ pub(crate) mod test_support {
         let events = recorder.events.clone();
         *state.emitter.lock().unwrap() = Some(Arc::new(recorder));
         let ctx = ToolCtx {
+            cancel: None,
             project_id: None,
             session_id: None,
             chat_id: None,

@@ -34,8 +34,9 @@ pub struct ToolCtx {
     // tools refuse to work without it (SPEC notes chat slice).
     pub notes_root: Option<std::path::PathBuf>,
     // Shared app state handle: search opens its own DB connection through it,
-    // fs/task tools borrow the UI connection from state.db.
+    // fs/task/memory tools borrow the UI connection from state.db.
     pub state: Option<std::sync::Arc<crate::state::AppState>>,
+    pub cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 
 pub trait Tool: Send + Sync {

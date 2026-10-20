@@ -33,6 +33,18 @@ pub trait ChatBackend: Send + Sync {
         params: &ChatParams,
         on_event: &mut dyn FnMut(ChatEvent),
     ) -> Result<ChatOutcome>;
+
+    fn chat_stream_cancellable(
+        &self,
+        messages: &[ChatMessage],
+        tools: Option<&[ToolSpec]>,
+        params: &ChatParams,
+        on_event: &mut dyn FnMut(ChatEvent),
+        cancel: Option<&AtomicBool>,
+    ) -> Result<ChatOutcome> {
+        let _ = cancel;
+        self.chat_stream(messages, tools, params, on_event)
+    }
 }
 
 impl ChatBackend for LlmClient {
@@ -44,6 +56,17 @@ impl ChatBackend for LlmClient {
         on_event: &mut dyn FnMut(ChatEvent),
     ) -> Result<ChatOutcome> {
         LlmClient::chat_stream(self, messages, tools, params, on_event)
+    }
+
+    fn chat_stream_cancellable(
+        &self,
+        messages: &[ChatMessage],
+        tools: Option<&[ToolSpec]>,
+        params: &ChatParams,
+        on_event: &mut dyn FnMut(ChatEvent),
+        cancel: Option<&AtomicBool>,
+    ) -> Result<ChatOutcome> {
+        LlmClient::chat_stream_with_cancel(self, messages, tools, params, on_event, cancel)
     }
 }
 
@@ -276,6 +299,10 @@ fn run_inner(
         }
         let outcome = match run.call_llm(state, config, &mut hooks) {
             Ok(outcome) => outcome,
+            Err(e) if run.is_cancelled(config) => {
+                let _ = e;
+                return Ok(run.finish_run(&mut hooks, "cancelled", step - 1, None));
+            }
             // A tool call already landed in this run: a follow-up model
             // failure must not read as an operation failure. End with the
             // tool result (already persisted through on_message) plus a
@@ -292,6 +319,9 @@ fn run_inner(
             }
         };
         run.note_round_outcome(&outcome);
+        if run.is_cancelled(config) {
+            return Ok(run.finish_run(&mut hooks, "cancelled", step - 1, None));
+        }
         match run.step(state, config, confirmer, &mut hooks, step, &outcome) {
             StepOutcome::Continue => continue,
             StepOutcome::Finished(result) => return Ok(result),
@@ -401,6 +431,7 @@ impl Run {
             working_dir: config.working_dir.clone(),
             state: config.state.clone(),
             notes_root: config.notes_root.clone(),
+            cancel: config.cancel.clone(),
         };
         let watchdog = match clock {
             Some(now) => Watchdog::new(&config.limits, now),
@@ -458,7 +489,13 @@ impl Run {
             }
             _ => {}
         };
-        state.backend.chat_stream(&self.messages, Some(&specs), &config.params, &mut on_event)
+        state.backend.chat_stream_cancellable(
+            &self.messages,
+            Some(&specs),
+            &config.params,
+            &mut on_event,
+            config.cancel.as_deref(),
+        )
     }
 
     // Accumulate this round's thinking trace and latch its final text as the
@@ -509,6 +546,9 @@ impl Run {
         self.messages.push(assistant_msg);
 
         for tc in &outcome.tool_calls {
+            if self.is_cancelled(config) {
+                return StepOutcome::Finished(self.finish_run(hooks, "cancelled", step, None));
+            }
             if let Some((answer, reason)) =
                 self.run_tool_call(state.catalog, tc, config, confirmer, hooks)
             {
@@ -819,7 +859,7 @@ fn execute_inner(
         }
     }
 
-    execute_with_timeout(tool, args, ctx, config.limits.tool_timeout)
+    execute_with_timeout(tool, args, ctx, config.limits.tool_timeout, config.cancel.as_deref())
 }
 
 // The tool runs on a detached worker so a hung tool cannot wedge the run: on
@@ -831,6 +871,7 @@ fn execute_with_timeout(
     args: Value,
     ctx: &ToolCtx,
     timeout: Duration,
+    cancel: Option<&AtomicBool>,
 ) -> ToolResult {
     let ctx = ctx.clone();
     let (tx, rx) = mpsc::channel();
@@ -840,12 +881,28 @@ fn execute_with_timeout(
             .unwrap_or_else(|e| ToolResult::err(ToolErrorCode::ExecutionError, e.to_string()));
         let _ = tx.send(result);
     });
-    rx.recv_timeout(timeout).unwrap_or_else(|_| {
-        ToolResult::err(
-            ToolErrorCode::ExecutionError,
-            format!("tool timed out after {}s", timeout.as_secs_f64()),
-        )
-    })
+    let deadline = Instant::now() + timeout;
+    loop {
+        match rx.recv_timeout(Duration::from_millis(100)) {
+            Ok(result) => return result,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return ToolResult::err(
+                    ToolErrorCode::ExecutionError,
+                    "tool worker died before producing a result",
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            return ToolResult::err(ToolErrorCode::ExecutionError, "tool was cancelled by user");
+        }
+        if Instant::now() >= deadline {
+            return ToolResult::err(
+                ToolErrorCode::ExecutionError,
+                format!("tool timed out after {}s", timeout.as_secs_f64()),
+            );
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1726,6 +1783,167 @@ mod tests {
         .unwrap();
         assert_eq!(result.finish_reason, "cancelled");
         assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cancel_during_streaming_ends_the_run_as_cancelled_not_error() {
+        // The flag flips mid-stream: the backend stops streaming (as the real
+        // SSE reader does) and the loop must map the partial round to the
+        // "cancelled" finish reason, never to an Error event.
+        struct CancellingStreamingBackend {
+            cancel: Arc<AtomicBool>,
+            calls: AtomicUsize,
+        }
+        impl ChatBackend for CancellingStreamingBackend {
+            fn chat_stream(
+                &self,
+                _messages: &[ChatMessage],
+                _tools: Option<&[ToolSpec]>,
+                _params: &ChatParams,
+                _on_event: &mut dyn FnMut(ChatEvent),
+            ) -> Result<ChatOutcome> {
+                unreachable!("the loop must use the cancellable variant")
+            }
+            fn chat_stream_cancellable(
+                &self,
+                _messages: &[ChatMessage],
+                _tools: Option<&[ToolSpec]>,
+                _params: &ChatParams,
+                on_event: &mut dyn FnMut(ChatEvent),
+                cancel: Option<&AtomicBool>,
+            ) -> Result<ChatOutcome> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                let mut outcome = tools_outcome(vec![finish_call("never")]);
+                for chunk in ["Первая ", "половина"] {
+                    if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+                        // Partial round: the reader closed on cancel, the
+                        // accumulated text is all the round ever produced.
+                        outcome.content = Some("Первая ".into());
+                        outcome.tool_calls = vec![];
+                        return Ok(outcome);
+                    }
+                    on_event(ChatEvent::Delta(chunk.into()));
+                    if chunk == "Первая " {
+                        self.cancel.store(true, Ordering::Relaxed);
+                    }
+                }
+                Ok(outcome)
+            }
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let backend = CancellingStreamingBackend {
+            cancel: Arc::clone(&cancel),
+            calls: AtomicUsize::new(0),
+        };
+        let mut catalog = catalog_with(None);
+        let mut state = AgentState {
+            backend: &backend,
+            catalog: &mut catalog,
+        };
+        let mut cfg = config(8);
+        cfg.cancel = Some(Arc::clone(&cancel));
+        let mut events = Vec::new();
+        let result = run(&mut state, &cfg, &DenyAllConfirmer, |e| events.push(e)).unwrap();
+        assert_eq!(result.finish_reason, "cancelled");
+        // The partial streamed text is latched as the answer, and the run's
+        // tool calls never executed.
+        assert_eq!(result.answer, "Первая ");
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 1);
+        assert!(!events.iter().any(|e| matches!(e, AgentEvent::Error { .. })));
+        assert!(!events.iter().any(|e| matches!(e, AgentEvent::ToolCallStarted { .. })));
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::Done { reason, .. }) if reason == "cancelled"
+        ));
+    }
+
+    #[test]
+    fn cancel_after_a_tool_call_skips_the_remaining_calls_of_the_round() {
+        // The flag flips inside the first tool call: the round's second call
+        // must not run and the run must end as "cancelled".
+        struct CancellingTool;
+        impl Tool for CancellingTool {
+            fn name(&self) -> &str {
+                "canceller"
+            }
+            fn description(&self) -> &str {
+                "sets the run cancel flag (test-only tool)"
+            }
+            fn parameters(&self) -> Value {
+                json!({ "type": "object", "properties": {}, "additionalProperties": false })
+            }
+            fn policy(&self) -> PermissionPolicy {
+                PermissionPolicy::Skip
+            }
+            fn execute(&self, _args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+                if let Some(flag) = &ctx.cancel {
+                    flag.store(true, Ordering::Relaxed);
+                }
+                Ok(ToolResult::ok(json!({ "ran": true })))
+            }
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let backend = ScriptedBackend::new(vec![tools_outcome(vec![
+            call("c1", "canceller", json!({})),
+            call("c2", "echo", json!({ "text": "never" })),
+        ])]);
+        let mut catalog = Catalog::new();
+        catalog.register(Arc::new(FinishTaskTool), true).unwrap();
+        catalog.register(Arc::new(CancellingTool), true).unwrap();
+        catalog
+            .register(Arc::new(EchoTool::new(PermissionPolicy::Skip)), true)
+            .unwrap();
+        let mut state = AgentState {
+            backend: &backend,
+            catalog: &mut catalog,
+        };
+        let mut cfg = config(8);
+        cfg.cancel = Some(Arc::clone(&cancel));
+        let mut events = Vec::new();
+        let result = run(&mut state, &cfg, &DenyAllConfirmer, |e| events.push(e)).unwrap();
+        assert_eq!(result.finish_reason, "cancelled");
+        let started: Vec<String> = events
+            .iter()
+            .filter_map(|e| match e {
+                AgentEvent::ToolCallStarted { name, .. } => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(started, ["canceller"]);
+    }
+
+    #[test]
+    fn cancel_flag_is_per_run_and_never_leaks_into_the_next_run() {
+        // Run one is cancelled by its own flag; run two gets a fresh flag and
+        // must complete normally even though the first flag is now true.
+        let first = Arc::new(AtomicBool::new(false));
+        let backend = ScriptedBackend::new(vec![
+            tools_outcome(vec![call("c1", "echo", json!({ "text": "a" }))]),
+            text_outcome("second run"),
+            tools_outcome(vec![finish_call("done")]),
+        ]);
+        let mut catalog = catalog_with(Some(EchoTool::new(PermissionPolicy::Skip)));
+        let mut state = AgentState {
+            backend: &backend,
+            catalog: &mut catalog,
+        };
+        let mut cfg = config(8);
+        cfg.cancel = Some(Arc::clone(&first));
+        let flag = Arc::clone(&first);
+        let result = run_with(&mut state, &cfg, &DenyAllConfirmer, |_| {}, move |m| {
+            if m.role == crate::llm::Role::Tool {
+                flag.store(true, Ordering::Relaxed);
+            }
+        })
+        .unwrap();
+        assert_eq!(result.finish_reason, "cancelled");
+        assert!(first.load(Ordering::Relaxed));
+
+        let mut cfg2 = config(8);
+        cfg2.cancel = Some(Arc::new(AtomicBool::new(false)));
+        let result = run(&mut state, &cfg2, &DenyAllConfirmer, |_| {}).unwrap();
+        assert_eq!(result.finish_reason, "finish");
+        assert_eq!(result.answer, "done");
     }
 
     // --- harness reliability guards ---

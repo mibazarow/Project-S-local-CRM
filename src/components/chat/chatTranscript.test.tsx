@@ -67,6 +67,7 @@ const slice: Slice = {
   confirmations: [],
   sendError: null,
   queue: [],
+  stopping: false,
   ready: false,
 };
 
@@ -149,6 +150,7 @@ describe("provider-silence retry (SPEC 6.0.1, Q23)", () => {
       confirmations: [],
       sendError: null,
       queue: [],
+      stopping: false,
       ready: false,
     };
   }
@@ -217,6 +219,7 @@ describe("queued messages (Q12)", () => {
       confirmations: [],
       sendError: null,
       queue: ["второе", "третье"],
+      stopping: false,
       ready: false,
     };
   }
@@ -268,6 +271,7 @@ describe("queued messages (Q12)", () => {
       confirmations: [],
       sendError: null,
       queue: ["ждёт"],
+      stopping: false,
       ready: false,
     };
     await act(async () => {
@@ -279,5 +283,79 @@ describe("queued messages (Q12)", () => {
     expect(container.querySelector(".msg.queued .queued-bubble")?.textContent).toBe("ждёт");
     // No remove control when the view does not provide a handler.
     expect(container.querySelector(".queued-x")).toBeNull();
+  });
+
+  it("shows «Отправить оставшееся» for a held queue with no run and fires it once", async () => {
+    const listRef = { current: null } as React.RefObject<HTMLDivElement | null>;
+    const onFlushQueue = vi.fn();
+    const s: Slice = {
+      loaded: true,
+      items: [],
+      run: null,
+      confirmations: [],
+      sendError: null,
+      queue: ["второе", "третье"],
+      stopping: false,
+      ready: false,
+    };
+    await act(async () => {
+      root.render(
+        <ChatTranscript
+          slice={s}
+          listRef={listRef}
+          empty="Пусто"
+          projectId={1}
+          chatId={10}
+          onFlushQueue={onFlushQueue}
+        />,
+      );
+    });
+    const btn = [...container.querySelectorAll<HTMLButtonElement>(".queue-flush button")];
+    expect(btn).toHaveLength(1);
+    expect(btn[0].textContent).toBe("Отправить оставшееся");
+    await act(async () => {
+      btn[0].click();
+    });
+    expect(onFlushQueue).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides «Отправить оставшееся» while a run is live or the queue is empty", async () => {
+    const listRef = { current: null } as React.RefObject<HTMLDivElement | null>;
+    const base: Slice = {
+      loaded: true,
+      items: [],
+      run: null,
+      confirmations: [],
+      sendError: null,
+      queue: ["второе"],
+      stopping: false,
+      ready: false,
+    };
+    await act(async () => {
+      root.render(
+        <ChatTranscript
+          slice={{ ...base, run: { text: "идёт ответ", reasoning: "", steps: [], compactions: [], error: null, local: true } }}
+          listRef={listRef}
+          empty="Пусто"
+          projectId={1}
+          chatId={10}
+          onFlushQueue={() => {}}
+        />,
+      );
+    });
+    expect(container.querySelector(".queue-flush")).toBeNull();
+    await act(async () => {
+      root.render(
+        <ChatTranscript
+          slice={{ ...base, queue: [] }}
+          listRef={listRef}
+          empty="Пусто"
+          projectId={1}
+          chatId={10}
+          onFlushQueue={() => {}}
+        />,
+      );
+    });
+    expect(container.querySelector(".queue-flush")).toBeNull();
   });
 });

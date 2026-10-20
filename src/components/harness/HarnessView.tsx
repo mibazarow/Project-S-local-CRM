@@ -17,12 +17,14 @@ import {
 import {
   dispatch,
   ensureSubscribed,
+  flushHeldQueue,
   getSlice,
   openChat,
   closeChat,
   onRunEnd,
   onSent,
   rememberChatId as storeRememberChatId,
+  requestStop,
   send as storeSend,
   sessionKey,
   useChatSnapshot,
@@ -488,7 +490,7 @@ export default function HarnessView() {
   };
 
   const stop = () => {
-    if (activeId != null) void ipc.cancelSessionRun(activeId).catch(() => {});
+    if (activeId != null) requestStop(sessionKey(activeId));
   };
 
   // Message-level UX: live items carry no DB ids, so the handlers refetch the
@@ -707,6 +709,7 @@ export default function HarnessView() {
               ? (index) => dispatch({ type: "removeFromQueue", key: sessionKey(activeId), index })
               : undefined
           }
+          onFlushQueue={activeId != null ? () => flushHeldQueue(sessionKey(activeId)) : undefined}
         />
 
         {att.pending.length > 0 && (
@@ -749,6 +752,7 @@ export default function HarnessView() {
             att.clear();
           }}
           running={running}
+          stopping={slice?.stopping ?? false}
           queueCount={slice?.queue.length ?? 0}
           placeholder="Поручение общему агенту…"
           attach={{ onPick: () => att.pick().catch(() => {}) }}

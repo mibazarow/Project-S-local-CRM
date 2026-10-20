@@ -1061,6 +1061,7 @@ mod tests {
         *state.working_dir.lock().unwrap() = Some(wd.clone());
         *state.db.lock().unwrap() = Some(conn);
         let ctx = ToolCtx {
+            cancel: None,
             project_id: Some(dto.id),
             session_id: None,
             chat_id: None,

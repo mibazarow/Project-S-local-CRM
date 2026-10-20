@@ -53,6 +53,7 @@ function runSlice(text: string): Slice {
     confirmations: [],
     sendError: null,
     queue: [],
+    stopping: false,
     ready: false,
   };
 }
@@ -75,7 +76,7 @@ function agentItem(text: string, extra: Partial<ChatItem> = {}): ChatItem {
 }
 
 function settledSlice(item: ChatItem): Slice {
-  return { loaded: true, items: [item], run: null, confirmations: [], sendError: null, queue: [], ready: false };
+  return { loaded: true, items: [item], run: null, confirmations: [], sendError: null, queue: [], stopping: false, ready: false };
 }
 
 function Transcript({ slice }: { slice: Slice }) {

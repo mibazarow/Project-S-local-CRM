@@ -327,6 +327,34 @@ describe("chatReducer", () => {
     expect(combineQueued(["a", "b"])).toBe("a\n\n---\n\nb");
   });
 
+  it("stopping/stopCleared toggle the pending-stop flag and run end clears it", () => {
+    let s = apply({}, { type: "send", key: KEY, text: "q", attachments: [] });
+    s = chatReducer(s, { type: "stopping", key: KEY });
+    expect(s[KEY].stopping).toBe(true);
+    s = chatReducer(s, { type: "stopping", key: KEY });
+    expect(s[KEY].stopping).toBe(true);
+    s = chatReducer(s, { type: "stopCleared", key: KEY });
+    expect(s[KEY].stopping).toBe(false);
+    s = chatReducer(s, { type: "stopping", key: KEY });
+    s = chatReducer(s, { type: "done", key: KEY, answer: "a", reason: "cancelled", reasoning: null });
+    expect(s[KEY].stopping).toBe(false);
+    s = apply({ [KEY]: { ...s[KEY], run: { text: "x", reasoning: "", steps: [], compactions: [], error: null, local: true } } },
+      { type: "stopping", key: KEY },
+      { type: "runError", key: KEY, message: "boom", code: "http" });
+    expect(s[KEY].stopping).toBe(false);
+  });
+
+  it("done with reason cancelled keeps the queue held instead of clearing it", () => {
+    let s = apply(
+      {},
+      { type: "send", key: KEY, text: "q", attachments: [] },
+      { type: "enqueue", key: KEY, text: "held" },
+    );
+    s = chatReducer(s, { type: "done", key: KEY, answer: "a", reason: "cancelled", reasoning: null });
+    expect(s[KEY].run).toBeNull();
+    expect(s[KEY].queue).toEqual(["held"]);
+  });
+
   it("compaction appends to the live run and opens one when absent", () => {
     let s = chatReducer({}, { type: "compaction", key: KEY, summary: "s1" });
     expect(s[KEY].run).not.toBeNull();

@@ -119,8 +119,10 @@ export interface Slice {
   confirmations: ConfirmationRequestPayload[];
   sendError: string | null;
   // Messages typed while a run is live: held per chat and flushed as one
-  // combined user turn when the run finishes (done/error/cancelled).
+  // combined user turn when the run finishes normally; a cancelled run keeps
+  // the queue held until the user presses «Отправить оставшееся».
   queue: string[];
+  stopping: boolean;
   // A background run finished while this chat was not the open one: the list
   // shows a "ready" dot until the user opens the chat (cleared by "seen").
   ready: boolean;
@@ -146,6 +148,8 @@ export type ChatAction =
   | { type: "enqueue"; key: string; text: string }
   | { type: "clearQueue"; key: string }
   | { type: "removeFromQueue"; key: string; index: number }
+  | { type: "stopping"; key: string }
+  | { type: "stopCleared"; key: string }
   | { type: "pin"; key: string; itemKey: number; pinned: boolean }
   | { type: "regenerate"; key: string; itemKey: number }
   | { type: "ready"; key: string }
@@ -160,6 +164,7 @@ const emptySlice: Slice = {
   confirmations: [],
   sendError: null,
   queue: [],
+  stopping: false,
   ready: false,
 };
 
@@ -180,6 +185,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return withSlice(state, action.key, (s) => ({
         ...s,
         sendError: null,
+        stopping: false,
         items: [
           ...s.items,
           {
@@ -199,7 +205,12 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         run: { text: "", reasoning: "", steps: [], compactions: [], error: null, local: true },
       }));
     case "sendFailed":
-      return withSlice(state, action.key, (s) => ({ ...s, run: null, sendError: action.message }));
+      return withSlice(state, action.key, (s) => ({
+        ...s,
+        run: null,
+        sendError: action.message,
+        stopping: false,
+      }));
     case "delta":
     case "reasoningDelta":
       // The first event of a run this view did not start (a fired schedule)
@@ -248,7 +259,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
         if (!s.run) return s;
         // Remote run: drop the live slice; the view pulls the persisted
         // transcript (the partial run is already in the DB).
-        if (!s.run.local) return { ...s, run: null };
+        if (!s.run.local) return { ...s, run: null, stopping: false };
         const item: ChatItem = {
           key: nextKey++,
           role: "agent",
@@ -263,14 +274,14 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           error: action.message,
           retryable: action.code === LLM_TIMEOUT_CODE,
         };
-        return { ...s, run: null, items: [...s.items, item] };
+        return { ...s, run: null, stopping: false, items: [...s.items, item] };
       });
     case "done":
       return withSlice(state, action.key, (s) => {
         if (!s.run) return s;
         // Remote run: drop the live slice; the view pulls the persisted
         // transcript, which also carries the schedule's user turn.
-        if (!s.run.local) return { ...s, run: null };
+        if (!s.run.local) return { ...s, run: null, stopping: false };
         const streamed = s.run.text.trim();
         const answer = action.answer.trim();
         const parts = [streamed];
@@ -296,7 +307,7 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
           note,
           error: s.run.error,
         };
-        return { ...s, run: null, items: [...s.items, item] };
+        return { ...s, run: null, stopping: false, items: [...s.items, item] };
       });
     case "confirm":
       return withSlice(state, action.key, (s) =>
@@ -398,6 +409,10 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       return withSlice(state, action.key, (s) => ({ ...s, queue: [...s.queue, action.text] }));
     case "clearQueue":
       return withSlice(state, action.key, (s) => ({ ...s, queue: [] }));
+    case "stopping":
+      return withSlice(state, action.key, (s) => (s.stopping ? s : { ...s, stopping: true }));
+    case "stopCleared":
+      return withSlice(state, action.key, (s) => (s.stopping ? { ...s, stopping: false } : s));
     case "removeFromQueue":
       // Drop one held message by its position; the rest of the queue stays.
       return withSlice(state, action.key, (s) =>
@@ -1130,6 +1145,7 @@ export function ChatTranscript({
   chatId,
   actions,
   onRemoveQueued,
+  onFlushQueue,
 }: {
   slice: Slice | null;
   listRef: RefObject<HTMLDivElement | null>;
@@ -1143,6 +1159,7 @@ export function ChatTranscript({
   actions?: TranscriptActions;
   // Remove one held (queued) message by its position in the queue.
   onRemoveQueued?: (index: number) => void;
+  onFlushQueue?: () => void;
 }) {
   const items = slice?.items ?? [];
   const pinned = items.filter((it) => it.pinned);
@@ -1247,6 +1264,13 @@ export function ChatTranscript({
           {slice.queue.map((text, i) => (
             <QueuedMessage key={i} text={text} index={i} onRemove={onRemoveQueued} />
           ))}
+          {!slice.run && slice.queue.length > 0 && onFlushQueue && (
+            <div className="queue-flush">
+              <button className="primary-btn small" type="button" onClick={onFlushQueue}>
+                Отправить оставшееся
+              </button>
+            </div>
+          )}
         </>
       )}
     </div>

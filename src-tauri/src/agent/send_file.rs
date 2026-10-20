@@ -263,6 +263,7 @@ mod tests {
 
     fn project_ctx(state: &Arc<AppState>, wd: &std::path::Path, pid: i64, chat_id: i64) -> ToolCtx {
         ToolCtx {
+            cancel: None,
             project_id: Some(pid),
             session_id: None,
             chat_id: Some(chat_id),
@@ -326,6 +327,7 @@ mod tests {
 
         let ctx = ToolCtx {
             project_id: None,
+            cancel: None,
             session_id: None,
             chat_id: Some(chat_id),
             working_dir: Some(wd.clone()),
@@ -353,6 +355,7 @@ mod tests {
 
         let ctx = ToolCtx {
             project_id: None,
+            cancel: None,
             session_id: Some(session.id),
             chat_id: Some(chat_id),
             working_dir: Some(wd.clone()),
