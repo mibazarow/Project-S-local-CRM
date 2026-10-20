@@ -298,7 +298,8 @@ fn run_inner(
         }
     }
 
-    Ok(run.finish_run(&mut hooks, "step_limit", config.max_steps, None))
+    let notice = format!("Остановлен по лимиту шагов: {}", config.max_steps);
+    Ok(run.finish_run(&mut hooks, "step_limit", config.max_steps, Some(notice)))
 }
 
 // The two run callbacks threaded through every step: `emit` for UI events,
@@ -1248,7 +1249,7 @@ mod tests {
     }
 
     #[test]
-    fn step_limit_returns_latched_fallback() {
+    fn step_limit_ends_with_a_notice_naming_the_limit() {
         let backend = ScriptedBackend::new(vec![
             text_outcome("first thought"),
             text_outcome("second thought"),
@@ -1258,10 +1259,16 @@ mod tests {
             backend: &backend,
             catalog: &mut catalog,
         };
-        let result = run(&mut state, &config(2), &DenyAllConfirmer, |_| {}).unwrap();
-        assert_eq!(result.answer, "second thought");
+        let mut events = Vec::new();
+        let result = run(&mut state, &config(2), &DenyAllConfirmer, |e| events.push(e)).unwrap();
+        assert_eq!(result.answer, "Остановлен по лимиту шагов: 2");
         assert_eq!(result.finish_reason, "step_limit");
         assert_eq!(result.steps, 2);
+        assert!(matches!(
+            events.last(),
+            Some(AgentEvent::Done { answer, reason, .. })
+                if answer == "Остановлен по лимиту шагов: 2" && reason == "step_limit"
+        ));
     }
 
     #[test]

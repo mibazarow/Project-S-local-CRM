@@ -35,7 +35,7 @@ use super::{append_chat_message, append_full, append_message, ensure_project_cha
 
 // A project-agent turn may chain several tool rounds; the cap is a safety
 // net, the real end is finish_task (SPEC 6.4).
-pub const MAX_STEPS: usize = 24;
+pub const MAX_STEPS: usize = 1000;
 // A confirmation left unanswered (user away) denies rather than hangs.
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(600);
 
@@ -488,7 +488,10 @@ fn run_agent_inner(
             persist_final_answer(conn, chat_id, &result)?;
             // Repeat detector (SPEC 6.2 Q20): only successfully completed
             // runs count; a detector failure never fails a finished run.
-            if matches!(result.finish_reason.as_str(), "finish" | "stop") {
+            // Scheduled runs are excluded entirely — a schedule is already a
+            // reusable workflow, so it must neither bump the counter nor
+            // spawn a skill proposal.
+            if repeat_detector_applies(kind, &result.finish_reason) {
                 let summary = crate::skills::RunSummary {
                     chat_id,
                     project_id: run.project_id(),
@@ -517,13 +520,14 @@ fn run_agent_inner(
 
 // The finish_task answer lives in the tool call arguments, not in the
 // transcript, so the final assistant turn is appended after the run. A
-// step_limit run already persisted its fallback text through the hook.
+// step_limit run already persisted its fallback text through the hook; its
+// answer is the explicit stop notice naming the limit, so it is persisted too.
 pub(crate) fn persist_final_answer(
     conn: &Connection,
     chat_id: i64,
     result: &agent_loop::AgentRunResult,
 ) -> Result<()> {
-    if result.finish_reason != "step_limit" && !result.answer.trim().is_empty() {
+    if !result.answer.trim().is_empty() {
         append_full(
             conn,
             chat_id,
@@ -536,6 +540,13 @@ pub(crate) fn persist_final_answer(
         )?;
     }
     Ok(())
+}
+
+// Whether the repeat detector may see this run: only successfully completed
+// runs count, and scheduled runs never do (a schedule is already a reusable
+// workflow, so it must not bump the counter or propose a skill).
+fn repeat_detector_applies(kind: &str, finish_reason: &str) -> bool {
+    kind != "schedule" && matches!(finish_reason, "finish" | "stop")
 }
 
 #[cfg(test)]
@@ -902,7 +913,7 @@ mod tests {
     }
 
     #[test]
-    fn step_limit_does_not_duplicate_the_fallback_answer() {
+    fn step_limit_persists_the_fallback_once_plus_the_stop_notice() {
         let (wd, conn, pid) = setup("chat-step-limit");
         let chat_id = ensure_project_chat(&conn, pid).unwrap();
         let backend = ScriptedBackend::new(vec![text_outcome("thought")]);
@@ -927,8 +938,11 @@ mod tests {
         .unwrap();
         persist_final_answer(&conn, chat_id, &result).unwrap();
         let hist = load_history(&conn, chat_id, false).unwrap();
-        assert_eq!(hist.len(), 1);
+        // The latched fallback is persisted once through the hook, and the
+        // run ends with an explicit stop notice naming the limit.
+        assert_eq!(hist.len(), 2);
         assert_eq!(hist[0].text_content(), Some("thought"));
+        assert_eq!(hist[1].text_content(), Some("Остановлен по лимиту шагов: 1"));
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -1229,6 +1243,19 @@ mod tests {
         assert_eq!(notes["notes"], true);
         assert!(notes.get("projectId").is_none(), "notes run leaked projectId");
         assert!(notes.get("sessionId").is_none(), "notes run leaked sessionId");
+    }
+
+    #[test]
+    fn repeat_detector_skips_scheduled_and_unfinished_runs() {
+        // Completed interactive runs feed the detector; scheduled runs never
+        // do (no counter bump, no proposal), and unfinished reasons never do.
+        assert!(repeat_detector_applies("project", "finish"));
+        assert!(repeat_detector_applies("harness", "stop"));
+        assert!(repeat_detector_applies("notes", "finish"));
+        assert!(!repeat_detector_applies("schedule", "finish"));
+        assert!(!repeat_detector_applies("schedule", "stop"));
+        assert!(!repeat_detector_applies("project", "step_limit"));
+        assert!(!repeat_detector_applies("project", "cancelled"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 // Repeat detector behind the skill proposals (SPEC 6.2 Q20): when the SAME
-// complex task completes twice, the chat gets a one-time Russian proposal to
-// save the workflow as a skill; the agent creates it only after the user
+// complex task completes PROPOSAL_THRESHOLD times, the chat gets a one-time
+// Russian proposal to save the workflow as a skill; the agent creates it only after the user
 // confirms (the `create_skill` tool itself runs under the Check policy, so
 // the standard confirmation dialog guards every write). No silent creation,
 // no proposals for trivial runs, no repeated nagging: one row per signature,
@@ -25,7 +25,7 @@ use std::path::Path;
 
 pub const COMPLEX_TOOL_CALLS: usize = 4;
 pub const COMPLEX_MIN_SECS: u64 = 120;
-pub const PROPOSAL_THRESHOLD: i64 = 2;
+pub const PROPOSAL_THRESHOLD: i64 = 4;
 const NORMALIZED_MAX_CHARS: usize = 200;
 const TASK_QUOTE_MAX_CHARS: usize = 120;
 
@@ -107,7 +107,7 @@ pub fn candidate_skill_name(normalized: &str, signature: &str) -> String {
 fn proposal_text(name: &str, user_text: &str, tools: &[String]) -> String {
     let quote: String = user_text.trim().chars().take(TASK_QUOTE_MAX_CHARS).collect();
     format!(
-        "Я заметил: одна и та же сложная задача выполнилась уже второй раз (инструменты: {}). Предлагаю сохранить этот рабочий процесс как скилл «{}».\nЗадача: «{}»\nОтветь «да» — я создам скилл инструментом create_skill, создание потребует подтверждения в диалоге подтверждений. Ответь «нет» — и предложение больше не повторится.",
+        "Я заметил: одна и та же сложная задача выполнилась уже четвёртый раз (инструменты: {}). Предлагаю сохранить этот рабочий процесс как скилл «{}».\nЗадача: «{}»\nОтветь «да» — я создам скилл инструментом create_skill, создание потребует подтверждения в диалоге подтверждений. Ответь «нет» — и предложение больше не повторится.",
         tools.join(", "),
         name,
         quote
@@ -258,20 +258,24 @@ mod tests {
     }
 
     #[test]
-    fn second_complex_repeat_posts_exactly_one_proposal() {
-        let (wd, conn) = setup("proposals-twice");
+    fn fourth_complex_repeat_posts_exactly_one_proposal() {
+        let (wd, conn) = setup("proposals-four-times");
         let t = tools(&["webfetch", "websearch", "write_file", "bash", "finish_task"]);
-        let first = record_run(&conn, &wd, &run("Сводка по example.ru", &t, 10)).unwrap();
-        assert!(first.is_none(), "first occurrence must not propose");
-        let second = record_run(&conn, &wd, &run("сводка по example.ru", &t, 10))
+        for _ in 0..3 {
+            assert!(
+                record_run(&conn, &wd, &run("Сводка по example.ru", &t, 10)).unwrap().is_none(),
+                "occurrences below the threshold must not propose"
+            );
+        }
+        let fourth = record_run(&conn, &wd, &run("сводка по example.ru", &t, 10))
             .unwrap()
-            .expect("second occurrence proposes");
-        assert!(second.text.contains("второй раз"), "{}", second.text);
-        assert!(second.text.contains("webfetch"), "{}", second.text);
+            .expect("the fourth occurrence proposes");
+        assert!(fourth.text.contains("четвёртый раз"), "{}", fourth.text);
+        assert!(fourth.text.contains("webfetch"), "{}", fourth.text);
         let stored = proposal_messages(&conn);
         assert_eq!(stored.len(), 1);
-        assert_eq!(stored[0], second.text);
-        // Third and fourth repeats: never a second proposal (decline/ignore
+        assert_eq!(stored[0], fourth.text);
+        // Fifth and sixth repeats: never a second proposal (decline/ignore
         // both mean silence).
         assert!(record_run(&conn, &wd, &run("Сводка по example.ru", &t, 10)).unwrap().is_none());
         assert!(record_run(&conn, &wd, &run("Сводка по example.ru", &t, 10)).unwrap().is_none());
@@ -279,7 +283,7 @@ mod tests {
         let occurrences: i64 = conn
             .query_row("SELECT occurrences FROM skill_proposals", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(occurrences, 4);
+        assert_eq!(occurrences, 6);
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -302,7 +306,9 @@ mod tests {
     fn long_duration_makes_a_few_tool_calls_complex() {
         let (wd, conn) = setup("proposals-duration");
         let t = tools(&["webfetch", "finish_task"]);
-        assert!(record_run(&conn, &wd, &run("должая задача", &t, COMPLEX_MIN_SECS)).unwrap().is_none());
+        for _ in 0..3 {
+            assert!(record_run(&conn, &wd, &run("должая задача", &t, COMPLEX_MIN_SECS)).unwrap().is_none());
+        }
         assert!(record_run(&conn, &wd, &run("должая задача", &t, COMPLEX_MIN_SECS)).unwrap().is_some());
         fs::remove_dir_all(&wd).unwrap();
     }
@@ -319,8 +325,11 @@ mod tests {
         // Same request, different tool mix: a different workflow.
         assert!(record_run(&conn, &wd, &run("сводка по ценам", &other, 10)).unwrap().is_none());
         assert!(proposal_messages(&conn).is_empty());
-        // Same request + same tools in a different call order: the same task.
-        let same = record_run(&conn, &wd, &run("СВОДКА   по   ценам", &reordered, 10)).unwrap();
+        // Same request + same tools in a different call order: the same task,
+        // so the variants stack onto one signature until the threshold (4).
+        assert!(record_run(&conn, &wd, &run("СВОДКА   по   ценам", &reordered, 10)).unwrap().is_none());
+        assert!(record_run(&conn, &wd, &run("сводка по ценам", &t, 10)).unwrap().is_none());
+        let same = record_run(&conn, &wd, &run("СВОДКА по ценам", &reordered, 10)).unwrap();
         assert!(same.is_some(), "case/whitespace/call-order variants must share the signature");
         fs::remove_dir_all(&wd).unwrap();
     }
@@ -341,8 +350,9 @@ mod tests {
             &name,
             &format!("---\nname: {name}\ndescription: d\n---\nB.\n"),
         );
-        assert!(record_run(&conn, &wd, &run(text, &t, 10)).unwrap().is_none());
-        assert!(record_run(&conn, &wd, &run(text, &t, 10)).unwrap().is_none());
+        for _ in 0..4 {
+            assert!(record_run(&conn, &wd, &run(text, &t, 10)).unwrap().is_none());
+        }
         assert!(proposal_messages(&conn).is_empty());
         let status: String = conn
             .query_row("SELECT status FROM skill_proposals", [], |r| r.get(0))
