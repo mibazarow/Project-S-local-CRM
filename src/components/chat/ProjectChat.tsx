@@ -267,7 +267,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
 
   return (
     <aside
-      className={att.dragOver ? "chat drag-over" : "chat"}
+      className={att.dragOver ? "chat chat-pattern drag-over" : "chat chat-pattern"}
       ref={chatRootRef}
       data-chat-drop
     >

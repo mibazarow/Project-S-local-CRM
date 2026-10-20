@@ -622,6 +622,14 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
   min-height: 0;
 }
 
+.chat.chat-pattern {
+  background-color: var(--panel);
+  background-image: url("../assets/pattern.png");
+  background-repeat: repeat-y;
+  background-position: top center;
+  background-size: 100% auto;
+}
+
 .chat-head {
   padding: 12px 16px 10px;
   border-bottom: 1px solid var(--hairline);
