@@ -127,6 +127,10 @@ vi.mock("../../api/ipc", () => ({
     void cb;
     return () => {};
   }),
+  onScheduleOpen: vi.fn(async (cb: (p: { sessionId: number }) => void) => {
+    void cb;
+    return () => {};
+  }),
   projectChatHistory: vi.fn(async () => history),
   sendProjectMessage: vi.fn(async () => 10),
   getVisionStatus: vi.fn(async () => ({ supported: true })),

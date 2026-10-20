@@ -37,6 +37,7 @@ import type {
   ReindexProgress,
   ReindexStatus,
     ScheduleDto,
+  ScheduleOpenEvent,
   SessionDto,
   SkillInfo,
   SkillProposalEvent,
@@ -597,6 +598,11 @@ export const onSkillProposal = (handler: (payload: SkillProposalEvent) => void) 
 
 export const onSchedulesChanged = (handler: () => void) =>
   listen<unknown>("schedules-changed", () => handler());
+
+// Emitted by the notification click handler in lib.rs when the user clicks
+// a schedule-run completion notification: open that session's chat.
+export const onScheduleOpen = (handler: (payload: ScheduleOpenEvent) => void) =>
+  listen<ScheduleOpenEvent>("schedule-open", (e) => handler(e.payload));
 
 // Emitted when the session list may have changed: the scheduler after a
 // fired tick (a fire touches lastActiveAt and may create a fresh session),

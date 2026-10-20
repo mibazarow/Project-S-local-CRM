@@ -29,9 +29,13 @@ vi.mock("../../api/ipc", async (importOriginal) => ({
   onSkillProposal: vi.fn(async () => () => {}),
 }));
 
+const store = vi.hoisted(() => ({
+  state: { schedulesVersion: 0, pendingSessionId: null as number | null },
+}));
+
 vi.mock("../../state/AppStore", () => ({
   useApp: () => ({
-    state: { schedulesVersion: 0, pendingSessionId: null },
+    state: store.state,
     actions: { clearPendingSession: vi.fn(), requestSession: vi.fn() },
   }),
 }));
@@ -52,6 +56,7 @@ let container: HTMLDivElement;
 let root: Root;
 
 beforeEach(() => {
+  store.state = { schedulesVersion: 0, pendingSessionId: null };
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -191,6 +196,7 @@ describe("HarnessView openSchedule loads history (Q.md item 3)", () => {
     timezone: null,
     error: null,
     title: "Ежедневный отчёт",
+    unreadAt: null,
   };
   const session = {
     id: 9,
@@ -275,8 +281,8 @@ describe("HarnessView cascade delete confirmations (Q.md item 4)", () => {
       { id: 1, title: "Чат с расписаниями", createdAt: "", updatedAt: "", lastActiveAt: "2026-01-01", pinned: false, pinnedAt: null },
     ] as never);
     vi.mocked(ipc.scheduleList).mockResolvedValue([
-      { id: 10, sessionId: 1, kind: "cron", spec: "0 9 * * *", prompt: null, status: "active", relatedTaskId: null, createdAt: "", lastRunAt: null, nextRunAt: null, timezone: null, error: null, title: "A" },
-      { id: 11, sessionId: 1, kind: "run_at", spec: "2026-11-01T10:00:00", prompt: null, status: "active", relatedTaskId: null, createdAt: "", lastRunAt: null, nextRunAt: null, timezone: null, error: null, title: "B" },
+      { id: 10, sessionId: 1, kind: "cron", spec: "0 9 * * *", prompt: null, status: "active", relatedTaskId: null, createdAt: "", lastRunAt: null, nextRunAt: null, timezone: null, error: null, title: "A", unreadAt: null },
+      { id: 11, sessionId: 1, kind: "run_at", spec: "2026-11-01T10:00:00", prompt: null, status: "active", relatedTaskId: null, createdAt: "", lastRunAt: null, nextRunAt: null, timezone: null, error: null, title: "B", unreadAt: null },
     ] as never);
     await mount();
 
@@ -292,7 +298,7 @@ describe("HarnessView cascade delete confirmations (Q.md item 4)", () => {
   it("deleting a schedule with a linked chat warns the chat goes too", async () => {
     vi.mocked(ipc.harnessListSessions).mockResolvedValue([] as never);
     vi.mocked(ipc.scheduleList).mockResolvedValue([
-      { id: 12, sessionId: 9, kind: "cron", spec: "0 9 * * *", prompt: null, status: "active", relatedTaskId: null, createdAt: "", lastRunAt: null, nextRunAt: null, timezone: null, error: null, title: "Ежедневный отчёт" },
+      { id: 12, sessionId: 9, kind: "cron", spec: "0 9 * * *", prompt: null, status: "active", relatedTaskId: null, createdAt: "", lastRunAt: null, nextRunAt: null, timezone: null, error: null, title: "Ежедневный отчёт", unreadAt: null },
     ] as never);
     await mount();
 
@@ -311,7 +317,7 @@ describe("HarnessView cascade delete confirmations (Q.md item 4)", () => {
       { id: 1, title: "Чат", createdAt: "", updatedAt: "", lastActiveAt: "2026-01-01", pinned: false, pinnedAt: null },
     ] as never);
     vi.mocked(ipc.scheduleList).mockResolvedValue([
-      { id: 10, sessionId: 1, kind: "cron", spec: "0 9 * * *", prompt: null, status: "active", relatedTaskId: null, createdAt: "", lastRunAt: null, nextRunAt: null, timezone: null, error: null, title: "A" },
+      { id: 10, sessionId: 1, kind: "cron", spec: "0 9 * * *", prompt: null, status: "active", relatedTaskId: null, createdAt: "", lastRunAt: null, nextRunAt: null, timezone: null, error: null, title: "A", unreadAt: null },
     ] as never);
     await mount();
 
@@ -322,5 +328,68 @@ describe("HarnessView cascade delete confirmations (Q.md item 4)", () => {
 
     expect(ipc.harnessDeleteSession).not.toHaveBeenCalled();
     expect(ipc.scheduleDelete).not.toHaveBeenCalled();
+  });
+});
+
+describe("HarnessView unread schedule pulse (Q.md item 7)", () => {
+  const unreadSchedule = {
+    id: 5,
+    sessionId: 9,
+    kind: "run_at",
+    spec: "2026-10-20T10:00:00",
+    prompt: null,
+    status: "done",
+    relatedTaskId: null,
+    createdAt: "",
+    lastRunAt: "2026-10-20T10:00:00",
+    nextRunAt: null,
+    timezone: null,
+    error: null,
+    title: "Утренняя сводка",
+    unreadAt: "2026-10-20T10:05:00Z",
+  };
+
+  it("pulses the unread card and stops pulsing once the schedule is opened", async () => {
+    vi.mocked(ipc.scheduleList).mockResolvedValue([unreadSchedule] as never);
+    vi.mocked(ipc.scheduleOpen).mockResolvedValue({ sessionId: 9 } as never);
+    vi.mocked(ipc.harnessListSessions).mockResolvedValue([
+      { id: 9, title: "Расписание: Утренняя сводка", createdAt: "", updatedAt: "", lastActiveAt: "2026-10-20", pinned: false, pinnedAt: null },
+    ] as never);
+    vi.mocked(ipc.harnessSessionHistory).mockResolvedValue([
+      {
+        id: 1,
+        chatId: 77,
+        role: "assistant",
+        content: "Готово: цены сняты.",
+        reasoning: null,
+        toolCalls: [],
+        toolCallId: null,
+        name: null,
+        createdAt: "",
+        position: 0,
+        attachments: [],
+        pinned: false,
+      },
+    ] as never);
+    await mount();
+
+    const item = container.querySelector<HTMLElement>(".schedule-item")!;
+    expect(item.classList.contains("unread")).toBe(true);
+
+    await act(async () => {
+      item.click();
+    });
+    expect(ipc.scheduleOpen).toHaveBeenCalledWith(5);
+
+    // The backend clears unread_at on open and emits "schedules-changed":
+    // the reloaded list arrives read and the pulse is gone.
+    vi.mocked(ipc.scheduleList).mockResolvedValue([{ ...unreadSchedule, unreadAt: null }] as never);
+    store.state = { ...store.state, schedulesVersion: store.state.schedulesVersion + 1 };
+    await act(async () => {
+      root.render(<HarnessView />);
+    });
+
+    const after = container.querySelector<HTMLElement>(".schedule-item")!;
+    expect(after.classList.contains("unread")).toBe(false);
   });
 });

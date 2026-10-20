@@ -36,6 +36,8 @@ pub(crate) fn schedule_delete(app: AppHandle, state: State<AppState>, id: i64) -
 // Click-through from the schedules panel: returns the session whose chat the
 // UI opens (the schedule's own, or a fresh one titled after the schedule);
 // "sessions-changed" makes a freshly created session appear in the sidebar.
+// Opening also clears the unread stamp (open_session), so "schedules-changed"
+// makes the unread pulse disappear (Q.md item 7).
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ScheduleOpenResult {
@@ -46,5 +48,6 @@ pub(crate) struct ScheduleOpenResult {
 pub(crate) fn schedule_open(app: AppHandle, state: State<AppState>, id: i64) -> Result<ScheduleOpenResult> {
     let session_id = with_db(&state, |conn| scheduler::open_session(conn, id))?;
     let _ = app.emit("sessions-changed", serde_json::json!({}));
+    emit_schedules_changed(&app);
     Ok(ScheduleOpenResult { session_id })
 }

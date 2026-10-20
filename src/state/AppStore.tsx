@@ -366,6 +366,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let unTasks: (() => void) | undefined;
     let unSchedules: (() => void) | undefined;
     let unProjects: (() => void) | undefined;
+    let unScheduleOpen: (() => void) | undefined;
     const refresh = () => void loadProjects();
     const onFs = (payload: FsChanged) => {
       refresh();
@@ -382,12 +383,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void ipc.onTasksChanged(onTasks).then((u) => (cancelled ? u() : (unTasks = u)));
     void ipc.onSchedulesChanged(onSchedules).then((u) => (cancelled ? u() : (unSchedules = u)));
     void ipc.onProjectsChanged(refresh).then((u) => (cancelled ? u() : (unProjects = u)));
+    // Q.md item 7: a click on a schedule-run notification routes through the
+    // pendingSession intent; App switches to the Harness tab and HarnessView
+    // opens the session.
+    void ipc
+      .onScheduleOpen((payload) => dispatch({ type: "pendingSession", id: payload.sessionId }))
+      .then((u) => (cancelled ? u() : (unScheduleOpen = u)));
     return () => {
       cancelled = true;
       unFs?.();
       unTasks?.();
       unSchedules?.();
       unProjects?.();
+      unScheduleOpen?.();
     };
   }, [state.onboarding.configured, loadProjects]);
 

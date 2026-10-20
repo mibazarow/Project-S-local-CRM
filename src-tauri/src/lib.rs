@@ -146,6 +146,38 @@ fn setup_global_shortcut(app: &AppHandle) {
     }
 }
 
+// Q.md item 7: schedule-run completion notifications must be clickable.
+// Registering the action type makes the notification carry its buttons, and
+// the on_action handler is what makes the notification server report clicks
+// at all: a body click arrives as "tap", the button as "open". Both read the
+// extras written by scheduler::TauriNotifier::notify_completion, show the
+// main window and route the frontend to the schedule's chat through the
+// "schedule-open" event. Registered in setup before any notification is
+// sent; a registration failure is never fatal.
+fn setup_schedule_notifications(app: &AppHandle) {
+    use tauri_plugin_notification::{Action, ActionType, NotificationExt};
+
+    let notification = app.notification();
+    let _ = notification.register_action_types(vec![ActionType::builder(scheduler::CLICK_ACTION_TYPE)
+        .actions(vec![Action::builder("open", "Открыть чат").build()])
+        .build()]);
+    let app = app.clone();
+    let _ = notification.on_action(move |action| {
+        if !matches!(action.action_id(), "tap" | "open") {
+            return;
+        }
+        let Some(session_id) = action
+            .notification()
+            .and_then(|n| n.extra().get("sessionId"))
+            .and_then(|v| v.as_i64())
+        else {
+            return;
+        };
+        show_main_window(&app);
+        let _ = app.emit("schedule-open", serde_json::json!({ "sessionId": session_id }));
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -177,6 +209,10 @@ pub fn run() {
             if let Some(wd) = onboarding::load_working_dir(&app_cfg) {
                 *lock_recover(&state.db) = Some(db::open(&paths::db_path(&wd))?);
                 *lock_recover(&state.working_dir) = Some(wd.clone());
+                // Clickable schedule notifications: the action type and the
+                // click handler must exist before the first tick can send a
+                // completion notification.
+                setup_schedule_notifications(app.handle());
                 // One-time indexing-limits migration for installs created
                 // before the 10 MB / 1M chars defaults. Best-effort.
                 let _ = config::migrate_indexing_defaults(&wd);

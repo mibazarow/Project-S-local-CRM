@@ -20,6 +20,7 @@ use crate::llm::{self, ChatMessage, ChatParams, Role};
 use crate::memory;
 use crate::paths;
 use crate::projects;
+use crate::scheduler::{self, Notifier};
 use crate::state::{AgentRegistry, AppState, RunKey};
 use rusqlite::{params, Connection};
 use serde::Serialize;
@@ -486,6 +487,29 @@ fn run_agent_inner(
             .unwrap_or(false);
         if chat_exists {
             persist_final_answer(conn, chat_id, &result)?;
+            // Q.md item 7: a finished scheduled run (run_at/cron) marks its
+            // schedule unread and reports the result through a macOS
+            // notification; clicking it opens this session's chat. Delivery
+            // failures are ignored — the unread pulse is the safety net.
+            if kind == "schedule" {
+                if let Some(session_id) = run.session_id() {
+                    if let Ok(Some(notice)) = scheduler::mark_run_completion(
+                        conn,
+                        session_id,
+                        &result.answer,
+                        &result.finish_reason,
+                        scheduler::now_utc(),
+                    ) {
+                        let notifier = scheduler::TauriNotifier::new(app);
+                        let _ = notifier.notify_completion(
+                            &notice.title,
+                            &notice.body,
+                            notice.schedule_id,
+                            notice.session_id,
+                        );
+                    }
+                }
+            }
             // Repeat detector (SPEC 6.2 Q20): only successfully completed
             // runs count; a detector failure never fails a finished run.
             // Scheduled runs are excluded entirely — a schedule is already a

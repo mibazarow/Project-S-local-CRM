@@ -10,6 +10,7 @@ const bus = vi.hoisted(() => ({
   tasks: undefined as ((p: { projectId: number }) => void) | undefined,
   schedules: undefined as (() => void) | undefined,
   projects: undefined as (() => void) | undefined,
+  scheduleOpen: undefined as ((p: { sessionId: number }) => void) | undefined,
 }));
 
 const projects = vi.hoisted((): ProjectDto[] => [
@@ -60,6 +61,12 @@ vi.mock("../api/ipc", () => ({
       bus.projects = undefined;
     };
   }),
+  onScheduleOpen: vi.fn(async (cb: (p: { sessionId: number }) => void) => {
+    bus.scheduleOpen = cb;
+    return () => {
+      bus.scheduleOpen = undefined;
+    };
+  }),
 }));
 
 import * as ipc from "../api/ipc";
@@ -96,6 +103,13 @@ function ActiveProbe() {
   return <span className="active-flag">{String(state.projects[0]?.hasActiveTasks ?? "")}</span>;
 }
 
+// Surfaces the pendingSession navigation intent (Q.md item 7: a schedule
+// notification click routes the UI to the schedule's chat session).
+function PendingProbe() {
+  const { state } = useApp();
+  return <span className="pending-session">{String(state.pendingSessionId)}</span>;
+}
+
 let container: HTMLDivElement;
 let root: Root;
 
@@ -110,6 +124,7 @@ async function mount() {
         <StateOnlyProbe />
         <CombinedProbe />
         <ActiveProbe />
+        <PendingProbe />
       </AppProvider>,
     );
   });
@@ -203,5 +218,12 @@ describe("app store split", () => {
       await acts.archiveProject(1, false);
     });
     expect(ipc.projectSetArchived).toHaveBeenCalledWith(1, false);
+  });
+
+  it("a schedule-open event routes the UI to the schedule's chat session", async () => {
+    await mount();
+    expect(container.querySelector(".pending-session")!.textContent).toBe("null");
+    await act(async () => bus.scheduleOpen?.({ sessionId: 9 }));
+    expect(container.querySelector(".pending-session")!.textContent).toBe("9");
   });
 });

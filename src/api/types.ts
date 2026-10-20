@@ -587,6 +587,15 @@ export interface ScheduleDto {
   timezone: string | null;
   error: string | null;
   title: string | null;
+  // Q.md item 7: set when a scheduled run finished and its result has not
+  // been opened yet; the schedule card pulses while it is set.
+  unreadAt: string | null;
+}
+
+// lib.rs "schedule-open" — emitted when the user clicks a schedule-run
+// notification: the frontend opens the schedule's chat session.
+export interface ScheduleOpenEvent {
+  sessionId: number;
 }
 
 // search_reindex::ReindexStatus — result of reindex_start / reindex_status.

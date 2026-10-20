@@ -106,6 +106,7 @@ vi.mock("../../api/ipc", () => ({
   onTasksChanged: vi.fn(async () => () => {}),
   onSchedulesChanged: vi.fn(async () => () => {}),
   onProjectsChanged: vi.fn(async () => () => {}),
+  onScheduleOpen: vi.fn(async () => () => {}),
   fsListDir,
   fsMove,
   fsRename: vi.fn(async () => undefined),

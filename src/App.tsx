@@ -74,6 +74,12 @@ export default function App() {
     if (state.pendingAsk) setTab("projects");
   }, [state.pendingAsk]);
 
+  // A schedule-run notification click (and any other session request) must
+  // land on the Harness tab so the opened chat is on screen.
+  useEffect(() => {
+    if (state.pendingSessionId != null) setTab("harness");
+  }, [state.pendingSessionId]);
+
   // A note link clicked in any agent answer opens that note inside the Notes
   // section (not externally): reuse the pendingNote intent and switch tabs.
   useEffect(() => {

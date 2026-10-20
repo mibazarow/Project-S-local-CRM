@@ -29,7 +29,7 @@ function ScheduleItem({
   const s = schedule;
   return (
     <div
-      className="schedule-item"
+      className={s.unreadAt ? "schedule-item unread" : "schedule-item"}
       role="button"
       tabIndex={0}
       title="Открыть чат расписания"

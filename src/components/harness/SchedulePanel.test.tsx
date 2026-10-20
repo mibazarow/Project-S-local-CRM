@@ -36,6 +36,7 @@ const makeSchedule = (overrides: Partial<ScheduleDto> = {}): ScheduleDto => ({
   timezone: "Europe/Moscow",
   error: null,
   title: "Ежедневный отчёт",
+  unreadAt: null,
   ...overrides,
 });
 
@@ -111,5 +112,35 @@ describe("SchedulePanel card (Q.md items 5-6)", () => {
     expect(rule![0]).not.toContain("var(--surface-2)");
     expect(rule![0]).toContain("border: 1px solid var(--border-strong)");
     expect(rule![0]).toContain("box-shadow:");
+  });
+
+  it("marks an unread schedule with the pulse class and leaves read ones plain", async () => {
+    await mount([
+      makeSchedule({ id: 2, unreadAt: "2026-10-20T10:00:00Z" }),
+      makeSchedule({ id: 3 }),
+    ]);
+    const items = container.querySelectorAll<HTMLElement>(".schedule-item");
+    expect(items).toHaveLength(2);
+    expect(items[0].classList.contains("unread")).toBe(true);
+    expect(items[1].classList.contains("unread")).toBe(false);
+  });
+
+  it("the unread class clears when the reloaded list arrives without unreadAt", async () => {
+    await mount([makeSchedule({ unreadAt: "2026-10-20T10:00:00Z" })]);
+    expect(container.querySelector(".schedule-item")!.classList.contains("unread")).toBe(true);
+    // Opening the schedule clears unread_at in the backend and the reloaded
+    // DTO comes back read: the pulse must be gone.
+    await mount([makeSchedule({ unreadAt: null })]);
+    expect(container.querySelector(".schedule-item")!.classList.contains("unread")).toBe(false);
+  });
+
+  it("the stylesheet defines a soft box-shadow pulse for the unread card", () => {
+    const css = readFileSync("src/styles/app.css", "utf8");
+    const rule = css.match(/\.schedule-item\.unread \{[^}]*\}/);
+    expect(rule, "the unread rule must exist").not.toBeNull();
+    expect(rule![0]).toContain("animation:");
+    const keyframes = css.match(/@keyframes schedule-unread-pulse \{[\s\S]*?\n\}/);
+    expect(keyframes, "the pulse keyframes must exist").not.toBeNull();
+    expect(keyframes![0]).toContain("box-shadow:");
   });
 });

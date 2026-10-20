@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::{params, Connection};
 
-pub const SCHEMA_VERSION: i64 = 38;
+pub const SCHEMA_VERSION: i64 = 39;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -646,6 +646,10 @@ const MIGRATION_37_CHAT_PINNED_AT: &str = "ALTER TABLE chats ADD COLUMN pinned_a
 
 const MIGRATION_38_PROJECT_ARCHIVED_AT: &str = "ALTER TABLE projects ADD COLUMN archived_at TEXT";
 
+// Q.md item 7: an unread schedule result stamp (NULL = read). Set when a
+// scheduled agent run finishes, cleared when the schedule's chat is opened.
+const MIGRATION_39_SCHEDULE_UNREAD_AT: &str = "ALTER TABLE schedules ADD COLUMN unread_at TEXT";
+
 fn migrate_v1(conn: &Connection) -> Result<()> {
     conn.execute_batch(MIGRATION_1)?;
     Ok(())
@@ -1035,6 +1039,18 @@ fn migrate_v38(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v39(conn: &Connection) -> Result<()> {
+    let has_unread_at: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('schedules') WHERE name = 'unread_at'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_unread_at == 0 {
+        conn.execute(MIGRATION_39_SCHEDULE_UNREAD_AT, [])?;
+    }
+    Ok(())
+}
+
 // Ordered (user_version target, migration body) table: each body runs when
 // the stored user_version is below its target, then the runner bumps
 // user_version to the target, exactly like the previous hand-rolled
@@ -1080,7 +1096,8 @@ const MIGRATIONS: &[(u32, Migration)] = &[
     (35, migrate_v35),
     (36, migrate_v36),
     (37, migrate_v37),
-    (SCHEMA_VERSION as u32, migrate_v38),
+    (38, migrate_v38),
+    (SCHEMA_VERSION as u32, migrate_v39),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {
@@ -2757,6 +2774,44 @@ CREATE UNIQUE INDEX uniq_chats_one_project_chat ON chats(project_id) WHERE kind 
         .unwrap();
 
         conn.pragma_update(None, "user_version", 37).unwrap();
+        run_migrations(&conn).unwrap();
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migration_v39_adds_unread_at_nullable() {
+        crate::db::ensure_vec_extension();
+        let conn = Connection::open_in_memory().unwrap();
+        run_migrations(&conn).unwrap();
+
+        conn.execute("ALTER TABLE schedules DROP COLUMN unread_at", [])
+            .unwrap();
+        conn.execute(
+            "INSERT INTO schedules (kind, spec, status, created_at) VALUES ('cron', '0 10 * * *', 'active', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        conn.pragma_update(None, "user_version", 38).unwrap();
+
+        run_migrations(&conn).unwrap();
+
+        let stored: Option<String> = conn
+            .query_row("SELECT unread_at FROM schedules WHERE id = 1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(stored, None);
+        conn.execute(
+            "UPDATE schedules SET unread_at = '2026-01-01T10:00:00Z' WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE schedules SET unread_at = NULL WHERE id = 1",
+            [],
+        )
+        .unwrap();
+
+        conn.pragma_update(None, "user_version", 38).unwrap();
         run_migrations(&conn).unwrap();
         let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(version, SCHEMA_VERSION);

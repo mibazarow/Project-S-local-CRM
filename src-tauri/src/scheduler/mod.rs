@@ -41,7 +41,12 @@ pub const MAX_RETRIES: i64 = 1;
 
 pub const KINDS: [&str; 3] = ["run_at", "cron", "notify"];
 
-const COLS: &str = "id, session_id, kind, spec, prompt, status, related_task_id, created_at, last_run_at, next_run_at, timezone, error, title";
+// Q.md item 7: the notification action type that makes a completion
+// notification clickable; the click handler in lib.rs reports the body
+// click as "tap" and the button as "open".
+pub const CLICK_ACTION_TYPE: &str = "schedule";
+
+const COLS: &str = "id, session_id, kind, spec, prompt, status, related_task_id, created_at, last_run_at, next_run_at, timezone, error, title, unread_at";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -59,6 +64,7 @@ pub struct ScheduleDto {
     pub timezone: Option<String>,
     pub error: Option<String>,
     pub title: Option<String>,
+    pub unread_at: Option<String>,
 }
 
 fn dto_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScheduleDto> {
@@ -76,6 +82,7 @@ fn dto_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ScheduleDto> {
         timezone: row.get(10)?,
         error: row.get(11)?,
         title: row.get(12)?,
+        unread_at: row.get(13)?,
     })
 }
 
@@ -100,6 +107,21 @@ pub(crate) fn derive_title(prompt: Option<&str>, spec: &str, max_chars: usize) -
 // lets tests inject a recording notifier.
 pub trait Notifier {
     fn notify(&self, title: &str, body: &str) -> Result<()>;
+
+    // Q.md item 7: a scheduled run's completion notification carries the
+    // schedule and session ids as extras and references the registered
+    // click action type, so clicking it opens the schedule's chat. The
+    // default drops the ids (plain delivery); tests keep the plain path.
+    fn notify_completion(
+        &self,
+        title: &str,
+        body: &str,
+        schedule_id: i64,
+        session_id: i64,
+    ) -> Result<()> {
+        let _ = (schedule_id, session_id);
+        self.notify(title, body)
+    }
 }
 
 pub struct TauriNotifier<'a> {
@@ -120,6 +142,26 @@ impl Notifier for TauriNotifier<'_> {
             .builder()
             .title(title)
             .body(body)
+            .show()
+            .map_err(|e| AppError::Io(format!("notification: {e}")))
+    }
+
+    fn notify_completion(
+        &self,
+        title: &str,
+        body: &str,
+        schedule_id: i64,
+        session_id: i64,
+    ) -> Result<()> {
+        use tauri_plugin_notification::NotificationExt;
+        self.app
+            .notification()
+            .builder()
+            .title(title)
+            .body(body)
+            .action_type_id(CLICK_ACTION_TYPE)
+            .extra("scheduleId", schedule_id)
+            .extra("sessionId", session_id)
             .show()
             .map_err(|e| AppError::Io(format!("notification: {e}")))
     }
@@ -419,7 +461,9 @@ pub fn delete(conn: &Connection, id: i64) -> Result<()> {
 // Click-through from the schedules panel: the session whose chat the UI
 // opens. The schedule's own session while it exists; otherwise a fresh one
 // titled after the schedule, linked back so later opens and fires reuse it
-// (same rule as ensure_run_session at fire time).
+// (same rule as ensure_run_session at fire time). Opening is also the read
+// mark (Q.md item 7): the unread stamp clears on every open path, and the
+// schedule_open command emits "schedules-changed" so the pulse disappears.
 pub fn open_session(conn: &Connection, id: i64) -> Result<i64> {
     let s = schedule_dto(conn, id)?;
     if let Some(sid) = s.session_id {
@@ -429,16 +473,87 @@ pub fn open_session(conn: &Connection, id: i64) -> Result<i64> {
             |r| r.get(0),
         )?;
         if exists > 0 {
+            conn.execute("UPDATE schedules SET unread_at = NULL WHERE id = ?1", params![id])?;
             return Ok(sid);
         }
     }
     let label = s.title.clone().unwrap_or_else(|| s.spec.clone());
     let session = harness::create_session(conn, Some(&format!("Расписание: {label}")))?;
     conn.execute(
-        "UPDATE schedules SET session_id = ?1 WHERE id = ?2",
+        "UPDATE schedules SET session_id = ?1, unread_at = NULL WHERE id = ?2",
         params![session.id, id],
     )?;
     Ok(session.id)
+}
+
+// Q.md item 7: a finished scheduled agent run (run_at/cron) marks its
+// schedule unread and yields the completion notification payload. The
+// schedule is the one that most recently fired into this session; `notify`
+// schedules already notified at fire time and never re-notify here. The
+// unread stamp is written before the caller delivers the notification, so
+// a user with notifications disabled still gets the visual pulse.
+pub struct CompletionNotice {
+    pub schedule_id: i64,
+    pub session_id: i64,
+    pub title: String,
+    pub body: String,
+}
+
+pub fn mark_run_completion(
+    conn: &Connection,
+    session_id: i64,
+    answer: &str,
+    finish_reason: &str,
+    now: DateTime<Utc>,
+) -> Result<Option<CompletionNotice>> {
+    let row: Option<(i64, Option<String>, String, String, Option<String>)> = conn
+        .query_row(
+            "SELECT id, title, kind, spec, prompt FROM schedules
+             WHERE session_id = ?1
+             ORDER BY last_run_at DESC, id DESC LIMIT 1",
+            params![session_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .optional()?;
+    let Some((id, title, kind, spec, prompt)) = row else {
+        return Ok(None);
+    };
+    if kind == "notify" {
+        return Ok(None);
+    }
+    let title = title
+        .filter(|t| !t.trim().is_empty())
+        .unwrap_or_else(|| derive_title(prompt.as_deref(), &spec, 60));
+    let body = completion_body(answer, finish_reason);
+    conn.execute(
+        "UPDATE schedules SET unread_at = ?1 WHERE id = ?2",
+        params![fmt_utc(now), id],
+    )?;
+    Ok(Some(CompletionNotice {
+        schedule_id: id,
+        session_id,
+        title,
+        body,
+    }))
+}
+
+// Notification body for a finished run: the answer's first 120 chars on a
+// normal finish; on any other finish reason the answer already carries the
+// stop notice or error text, and an empty answer falls back to the reason.
+fn completion_body(answer: &str, finish_reason: &str) -> String {
+    let text = answer.trim();
+    if matches!(finish_reason, "finish" | "stop") || !text.is_empty() {
+        return truncate_chars(text, 120);
+    }
+    format!("Сбой выполнения: {finish_reason}")
+}
+
+fn truncate_chars(text: &str, max_chars: usize) -> String {
+    let mut out: String = text.chars().take(max_chars).collect();
+    if text.chars().count() > max_chars {
+        out.push('…');
+    }
+    out
 }
 
 // Engine CRUD used by the schedules UI slice (later): edit spec/prompt/tz/status.
@@ -1698,6 +1813,161 @@ mod tests {
         assert_eq!(open_session(&conn, s.id).unwrap(), fresh);
 
         assert!(matches!(open_session(&conn, 999), Err(AppError::Invalid(_))));
+    }
+
+    #[test]
+    fn run_completion_marks_unread_yields_the_notice_and_clears_on_open() {
+        let conn = setup();
+        let session = create_session_row(&conn);
+        let s = create(
+            &conn,
+            &CreateIn { kind: "run_at", spec: "2026-10-16T10:00:00", prompt: Some("go"), timezone: Some("Europe/Moscow"), session_id: Some(session), related_task_id: None, title: Some("Утренняя сводка") },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+        // Fire it so last_run_at is set (the completion lookup orders by it).
+        tick(
+            &conn,
+            utc("2026-10-16T11:00:00Z"),
+            &RecordingNotifier::new(),
+            &RecordingRunner::new(),
+        )
+        .unwrap();
+
+        let notice = mark_run_completion(
+            &conn,
+            session,
+            "  Готово: цены сняты.  ",
+            "finish",
+            utc("2026-10-16T11:05:00Z"),
+        )
+        .unwrap()
+        .expect("a fired run_at schedule must produce a completion notice");
+        assert_eq!((notice.schedule_id, notice.session_id), (s.id, session));
+        assert_eq!(notice.title, "Утренняя сводка");
+        assert_eq!(notice.body, "Готово: цены сняты.");
+
+        let dto = schedule_dto(&conn, s.id).unwrap();
+        assert_eq!(dto.unread_at.as_deref(), Some("2026-10-16T11:05:00Z"));
+
+        // Opening the schedule's chat is the read mark: the stamp clears.
+        assert_eq!(open_session(&conn, s.id).unwrap(), session);
+        let dto = schedule_dto(&conn, s.id).unwrap();
+        assert_eq!(dto.unread_at, None);
+    }
+
+    #[test]
+    fn run_completion_bodies_truncate_and_report_failed_finishes() {
+        let conn = setup();
+        let session = create_session_row(&conn);
+        create(
+            &conn,
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("daily report"), timezone: None, session_id: Some(session), related_task_id: None, title: None },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+
+        // A long answer is cut to 120 chars plus the ellipsis.
+        let long = "д".repeat(200);
+        let notice = mark_run_completion(&conn, session, &long, "stop", utc("2026-10-16T11:00:00Z"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(notice.body.chars().count(), 121);
+        assert!(notice.body.ends_with('…'));
+        // No explicit title: it is derived from the prompt.
+        assert_eq!(notice.title, "daily report");
+
+        // A failed finish with no answer text reports the reason instead.
+        let notice = mark_run_completion(&conn, session, "", "llm_error", utc("2026-10-16T12:00:00Z"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(notice.body, "Сбой выполнения: llm_error");
+
+        // A failed finish whose answer carries the error text shows it.
+        let notice = mark_run_completion(
+            &conn,
+            session,
+            "Warning: transport failed",
+            "llm_error",
+            utc("2026-10-16T12:00:00Z"),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(notice.body, "Warning: transport failed");
+    }
+
+    #[test]
+    fn run_completion_skips_notify_schedules_and_sessions_without_one() {
+        let conn = setup();
+        let session = create_session_row(&conn);
+        let s = create(
+            &conn,
+            &CreateIn { kind: "notify", spec: "2026-10-16T10:00:00", prompt: Some("ping"), timezone: None, session_id: Some(session), related_task_id: None, title: None },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+        // notify schedules already notified at fire time: no completion
+        // notice, no unread stamp.
+        assert!(mark_run_completion(&conn, session, "answer", "finish", utc("2026-10-16T11:00:00Z"))
+            .unwrap()
+            .is_none());
+        let dto = schedule_dto(&conn, s.id).unwrap();
+        assert_eq!(dto.unread_at, None);
+
+        // A harness run in a session with no schedule: nothing to mark.
+        assert!(mark_run_completion(&conn, 999, "answer", "finish", utc("2026-10-16T11:00:00Z"))
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn run_completion_targets_the_most_recently_fired_schedule_of_the_session() {
+        let conn = setup();
+        let session = create_session_row(&conn);
+        let older = create(
+            &conn,
+            &CreateIn { kind: "run_at", spec: "2026-10-14T10:00:00Z", prompt: Some("a"), timezone: None, session_id: Some(session), related_task_id: None, title: Some("older") },
+            utc("2026-10-13T08:00:00Z"),
+        )
+        .unwrap();
+        let newer = create(
+            &conn,
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("b"), timezone: None, session_id: Some(session), related_task_id: None, title: Some("newer") },
+            utc("2026-10-13T08:00:00Z"),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE schedules SET last_run_at = '2026-10-14T07:00:00Z' WHERE id = ?1",
+            params![older.id],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE schedules SET last_run_at = '2026-10-16T07:00:00Z' WHERE id = ?1",
+            params![newer.id],
+        )
+        .unwrap();
+
+        let notice = mark_run_completion(&conn, session, "done", "finish", utc("2026-10-16T11:00:00Z"))
+            .unwrap()
+            .unwrap();
+        assert_eq!((notice.schedule_id, notice.title.as_str()), (newer.id, "newer"));
+        let older = schedule_dto(&conn, older.id).unwrap();
+        assert_eq!(older.unread_at, None);
+        let newer = schedule_dto(&conn, newer.id).unwrap();
+        assert_eq!(newer.unread_at.as_deref(), Some("2026-10-16T11:00:00Z"));
+    }
+
+    #[test]
+    fn completion_notifications_fall_back_to_plain_delivery_in_recording_testers() {
+        // The trait default drops the schedule/session ids and delivers a
+        // plain notification, so every existing recording tester keeps the
+        // completion path observable.
+        let notifier = RecordingNotifier::new();
+        notifier.notify_completion("t", "b", 1, 2).unwrap();
+        assert_eq!(
+            *notifier.sent.lock().unwrap(),
+            vec![("t".to_string(), "b".to_string())]
+        );
     }
 
     #[test]
