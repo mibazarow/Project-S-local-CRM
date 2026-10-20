@@ -72,6 +72,7 @@ vi.mock("../../api/ipc", () => ({
   onboardingStatus: vi.fn(async () => ({ configured: true, workingDir: "/ws-test" })),
   touchProjectOpened: vi.fn(async () => undefined),
   onFsChanged: vi.fn(async () => () => {}),
+  onIndexChanged: vi.fn(async () => () => {}),
   onTasksChanged: vi.fn(async () => () => {}),
   onSchedulesChanged: vi.fn(async () => () => {}),
   onProjectsChanged: vi.fn(async () => () => {}),

@@ -17,12 +17,39 @@ const openWith = vi.hoisted(
   () => vi.fn(async (..._args: unknown[]) => ({ opened: true, app: null })),
 );
 
+// Event bus: the editor subscribes to notes-changed / index-changed; tests
+// fire those handlers to simulate an external write to the open note.
+const bus = vi.hoisted(() => ({
+  notes: [] as ((p: { relPath: string }) => void)[],
+  index: [] as ((p: { projectId: number }) => void)[],
+}));
+const onNotesChanged = vi.hoisted(
+  () =>
+    vi.fn(async (h: (p: { relPath: string }) => void) => {
+      bus.notes.push(h);
+      return () => {
+        bus.notes = bus.notes.filter((x) => x !== h);
+      };
+    }),
+);
+const onIndexChanged = vi.hoisted(
+  () =>
+    vi.fn(async (h: (p: { projectId: number }) => void) => {
+      bus.index.push(h);
+      return () => {
+        bus.index = bus.index.filter((x) => x !== h);
+      };
+    }),
+);
+
 vi.mock("../../api/ipc", () => ({
   notesRead,
   notesReadBinaryDataUrl,
   notesWrite,
   notesEnsure,
   openWith,
+  onNotesChanged,
+  onIndexChanged,
 }));
 
 import NoteEditor from "./NoteEditor";
@@ -72,6 +99,20 @@ beforeEach(() => {
   notesWrite.mockReset().mockResolvedValue({});
   notesEnsure.mockReset().mockResolvedValue("/wd/Notes");
   openWith.mockReset().mockResolvedValue({ opened: true, app: null });
+  bus.notes = [];
+  bus.index = [];
+  onNotesChanged.mockReset().mockImplementation(async (h: (p: { relPath: string }) => void) => {
+    bus.notes.push(h);
+    return () => {
+      bus.notes = bus.notes.filter((x) => x !== h);
+    };
+  });
+  onIndexChanged.mockReset().mockImplementation(async (h: (p: { projectId: number }) => void) => {
+    bus.index.push(h);
+    return () => {
+      bus.index = bus.index.filter((x) => x !== h);
+    };
+  });
   URL.createObjectURL = vi.fn(() => "blob:pdf-preview");
   URL.revokeObjectURL = vi.fn();
   container = document.createElement("div");
@@ -180,5 +221,100 @@ describe("NoteEditor non-md previews", () => {
       openBtn!.click();
     });
     expect(openWith).toHaveBeenCalledWith("notes", "archive.zip");
+  });
+});
+
+describe("NoteEditor external reload", () => {
+  const fireNotes = async (rel: string) => {
+    await act(async () => {
+      bus.notes.forEach((h) => h({ relPath: rel }));
+    });
+    await settle();
+  };
+
+  const setValue = (ta: HTMLTextAreaElement, value: string) => {
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value",
+    )!.set!;
+    setter.call(ta, value);
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  };
+
+  it("silently reloads a clean text file and keeps the scroll position", async () => {
+    notesRead.mockResolvedValue("строка 1\nстрока 2");
+    await mount(txtEntry);
+    const pre = container.querySelector("pre.preview-body")!;
+    pre.scrollTop = 42;
+    notesRead.mockResolvedValue("новый текст с диска");
+    await fireNotes("plan.txt");
+    expect(container.querySelector("pre.preview-body")?.textContent).toBe("новый текст с диска");
+    expect(container.querySelector("pre.preview-body")?.scrollTop).toBe(42);
+    expect(container.querySelector(".preview-conflict")).toBeNull();
+  });
+
+  it("shows the «изменён извне» banner instead of overwriting a dirty draft", async () => {
+    notesRead.mockResolvedValue("исходник");
+    await mount(mdEntry);
+    await act(async () => {
+      button("Исходник")!.click();
+    });
+    const ta = container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")!;
+    setValue(ta, "моя правка");
+    notesRead.mockResolvedValue("правка извне");
+    await fireNotes("note.md");
+    expect(container.querySelector(".preview-conflict")?.textContent).toContain("Файл изменён извне");
+    expect(container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")?.value).toBe(
+      "моя правка",
+    );
+    expect(notesWrite).not.toHaveBeenCalled();
+  });
+
+  it("«Обновить» replaces the draft with the disk content", async () => {
+    notesRead.mockResolvedValue("исходник");
+    await mount(mdEntry);
+    await act(async () => {
+      button("Исходник")!.click();
+    });
+    const ta = container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")!;
+    setValue(ta, "моя правка");
+    notesRead.mockResolvedValue("правка извне");
+    await fireNotes("note.md");
+    await act(async () => {
+      button("Обновить")!.click();
+    });
+    await settle();
+    expect(container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")?.value).toBe(
+      "правка извне",
+    );
+    expect(container.querySelector(".preview-conflict")).toBeNull();
+  });
+
+  it("«Оставить моё» keeps the local draft and dismisses the banner", async () => {
+    notesRead.mockResolvedValue("исходник");
+    await mount(mdEntry);
+    await act(async () => {
+      button("Исходник")!.click();
+    });
+    const ta = container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")!;
+    setValue(ta, "моя правка");
+    notesRead.mockResolvedValue("правка извне");
+    await fireNotes("note.md");
+    await act(async () => {
+      button("Оставить моё")!.click();
+    });
+    expect(container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")?.value).toBe(
+      "моя правка",
+    );
+    expect(container.querySelector(".preview-conflict")).toBeNull();
+  });
+
+  it("reports a deleted/renamed note instead of a broken view", async () => {
+    notesRead.mockResolvedValue("было");
+    await mount(mdEntry);
+    notesRead.mockRejectedValue(new Error("not found"));
+    await fireNotes("note.md");
+    expect(container.textContent).toContain("Файл недоступен");
+    expect(container.querySelector(".md-block")).toBeNull();
   });
 });

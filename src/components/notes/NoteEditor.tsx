@@ -1,5 +1,7 @@
 import {
+  useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -29,6 +31,10 @@ type Mode = "blocks" | "source";
 type Format = "h1" | "h2" | "h3" | "bold" | "italic" | "underline" | "strike";
 
 const AUTOSAVE_MS = 800;
+
+// NOTES_SCOPE_ID in index/mod.rs: "index-changed" rows for the Notes/ vault
+// reach the editor through the debounced reindex watcher (external edits).
+const NOTES_SCOPE_ID = -1;
 
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 // Must stay in sync with PDF_MAX_BYTES in src-tauri/src/fs_ops.rs.
@@ -85,10 +91,19 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
   const [reloadTick, setReloadTick] = useState(0);
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
+  const [external, setExternal] = useState<string | null>(null);
+  const [conflict, setConflict] = useState(false);
+  const [missing, setMissing] = useState(false);
+  const [reloadSeq, setReloadSeq] = useState(0);
   const blockTaRef = useRef<HTMLTextAreaElement | null>(null);
   const sourceTaRef = useRef<HTMLTextAreaElement | null>(null);
+  const blocksRef = useRef<HTMLDivElement | null>(null);
+  const textPreRef = useRef<HTMLPreElement | null>(null);
   const pendingCaret = useRef<number | null>(null);
   const relRef = useRef<string | null>(null);
+  const restoreRef = useRef<{ top: number; start: number | null; end: number | null } | null>(null);
+  const savedRef = useRef("");
+  const dirtyRef = useRef(false);
 
   useEffect(() => {
     setMode("blocks");
@@ -100,6 +115,9 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
     setDraft("");
     setDataUrl(null);
     setPdfUrl(null);
+    setExternal(null);
+    setConflict(false);
+    setMissing(false);
     relRef.current = entry?.relPath ?? null;
     if (!entry) return;
     let cancelled = false;
@@ -177,10 +195,112 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
     if (text !== saved) setSavedFlash(false);
   }, [entry, text, saved, onDirtyChange]);
 
-  // Debounced autosave through notes_write; the rel guard keeps a late write
-  // from marking a freshly opened note as saved.
+  savedRef.current = saved;
+  // A block being edited (uncommitted draft) counts as an unsaved edit too, so
+  // an external change raises the banner instead of dropping the in-progress block.
+  dirtyRef.current = entry != null && (text !== saved || active !== null);
+
+  const scroller = (): HTMLElement | null =>
+    mode === "source"
+      ? sourceTaRef.current
+      : entry?.isMarkdown
+        ? blocksRef.current
+        : textPreRef.current;
+
+  // Replace the shown content with freshly read disk content, keeping the
+  // scroll position and (in source mode) the caret/selection.
+  const applyExternal = useCallback(
+    (content: string) => {
+      const el = scroller();
+      if (el) {
+        const ta = el instanceof HTMLTextAreaElement ? el : null;
+        restoreRef.current = {
+          top: el.scrollTop,
+          start: ta ? ta.selectionStart : null,
+          end: ta ? ta.selectionEnd : null,
+        };
+      }
+      setText(content);
+      setSaved(content);
+      setExternal(null);
+      setConflict(false);
+      setMissing(false);
+      setReloadSeq((s) => s + 1);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [mode, entry?.isMarkdown],
+  );
+
+  useLayoutEffect(() => {
+    if (reloadSeq === 0) return;
+    const el = scroller();
+    const r = restoreRef.current;
+    restoreRef.current = null;
+    if (!el || !r) return;
+    el.scrollTop = r.top;
+    if (r.start !== null && el instanceof HTMLTextAreaElement) {
+      el.focus();
+      el.setSelectionRange(r.start, r.end ?? r.start);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reloadSeq, mode, entry?.isMarkdown]);
+
+  // Re-read the open note when the backend reports a change for this path
+  // (notes-changed from our own/agent writes, index-changed from the watcher
+  // for edits by another program). Content is diffed against the last loaded
+  // version, so our own autosaves and no-op events never loop or raise a banner.
+  const checkExternal = useCallback(() => {
+    const rel = entry?.relPath;
+    if (!rel) return;
+    void (async () => {
+      let disk: string;
+      try {
+        disk = await ipc.notesRead(rel);
+      } catch {
+        setMissing(true);
+        setConflict(false);
+        setExternal(null);
+        return;
+      }
+      setMissing(false);
+      if (disk === savedRef.current) return;
+      if (dirtyRef.current) {
+        setExternal(disk);
+        setConflict(true);
+      } else {
+        applyExternal(disk);
+      }
+    })();
+  }, [entry?.relPath, applyExternal]);
+
   useEffect(() => {
-    if (!entry || text === saved) return;
+    const rel = entry?.relPath;
+    if (!rel || !(entry.isMarkdown || entry.isText)) return;
+    let cancelled = false;
+    let unNotes: (() => void) | undefined;
+    let unIndex: (() => void) | undefined;
+    void ipc
+      .onNotesChanged((p) => {
+        if (!cancelled && p.relPath === rel) checkExternal();
+      })
+      .then((u) => (cancelled ? u() : (unNotes = u)));
+    void ipc
+      .onIndexChanged((p) => {
+        if (!cancelled && p.projectId === NOTES_SCOPE_ID) checkExternal();
+      })
+      .then((u) => (cancelled ? u() : (unIndex = u)));
+    return () => {
+      cancelled = true;
+      unNotes?.();
+      unIndex?.();
+    };
+  }, [entry?.relPath, entry?.isMarkdown, entry?.isText, checkExternal]);
+
+  // Debounced autosave through notes_write; the rel guard keeps a late write
+  // from marking a freshly opened note as saved. Paused while an external
+  // change is pending a decision, so the draft never clobbers the disk edit.
+  useEffect(() => {
+    if (!entry || text === saved || conflict) return;
     const rel = entry.relPath;
     const timer = setTimeout(() => {
       void ipc
@@ -398,6 +518,28 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
         )}
       </div>
       {error && <div className="tree-error notes-editor-error">{error}</div>}
+      {conflict && (
+        <div className="preview-conflict notes-conflict" role="alert">
+          <span className="preview-conflict-text">Файл изменён извне</span>
+          <div className="preview-conflict-actions">
+            <button
+              className="ghost-btn small"
+              onClick={() => external !== null && applyExternal(external)}
+            >
+              Обновить
+            </button>
+            <button
+              className="ghost-btn small"
+              onClick={() => {
+                setConflict(false);
+                setExternal(null);
+              }}
+            >
+              Оставить моё
+            </button>
+          </div>
+        </div>
+      )}
       {entry?.isMarkdown && (
         <div className="notes-md-toolbar">
           {TOOLBAR.map((t) => (
@@ -423,9 +565,17 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
         </div>
       ) : loading ? (
         <div className="center-body">Загрузка…</div>
+      ) : missing ? (
+        <div className="center-body">
+          <div className="preview-body preview-error">
+            Файл недоступен — он был удалён или переименован.
+          </div>
+        </div>
       ) : !entry.isMarkdown && entry.isText ? (
         <div className="notes-editor-body">
-          <pre className="preview-body">{text}</pre>
+          <pre ref={textPreRef} className="preview-body">
+            {text}
+          </pre>
         </div>
       ) : !entry.isMarkdown && entry.isImage ? (
         <div className="notes-editor-body">
@@ -463,7 +613,7 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
           />
         </div>
       ) : (
-        <div className="notes-editor-body notes-blocks">
+        <div ref={blocksRef} className="notes-editor-body notes-blocks">
           {blocks.map((block, i) =>
             active === i ? (
               blockTextarea

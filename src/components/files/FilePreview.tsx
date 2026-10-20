@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { marked } from "marked";
 import DOMPurify from "dompurify";
 import * as ipc from "../../api/ipc";
@@ -41,6 +41,15 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
   const [historyAbs, setHistoryAbs] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
+  // External-change reload: disk content differs from the last loaded version.
+  const [external, setExternal] = useState<string | null>(null);
+  const [conflict, setConflict] = useState(false);
+  const [missing, setMissing] = useState(false);
+  const [reloadSeq, setReloadSeq] = useState(0);
+  const bodyRef = useRef<HTMLElement | null>(null);
+  const restoreRef = useRef<{ top: number; start: number | null; end: number | null } | null>(null);
+  const savedRef = useRef("");
+  const dirtyRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -51,6 +60,9 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
     setSaved("");
     setDataUrl(null);
     setPdfUrl(null);
+    setExternal(null);
+    setConflict(false);
+    setMissing(false);
     if (!isTextual && !entry.isImage && !isPdf) return;
     setLoading(true);
     void (async () => {
@@ -94,9 +106,95 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
     };
   }, [projectId, entry.relPath, entry.isImage, entry.isMarkdown, entry.isText, entry.ext, entry.size, isPdf, reloadTick]);
 
+  const dirty = isTextual && mode === "edit" && text !== saved;
+
   useEffect(() => {
-    onDirtyChange(isTextual && mode === "edit" && text !== saved);
-  }, [isTextual, mode, text, saved, onDirtyChange]);
+    onDirtyChange(dirty);
+  }, [dirty, onDirtyChange]);
+
+  savedRef.current = saved;
+  dirtyRef.current = dirty;
+
+  // Replace the shown content with freshly read disk content, keeping the
+  // scroll position and (in edit mode) the caret/selection of the body element.
+  const applyExternal = useCallback((content: string) => {
+    const el = bodyRef.current;
+    if (el) {
+      const ta = el instanceof HTMLTextAreaElement ? el : null;
+      restoreRef.current = {
+        top: el.scrollTop,
+        start: ta ? ta.selectionStart : null,
+        end: ta ? ta.selectionEnd : null,
+      };
+    }
+    setText(content);
+    setSaved(content);
+    setExternal(null);
+    setConflict(false);
+    setMissing(false);
+    setReloadSeq((s) => s + 1);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (reloadSeq === 0) return;
+    const el = bodyRef.current;
+    const r = restoreRef.current;
+    restoreRef.current = null;
+    if (!el || !r) return;
+    el.scrollTop = r.top;
+    if (r.start !== null && el instanceof HTMLTextAreaElement) {
+      el.focus();
+      el.setSelectionRange(r.start, r.end ?? r.start);
+    }
+  }, [reloadSeq]);
+
+  // Re-read the open file when the backend reports a change for this path
+  // (fs-changed from our own/agent writes, index-changed from the watcher for
+  // edits by another program). Content is diffed against the last loaded
+  // version, so our own saves and no-op events never loop or raise a banner.
+  const checkExternal = useCallback(() => {
+    void (async () => {
+      let disk: string;
+      try {
+        disk = await ipc.fsReadText(projectId, entry.relPath);
+      } catch {
+        setMissing(true);
+        setConflict(false);
+        setExternal(null);
+        return;
+      }
+      setMissing(false);
+      if (disk === savedRef.current) return;
+      if (dirtyRef.current) {
+        setExternal(disk);
+        setConflict(true);
+      } else {
+        applyExternal(disk);
+      }
+    })();
+  }, [projectId, entry.relPath, applyExternal]);
+
+  useEffect(() => {
+    if (!isTextual) return;
+    let cancelled = false;
+    let unFs: (() => void) | undefined;
+    let unIndex: (() => void) | undefined;
+    void ipc
+      .onFsChanged((p) => {
+        if (!cancelled && p.projectId === projectId && p.relPath === entry.relPath) checkExternal();
+      })
+      .then((u) => (cancelled ? u() : (unFs = u)));
+    void ipc
+      .onIndexChanged((p) => {
+        if (!cancelled && p.projectId === projectId) checkExternal();
+      })
+      .then((u) => (cancelled ? u() : (unIndex = u)));
+    return () => {
+      cancelled = true;
+      unFs?.();
+      unIndex?.();
+    };
+  }, [projectId, entry.relPath, isTextual, checkExternal]);
 
   const html = useMemo(
     () =>
@@ -171,8 +269,34 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
           </button>
         </div>
       </div>
+      {conflict && (
+        <div className="preview-conflict" role="alert">
+          <span className="preview-conflict-text">Файл изменён извне</span>
+          <div className="preview-conflict-actions">
+            <button
+              className="ghost-btn small"
+              onClick={() => external !== null && applyExternal(external)}
+            >
+              Обновить
+            </button>
+            <button
+              className="ghost-btn small"
+              onClick={() => {
+                setConflict(false);
+                setExternal(null);
+              }}
+            >
+              Оставить моё
+            </button>
+          </div>
+        </div>
+      )}
       {loading ? (
         <div className="preview-body">Загрузка…</div>
+      ) : missing ? (
+        <div className="preview-body preview-error">
+          Файл недоступен — он был удалён или переименован.
+        </div>
       ) : shownError ? (
         <div className="preview-body preview-error">
           {shownError}
@@ -194,15 +318,31 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
         </div>
       ) : mode === "edit" ? (
         <textarea
+          ref={(el) => {
+            bodyRef.current = el;
+          }}
           className="preview-textarea"
           value={text}
           onChange={(e) => setText(e.target.value)}
           autoFocus
         />
       ) : entry.isMarkdown ? (
-        <div className="preview-body md" dangerouslySetInnerHTML={{ __html: html ?? "" }} />
+        <div
+          ref={(el) => {
+            bodyRef.current = el;
+          }}
+          className="preview-body md"
+          dangerouslySetInnerHTML={{ __html: html ?? "" }}
+        />
       ) : (
-        <pre className="preview-body">{text}</pre>
+        <pre
+          ref={(el) => {
+            bodyRef.current = el;
+          }}
+          className="preview-body"
+        >
+          {text}
+        </pre>
       )}
       {ow.dialog}
       {historyAbs !== null && (
