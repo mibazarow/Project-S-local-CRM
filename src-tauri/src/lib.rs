@@ -343,6 +343,7 @@ pub fn run() {
             commands::attachments::chat_attachment_open,
             commands::index::index_project,
             commands::index::reindex_all,
+            commands::index::reindex_hard,
             commands::index::index_status,
             commands::index::reindex_start,
             commands::index::reindex_status,

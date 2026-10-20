@@ -1,10 +1,28 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as ipc from "../../api/ipc";
-import type { EmbedStatus, IndexingConfig } from "../../api/types";
+import type { EmbedStatus, IndexingConfig, ProjectIndexStats } from "../../api/types";
 import { toMessage as errMsg } from "../../shared/errors";
+import { confirmAction } from "../../shared/confirm";
 import { Card, Field } from "./shared";
 import { useDebouncedConfig, type DebouncedConfig } from "./useDebouncedConfig";
 import { indexingToPatch, toForm, type AppForm, type Form } from "./forms";
+
+const MAX_SHOWN_ERRORS = 3;
+
+function summarize(results: ProjectIndexStats[]): string {
+  const seen = results.reduce((s, r) => s + r.stats.filesSeen, 0);
+  const updated = results.reduce((s, r) => s + r.stats.filesIndexed, 0);
+  const unchanged = results.reduce((s, r) => s + r.stats.filesSkipped, 0);
+  const removed = results.reduce((s, r) => s + r.stats.filesRemoved, 0);
+  const errors = results.flatMap((r) => r.stats.errors);
+  const counters =
+    updated === 0 && removed === 0
+      ? "Индекс актуален"
+      : `Проверено ${seen}, обновлено ${updated}, без изменений ${unchanged}, удалено ${removed}`;
+  if (errors.length === 0) return counters;
+  const rest = errors.length > MAX_SHOWN_ERRORS ? ` (+${errors.length - MAX_SHOWN_ERRORS})` : "";
+  return `${counters}. Ошибки: ${errors.slice(0, MAX_SHOWN_ERRORS).join("; ")}${rest}`;
+}
 
 export default function AgentTab({
   active,
@@ -24,10 +42,12 @@ export default function AgentTab({
     setError,
   );
   const [embed, setEmbed] = useState<EmbedStatus | null>(null);
-  const [reindexBusy, setReindexBusy] = useState(false);
+  const [reindexBusy, setReindexBusy] = useState<"inc" | "hard" | null>(null);
   const [reindexNote, setReindexNote] = useState<string | null>(null);
   const [styleBusy, setStyleBusy] = useState(false);
   const [styleNote, setStyleNote] = useState<string | null>(null);
+  const reindexBusyRef = useRef(false);
+  reindexBusyRef.current = reindexBusy !== null;
 
   useEffect(() => {
     void ipc
@@ -47,11 +67,11 @@ export default function AgentTab({
       }),
     );
     track(
-      ipc.onIndexChanged(({ stats }) =>
-        setReindexNote(
-          `Индекс обновлён: файлов ${stats.filesIndexed}, убрано ${stats.filesRemoved}`,
-        ),
-      ),
+      ipc.onIndexChanged(({ projectId, stats }) => {
+        if (!reindexBusyRef.current) {
+          setReindexNote(summarize([{ projectId, stats }]));
+        }
+      }),
     );
     return () => {
       cancelled = true;
@@ -60,20 +80,31 @@ export default function AgentTab({
   }, [reload]);
 
   const reindex = () => {
-    setReindexBusy(true);
+    setReindexBusy("inc");
     setReindexNote("Переиндексация…");
     void ipc
       .reindexAll()
-      .then((results) => {
-        const indexed = results.reduce((s, r) => s + r.stats.filesIndexed, 0);
-        const seen = results.reduce((s, r) => s + r.stats.filesSeen, 0);
-        const errors = results.reduce((s, r) => s + r.stats.errors.length, 0);
-        setReindexNote(
-          `Готово: индексировано ${indexed} из ${seen} файлов${errors ? `, ошибок: ${errors}` : ""}`,
-        );
-      })
+      .then((results) => setReindexNote(summarize(results)))
       .catch((e) => setError(errMsg(e)))
-      .finally(() => setReindexBusy(false));
+      .finally(() => setReindexBusy(null));
+  };
+
+  const reindexHard = async () => {
+    const ok = await confirmAction({
+      title: "Пересобрать индекс полностью?",
+      message:
+        "Весь текущий индекс файлов (поиск по словам и векторы) будет очищен и построен заново по всем проектам и заметкам. Это лечит испорченный индекс; сборка может занять время.",
+      confirmLabel: "Пересобрать",
+      danger: true,
+    });
+    if (!ok) return;
+    setReindexBusy("hard");
+    setReindexNote("Пересборка индекса…");
+    void ipc
+      .reindexHard()
+      .then((results) => setReindexNote(summarize(results)))
+      .catch((e) => setError(errMsg(e)))
+      .finally(() => setReindexBusy(null));
   };
 
   const resetStyle = () => {
@@ -146,10 +177,13 @@ export default function AgentTab({
           />
         </Field>
       </Card>
-      <Card title="Переиндексация" desc="Полное перестроение индекса по всем проектам.">
+      <Card title="Переиндексация" desc="Обход файлов по всем проектам: новые и изменённые обновляются, удалённые убираются из поиска.">
         <div className="set-actions">
-          <button className="ghost-btn" disabled={reindexBusy} onClick={reindex}>
-            {reindexBusy ? "Переиндексация…" : "Переиндексировать"}
+          <button className="ghost-btn" disabled={reindexBusy !== null} onClick={reindex}>
+            {reindexBusy === "inc" ? "Переиндексация…" : "Переиндексировать"}
+          </button>
+          <button className="ghost-btn" disabled={reindexBusy !== null} onClick={reindexHard}>
+            {reindexBusy === "hard" ? "Пересборка…" : "Пересобрать индекс полностью"}
           </button>
         </div>
         {reindexNote && <div className="set-note">{reindexNote}</div>}
@@ -175,8 +209,8 @@ export default function AgentTab({
             {embed.available
               ? "скачана, активна"
               : embed.modelPresent
-                ? "файлы на месте, но модель недоступна"
-                : "не скачана — сейчас поиск только по словам"}
+                ? "файлы на месте, но модель недоступна — векторы не строятся, поиск только по словам"
+                : "не скачана — векторы не строятся, поиск только по словам"}
           </div>
         )}
         {embed?.reason && <div className="set-note">{embed.reason}</div>}

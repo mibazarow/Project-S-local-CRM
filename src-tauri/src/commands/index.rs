@@ -37,10 +37,8 @@ pub(crate) fn index_project(app: AppHandle, state: State<AppState>, project_id: 
     Ok(stats)
 }
 
-#[tauri::command]
-pub(crate) fn reindex_all(app: AppHandle, state: State<AppState>) -> Result<Vec<ProjectIndexStats>> {
-    let results = index::index_all(&state)?;
-    Ok(results
+fn emit_results(app: &AppHandle, results: Vec<(i64, index::IndexStats)>) -> Vec<ProjectIndexStats> {
+    results
         .into_iter()
         .map(|(project_id, stats)| {
             let _ = app.emit(
@@ -52,7 +50,20 @@ pub(crate) fn reindex_all(app: AppHandle, state: State<AppState>) -> Result<Vec<
             );
             ProjectIndexStats { project_id, stats }
         })
-        .collect())
+        .collect()
+}
+
+#[tauri::command]
+pub(crate) fn reindex_all(app: AppHandle, state: State<AppState>) -> Result<Vec<ProjectIndexStats>> {
+    Ok(emit_results(&app, index::index_all(&state)?))
+}
+
+// Hard rebuild: wipes the whole file index in one transaction and reindexes
+// every project and the Notes vault from scratch; same "index-changed"
+// progress events as reindex_all.
+#[tauri::command]
+pub(crate) fn reindex_hard(app: AppHandle, state: State<AppState>) -> Result<Vec<ProjectIndexStats>> {
+    Ok(emit_results(&app, index::reindex_hard(&state)?))
 }
 
 #[tauri::command]

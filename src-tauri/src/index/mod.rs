@@ -59,6 +59,15 @@ pub fn index_all(state: &AppState) -> Result<Vec<(i64, IndexStats)>> {
     let conn = db::open(&paths::db_path(&wd))?;
     let cfg = indexing_config(&wd)?;
     let embedder = embed::select_embedder(&wd);
+    index_projects(&conn, &wd, &cfg, embedder.as_ref())
+}
+
+fn index_projects(
+    conn: &Connection,
+    wd: &Path,
+    cfg: &IndexingConfig,
+    embedder: &dyn embed::Embedder,
+) -> Result<Vec<(i64, IndexStats)>> {
     let mut ids = Vec::new();
     {
         let mut stmt = conn.prepare("SELECT id FROM projects ORDER BY id")?;
@@ -68,8 +77,8 @@ pub fn index_all(state: &AppState) -> Result<Vec<(i64, IndexStats)>> {
     }
     let mut out = Vec::new();
     for id in ids {
-        match projects::project_root(&conn, &wd, id) {
-            Ok(root) => out.push((id, index_root(&conn, id, &root, &cfg, embedder.as_ref())?)),
+        match projects::project_root(conn, wd, id) {
+            Ok(root) => out.push((id, index_root(conn, id, &root, cfg, embedder)?)),
             Err(e) => out.push((
                 id,
                 IndexStats {
@@ -79,6 +88,42 @@ pub fn index_all(state: &AppState) -> Result<Vec<(i64, IndexStats)>> {
             )),
         }
     }
+    Ok(out)
+}
+
+// Wipes the whole file index (every project scope + the notes scope) in one
+// transaction: a failure can only leave an empty consistent index, never a
+// half-cleared one.
+pub fn clear_all_index(conn: &Connection) -> Result<()> {
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM vec_items", [])?;
+    tx.execute("DELETE FROM file_vectors", [])?;
+    tx.execute("DELETE FROM files_fts", [])?;
+    tx.execute("DELETE FROM indexed_files", [])?;
+    tx.commit()?;
+    Ok(())
+}
+
+// Hard rebuild («Пересобрать индекс полностью»): clears every file-index row
+// in the storage, then walks all projects and the Notes vault from scratch.
+// Heals index corruption the incremental pass cannot (orphan FTS/vector rows).
+pub fn reindex_hard(state: &AppState) -> Result<Vec<(i64, IndexStats)>> {
+    let wd = state.working_dir()?;
+    let conn = db::open(&paths::db_path(&wd))?;
+    clear_all_index(&conn)?;
+    let cfg = indexing_config(&wd)?;
+    let embedder = embed::select_embedder(&wd);
+    let mut out = index_projects(&conn, &wd, &cfg, embedder.as_ref())?;
+    out.push((
+        NOTES_SCOPE_ID,
+        index_root(
+            &conn,
+            NOTES_SCOPE_ID,
+            &paths::notes_dir(&wd),
+            &cfg,
+            embedder.as_ref(),
+        )?,
+    ));
     Ok(out)
 }
 
@@ -779,11 +824,78 @@ mod tests {
 
     #[test]
     fn semantic_search_returns_empty_list_with_noop_backend() {
-        let (wd, _conn, id, state) = setup("idx-noop");
+        let (wd, conn, id, state) = setup("idx-noop");
         fs::write(root(&wd).join("a.txt"), "раз").unwrap();
         index_project(&state, id).unwrap(); // default config: ort, but no model files here -> noop
         let hits = semantic_search(&state, id, "раз", 5).unwrap();
         assert!(hits.is_empty());
+        // Without an embedder no vectors are written at all, while the status
+        // says so plainly and word search keeps working.
+        assert_eq!(vector_count(&conn, id), 0);
+        assert_eq!(vec_item_count(&conn), 0);
+        let st = embed::status(&wd);
+        assert!(!st.available && !st.model_present);
+        assert_eq!(fts_rel_paths(&conn, id, "раз"), ["a.txt"]);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn reindex_hard_wipes_orphan_fts_rows_and_reindexes_everything() {
+        let (wd, conn, id, state) = setup("idx-hard");
+        fs::create_dir_all(paths::notes_dir(&wd)).unwrap();
+        fs::write(root(&wd).join("a.md"), "первое слово").unwrap();
+        fs::write(paths::notes_dir(&wd).join("n.md"), "заметка про слово").unwrap();
+        index_all(&state).unwrap();
+
+        // Corrupt the index behind the indexer's back: an orphan FTS row for
+        // a path that is not on disk. The incremental pass never prunes it
+        // (pruning follows indexed_files rows), only the hard rebuild does.
+        conn.execute(
+            "INSERT INTO files_fts (rel_path, project_id, name, content)
+             VALUES ('ghost.md', ?1, 'ghost.md', 'призрачное слово')",
+            params![id.to_string()],
+        )
+        .unwrap();
+        assert_eq!(fts_rel_paths(&conn, id, "призрачное"), ["ghost.md"]);
+
+        let results = reindex_hard(&state).unwrap();
+
+        assert!(fts_rel_paths(&conn, id, "призрачное").is_empty());
+        let scopes: Vec<i64> = results.iter().map(|(pid, _)| *pid).collect();
+        assert!(scopes.contains(&id));
+        assert!(scopes.contains(&NOTES_SCOPE_ID));
+        let indexed: u64 = results.iter().map(|(_, s)| s.files_indexed).sum();
+        let skipped: u64 = results.iter().map(|(_, s)| s.files_skipped).sum();
+        assert_eq!(skipped, 0); // rebuilt from scratch: nothing counted unchanged
+        assert_eq!(indexed, 3); // datas.md + a.md + notes/n.md
+
+        // FTS finds a word from a freshly indexed file in both scopes.
+        assert_eq!(fts_rel_paths(&conn, id, "первое"), ["a.md"]);
+        assert_eq!(fts_rel_paths(&conn, NOTES_SCOPE_ID, "заметка"), ["n.md"]);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn reindex_hard_clears_vectors_and_semantic_search_works_after_rebuild() {
+        let (wd, conn, id, _state) = setup("idx-hard-vec");
+        fs::write(root(&wd).join("cats.md"), "cats cats cats").unwrap();
+        fs::write(root(&wd).join("dogs.md"), "dogs dogs dogs").unwrap();
+        let fake = FakeEmbedder::new();
+        let cfg = IndexingConfig::default();
+        index_root(&conn, id, &root(&wd), &cfg, &fake).unwrap();
+        assert!(vector_count(&conn, id) > 0);
+
+        clear_all_index(&conn).unwrap();
+        for table in ["indexed_files", "files_fts", "file_vectors", "vec_items"] {
+            let rows: i64 = conn
+                .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(rows, 0, "{table} must be empty after the wipe");
+        }
+
+        index_root(&conn, id, &root(&wd), &cfg, &fake).unwrap();
+        let hits = semantic_search_with(&conn, &fake, 0.3, id, "cats", 5).unwrap();
+        assert_eq!(hits[0].rel_path, "cats.md");
         fs::remove_dir_all(&wd).unwrap();
     }
 }

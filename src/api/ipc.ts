@@ -396,6 +396,10 @@ export const chatAttachmentOpen = (chatId: number, messageId: number, index: num
 
 export const reindexAll = () => invoke<ProjectIndexStats[]>("reindex_all");
 
+// Hard rebuild: clears the whole file index (all projects + notes) in one
+// transaction and reindexes everything from scratch.
+export const reindexHard = () => invoke<ProjectIndexStats[]>("reindex_hard");
+
 // Style profile (SPEC 6.6): reset the global style-of-communication profile the
 // agents mirror from the user's messages.
 export const styleReset = () => invoke<void>("style_reset");
