@@ -394,6 +394,7 @@ pub fn run() {
             commands::style::style_reset,
             commands::mcp::mcp_status,
             commands::mcp::mcp_reload,
+            commands::mcp::mcp_set_enabled,
             commands::skills::skills_list,
             commands::skills::skills_set_enabled,
             commands::skills::skills_import,

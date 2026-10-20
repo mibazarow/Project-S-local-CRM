@@ -254,6 +254,9 @@ pub struct McpServerConfig {
     #[serde(default)]
     pub enabled: bool,
     pub transport: McpTransportConfig,
+    // Per-server tool-call timeout in seconds; falls back to the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u64>,
     // Unknown per-server keys (allowed_tools, cwd, ...) survive app rewrites.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
@@ -748,12 +751,14 @@ mod tests {
     #[test]
     fn mcp_transport_variants_parse() {
         let cfg: McpConfig = serde_json::from_value(json!({ "servers": [
-            { "name": "std", "enabled": true, "transport": { "type": "stdio", "command": "sh", "args": ["-c", "x"], "env": { "K": "V" } } },
+            { "name": "std", "enabled": true, "timeoutSecs": 30, "transport": { "type": "stdio", "command": "sh", "args": ["-c", "x"], "env": { "K": "V" } } },
             { "name": "h", "enabled": true, "transport": { "type": "http", "url": "https://x.example/mcp", "headers": { "A": "b" } } },
             { "name": "s", "enabled": true, "transport": { "type": "sse", "url": "http://localhost:1/sse" } },
         ] }))
         .unwrap();
         assert_eq!(cfg.servers.len(), 3);
+        assert_eq!(cfg.servers[0].timeout_secs, Some(30));
+        assert_eq!(cfg.servers[1].timeout_secs, None);
         assert!(matches!(&cfg.servers[0].transport, McpTransportConfig::Stdio { command, args, env }
             if command == "sh" && args.len() == 2 && env["K"] == "V"));
         assert!(matches!(&cfg.servers[1].transport, McpTransportConfig::Http { url, headers }

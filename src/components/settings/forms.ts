@@ -171,6 +171,7 @@ export interface McpForm {
   env: string;
   url: string;
   headers: string;
+  timeout: string;
 }
 
 export const emptyMcpForm: McpForm = {
@@ -181,6 +182,7 @@ export const emptyMcpForm: McpForm = {
   env: "",
   url: "",
   headers: "",
+  timeout: "",
 };
 
 export type SkillKindOption = "instruction" | "script" | "extension";

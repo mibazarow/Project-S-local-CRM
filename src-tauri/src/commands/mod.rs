@@ -147,6 +147,23 @@ pub(crate) fn emit_skills_changed(app: &AppHandle) {
 
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
+struct ConfigChanged {
+    which: &'static str,
+}
+
+// Same payload the config file watcher emits, so UI listeners cannot tell
+// apart who triggered the change (command write vs hand edit).
+pub(crate) fn emit_config_changed(app: &AppHandle, kind: crate::config::ConfigKind) {
+    let _ = app.emit(
+        "config-changed",
+        ConfigChanged {
+            which: kind.which(),
+        },
+    );
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 struct ProjectsChanged {}
 
 pub(crate) fn emit_projects_changed(app: &AppHandle) {

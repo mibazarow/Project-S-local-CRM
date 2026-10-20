@@ -15,7 +15,6 @@ use std::io::BufReader;
 use std::time::{Duration, Instant};
 
 const ACCEPT: &str = "application/json, text/event-stream";
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 pub struct HttpTransport {
     url: String,
@@ -23,19 +22,25 @@ pub struct HttpTransport {
     agent: ureq::Agent,
     session_id: Option<String>,
     pending: VecDeque<Value>,
+    call_timeout: Duration,
 }
 
 impl HttpTransport {
-    pub fn new(url: &str, headers: &BTreeMap<String, String>) -> Result<HttpTransport> {
+    pub fn new(
+        url: &str,
+        headers: &BTreeMap<String, String>,
+        call_timeout: Duration,
+    ) -> Result<HttpTransport> {
         Ok(HttpTransport {
             url: url.to_string(),
             headers: headers.clone(),
             agent: ureq::AgentBuilder::new()
                 .timeout_connect(Duration::from_secs(15))
-                .timeout_read(REQUEST_TIMEOUT)
+                .timeout_read(call_timeout)
                 .build(),
             session_id: None,
             pending: VecDeque::new(),
+            call_timeout,
         })
     }
 }
@@ -59,7 +64,7 @@ impl McpTransport for HttpTransport {
         };
         if resp.content_type().starts_with("text/event-stream") {
             let mut reader = BufReader::new(resp.into_reader());
-            let deadline = Instant::now() + REQUEST_TIMEOUT;
+            let deadline = Instant::now() + self.call_timeout;
             loop {
                 if Instant::now() > deadline {
                     return Err(AppError::Http(
@@ -146,7 +151,7 @@ mod tests {
     fn streamable_http_round_trips_and_echoes_session_and_auth_headers() {
         let server = MockServer::start(json_handler("sess-42"));
         let transport =
-            HttpTransport::new(&format!("{}/mcp", server.url_base), &auth_headers()).unwrap();
+            HttpTransport::new(&format!("{}/mcp", server.url_base), &auth_headers(), Duration::from_secs(120)).unwrap();
         let mut client = McpClient::connect(Box::new(transport)).unwrap();
         let tools = client.list_tools().unwrap();
         assert_eq!(tools.len(), 1);
@@ -182,7 +187,7 @@ mod tests {
         });
         let server = MockServer::start(handler);
         let transport =
-            HttpTransport::new(&format!("{}/mcp", server.url_base), &BTreeMap::new()).unwrap();
+            HttpTransport::new(&format!("{}/mcp", server.url_base), &BTreeMap::new(), Duration::from_secs(120)).unwrap();
         let mut client = McpClient::connect(Box::new(transport)).unwrap();
         let tools = client.list_tools().unwrap();
         assert_eq!(tools.len(), 1);
@@ -196,7 +201,7 @@ mod tests {
             Arc::new(|stream: &mut TcpStream, _req| respond(stream, 401, "text/plain", "unauthorized", &[]));
         let server = MockServer::start(handler);
         let transport =
-            HttpTransport::new(&format!("{}/mcp", server.url_base), &auth_headers()).unwrap();
+            HttpTransport::new(&format!("{}/mcp", server.url_base), &auth_headers(), Duration::from_secs(120)).unwrap();
         let err = match McpClient::connect(Box::new(transport)) {
             Ok(_) => panic!("connect must fail on 401"),
             Err(e) => e,

@@ -43,11 +43,16 @@ pub struct McpCallOutcome {
 
 pub struct McpClient {
     channel: RpcChannel,
+    call_timeout: Duration,
 }
 
 impl McpClient {
     // initialize handshake + initialized notification over any transport.
     pub fn connect(transport: Box<dyn McpTransport>) -> Result<McpClient> {
+        Self::connect_with(transport, CALL_TIMEOUT)
+    }
+
+    pub fn connect_with(transport: Box<dyn McpTransport>, call_timeout: Duration) -> Result<McpClient> {
         let mut channel = RpcChannel::new(transport);
         channel.request(
             "initialize",
@@ -59,13 +64,16 @@ impl McpClient {
             CONNECT_TIMEOUT,
         )?;
         channel.notify("notifications/initialized", json!({}))?;
-        Ok(McpClient { channel })
+        Ok(McpClient {
+            channel,
+            call_timeout,
+        })
     }
 
     pub fn list_tools(&mut self) -> Result<Vec<McpTool>> {
         let result = self
             .channel
-            .request("tools/list", json!({}), CALL_TIMEOUT)?;
+            .request("tools/list", json!({}), self.call_timeout)?;
         let tools = result
             .get("tools")
             .and_then(Value::as_array)
@@ -95,7 +103,7 @@ impl McpClient {
         let result = self.channel.request(
             "tools/call",
             json!({ "name": name, "arguments": arguments }),
-            CALL_TIMEOUT,
+            self.call_timeout,
         )?;
         let text = result
             .get("content")
@@ -405,6 +413,7 @@ struct ServerHandle {
     client: Option<Arc<Mutex<McpClient>>>,
     tools: Vec<McpTool>,
     secrets: Vec<String>,
+    call_timeout: Duration,
 }
 
 #[derive(Default)]
@@ -500,6 +509,7 @@ fn config_error_row(name: &str, error: String) -> ServerHandle {
         client: None,
         tools: Vec::new(),
         secrets: Vec::new(),
+        call_timeout: CALL_TIMEOUT,
     }
 }
 
@@ -545,10 +555,15 @@ fn start_server(entry: &Value, wd: &Path) -> ServerHandle {
                 client: None,
                 tools: Vec::new(),
                 secrets: Vec::new(),
+                call_timeout: CALL_TIMEOUT,
             }
         }
     };
     let transport_kind = transport_label(&config.transport);
+    let call_timeout = config
+        .timeout_secs
+        .map(|secs| Duration::from_secs(secs))
+        .unwrap_or(CALL_TIMEOUT);
     if !config.enabled {
         return ServerHandle {
             name: config.name,
@@ -558,6 +573,7 @@ fn start_server(entry: &Value, wd: &Path) -> ServerHandle {
             client: None,
             tools: Vec::new(),
             secrets: Vec::new(),
+            call_timeout,
         };
     }
     let (transport, secrets) = match &config.transport {
@@ -569,7 +585,7 @@ fn start_server(entry: &Value, wd: &Path) -> ServerHandle {
         ),
         McpTransportConfig::Http { url, headers } => (
             check_url(url).and_then(|_| {
-                http::HttpTransport::new(url, headers)
+                http::HttpTransport::new(url, headers, call_timeout)
                     .map(|transport| Box::new(transport) as Box<dyn McpTransport>)
             }),
             headers.values().cloned().collect(),
@@ -583,7 +599,7 @@ fn start_server(entry: &Value, wd: &Path) -> ServerHandle {
         ),
     };
     let outcome = transport.and_then(|transport| {
-        let mut client = McpClient::connect(transport)?;
+        let mut client = McpClient::connect_with(transport, call_timeout)?;
         let tools = client.list_tools()?;
         Ok((client, tools))
     });
@@ -596,6 +612,7 @@ fn start_server(entry: &Value, wd: &Path) -> ServerHandle {
             client: Some(Arc::new(Mutex::new(client))),
             tools,
             secrets,
+            call_timeout,
         },
         Err(e) => ServerHandle {
             name: config.name,
@@ -605,6 +622,7 @@ fn start_server(entry: &Value, wd: &Path) -> ServerHandle {
             client: None,
             tools: Vec::new(),
             secrets,
+            call_timeout,
         },
     }
 }
@@ -874,6 +892,64 @@ mod tests {
             Path::new("/nonexistent-wd"),
         );
         assert_eq!(registry.status()[0].status, "disabled");
+        assert!(registry.tools().is_empty());
+    }
+
+    #[test]
+    fn stdio_server_honors_per_server_timeout_secs() {
+        let wd = temp_test_dir("mcp-timeout-secs");
+        // Answers initialize, then goes silent: tools/list must time out
+        // after the configured 1s, not the default 120s.
+        let registry = McpRegistry::start_from(
+            &[json!({ "name": "slow", "enabled": true, "timeoutSecs": 1,
+                      "transport": { "type": "stdio", "command": "sh", "args": [
+                          "-c", "read request; printf '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\\n'; sleep 10"
+                      ] } })],
+            &wd,
+        );
+        let status = registry.status();
+        assert_eq!(status[0].status, "error");
+        assert!(status[0].error.as_ref().unwrap().contains("did not answer within 1s"),
+                "{:?}", status[0].error);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn registry_shutdown_kills_the_stdio_child_process() {
+        let wd = temp_test_dir("mcp-shutdown-kill");
+        // The child writes its own pid to a file in the wd (spawn points the
+        // cwd at harness_tmp under the wd? no — it inherits ours, so use an
+        // absolute path), answers initialize, then loops forever; after
+        // shutdown the pid must be gone.
+        let pid_file = wd.join("child.pid");
+        let script = format!(
+            "read request; echo $$ > {}; printf '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}\\n'; while read _; do printf '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{}}}}\\n'; done",
+            pid_file.display()
+        );
+        let registry = McpRegistry::start_from(
+            &[json!({ "name": "loop", "enabled": true,
+                      "transport": { "type": "stdio", "command": "sh", "args": ["-c", script] } })],
+            &wd,
+        );
+        assert_eq!(registry.status()[0].status, "running");
+        let pid = fs::read_to_string(&pid_file).unwrap().trim().to_string();
+        assert!(!pid.is_empty());
+        let mut registry = registry;
+        registry.shutdown();
+        let mut gone = false;
+        for _ in 0..40 {
+            let alive = std::process::Command::new("kill")
+                .args(["-0", &pid])
+                .status()
+                .map_or(false, |s| s.success());
+            if !alive {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(gone, "stdio child {pid} must be killed by shutdown");
+        fs::remove_dir_all(&wd).unwrap();
     }
 
     #[test]
