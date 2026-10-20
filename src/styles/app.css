@@ -363,6 +363,7 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 .crumb-link { border: none; background: none; cursor: pointer; font: inherit; }
 .crumb-link:hover { background: var(--accent-soft); }
 .crumb-sep { color: var(--text-muted); }
+.crumb-home { display: inline-flex; align-items: center; }
 
 /* плитка */
 .file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 12px; }
@@ -474,6 +475,9 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 .task-edit-actions .mini-btn { padding: 3px 8px; font-size: 11px; }
 .task-edit-actions .mini-btn:disabled { opacity: .45; cursor: default; }
 .task-edit-actions .mini-btn:disabled:hover { background: transparent; color: var(--text-muted); }
+.task-edit-actions .task-save-btn { color: #248a3d; }
+.task-edit-actions .task-save-btn:hover { color: #1e7834; }
+.task-edit-actions .task-save-btn:disabled { cursor: not-allowed; }
 
 /* Таймер задачи (SPEC 4.3): нижняя строка карточки — слева «Затрачено: ЧЧ:ММ:СС»,
    справа иконки действий. */
@@ -1475,20 +1479,20 @@ details.set-card code {
 
 .schedule-list { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
 .schedule-item {
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
   border-radius: 7px;
   padding: 10px 12px;
   display: flex;
   align-items: center;
   gap: 10px;
-  background: var(--surface-2);
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .06);
   cursor: pointer;
 }
 .schedule-item:hover { border-color: var(--border-strong); }
 .schedule-item .info { flex: 1; min-width: 0; }
 .schedule-item .info .t { font-size: 12.5px; font-weight: 500; }
 .schedule-item .info .c { font-size: 11px; color: var(--text-muted); }
-.schedule-item .badge { flex-shrink: 0; }
 .badge.st-active { color: var(--ok); }
 .badge.st-error { color: var(--danger); }
 .schedule-group { display: flex; flex-direction: column; gap: 8px; }

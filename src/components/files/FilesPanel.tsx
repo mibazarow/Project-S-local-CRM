@@ -109,6 +109,26 @@ export default function FilesPanel({ project }: Props) {
   // Local state flips immediately; the backend persists the mode per project
   // and emits "projects-changed", so AppStore refreshes the project list and
   // the saved value arrives back through the `project` prop (restart path).
+  // List-view breadcrumb navigation: a folder crumb selects that folder in the
+  // tree (like clicking its row), the home crumb clears the selection.
+  const navigateList = (dirRel: string) => {
+    if (dirRel === "") {
+      void handleClosePreview();
+      return;
+    }
+    void handleSelect({
+      name: dirRel.slice(dirRel.lastIndexOf("/") + 1),
+      relPath: dirRel,
+      kind: "dir",
+      ext: "",
+      size: 0,
+      modified: 0,
+      isMarkdown: false,
+      isText: false,
+      isImage: false,
+    });
+  };
+
   const changeView = (next: "list" | "grid") => {
     setView(next);
     void ipc.projectSetFilesView(project.id, next).catch(() => {
@@ -151,7 +171,7 @@ export default function FilesPanel({ project }: Props) {
         <>
           <Breadcrumbs
             path={view === "grid" ? currentDir : (selected?.relPath ?? "")}
-            onNavigate={view === "grid" ? setCurrentDir : undefined}
+            onNavigate={view === "grid" ? setCurrentDir : navigateList}
           />
 
           <div className="center-body">

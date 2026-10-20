@@ -228,7 +228,7 @@ export function TaskEditor({
         <button className="mini-btn" title="Отменить" onClick={onCancel}>
           Отменить
         </button>
-        <button className="mini-btn" title="Сохранить" disabled={!canSave} onClick={save}>
+        <button className="mini-btn task-save-btn" title="Сохранить" disabled={!canSave} onClick={save}>
           Сохранить
         </button>
       </div>

@@ -1,32 +1,47 @@
 import { Fragment } from "react";
+import { IconHome } from "./icons";
 
 interface Props {
-  // Project-relative folder path ("" = project root, row hidden).
+  // Project-relative folder path ("" = project root).
   path: string;
-  // When present, crumbs become clickable and navigate to that folder prefix
-  // (grid view). When absent, crumbs are display-only (list view, unchanged).
-  onNavigate?: (dirRel: string) => void;
+  // Crumbs navigate to that folder prefix; the current segment is never a link.
+  onNavigate: (dirRel: string) => void;
 }
 
 export default function Breadcrumbs({ path, onNavigate }: Props) {
   const segments = path ? path.split("/") : [];
-  if (segments.length === 0) return null;
-  const crumb = (label: string, dirRel: string) =>
-    onNavigate ? (
-      <button className="crumb crumb-link" onClick={() => onNavigate(dirRel)}>
-        {label}
-      </button>
-    ) : (
-      <span className="crumb">{label}</span>
-    );
+  const atRoot = segments.length === 0;
   return (
     <div className="crumbs">
-      {segments.map((segment, i) => (
-        <Fragment key={i}>
-          {i > 0 && <span className="crumb-sep">›</span>}
-          {crumb(segment, segments.slice(0, i + 1).join("/"))}
-        </Fragment>
-      ))}
+      {atRoot ? (
+        <span className="crumb crumb-home" title="Корень проекта">
+          <IconHome />
+        </span>
+      ) : (
+        <button
+          className="crumb crumb-home crumb-link"
+          title="В корень проекта"
+          onClick={() => onNavigate("")}
+        >
+          <IconHome />
+        </button>
+      )}
+      {segments.map((segment, i) => {
+        const dirRel = segments.slice(0, i + 1).join("/");
+        const current = i === segments.length - 1;
+        return (
+          <Fragment key={dirRel}>
+            <span className="crumb-sep">›</span>
+            {current ? (
+              <span className="crumb">{segment}</span>
+            ) : (
+              <button className="crumb crumb-link" onClick={() => onNavigate(dirRel)}>
+                {segment}
+              </button>
+            )}
+          </Fragment>
+        );
+      })}
     </div>
   );
 }

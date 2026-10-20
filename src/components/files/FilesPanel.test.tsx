@@ -18,6 +18,17 @@ const entries = vi.hoisted(
       isText: true,
       isImage: false,
     },
+    {
+      name: "docs",
+      relPath: "docs",
+      kind: "dir",
+      ext: "",
+      size: 0,
+      modified: 0,
+      isMarkdown: false,
+      isText: false,
+      isImage: false,
+    },
   ],
 );
 
@@ -64,7 +75,7 @@ vi.mock("../../api/ipc", () => ({
   onTasksChanged: vi.fn(async () => () => {}),
   onSchedulesChanged: vi.fn(async () => () => {}),
   onProjectsChanged: vi.fn(async () => () => {}),
-  fsListDir: vi.fn(async () => entries),
+  fsListDir: vi.fn(async (_projectId: number, dir: string) => (dir === "" ? entries : [])),
   fsMove: vi.fn(async () => entries[0]),
   fsReadText: vi.fn(async () => "hello"),
   fsWriteText: vi.fn(async () => entries[0]),
@@ -273,6 +284,61 @@ describe("FilesPanel archived project (Q.md item 5)", () => {
     expect(segs()[0].className).toBe("seg active");
     expect(container.querySelector(".seg-filter")).toBeNull();
     expect(container.querySelector(".task-board")).toBeNull();
+  });
+});
+
+describe("FilesPanel breadcrumbs home crumb (Q.md item 9)", () => {
+  const homeCrumb = () => container.querySelector(".crumbs .crumb-home")!;
+  const crumbLabels = () =>
+    Array.from(container.querySelectorAll(".crumbs .crumb")).map((c) => c.textContent ?? "");
+
+  it("list view: home is present at root as a span and crumbs appear without a jump", async () => {
+    await mount(projects[0]);
+    expect(container.querySelector(".crumbs")).not.toBeNull();
+    expect(homeCrumb().tagName).toBe("SPAN");
+    expect(crumbLabels()).toEqual([""]);
+  });
+
+  it("list view: selecting a file makes home clickable and clicking it clears the selection", async () => {
+    await mount(projects[0]);
+    const row = Array.from(container.querySelectorAll(".tree-row")).find(
+      (r) => r.querySelector(".label")?.textContent === "a.txt",
+    )!;
+    await click(row);
+    expect(container.querySelector(".file-preview")).not.toBeNull();
+    expect(crumbLabels()).toEqual(["", "a.txt"]);
+    expect(homeCrumb().tagName).toBe("BUTTON");
+    await click(homeCrumb());
+    expect(container.querySelector(".file-preview")).toBeNull();
+    expect(homeCrumb().tagName).toBe("SPAN");
+  });
+
+  it("list view: selecting a folder shows it as the current non-link crumb", async () => {
+    await mount(projects[0]);
+    const row = Array.from(container.querySelectorAll(".tree-row")).find(
+      (r) => r.querySelector(".label")?.textContent === "docs",
+    )!;
+    await click(row);
+    expect(crumbLabels()).toEqual(["", "docs"]);
+    const current = container.querySelectorAll(".crumbs .crumb")[1];
+    expect(current.tagName).toBe("SPAN");
+    expect(container.querySelectorAll(".crumbs button.crumb")).toHaveLength(1);
+  });
+
+  it("grid view: navigating into a folder keeps clickable crumbs and home returns to root", async () => {
+    await mount(projects[1]);
+    const tile = Array.from(container.querySelectorAll(".tile")).find(
+      (t) => t.querySelector(".label")?.textContent === "docs",
+    )!;
+    await act(() =>
+      tile.dispatchEvent(new MouseEvent("dblclick", { bubbles: true })),
+    );
+    expect(crumbLabels()).toEqual(["", "docs"]);
+    const current = container.querySelectorAll(".crumbs .crumb")[1];
+    expect(current.tagName).toBe("SPAN");
+    await click(homeCrumb());
+    expect(crumbLabels()).toEqual([""]);
+    expect(homeCrumb().tagName).toBe("SPAN");
   });
 });
 

@@ -286,6 +286,45 @@ describe("TaskCard action row", () => {
   });
 });
 
+describe("TaskCard save button (Q.md item 11)", () => {
+  it("the save button carries the task-save-btn class, cancel stays neutral", async () => {
+    await mount(makeTask());
+    const editor = await openEditor();
+    const save = findButton(editor, "Сохранить");
+    const cancel = findButton(editor, "Отменить");
+    expect(save.className).toContain("task-save-btn");
+    expect(cancel.className).not.toContain("task-save-btn");
+  });
+
+  it("the save button is disabled with the class while the title is empty", async () => {
+    await mount(makeTask());
+    const editor = await openEditor();
+    const title = editor.querySelector<HTMLTextAreaElement>(".task-edit-title")!;
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value",
+    )!.set!;
+    act(() => {
+      setter.call(title, " ");
+      title.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const save = findButton(editor, "Сохранить") as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+    expect(save.className).toContain("task-save-btn");
+  });
+
+  it("the stylesheet gives the save button green text and a not-allowed disabled cursor", () => {
+    const css = readFileSync("src/styles/app.css", "utf8");
+    const rule = css.match(/\.task-edit-actions \.task-save-btn \{[^}]*\}/);
+    expect(rule, "the save button rule must exist").not.toBeNull();
+    expect(rule![0]).toContain("color: #248a3d");
+    expect(rule![0]).not.toContain("background");
+    const disabled = css.match(/\.task-edit-actions \.task-save-btn:disabled \{[^}]*\}/);
+    expect(disabled, "the disabled save rule must exist").not.toBeNull();
+    expect(disabled![0]).toContain("cursor: not-allowed");
+  });
+});
+
 describe("TaskCard overdue label", () => {
   it("renders a red «Просрочено» caption directly under the title when overdue", async () => {
     await mount(makeTask({ overdue: true }));

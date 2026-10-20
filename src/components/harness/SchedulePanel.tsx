@@ -8,13 +8,6 @@ const KIND_LABEL: Record<string, string> = {
   notify: "Уведомление",
 };
 
-const STATUS_LABEL: Record<string, string> = {
-  active: "активно",
-  paused: "пауза",
-  done: "готово",
-  error: "ошибка",
-};
-
 const GROUPS: Array<{ status: ScheduleDto["status"]; title: string }> = [
   { status: "active", title: "Активные" },
   { status: "paused", title: "Пауза" },
@@ -55,7 +48,6 @@ function ScheduleItem({
         </div>
         {s.error && <div className="c">{s.error}</div>}
       </div>
-      <span className={`badge st-${s.status}`}>{STATUS_LABEL[s.status] ?? s.status}</span>
       <label
         className="switch"
         title={s.status === "active" ? "Поставить на паузу" : "Возобновить"}
