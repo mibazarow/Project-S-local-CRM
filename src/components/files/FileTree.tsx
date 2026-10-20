@@ -282,7 +282,7 @@ export default function FileTree({
           consumeSuppressedClick={consumeSuppressedClick}
           onContextMenu={(e, ev) => setMenu({ entry: e, x: ev.clientX, y: ev.clientY })}
           onOpenExternal={(e) =>
-            void (isDocument(e) ? ow.openDocument(e) : ops.openExternal(e.relPath))
+            void (isDocument(e) ? ow.showChooser(e) : ops.openExternal(e.relPath))
           }
           onOpenWith={isDocument(entry) ? (e) => void ow.showChooser(e) : undefined}
           onAskAgent={entry.kind === "file" ? cross.askAgent : undefined}

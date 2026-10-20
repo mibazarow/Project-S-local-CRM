@@ -131,7 +131,7 @@ export default function FileRow({
         {onOpenWith && (
           <button
             className="mini-btn"
-            title="Открыть с помощью…"
+            title="Открыть в редакторе"
             onClick={(e) => {
               e.stopPropagation();
               onOpenWith(entry);

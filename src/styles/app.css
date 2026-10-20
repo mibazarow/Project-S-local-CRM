@@ -1732,7 +1732,7 @@ details.set-card code {
   line-height: 1.55;
 }
 
-/* ---------- «Открыть с помощью…» ---------- */
+/* ---------- «Открыть в редакторе» (open-with chooser) ---------- */
 
 .open-with-modal { width: 420px; }
 .open-with-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -1757,6 +1757,7 @@ details.set-card code {
 }
 .open-with-item:hover:not(:disabled) { background: var(--surface-2); }
 .open-with-item:disabled { opacity: .6; }
+.open-with-item.remembered { border-color: var(--accent); }
 .ow-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ow-badge {
   flex-shrink: 0;
@@ -1766,6 +1767,7 @@ details.set-card code {
   border-radius: 5px;
   padding: 2px 6px;
 }
+.ow-badge.remembered { color: var(--text-muted); background: var(--surface-2); }
 .ow-remember { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--text-muted); }
 .open-with-actions { display: flex; justify-content: flex-end; }
 .open-with-empty { font-size: 12.5px; color: var(--text-muted); }

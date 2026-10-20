@@ -46,12 +46,13 @@ vi.mock("../../api/ipc", () => ({
   onIndexChanged,
 }));
 
+const owShowChooser = vi.hoisted(() => vi.fn());
+
 vi.mock("./useOpenWith", () => ({
   useOpenWith: () => ({
     error: null,
     dialog: null,
-    openDocument: vi.fn(),
-    showChooser: vi.fn(),
+    showChooser: owShowChooser,
   }),
 }));
 vi.mock("../shared/crossActions", () => ({
@@ -135,6 +136,7 @@ beforeEach(() => {
       bus.index = bus.index.filter((x) => x !== h);
     };
   });
+  owShowChooser.mockReset();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -222,5 +224,34 @@ describe("FilePreview external reload", () => {
     await fireFs("note.md");
     expect(container.textContent).toContain("Файл недоступен");
     expect(container.querySelector(".preview-body.md")).toBeNull();
+  });
+});
+
+describe("FilePreview open-in-editor action", () => {
+  it("shows exactly one «Открыть в редакторе» button that opens the app chooser", async () => {
+    const docxEntry = entry({ name: "doc.docx", relPath: "doc.docx", ext: "docx" });
+    await mount(docxEntry);
+    const labels = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).map(
+      (b) => b.textContent,
+    );
+    expect(labels.filter((l) => l === "Открыть в редакторе")).toHaveLength(1);
+    expect(labels).not.toContain("Открыть вовне");
+    expect(labels).not.toContain("Открыть с помощью…");
+    await act(async () => {
+      button("Открыть в редакторе")!.click();
+    });
+    expect(owShowChooser).toHaveBeenCalledWith(expect.objectContaining({ relPath: "doc.docx" }));
+  });
+
+  it("keeps the «Открыть в редакторе» fallback when the PDF preview fails", async () => {
+    fsReadBinaryDataUrl.mockRejectedValue(new Error("read failed"));
+    const pdfEntry = entry({ name: "doc.pdf", relPath: "doc.pdf", ext: "pdf" });
+    await mount(pdfEntry);
+    const fallback = container.querySelector<HTMLButtonElement>(".preview-error-actions button")!;
+    expect(fallback.textContent).toBe("Открыть в редакторе");
+    await act(async () => {
+      fallback.click();
+    });
+    expect(owShowChooser).toHaveBeenCalledWith(expect.objectContaining({ relPath: "doc.pdf" }));
   });
 });

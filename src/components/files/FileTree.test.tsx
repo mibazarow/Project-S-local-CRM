@@ -34,7 +34,22 @@ const file = (name: string, relPath: string, ext: string, isMarkdown = false): F
 const initialTree = vi.hoisted(
   () =>
     (): Record<string, FsEntry[]> => ({
-      "": [dir("docs", "docs"), dir("src", "src"), file("a.txt", "a.txt", "txt")],
+      "": [
+        dir("docs", "docs"),
+        dir("src", "src"),
+        file("a.txt", "a.txt", "txt"),
+        {
+          name: "report.pdf",
+          relPath: "report.pdf",
+          kind: "file",
+          ext: "pdf",
+          size: 1,
+          modified: 0,
+          isMarkdown: false,
+          isText: false,
+          isImage: false,
+        },
+      ],
       docs: [file("inner.md", "docs/inner.md", "md", true), dir("sub", "docs/sub")],
       "docs/sub": [],
       src: [],
@@ -528,5 +543,15 @@ describe("FileTree Finder drag import (OS drag-drop)", () => {
     hoverEl = row("a.txt");
     await osDrag("drop", ["/tmp/a.txt"]);
     expect(container.querySelector(".tree-error")?.textContent).toContain("is not a folder");
+  });
+});
+
+describe("FileTree open-in-editor row action", () => {
+  it("document rows label the action «Открыть в редакторе», not «Открыть с помощью…»", async () => {
+    await mount();
+    const r = row("report.pdf");
+    expect(r.querySelector('button[title="Открыть в редакторе"]')).not.toBeNull();
+    expect(r.querySelector('button[title="Открыть с помощью…"]')).toBeNull();
+    expect(row("a.txt").querySelector('button[title="Открыть в редакторе"]')).toBeNull();
   });
 });

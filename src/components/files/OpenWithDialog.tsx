@@ -7,12 +7,13 @@ import Modal from "../shared/Modal";
 interface Props {
   entry: FsEntry;
   apps: OpenWithApp[];
+  rememberedPath?: string | null;
   // app = null means "Открыть по умолчанию" (system default).
   onPick: (app: OpenWithApp | null, remember: boolean) => Promise<void>;
   onClose: () => void;
 }
 
-export default function OpenWithDialog({ entry, apps, onPick, onClose }: Props) {
+export default function OpenWithDialog({ entry, apps, rememberedPath, onPick, onClose }: Props) {
   const [remember, setRemember] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,7 +31,7 @@ export default function OpenWithDialog({ entry, apps, onPick, onClose }: Props) 
   return (
     <Modal onClose={onClose} closeOnEsc className="modal open-with-modal">
       <div className="open-with-head">
-        <h3>Открыть «{entry.name}» с помощью…</h3>
+        <h3>Открыть «{entry.name}» в редакторе</h3>
         <button className="icon-btn small" title="Закрыть" onClick={onClose}>
           <IconClose />
         </button>
@@ -46,11 +47,12 @@ export default function OpenWithDialog({ entry, apps, onPick, onClose }: Props) 
           {apps.map((app) => (
             <button
               key={app.path}
-              className="open-with-item"
+              className={app.path === rememberedPath ? "open-with-item remembered" : "open-with-item"}
               disabled={busy}
               onClick={() => void pick(app)}
             >
               <span className="ow-name">{app.name}</span>
+              {app.path === rememberedPath && <span className="ow-badge remembered">запомнено</span>}
               {app.recommended && <span className="ow-badge">рекомендуется</span>}
             </button>
           ))}

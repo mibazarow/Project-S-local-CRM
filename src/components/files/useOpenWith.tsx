@@ -5,16 +5,22 @@ import { toMessage } from "./fileOps";
 import OpenWithDialog from "./OpenWithDialog";
 
 // Document files (docx/xlsx/pptx/pdf/…): opened externally through the
-// remembered app or the chooser; md/txt/images keep the in-app preview.
+// chooser; md/txt/images keep the in-app preview.
 export function isDocument(entry: FsEntry): boolean {
   return entry.kind === "file" && entry.ext !== "" && !entry.isText && !entry.isImage;
 }
 
-// Shared "open externally" flow for the file views and the preview:
-// remembered app if set → chooser → system default when no non-stock app
-// exists (fs_open_external stays the fallback path).
+// Shared "open in editor" flow for the file views and the preview:
+// «Открыть в редакторе» always shows the chooser of compatible apps; the
+// remembered per-extension app is marked in it, and picking with
+// "remember" stores it again (system default stays the fallback when no
+// compatible app exists).
 export function useOpenWith(projectId: number) {
-  const [chooser, setChooser] = useState<{ entry: FsEntry; apps: OpenWithApp[] } | null>(null);
+  const [chooser, setChooser] = useState<{
+    entry: FsEntry;
+    apps: OpenWithApp[];
+    rememberedPath: string | null;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -22,31 +28,14 @@ export function useOpenWith(projectId: number) {
     setError(null);
   }, [projectId]);
 
-  const openDocument = async (entry: FsEntry) => {
-    setError(null);
-    try {
-      const remembered = await ipc.getOpenWith(entry.ext);
-      if (remembered) {
-        await ipc.openWith("project", entry.relPath, projectId, remembered.path);
-        return;
-      }
-      const apps = await ipc.listOpenWithApps(entry.ext);
-      if (apps.length === 0) {
-        await ipc.fsOpenExternal(projectId, entry.relPath);
-        return;
-      }
-      setChooser({ entry, apps });
-    } catch (e) {
-      setError(toMessage(e));
-    }
-  };
-
-  // "Открыть с помощью…": always show the chooser to change the app.
   const showChooser = async (entry: FsEntry) => {
     setError(null);
     try {
-      const apps = await ipc.listOpenWithApps(entry.ext);
-      setChooser({ entry, apps });
+      const [apps, remembered] = await Promise.all([
+        ipc.listOpenWithApps(entry.ext),
+        ipc.getOpenWith(entry.ext),
+      ]);
+      setChooser({ entry, apps, rememberedPath: remembered?.path ?? null });
     } catch (e) {
       setError(toMessage(e));
     }
@@ -68,10 +57,11 @@ export function useOpenWith(projectId: number) {
     <OpenWithDialog
       entry={chooser.entry}
       apps={chooser.apps}
+      rememberedPath={chooser.rememberedPath}
       onPick={pick}
       onClose={() => setChooser(null)}
     />
   ) : null;
 
-  return { openDocument, showChooser, error, dialog };
+  return { showChooser, error, dialog };
 }

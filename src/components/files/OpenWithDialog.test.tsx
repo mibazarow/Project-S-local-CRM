@@ -86,3 +86,30 @@ describe("OpenWithDialog close behavior", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("OpenWithDialog remembered app", () => {
+  it("titles the chooser «в редакторе» and marks the remembered app", async () => {
+    await act(async () => {
+      root.render(
+        <OpenWithDialog
+          entry={entry}
+          apps={apps}
+          rememberedPath="/apps/example"
+          onPick={async () => {}}
+          onClose={() => {}}
+        />,
+      );
+    });
+    expect(container.querySelector(".open-with-head h3")?.textContent).toContain("в редакторе");
+    const item = container.querySelector<HTMLElement>(".open-with-item")!;
+    expect(item.className).toContain("remembered");
+    expect(item.textContent).toContain("запомнено");
+  });
+
+  it("marks nothing when no app was remembered for the extension", async () => {
+    await mount();
+    const item = container.querySelector<HTMLElement>(".open-with-item")!;
+    expect(item.className).not.toContain("remembered");
+    expect(item.textContent).not.toContain("запомнено");
+  });
+});

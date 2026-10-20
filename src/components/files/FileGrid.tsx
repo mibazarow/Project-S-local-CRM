@@ -265,7 +265,7 @@ export default function FileGrid({
                 {isDocument(entry) && (
                   <button
                     className="mini-btn"
-                    title="Открыть с помощью…"
+                    title="Открыть в редакторе"
                     onClick={(e) => {
                       e.stopPropagation();
                       void ow.showChooser(entry);

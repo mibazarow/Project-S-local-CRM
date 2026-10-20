@@ -29,6 +29,17 @@ const entries = vi.hoisted(
       isText: false,
       isImage: false,
     },
+    {
+      name: "report.pdf",
+      relPath: "report.pdf",
+      kind: "file",
+      ext: "pdf",
+      size: 1,
+      modified: 0,
+      isMarkdown: false,
+      isText: false,
+      isImage: false,
+    },
   ],
 );
 
@@ -248,6 +259,16 @@ describe("FilesPanel per-project file view mode", () => {
     expect(container.querySelector(".tree-toolbar .view-toggle[title='Вид файлов']")).not.toBeNull();
     expect(vts()).toHaveLength(2);
     expect(container.querySelector(".file-grid")).not.toBeNull();
+  });
+
+  it("grid tiles label the document action «Открыть в редакторе»", async () => {
+    await mount(projects[0]);
+    await click(vts()[1]);
+    const tile = Array.from(container.querySelectorAll<HTMLElement>(".tile")).find(
+      (t) => t.querySelector(".label")?.textContent === "report.pdf",
+    )!;
+    expect(tile.querySelector('button[title="Открыть в редакторе"]')).not.toBeNull();
+    expect(tile.querySelector('button[title="Открыть с помощью…"]')).toBeNull();
   });
 });
 

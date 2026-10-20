@@ -255,14 +255,9 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
             </button>
           )}
           {!isTextual && !entry.isImage && (
-            <>
-              <button className="ghost-btn small" onClick={() => void ow.openDocument(entry)}>
-                Открыть вовне
-              </button>
-              <button className="ghost-btn small" onClick={() => void ow.showChooser(entry)}>
-                Открыть с помощью…
-              </button>
-            </>
+            <button className="ghost-btn small" onClick={() => void ow.showChooser(entry)}>
+              Открыть в редакторе
+            </button>
           )}
           <button className="icon-btn small" title="Закрыть" onClick={onClose}>
             <IconClose />
@@ -302,8 +297,8 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
           {shownError}
           {isPdf && (
             <div className="preview-error-actions">
-              <button className="ghost-btn small" onClick={() => void ow.openDocument(entry)}>
-                Открыть вовне
+              <button className="ghost-btn small" onClick={() => void ow.showChooser(entry)}>
+                Открыть в редакторе
               </button>
             </div>
           )}
