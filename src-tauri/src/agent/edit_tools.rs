@@ -7,7 +7,9 @@
 // Patch files live under Harness/tmp/, the patch is capped at 1 MiB, and all
 // git output is secret-masked and capped by git_tools::run_git (30 s timeout).
 use super::git_tools::{git_exit_fail, run_git};
-use super::project_tools::{emit_versions_changed, envelope, require_wd, with_conn};
+use super::project_tools::{
+    emit_fs_changed_for_abs, emit_versions_changed, envelope, require_wd, with_conn,
+};
 use super::result::{io_fail, ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
@@ -163,6 +165,7 @@ impl Tool for EditFileTool {
             Ok(n) => n,
             Err(e) => return Ok(envelope::<()>(Err(e))),
         };
+        emit_fs_changed_for_abs(ctx, &path);
         // Version history: keep the pre-edit content under the absolute path.
         let scope = if ctx.project_id.is_some() { "project" } else { "harness" };
         let abs = path.display().to_string();
@@ -383,6 +386,13 @@ impl Tool for ApplyPatchTool {
         if applied.code != 0 {
             return Ok(git_exit_fail("git apply", &applied));
         }
+        let mut patched: Vec<String> = Vec::new();
+        for p in patch_paths(patch) {
+            if !patched.contains(&p) {
+                patched.push(p.clone());
+                emit_fs_changed_for_abs(ctx, &base.join(&p));
+            }
+        }
         for (abs, prev, rel) in &snapshots {
             let version_id = with_conn(ctx, |conn| {
                 crate::reliability::version_save(conn, &wd, scope, abs, prev)
@@ -430,12 +440,14 @@ impl Tool for ApplyPatchTool {
 mod tests {
     use super::*;
     use crate::agent::git_tools::{git_available, git_ok};
+    use crate::agent::harness_tools::test_support::{self, RecordingEmitter};
     use crate::agent::tool::validate_args;
     use crate::db;
     use crate::onboarding::temp_test_dir;
     use crate::state::AppState;
+    use crate::sync_util::lock_recover;
     use std::path::Path;
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     fn init_repo(tag: &str) -> PathBuf {
         let dir = temp_test_dir(tag);
@@ -454,6 +466,11 @@ mod tests {
     }
 
     fn project_env(tag: &str) -> (PathBuf, ToolCtx) {
+        let (root, ctx, _) = project_env_events(tag);
+        (root, ctx)
+    }
+
+    fn project_env_events(tag: &str) -> (PathBuf, ToolCtx, Arc<Mutex<Vec<(String, Value)>>>) {
         let wd = temp_test_dir(tag);
         fs::create_dir_all(paths::projects_dir(&wd)).unwrap();
         let conn = db::open(&paths::db_path(&wd)).unwrap();
@@ -461,6 +478,9 @@ mod tests {
         let state = Arc::new(AppState::new());
         *state.working_dir.lock().unwrap() = Some(wd.clone());
         *state.db.lock().unwrap() = Some(conn);
+        let recorder = RecordingEmitter::default();
+        let events = recorder.events.clone();
+        *state.emitter.lock().unwrap() = Some(Arc::new(recorder));
         let ctx = ToolCtx {
             cancel: None,
             project_id: Some(dto.id),
@@ -470,7 +490,17 @@ mod tests {
             state: Some(state),
             notes_root: None,
         };
-        (paths::projects_dir(&wd).join("proj"), ctx)
+        (paths::projects_dir(&wd).join("proj"), ctx, events)
+    }
+
+    fn fs_changed(events: &Arc<Mutex<Vec<(String, Value)>>>) -> Vec<Value> {
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name == "fs-changed")
+            .map(|(_, payload)| payload.clone())
+            .collect()
     }
 
     fn exec(tool: &dyn Tool, args: Value, ctx: &ToolCtx) -> ToolResult {
@@ -741,6 +771,91 @@ mod tests {
             &ctx,
         );
         assert_eq!(r.error.unwrap().code, "permission_denied");
+        fs::remove_dir_all(ctx.working_dir.unwrap()).unwrap();
+    }
+
+    #[test]
+    fn edit_file_project_emits_fs_changed_with_project_id_and_rel_path() {
+        let (root, ctx, events) = project_env_events("et-fs-changed");
+        fs::create_dir_all(root.join("sub")).unwrap();
+        fs::write(root.join("f.md"), "one\ntwo\n").unwrap();
+        fs::write(root.join("sub/n.md"), "a\n").unwrap();
+        let tool = EditFileTool::project();
+        let r = exec(
+            &tool,
+            json!({ "path": "f.md", "old_string": "two", "new_string": "TWO" }),
+            &ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        let r = exec(
+            &tool,
+            json!({ "path": "sub/n.md", "old_string": "a", "new_string": "b" }),
+            &ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        let changed = fs_changed(&events);
+        assert_eq!(changed.len(), 2, "{changed:?}");
+        let pid = ctx.project_id.unwrap();
+        assert_eq!(changed[0]["projectId"], pid);
+        assert_eq!(changed[0]["relPath"], "f.md");
+        assert_eq!(changed[1]["projectId"], pid);
+        assert_eq!(changed[1]["relPath"], "sub/n.md");
+        fs::remove_dir_all(ctx.working_dir.unwrap()).unwrap();
+    }
+
+    #[test]
+    fn edit_file_harness_emits_fs_changed_only_for_project_paths() {
+        let env = test_support::setup("et-harness-fs-changed");
+        let state = env.ctx.state.clone().unwrap();
+        let pid = {
+            let guard = lock_recover(&state.db);
+            projects::create_project(guard.as_ref().unwrap(), &env.wd, "proj")
+                .unwrap()
+                .id
+        };
+        fs::write(paths::projects_dir(&env.wd).join("proj/a.txt"), "one\n").unwrap();
+        fs::write(env.wd.join("Harness/n.md"), "x\n").unwrap();
+        let tool = EditFileTool::harness();
+        let r = exec(
+            &tool,
+            json!({ "path": "Projects/proj/a.txt", "old_string": "one", "new_string": "two" }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        let r = exec(
+            &tool,
+            json!({ "path": "Harness/n.md", "old_string": "x", "new_string": "y" }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        let changed = fs_changed(&env.events);
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert_eq!(changed[0]["projectId"], pid);
+        assert_eq!(changed[0]["relPath"], "a.txt");
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn apply_patch_project_emits_fs_changed_per_patched_file() {
+        if !git_available() {
+            eprintln!("git not available, skipping");
+            return;
+        }
+        let (root, ctx, events) = project_env_events("et-apply-fs-changed");
+        git_ok(&root, &["init", "-q"]);
+        git_ok(&root, &["config", "user.email", "test@example.com"]);
+        git_ok(&root, &["config", "user.name", "Test User"]);
+        fs::write(root.join("a.txt"), "one\n").unwrap();
+        fs::write(root.join("b.txt"), "keep\n").unwrap();
+        git_ok(&root, &["add", "-A"]);
+        git_ok(&root, &["commit", "-m", "base"]);
+        let patch = "--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-one\n+two\n";
+        let r = exec(&ApplyPatchTool, json!({ "patch": patch }), &ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let changed = fs_changed(&events);
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert_eq!(changed[0]["projectId"], ctx.project_id.unwrap());
+        assert_eq!(changed[0]["relPath"], "a.txt");
         fs::remove_dir_all(ctx.working_dir.unwrap()).unwrap();
     }
 

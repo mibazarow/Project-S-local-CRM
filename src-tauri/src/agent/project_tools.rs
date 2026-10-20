@@ -16,7 +16,7 @@ use crate::error::{AppError, Result};
 use crate::{extract, fs_ops, paths, search, tasks, undo};
 use rusqlite::Connection;
 use serde_json::{json, Value};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 // Envelope headroom for extracted documents: the JSON wrapper around the
@@ -187,6 +187,49 @@ pub(crate) fn emit_versions_changed(ctx: &ToolCtx, scope: &str, path: &str) {
                 json!({ "scope": scope, "path": path }),
             );
         }
+    }
+}
+
+// Reload an open text preview after an agent write: same payload as the
+// fs-changed event of the UI commands (commands/mod.rs).
+pub(crate) fn emit_fs_changed(ctx: &ToolCtx, project_id: i64, rel_path: impl Into<String>) {
+    if let Ok(state) = state_of(ctx) {
+        if let Some(emitter) = lock_recover(&state.emitter).as_ref() {
+            emitter.emit_event(
+                "fs-changed",
+                json!({ "projectId": project_id, "relPath": rel_path.into() }),
+            );
+        }
+    }
+}
+
+// (projectId, project-relative path) of the project folder containing the
+// written absolute path; None when the write lies outside every project, so
+// no misleading project event is emitted.
+pub(crate) fn project_for_abs(ctx: &ToolCtx, abs: &Path) -> Option<(i64, String)> {
+    let state = state_of(ctx).ok()?;
+    let guard = lock_recover(&state.db);
+    let conn = guard.as_ref()?;
+    let mut stmt = conn.prepare("SELECT id, path FROM projects").ok()?;
+    let roots: Vec<(i64, PathBuf)> = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, PathBuf::from(r.get::<_, String>(1)?))))
+        .ok()?
+        .flatten()
+        .collect();
+    let target = crate::path_policy::canonicalish(abs);
+    roots.into_iter().find_map(|(id, root)| {
+        let rest = target
+            .strip_prefix(&crate::path_policy::canonicalish(&root))
+            .ok()?;
+        (!rest.as_os_str().is_empty()).then(|| (id, rest.to_string_lossy().into_owned()))
+    })
+}
+
+// fs-changed for a written absolute path, but only when it lies inside a
+// project folder: the preview reload is project-scoped.
+pub(crate) fn emit_fs_changed_for_abs(ctx: &ToolCtx, abs: &Path) {
+    if let Some((id, rel)) = project_for_abs(ctx, abs) {
+        emit_fs_changed(ctx, id, rel);
     }
 }
 

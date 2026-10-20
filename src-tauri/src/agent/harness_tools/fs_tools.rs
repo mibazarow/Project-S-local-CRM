@@ -4,7 +4,7 @@
 // relative; the confirmation policy keys off in_default_territory (mod.rs).
 // The shared fs_copy/fs_move body lives in transfer.rs.
 use crate::agent::project_tools::{
-    emit_trash_changed, emit_versions_changed, require_wd, with_conn,
+    emit_fs_changed_for_abs, emit_trash_changed, emit_versions_changed, require_wd, with_conn,
 };
 use crate::agent::result::{io_fail, ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
@@ -243,6 +243,7 @@ impl Tool for FsWriteTool {
         match fs::write(&path, content) {
             Ok(()) => {
                 let abs = path.display().to_string();
+                emit_fs_changed_for_abs(ctx, &path);
                 if let Some(prev) = previous {
                     let version_id = with_conn(ctx, |conn| {
                         crate::reliability::version_save(conn, &wd, "harness", &abs, &prev)
@@ -752,6 +753,42 @@ mod tests {
         }
         let r = exec("fs_read", json!({ "path": "missing.md" }), &env.ctx);
         assert_eq!(r.error.unwrap().code, "not_found");
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[test]
+    fn fs_write_inside_project_emits_fs_changed_outside_does_not() {
+        let env = setup("ht-fs-write-fs-changed");
+        let state = env.ctx.state.clone().unwrap();
+        let pid = {
+            let guard = crate::sync_util::lock_recover(&state.db);
+            crate::projects::create_project(guard.as_ref().unwrap(), &env.wd, "proj")
+                .unwrap()
+                .id
+        };
+        let r = exec(
+            "fs_write",
+            json!({ "path": "Projects/proj/note.md", "content": "v1" }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        let r = exec(
+            "fs_write",
+            json!({ "path": "Harness/out.md", "content": "v1" }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        let changed: Vec<Value> = env
+            .events
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(name, _)| name == "fs-changed")
+            .map(|(_, payload)| payload.clone())
+            .collect();
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert_eq!(changed[0]["projectId"], pid);
+        assert_eq!(changed[0]["relPath"], "note.md");
         fs::remove_dir_all(&env.wd).unwrap();
     }
 
