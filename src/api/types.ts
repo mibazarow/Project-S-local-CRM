@@ -592,8 +592,8 @@ export interface ScheduleDto {
   unreadAt: string | null;
 }
 
-// lib.rs "schedule-open" — emitted when the user clicks a schedule-run
-// notification: the frontend opens the schedule's chat session.
+// "schedule-open" — emitted when the frontend must open a session's chat:
+// a clicked schedule-run notification or a freshly created schedule chat.
 export interface ScheduleOpenEvent {
   sessionId: number;
 }

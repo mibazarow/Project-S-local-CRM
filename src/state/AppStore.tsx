@@ -410,9 +410,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void ipc.onTasksChanged(onTasks).then((u) => (cancelled ? u() : (unTasks = u)));
     void ipc.onSchedulesChanged(onSchedules).then((u) => (cancelled ? u() : (unSchedules = u)));
     void ipc.onProjectsChanged(refresh).then((u) => (cancelled ? u() : (unProjects = u)));
-    // Q.md item 7: a click on a schedule-run notification routes through the
-    // pendingSession intent; App switches to the Harness tab and HarnessView
-    // opens the session.
+    // Q.md items 4/7: a click on a schedule-run notification and the creation
+    // of a new schedule both route through the pendingSession intent; App
+    // switches to the Harness tab and HarnessView opens the session.
     void ipc
       .onScheduleOpen((payload) => dispatch({ type: "pendingSession", id: payload.sessionId }))
       .then((u) => (cancelled ? u() : (unScheduleOpen = u)));

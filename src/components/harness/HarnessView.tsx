@@ -601,25 +601,23 @@ export default function HarnessView() {
     }
   };
 
-  // Click-through: open the schedule's chat (the backend reuses its session or
-  // creates one titled after the schedule). The chat's own history is loaded and
-  // shown first; the explanatory auto-question is sent only for a genuinely
-  // empty/new session, so opening a schedule never hides its earlier messages.
+  // Q.md item 6: click-through opens the schedule's chat (the backend reuses
+  // its session or creates one titled after the schedule). The chat's full
+  // history is loaded and shown first, then the explanatory prompt is sent
+  // on every click — queued through the run store while a run is live there.
   const openSchedule = async (s: ScheduleDto) => {
     try {
       const { sessionId } = await ipc.scheduleOpen(s.id);
       setActiveId(sessionId);
       await loadSessions();
       const k = sessionKey(sessionId);
-      if (getSlice(k)?.run) return; // a run is already live there
       const dtos = await ipc.harnessSessionHistory(sessionId).catch(() => []);
       const firstChatId = dtos[0]?.chatId;
       if (firstChatId != null) rememberChatId(sessionId, firstChatId);
-      const items = historyToItems(dtos);
-      dispatch({ type: "loaded", key: k, items });
-      if (items.length > 0) return;
-      const question = `Коротко (1–2 предложения) объясни, что это за задача по расписанию: «${s.title ?? s.spec}» (id ${s.id}).`;
-      storeSend(k, question, []);
+      dispatch({ type: "loaded", key: k, items: historyToItems(dtos) });
+      const question = "Расскажи мне, что это за расписание";
+      if (getSlice(k)?.run) dispatch({ type: "enqueue", key: k, text: question });
+      else storeSend(k, question, []);
     } catch (e) {
       setSchedulesError(toMessage(e));
     }

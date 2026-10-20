@@ -46,7 +46,7 @@ vi.mock("../chat/TodoPanel", () => ({ default: () => null }));
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import * as ipc from "../../api/ipc";
-import { resetChatRunStore } from "../../state/chatRunStore";
+import { getSlice, resetChatRunStore, sessionKey } from "../../state/chatRunStore";
 import { registerConfirmHost, type ConfirmOptions } from "../../shared/confirm";
 import HarnessView from "./HarnessView";
 
@@ -181,7 +181,7 @@ describe("HarnessView schedules «+» opens a greeting chat (Q.md schedules slic
   });
 });
 
-describe("HarnessView openSchedule loads history (Q.md item 3)", () => {
+describe("HarnessView openSchedule loads history and always asks (Q.md item 6)", () => {
   const schedule = {
     id: 5,
     sessionId: 9,
@@ -200,7 +200,7 @@ describe("HarnessView openSchedule loads history (Q.md item 3)", () => {
   };
   const session = {
     id: 9,
-    title: "Расписание: Ежедневный отчёт",
+    title: "Ежедневный отчёт",
     createdAt: "",
     updatedAt: "",
     lastActiveAt: "2026-01-01",
@@ -214,7 +214,7 @@ describe("HarnessView openSchedule loads history (Q.md item 3)", () => {
     vi.mocked(ipc.harnessListSessions).mockResolvedValue([session] as never);
   });
 
-  it("shows the existing history and never sends the auto-question", async () => {
+  it("loads the existing history and still sends the auto-question", async () => {
     vi.mocked(ipc.harnessSessionHistory).mockResolvedValue([
       {
         id: 1,
@@ -239,11 +239,14 @@ describe("HarnessView openSchedule loads history (Q.md item 3)", () => {
     });
 
     expect(ipc.scheduleOpen).toHaveBeenCalledWith(5);
-    expect(ipc.sendSessionMessage).not.toHaveBeenCalled();
+    expect(ipc.sendSessionMessage).toHaveBeenCalledTimes(1);
+    const [sid, text] = vi.mocked(ipc.sendSessionMessage).mock.calls[0];
+    expect(sid).toBe(9);
+    expect(text).toBe("Расскажи мне, что это за расписание");
     expect(container.textContent).toContain("старое сообщение из истории");
   });
 
-  it("sends the auto-question only for a genuinely empty session", async () => {
+  it("sends the auto-question on every click, queuing it while a run is live", async () => {
     vi.mocked(ipc.harnessSessionHistory).mockResolvedValue([] as never);
     await mount();
 
@@ -251,11 +254,19 @@ describe("HarnessView openSchedule loads history (Q.md item 3)", () => {
     await act(async () => {
       item.click();
     });
-
     expect(ipc.sendSessionMessage).toHaveBeenCalledTimes(1);
     const [sid, text] = vi.mocked(ipc.sendSessionMessage).mock.calls[0];
     expect(sid).toBe(9);
-    expect(text).toContain("что это за задача по расписанию");
+    expect(text).toBe("Расскажи мне, что это за расписание");
+
+    // The first click left a live run in the session: the second click must
+    // not start a parallel run — the prompt goes through the run store queue.
+    await act(async () => {
+      container.querySelector<HTMLElement>(".schedule-item")!.click();
+    });
+    expect(ipc.scheduleOpen).toHaveBeenCalledTimes(2);
+    expect(ipc.sendSessionMessage).toHaveBeenCalledTimes(1);
+    expect(getSlice(sessionKey(9))?.queue).toEqual(["Расскажи мне, что это за расписание"]);
   });
 });
 
@@ -353,7 +364,7 @@ describe("HarnessView unread schedule pulse (Q.md item 7)", () => {
     vi.mocked(ipc.scheduleList).mockResolvedValue([unreadSchedule] as never);
     vi.mocked(ipc.scheduleOpen).mockResolvedValue({ sessionId: 9 } as never);
     vi.mocked(ipc.harnessListSessions).mockResolvedValue([
-      { id: 9, title: "Расписание: Утренняя сводка", createdAt: "", updatedAt: "", lastActiveAt: "2026-10-20", pinned: false, pinnedAt: null },
+      { id: 9, title: "Утренняя сводка", createdAt: "", updatedAt: "", lastActiveAt: "2026-10-20", pinned: false, pinnedAt: null },
     ] as never);
     vi.mocked(ipc.harnessSessionHistory).mockResolvedValue([
       {

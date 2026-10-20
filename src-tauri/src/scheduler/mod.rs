@@ -349,36 +349,30 @@ pub struct CreateIn<'a> {
     pub spec: &'a str,
     pub prompt: Option<&'a str>,
     pub timezone: Option<&'a str>,
-    pub session_id: Option<i64>,
     pub related_task_id: Option<i64>,
     pub title: Option<&'a str>,
 }
 
+// Q.md items 4/5: every new schedule gets its own dedicated Harness chat,
+// titled after the schedule, even when the agent creates it from another
+// chat (that chat keeps its own context). Only new schedules follow this
+// rule; existing rows keep their session links untouched.
 pub fn create(conn: &Connection, input: &CreateIn<'_>, now: DateTime<Utc>) -> Result<ScheduleDto> {
     validate_kind(input.kind)?;
     let tz = resolve_timezone(input.timezone)?;
     let next = compute_next(input.kind, input.spec, tz, now)?.unwrap();
-    if let Some(sid) = input.session_id {
-        let exists: i64 = conn.query_row(
-            "SELECT count(*) FROM sessions WHERE id = ?1",
-            params![sid],
-            |r| r.get(0),
-        )?;
-        if exists == 0 {
-            return Err(AppError::Invalid(format!("session {sid} not found")));
-        }
-    }
     let title = input
         .title
         .map(str::trim)
         .filter(|t| !t.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| derive_title(input.prompt, input.spec, 60));
+    let session = harness::create_session(conn, Some(&title))?;
     conn.execute(
         "INSERT INTO schedules (session_id, kind, spec, prompt, status, related_task_id, created_at, next_run_at, timezone, title)
          VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6, ?7, ?8, ?9)",
         params![
-            input.session_id,
+            session.id,
             input.kind,
             input.spec,
             input.prompt,
@@ -390,6 +384,33 @@ pub fn create(conn: &Connection, input: &CreateIn<'_>, now: DateTime<Utc>) -> Re
         ],
     )?;
     schedule_dto(conn, conn.last_insert_rowid())
+}
+
+// Q.md item 5: renaming a schedule renames its linked chat too, always
+// overwriting a manual chat title. A detached or deleted session is skipped
+// without failing: open_session and ensure_run_session recreate it titled
+// after the schedule later.
+pub fn rename(conn: &Connection, id: i64, title: &str) -> Result<ScheduleDto> {
+    let title = title.trim();
+    if title.is_empty() {
+        return Err(AppError::Invalid("schedule title is empty".into()));
+    }
+    let updated = conn.execute(
+        "UPDATE schedules SET title = ?1 WHERE id = ?2",
+        params![title, id],
+    )?;
+    if updated != 1 {
+        return Err(AppError::Invalid(format!("schedule {id} not found")));
+    }
+    let session_id: Option<i64> = conn.query_row(
+        "SELECT session_id FROM schedules WHERE id = ?1",
+        params![id],
+        |r| r.get(0),
+    )?;
+    if let Some(sid) = session_id {
+        let _ = harness::rename_session(conn, sid, title);
+    }
+    schedule_dto(conn, id)
 }
 
 fn schedule_dto(conn: &Connection, id: i64) -> Result<ScheduleDto> {
@@ -478,7 +499,7 @@ pub fn open_session(conn: &Connection, id: i64) -> Result<i64> {
         }
     }
     let label = s.title.clone().unwrap_or_else(|| s.spec.clone());
-    let session = harness::create_session(conn, Some(&format!("Расписание: {label}")))?;
+    let session = harness::create_session(conn, Some(&label))?;
     conn.execute(
         "UPDATE schedules SET session_id = ?1, unread_at = NULL WHERE id = ?2",
         params![session.id, id],
@@ -654,7 +675,7 @@ fn ensure_run_session(conn: &Connection, s: &ScheduleDto) -> Result<i64> {
             return Ok(sid);
         }
     }
-    let title = format!("Расписание · {} · {}", s.kind, s.spec);
+    let title = s.title.clone().unwrap_or_else(|| s.spec.clone());
     let session = harness::create_session(conn, Some(&title))?;
     conn.execute(
         "UPDATE schedules SET session_id = ?1 WHERE id = ?2",
@@ -964,7 +985,6 @@ mod tests {
     #[test]
     fn create_computes_next_run_and_validates_input() {
         let conn = setup();
-        let session = create_session_row(&conn);
         let now = utc("2026-10-16T08:00:00Z");
         let s = create(
             &conn,
@@ -973,7 +993,6 @@ mod tests {
                 spec: "2026-10-20T10:00:00",
                 prompt: Some("check rates"),
                 timezone: Some("Europe/Moscow"),
-                session_id: Some(session),
                 related_task_id: Some(7), title: None,
             },
             now,
@@ -991,7 +1010,6 @@ mod tests {
                 spec: "0 10 * * *",
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
-                session_id: Some(session),
                 related_task_id: None, title: None,
             },
             now,
@@ -1002,7 +1020,7 @@ mod tests {
         assert!(matches!(
             create(
                 &conn,
-                &CreateIn { kind: "bogus", spec: "x", prompt: None, timezone: None, session_id: None, related_task_id: None, title: None },
+                &CreateIn { kind: "bogus", spec: "x", prompt: None, timezone: None, related_task_id: None, title: None },
                 now,
             ),
             Err(AppError::Invalid(_))
@@ -1010,7 +1028,7 @@ mod tests {
         assert!(matches!(
             create(
                 &conn,
-                &CreateIn { kind: "run_at", spec: "tomorrow", prompt: None, timezone: None, session_id: None, related_task_id: None, title: None },
+                &CreateIn { kind: "run_at", spec: "tomorrow", prompt: None, timezone: None, related_task_id: None, title: None },
                 now,
             ),
             Err(AppError::Invalid(_))
@@ -1018,15 +1036,7 @@ mod tests {
         assert!(matches!(
             create(
                 &conn,
-                &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: None, timezone: Some("Mars/Olympus"), session_id: None, related_task_id: None, title: None },
-                now,
-            ),
-            Err(AppError::Invalid(_))
-        ));
-        assert!(matches!(
-            create(
-                &conn,
-                &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: None, timezone: None, session_id: Some(999), related_task_id: None, title: None },
+                &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: None, timezone: Some("Mars/Olympus"), related_task_id: None, title: None },
                 now,
             ),
             Err(AppError::Invalid(_))
@@ -1036,7 +1046,6 @@ mod tests {
     #[test]
     fn pause_stops_firing_and_resume_recomputes_from_now() {
         let conn = setup();
-        let session = create_session_row(&conn);
         let now = utc("2026-10-16T08:00:00Z");
         let s = create(
             &conn,
@@ -1045,7 +1054,6 @@ mod tests {
                 spec: "0 10 * * *",
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
-                session_id: Some(session),
                 related_task_id: None, title: None,
             },
             now,
@@ -1073,7 +1081,6 @@ mod tests {
     #[test]
     fn tick_fires_due_schedules_once_and_advances_them() {
         let conn = setup();
-        let session = create_session_row(&conn);
         let now = utc("2026-10-16T08:00:00Z");
         let notify = create(
             &conn,
@@ -1082,7 +1089,6 @@ mod tests {
                 spec: "2026-10-16T10:00:00",
                 prompt: Some("call the client"),
                 timezone: Some("Europe/Moscow"),
-                session_id: None,
                 related_task_id: None, title: None,
             },
             now,
@@ -1095,7 +1101,6 @@ mod tests {
                 spec: "2026-10-16T10:30:00",
                 prompt: Some("do the thing"),
                 timezone: Some("Europe/Moscow"),
-                session_id: Some(session),
                 related_task_id: None, title: None,
             },
             now,
@@ -1108,7 +1113,6 @@ mod tests {
                 spec: "0 10 * * *",
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
-                session_id: Some(session),
                 related_task_id: None, title: None,
             },
             now,
@@ -1124,13 +1128,16 @@ mod tests {
             *notifier.sent.lock().unwrap(),
             vec![("Project-S".to_string(), "call the client".to_string())]
         );
+        // Q.md item 4: each schedule runs in its own dedicated chat.
         assert_eq!(
             *runner.runs.lock().unwrap(),
             vec![
-                (session, "do the thing".to_string()),
-                (session, "daily".to_string()),
+                (run_at.session_id.unwrap(), "do the thing".to_string()),
+                (cron.session_id.unwrap(), "daily".to_string()),
             ]
         );
+        assert_ne!(run_at.session_id, cron.session_id);
+        assert_ne!(notify.session_id, run_at.session_id);
 
         let s = schedule_dto(&conn, notify.id).unwrap();
         assert_eq!((s.status.as_str(), s.next_run_at.as_deref()), ("done", None));
@@ -1193,9 +1200,8 @@ mod tests {
     #[test]
     fn failing_runs_retry_once_and_the_second_failure_sets_status_error() {
         let conn = setup();
-        let session = create_session_row(&conn);
         let now = utc("2026-10-16T08:00:00Z");
-        // run_at whose session vanished: the runner reports the failure.
+        // run_at whose run fails: the runner reports the failure.
         let run_at = create(
             &conn,
             &CreateIn {
@@ -1203,7 +1209,6 @@ mod tests {
                 spec: "2026-10-16T10:00:00",
                 prompt: Some("go"),
                 timezone: Some("Europe/Moscow"),
-                session_id: Some(session),
                 related_task_id: None, title: None,
             },
             now,
@@ -1217,7 +1222,6 @@ mod tests {
                 spec: "2026-10-16T10:00:00",
                 prompt: Some("ping"),
                 timezone: Some("Europe/Moscow"),
-                session_id: None,
                 related_task_id: None, title: None,
             },
             now,
@@ -1262,7 +1266,6 @@ mod tests {
     #[test]
     fn rate_limit_skips_a_schedule_that_fired_within_the_last_minute() {
         let conn = setup();
-        let session = create_session_row(&conn);
         let cron = create(
             &conn,
             &CreateIn {
@@ -1270,7 +1273,6 @@ mod tests {
                 spec: "0 10 * * *",
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
-                session_id: Some(session),
                 related_task_id: None, title: None,
             },
             utc("2026-10-16T08:00:00Z"),
@@ -1326,7 +1328,6 @@ mod tests {
     #[test]
     fn a_successful_run_resets_the_retry_counter() {
         let conn = setup();
-        let session = create_session_row(&conn);
         let cron = create(
             &conn,
             &CreateIn {
@@ -1334,7 +1335,6 @@ mod tests {
                 spec: "0 10 * * *",
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
-                session_id: Some(session),
                 related_task_id: None, title: None,
             },
             utc("2026-10-16T08:00:00Z"),
@@ -1365,7 +1365,6 @@ mod tests {
     #[test]
     fn a_successful_one_shot_run_resets_the_retry_counter() {
         let conn = setup();
-        let session = create_session_row(&conn);
         let run_at = create(
             &conn,
             &CreateIn {
@@ -1373,7 +1372,6 @@ mod tests {
                 spec: "2026-10-16T10:00:00",
                 prompt: Some("go"),
                 timezone: Some("Europe/Moscow"),
-                session_id: Some(session),
                 related_task_id: None, title: None,
             },
             utc("2026-10-16T08:00:00Z"),
@@ -1406,7 +1404,6 @@ mod tests {
     #[test]
     fn deleting_a_session_deletes_its_schedules() {
         let conn = setup();
-        let session = create_session_row(&conn);
         let s = create(
             &conn,
             &CreateIn {
@@ -1414,14 +1411,13 @@ mod tests {
                 spec: "2026-10-16T10:00:00",
                 prompt: Some("go"),
                 timezone: Some("Europe/Moscow"),
-                session_id: Some(session),
                 related_task_id: None, title: None,
             },
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
 
-        harness::delete_session(&conn, session).unwrap();
+        harness::delete_session(&conn, s.session_id.unwrap()).unwrap();
         // Q.md: the schedule is removed with its chat, not left orphaned.
         let remaining: i64 = conn
             .query_row("SELECT count(*) FROM schedules WHERE id = ?1", params![s.id], |r| r.get(0))
@@ -1432,7 +1428,6 @@ mod tests {
     #[test]
     fn deleting_a_schedule_deletes_its_linked_session() {
         let conn = setup();
-        let session = create_session_row(&conn);
         let s = create(
             &conn,
             &CreateIn {
@@ -1440,16 +1435,16 @@ mod tests {
                 spec: "0 10 * * *",
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
-                session_id: Some(session),
                 related_task_id: None, title: None,
             },
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
+        let own = s.session_id.expect("a new schedule owns its chat");
 
         delete(&conn, s.id).unwrap();
         let sessions: i64 = conn
-            .query_row("SELECT count(*) FROM sessions WHERE id = ?1", params![session], |r| r.get(0))
+            .query_row("SELECT count(*) FROM sessions WHERE id = ?1", params![own], |r| r.get(0))
             .unwrap();
         let schedules: i64 = conn
             .query_row("SELECT count(*) FROM schedules WHERE id = ?1", params![s.id], |r| r.get(0))
@@ -1467,10 +1462,15 @@ mod tests {
                 spec: "2026-10-16T10:00:00",
                 prompt: Some("ping"),
                 timezone: Some("Europe/Moscow"),
-                session_id: None,
                 related_task_id: None, title: None,
             },
             utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+        // A detached schedule (TTL purge nulled the link) has no chat to remove.
+        conn.execute(
+            "UPDATE schedules SET session_id = NULL WHERE id = ?1",
+            params![s.id],
         )
         .unwrap();
 
@@ -1485,16 +1485,23 @@ mod tests {
     fn deleting_a_chat_removes_every_schedule_created_in_it() {
         let conn = setup();
         let session = create_session_row(&conn);
-        create(
+        let a = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("a"), timezone: Some("Europe/Moscow"), session_id: Some(session), related_task_id: None, title: None },
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("a"), timezone: Some("Europe/Moscow"), related_task_id: None, title: None },
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
-        create(
+        let b = create(
             &conn,
-            &CreateIn { kind: "run_at", spec: "2026-10-20T10:00:00", prompt: Some("b"), timezone: Some("Europe/Moscow"), session_id: Some(session), related_task_id: None, title: None },
+            &CreateIn { kind: "run_at", spec: "2026-10-20T10:00:00", prompt: Some("b"), timezone: Some("Europe/Moscow"), related_task_id: None, title: None },
             utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+        // Two schedules sharing one chat (an old row created before the
+        // dedicated-chat rule): deleting that chat removes both.
+        conn.execute(
+            "UPDATE schedules SET session_id = ?1 WHERE id IN (?2, ?3)",
+            params![session, a.id, b.id],
         )
         .unwrap();
 
@@ -1508,7 +1515,6 @@ mod tests {
     #[test]
     fn firing_a_schedule_whose_session_was_detached_creates_a_fresh_one() {
         let conn = setup();
-        let old = create_session_row(&conn);
         let s = create(
             &conn,
             &CreateIn {
@@ -1516,7 +1522,6 @@ mod tests {
                 spec: "2026-10-16T10:00:00",
                 prompt: Some("go"),
                 timezone: Some("Europe/Moscow"),
-                session_id: Some(old),
                 related_task_id: None, title: None,
             },
             utc("2026-10-16T08:00:00Z"),
@@ -1530,8 +1535,6 @@ mod tests {
             params![s.id],
         )
         .unwrap();
-        conn.execute("DELETE FROM sessions WHERE id = ?1", params![old])
-            .unwrap();
 
         let runner = RecordingRunner::new();
         let fired = tick(
@@ -1555,16 +1558,14 @@ mod tests {
         let title: Option<String> = conn
             .query_row("SELECT title FROM sessions WHERE id = ?1", params![fresh], |r| r.get(0))
             .unwrap();
-        assert_eq!(
-            title.as_deref(),
-            Some("Расписание · run_at · 2026-10-16T10:00:00")
-        );
+        // Q.md item 5: the recreated chat is titled after the schedule.
+        assert_eq!(title.as_deref(), Some("go"));
         // The fresh session has its harness chat row: the run bridge needs it.
         assert!(harness::session_chat_id(&conn, fresh).is_ok());
     }
 
     #[test]
-    fn firing_a_run_at_created_without_a_session_creates_one() {
+    fn firing_a_run_at_without_a_session_creates_one() {
         let conn = setup();
         let s = create(
             &conn,
@@ -1573,10 +1574,14 @@ mod tests {
                 spec: "2026-10-16T10:00:00",
                 prompt: Some("go"),
                 timezone: Some("Europe/Moscow"),
-                session_id: None,
                 related_task_id: None, title: None,
             },
             utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE schedules SET session_id = NULL WHERE id = ?1",
+            params![s.id],
         )
         .unwrap();
 
@@ -1597,7 +1602,6 @@ mod tests {
     #[test]
     fn firing_reuses_the_existing_session_and_keeps_the_link() {
         let conn = setup();
-        let session = create_session_row(&conn);
         let s = create(
             &conn,
             &CreateIn {
@@ -1605,12 +1609,12 @@ mod tests {
                 spec: "0 10 * * *",
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
-                session_id: Some(session),
                 related_task_id: None, title: None,
             },
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
+        let own = s.session_id.expect("a new schedule owns its chat");
 
         let runner = RecordingRunner::new();
         let fired = tick(
@@ -1623,16 +1627,15 @@ mod tests {
         assert!(fired);
         assert_eq!(
             *runner.runs.lock().unwrap(),
-            vec![(session, "daily".to_string())]
+            vec![(own, "daily".to_string())]
         );
         let after = schedule_dto(&conn, s.id).unwrap();
-        assert_eq!(after.session_id, Some(session));
+        assert_eq!(after.session_id, Some(own));
     }
 
     #[test]
     fn update_accepts_rfc3339_specs_and_round_trips_stored_timestamps() {
         let conn = setup();
-        let session = create_session_row(&conn);
         let now = utc("2026-10-16T08:00:00Z");
         let s = create(
             &conn,
@@ -1641,7 +1644,6 @@ mod tests {
                 spec: "2026-10-20T10:00:00",
                 prompt: Some("x"),
                 timezone: Some("Europe/Moscow"),
-                session_id: Some(session),
                 related_task_id: None, title: None,
             },
             now,
@@ -1669,7 +1671,6 @@ mod tests {
 
     #[test]
     fn update_edits_spec_prompt_and_status() {        let conn = setup();
-        let session = create_session_row(&conn);
         let now = utc("2026-10-16T08:00:00Z");
         let s = create(
             &conn,
@@ -1678,7 +1679,6 @@ mod tests {
                 spec: "2026-10-20T10:00:00",
                 prompt: Some("old"),
                 timezone: Some("Europe/Moscow"),
-                session_id: Some(session),
                 related_task_id: None, title: None,
             },
             now,
@@ -1719,17 +1719,16 @@ mod tests {
     #[test]
     fn list_orders_by_next_run_and_exposes_the_origin_fields() {
         let conn = setup();
-        let session = create_session_row(&conn);
         let now = utc("2026-10-16T08:00:00Z");
         let later = create(
             &conn,
-            &CreateIn { kind: "run_at", spec: "2026-10-20T10:00:00", prompt: Some("later"), timezone: Some("Europe/Moscow"), session_id: Some(session), related_task_id: Some(3), title: None },
+            &CreateIn { kind: "run_at", spec: "2026-10-20T10:00:00", prompt: Some("later"), timezone: Some("Europe/Moscow"), related_task_id: Some(3), title: None },
             now,
         )
         .unwrap();
         let sooner = create(
             &conn,
-            &CreateIn { kind: "run_at", spec: "2026-10-18T10:00:00", prompt: Some("sooner"), timezone: Some("Europe/Moscow"), session_id: Some(session), related_task_id: None, title: None },
+            &CreateIn { kind: "run_at", spec: "2026-10-18T10:00:00", prompt: Some("sooner"), timezone: Some("Europe/Moscow"), related_task_id: None, title: None },
             now,
         )
         .unwrap();
@@ -1746,7 +1745,7 @@ mod tests {
         let now = utc("2026-10-16T08:00:00Z");
         let s = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("  \n  проверить цены на сайте\nлишняя строка\n"), timezone: None, session_id: None, related_task_id: None, title: None },
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("  \n  проверить цены на сайте\nлишняя строка\n"), timezone: None, related_task_id: None, title: None },
             now,
         )
         .unwrap();
@@ -1756,7 +1755,7 @@ mod tests {
         let long = "д".repeat(80);
         let s = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "@daily", prompt: Some(&long), timezone: None, session_id: None, related_task_id: None, title: None },
+            &CreateIn { kind: "cron", spec: "@daily", prompt: Some(&long), timezone: None, related_task_id: None, title: None },
             now,
         )
         .unwrap();
@@ -1765,7 +1764,7 @@ mod tests {
         // No prompt: the spec becomes the title.
         let s = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: None, timezone: None, session_id: None, related_task_id: None, title: None },
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: None, timezone: None, related_task_id: None, title: None },
             now,
         )
         .unwrap();
@@ -1774,24 +1773,146 @@ mod tests {
         // An explicit title wins and is trimmed.
         let s = create(
             &conn,
-            &CreateIn { kind: "run_at", spec: "2026-10-20T10:00:00", prompt: Some("x"), timezone: None, session_id: None, related_task_id: None, title: Some("  Утренняя сводка  ") },
+            &CreateIn { kind: "run_at", spec: "2026-10-20T10:00:00", prompt: Some("x"), timezone: None, related_task_id: None, title: Some("  Утренняя сводка  ") },
             now,
         )
         .unwrap();
         assert_eq!(s.title.as_deref(), Some("Утренняя сводка"));
+
+        // Q.md item 5: the dedicated chat carries the same title.
+        let title: Option<String> = conn
+            .query_row("SELECT title FROM sessions WHERE id = ?1", params![s.session_id.unwrap()], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title.as_deref(), Some("Утренняя сводка"));
+    }
+
+    #[test]
+    fn create_gives_each_schedule_its_own_chat_titled_after_the_schedule() {
+        let conn = setup();
+        let talking_chat = create_session_row(&conn);
+        let now = utc("2026-10-16T08:00:00Z");
+        let a = create(
+            &conn,
+            &CreateIn { kind: "cron", spec: "0 */2 * * *", prompt: Some("Привет каждые 2 часа (9:00–17:00)"), timezone: None, related_task_id: None, title: None },
+            now,
+        )
+        .unwrap();
+        let b = create(
+            &conn,
+            &CreateIn { kind: "notify", spec: "2026-10-20T10:00:00", prompt: Some("ping"), timezone: None, related_task_id: None, title: None },
+            now,
+        )
+        .unwrap();
+        let (sa, sb) = (
+            a.session_id.expect("schedule a owns a chat"),
+            b.session_id.expect("schedule b owns a chat"),
+        );
+        // Q.md item 4: distinct chats, never the chat the schedule came from.
+        assert_ne!(sa, sb);
+        assert_ne!(sa, talking_chat);
+        assert_ne!(sb, talking_chat);
+        // Q.md item 5: each chat title equals its schedule title.
+        let titles: Vec<Option<String>> = conn
+            .prepare("SELECT title FROM sessions WHERE id IN (?1, ?2) ORDER BY id")
+            .unwrap()
+            .query_map(params![sa, sb], |r| r.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            titles,
+            vec![
+                Some("Привет каждые 2 часа (9:00–17:00)".to_string()),
+                Some("ping".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn rename_updates_the_schedule_and_renames_the_linked_chat_overriding_manual_titles() {
+        let conn = setup();
+        let s = create(
+            &conn,
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("daily"), timezone: None, related_task_id: None, title: Some("Старое имя") },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+        let sid = s.session_id.unwrap();
+        // A manual chat rename must be overwritten by the schedule rename.
+        harness::rename_session(&conn, sid, "Пользователь переименовал сам").unwrap();
+
+        let renamed = rename(&conn, s.id, "  Новое имя  ").unwrap();
+        assert_eq!(renamed.title.as_deref(), Some("Новое имя"));
+        let title: Option<String> = conn
+            .query_row("SELECT title FROM sessions WHERE id = ?1", params![sid], |r| r.get(0))
+            .unwrap();
+        assert_eq!(title.as_deref(), Some("Новое имя"));
+
+        assert!(matches!(rename(&conn, s.id, "   "), Err(AppError::Invalid(_))));
+        assert!(matches!(rename(&conn, 999, "x"), Err(AppError::Invalid(_))));
+    }
+
+    #[test]
+    fn rename_survives_a_detached_or_deleted_linked_session() {
+        let conn = setup();
+        let s = create(
+            &conn,
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("daily"), timezone: None, related_task_id: None, title: Some("Старое имя") },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+        // Detached link (TTL purge nulls it): the schedule title still updates.
+        conn.execute(
+            "UPDATE schedules SET session_id = NULL WHERE id = ?1",
+            params![s.id],
+        )
+        .unwrap();
+        assert_eq!(rename(&conn, s.id, "Новое имя").unwrap().title.as_deref(), Some("Новое имя"));
+    }
+
+    #[test]
+    fn existing_rows_keep_their_session_links_when_a_new_schedule_is_created() {
+        let conn = setup();
+        let session = create_session_row(&conn);
+        // A schedule created before the dedicated-chat rule (raw row with a
+        // session link): the new rule applies only to new schedules.
+        conn.execute(
+            "INSERT INTO schedules (session_id, kind, spec, prompt, status, created_at, next_run_at, timezone, title)
+             VALUES (?1, 'cron', '0 10 * * *', 'daily', 'active', '2026-10-01T00:00:00Z', '2026-10-17T07:00:00Z', 'Europe/Moscow', 'старое')",
+            params![session],
+        )
+        .unwrap();
+        let fresh = create(
+            &conn,
+            &CreateIn { kind: "cron", spec: "0 12 * * *", prompt: Some("new"), timezone: None, related_task_id: None, title: None },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+        assert_ne!(fresh.session_id.unwrap(), session);
+        let (old_sid, old_title): (Option<i64>, Option<String>) = conn
+            .query_row(
+                "SELECT s.session_id, se.title FROM schedules s
+                 JOIN sessions se ON se.id = s.session_id
+                 WHERE s.title = 'старое'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(old_sid, Some(session));
+        assert_eq!(old_title.as_deref(), Some("sched"));
     }
 
     #[test]
     fn open_session_reuses_the_linked_session_or_creates_a_titled_one() {
         let conn = setup();
-        let session = create_session_row(&conn);
         let s = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("daily"), timezone: Some("Europe/Moscow"), session_id: Some(session), related_task_id: None, title: Some("Ежедневный отчёт") },
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("daily"), timezone: Some("Europe/Moscow"), related_task_id: None, title: Some("Ежедневный отчёт") },
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
-        assert_eq!(open_session(&conn, s.id).unwrap(), session);
+        let own = s.session_id.expect("a new schedule owns its chat");
+        assert_eq!(open_session(&conn, s.id).unwrap(), own);
 
         // The session was detached (a TTL purge nulls session_id without
         // deleting the schedule): a fresh one titled after the schedule is
@@ -1802,14 +1923,15 @@ mod tests {
             params![s.id],
         )
         .unwrap();
-        harness::delete_session(&conn, session).unwrap();
+        harness::delete_session(&conn, own).unwrap();
         let fresh = open_session(&conn, s.id).unwrap();
         let after = schedule_dto(&conn, s.id).unwrap();
         assert_eq!(after.session_id, Some(fresh));
         let title: Option<String> = conn
             .query_row("SELECT title FROM sessions WHERE id = ?1", params![fresh], |r| r.get(0))
             .unwrap();
-        assert_eq!(title.as_deref(), Some("Расписание: Ежедневный отчёт"));
+        // Q.md item 5: the recreated chat title is exactly the schedule title.
+        assert_eq!(title.as_deref(), Some("Ежедневный отчёт"));
         assert_eq!(open_session(&conn, s.id).unwrap(), fresh);
 
         assert!(matches!(open_session(&conn, 999), Err(AppError::Invalid(_))));
@@ -1818,13 +1940,13 @@ mod tests {
     #[test]
     fn run_completion_marks_unread_yields_the_notice_and_clears_on_open() {
         let conn = setup();
-        let session = create_session_row(&conn);
         let s = create(
             &conn,
-            &CreateIn { kind: "run_at", spec: "2026-10-16T10:00:00", prompt: Some("go"), timezone: Some("Europe/Moscow"), session_id: Some(session), related_task_id: None, title: Some("Утренняя сводка") },
+            &CreateIn { kind: "run_at", spec: "2026-10-16T10:00:00", prompt: Some("go"), timezone: Some("Europe/Moscow"), related_task_id: None, title: Some("Утренняя сводка") },
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
+        let session = s.session_id.expect("a new schedule owns its chat");
         // Fire it so last_run_at is set (the completion lookup orders by it).
         tick(
             &conn,
@@ -1859,13 +1981,13 @@ mod tests {
     #[test]
     fn run_completion_bodies_truncate_and_report_failed_finishes() {
         let conn = setup();
-        let session = create_session_row(&conn);
-        create(
+        let s = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("daily report"), timezone: None, session_id: Some(session), related_task_id: None, title: None },
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("daily report"), timezone: None, related_task_id: None, title: None },
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
+        let session = s.session_id.unwrap();
 
         // A long answer is cut to 120 chars plus the ellipsis.
         let long = "д".repeat(200);
@@ -1899,16 +2021,15 @@ mod tests {
     #[test]
     fn run_completion_skips_notify_schedules_and_sessions_without_one() {
         let conn = setup();
-        let session = create_session_row(&conn);
         let s = create(
             &conn,
-            &CreateIn { kind: "notify", spec: "2026-10-16T10:00:00", prompt: Some("ping"), timezone: None, session_id: Some(session), related_task_id: None, title: None },
+            &CreateIn { kind: "notify", spec: "2026-10-16T10:00:00", prompt: Some("ping"), timezone: None, related_task_id: None, title: None },
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
         // notify schedules already notified at fire time: no completion
         // notice, no unread stamp.
-        assert!(mark_run_completion(&conn, session, "answer", "finish", utc("2026-10-16T11:00:00Z"))
+        assert!(mark_run_completion(&conn, s.session_id.unwrap(), "answer", "finish", utc("2026-10-16T11:00:00Z"))
             .unwrap()
             .is_none());
         let dto = schedule_dto(&conn, s.id).unwrap();
@@ -1926,14 +2047,21 @@ mod tests {
         let session = create_session_row(&conn);
         let older = create(
             &conn,
-            &CreateIn { kind: "run_at", spec: "2026-10-14T10:00:00Z", prompt: Some("a"), timezone: None, session_id: Some(session), related_task_id: None, title: Some("older") },
+            &CreateIn { kind: "run_at", spec: "2026-10-14T10:00:00Z", prompt: Some("a"), timezone: None, related_task_id: None, title: Some("older") },
             utc("2026-10-13T08:00:00Z"),
         )
         .unwrap();
         let newer = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("b"), timezone: None, session_id: Some(session), related_task_id: None, title: Some("newer") },
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("b"), timezone: None, related_task_id: None, title: Some("newer") },
             utc("2026-10-13T08:00:00Z"),
+        )
+        .unwrap();
+        // Both schedules share one chat (the pre-dedicated-chat shape): the
+        // completion lookup picks the most recently fired one of that session.
+        conn.execute(
+            "UPDATE schedules SET session_id = ?1 WHERE id IN (?2, ?3)",
+            params![session, older.id, newer.id],
         )
         .unwrap();
         conn.execute(

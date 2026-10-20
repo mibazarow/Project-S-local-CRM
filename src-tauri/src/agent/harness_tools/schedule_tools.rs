@@ -1,9 +1,11 @@
 // Scheduler tools (SPEC 5.2 #5, 5.3): the agent schedules its own future
-// runs. schedule_create binds to the session that created it (ToolCtx
-// session_id); a notify schedule needs no session. create/delete are
-// confirmed because they make the agent run (or stop) unattended later.
-// Every mutation notifies the open Harness view through the run state's
-// emitter, mirroring the schedule_* commands in lib.rs.
+// runs. schedule_create always gives the schedule its own dedicated Harness
+// chat titled after the schedule (Q.md items 4/5), then redirects the UI to
+// it through the "schedule-open" event; the chat that created the schedule
+// keeps running untouched. create/delete are confirmed because they make the
+// agent run (or stop) unattended later. Every mutation notifies the open
+// Harness view through the run state's emitter, mirroring the schedule_*
+// commands in lib.rs.
 use crate::agent::project_tools::{envelope, state_of, with_conn};
 use crate::agent::result::ToolResult;
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
@@ -27,7 +29,7 @@ impl Tool for ScheduleCreateTool {
         "schedule_create"
     }
     fn description(&self) -> &str {
-        "Create a schedule: kind=run_at (one-shot ISO datetime in spec), cron (5-field expression in spec), or notify (native notification, no model call). prompt is the user turn for run_at/cron and the body for notify; timezone is IANA (default: system); title is a short label for the UI (derived from the prompt when absent). Fires while the app is open."
+        "Create a schedule: kind=run_at (one-shot ISO datetime in spec), cron (5-field expression in spec), or notify (native notification, no model call). prompt is the user turn for run_at/cron and the body for notify; timezone is IANA (default: system); title is a short label for the UI (derived from the prompt when absent). A dedicated Harness chat titled after the schedule is created for it and the UI opens it right away; the chat running this tool keeps its own context. Fires while the app is open."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -62,14 +64,6 @@ impl Tool for ScheduleCreateTool {
         let timezone = args.get("timezone").and_then(Value::as_str);
         let title = args.get("title").and_then(Value::as_str);
         let r = with_conn(ctx, |conn| {
-            let session_id = if kind == "notify" {
-                ctx.session_id
-            } else {
-                match ctx.session_id {
-                    Some(id) => Some(id),
-                    None => Some(crate::harness::create_session(conn, Some("schedule"))?.id),
-                }
-            };
             scheduler::create(
                 conn,
                 &CreateIn {
@@ -77,15 +71,26 @@ impl Tool for ScheduleCreateTool {
                     spec,
                     prompt,
                     timezone,
-                    session_id,
                     related_task_id: None,
                     title,
                 },
                 scheduler::now_utc(),
             )
         });
-        if r.is_ok() {
+        if let Ok(dto) = &r {
             emit_schedules_changed(ctx);
+            // Q.md item 4: the schedule lives in its own freshly created
+            // chat; "sessions-changed" shows it in the sidebar and
+            // "schedule-open" switches the UI to it. The creating chat's run
+            // continues untouched.
+            if let Ok(state) = state_of(ctx) {
+                if let Some(emitter) = lock_recover(&state.emitter).as_ref() {
+                    emitter.emit_event("sessions-changed", json!({}));
+                    if let Some(session_id) = dto.session_id {
+                        emitter.emit_event("schedule-open", json!({ "sessionId": session_id }));
+                    }
+                }
+            }
         }
         Ok(envelope(r))
     }
@@ -209,20 +214,39 @@ mod tests {
         assert!(r.ok, "{:?}", r.error);
         let id = r.data.unwrap()["id"].as_i64().unwrap();
 
-        // no session in ctx: a dedicated harness session was created for it
-        let session_id: Option<i64> = with_conn(&env.ctx, |conn| {
-            conn.query_row("SELECT session_id FROM schedules WHERE id = ?1", params![id], |r| r.get(0))
-                .map_err(Into::into)
+        // Q.md items 4/5: the schedule got its own dedicated chat titled
+        // after the schedule title, not the (absent) ToolCtx session.
+        let (session_id, chat_title): (Option<i64>, Option<String>) = with_conn(&env.ctx, |conn| {
+            conn.query_row(
+                "SELECT s.session_id, se.title FROM schedules s
+                 JOIN sessions se ON se.id = s.session_id WHERE s.id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(Into::into)
         })
         .unwrap();
-        assert!(session_id.is_some(), "run_at/cron schedule must bind to a session");
+        let cron_session = session_id.expect("every new schedule binds to its own session");
+        assert_eq!(chat_title.as_deref(), Some("daily"), "chat title = schedule title");
+
+        // notify also gets its own chat (Q.md item 4: every schedule does)
+        let r = exec(
+            "schedule_create",
+            json!({ "kind": "notify", "spec": "2030-01-01T09:00:00", "prompt": "ping", "timezone": "Europe/Moscow" }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
 
         let r = exec("schedule_list", json!({}), &env.ctx);
         let items = r.data.unwrap()["schedules"].as_array().unwrap().clone();
-        assert_eq!(items.len(), 1);
-        assert_eq!(items[0]["kind"], "cron");
-        assert_eq!(items[0]["title"], "daily", "title derived from the prompt");
-        assert!(items[0]["nextRunAt"].is_string());
+        assert_eq!(items.len(), 2);
+        let cron_item = items.iter().find(|s| s["kind"] == "cron").unwrap();
+        assert_eq!(cron_item["title"], "daily", "title derived from the prompt");
+        assert!(cron_item["nextRunAt"].is_string());
+        let notify_session = items.iter().find(|s| s["kind"] == "notify").unwrap()["sessionId"]
+            .as_i64()
+            .expect("notify gets its own chat");
+        assert_ne!(notify_session, cron_session, "each schedule gets a distinct chat");
 
         let r = exec("schedule_pause", json!({ "id": id }), &env.ctx);
         assert_eq!(r.data.unwrap()["status"], "paused");
@@ -232,17 +256,6 @@ mod tests {
         let r = exec("schedule_pause", json!({ "id": id }), &env.ctx);
         assert_eq!(r.error.unwrap().code, "not_found");
 
-        // notify needs no session and takes an ISO spec
-        let r = exec(
-            "schedule_create",
-            json!({ "kind": "notify", "spec": "2030-01-01T09:00:00", "prompt": "ping", "timezone": "Europe/Moscow" }),
-            &env.ctx,
-        );
-        assert!(r.ok, "{:?}", r.error);
-        let r = exec("schedule_list", json!({}), &env.ctx);
-        let items = r.data.unwrap()["schedules"].as_array().unwrap().clone();
-        assert_eq!(items[0]["sessionId"], Value::Null);
-
         // every successful schedule mutation notifies the UI; the failed pause does not
         let events = env.events.lock().unwrap().clone();
         let notified = events
@@ -250,6 +263,19 @@ mod tests {
             .filter(|(name, _)| name == "schedules-changed")
             .count();
         assert_eq!(notified, 4, "create/pause/delete/create-notify must notify: {events:?}");
+
+        // Q.md item 4: each create redirects the UI to the new schedule chat
+        let opens: Vec<i64> = events
+            .iter()
+            .filter(|(name, _)| name == "schedule-open")
+            .map(|(_, payload)| payload["sessionId"].as_i64().unwrap())
+            .collect();
+        assert_eq!(opens, vec![cron_session, notify_session], "create must open the new chat: {events:?}");
+        let refreshed = events
+            .iter()
+            .filter(|(name, _)| name == "sessions-changed")
+            .count();
+        assert_eq!(refreshed, 2, "the sidebar must learn about each new chat");
         fs::remove_dir_all(&env.wd).unwrap();
     }
 }

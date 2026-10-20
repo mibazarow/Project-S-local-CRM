@@ -616,8 +616,9 @@ export const onSkillProposal = (handler: (payload: SkillProposalEvent) => void) 
 export const onSchedulesChanged = (handler: () => void) =>
   listen<unknown>("schedules-changed", () => handler());
 
-// Emitted by the notification click handler in lib.rs when the user clicks
-// a schedule-run completion notification: open that session's chat.
+// Emitted when the UI must switch to a session's chat: the notification click
+// handler in lib.rs (a schedule-run completion) and the schedule_create tool
+// (a freshly created schedule chat, Q.md item 4).
 export const onScheduleOpen = (handler: (payload: ScheduleOpenEvent) => void) =>
   listen<ScheduleOpenEvent>("schedule-open", (e) => handler(e.payload));
 
