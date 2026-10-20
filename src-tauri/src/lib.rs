@@ -218,7 +218,8 @@ pub fn run() {
                 let _ = config::migrate_indexing_defaults(&wd);
                 // SPEC 6.2: keep the bundled builtin skill set in sync with
                 // this app build on every start (missing/changed copies are
-                // refreshed; user skills and unknown builtin dirs survive).
+                // refreshed, builtin copies the bundle no longer ships are
+                // removed; user skills are never touched).
                 // Best-effort: a sync failure must never block startup.
                 let _ = skills::sync_builtin(&wd);
                 // SPEC 5.1: drop harness sessions idle past the TTL on start.

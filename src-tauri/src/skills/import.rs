@@ -357,11 +357,20 @@ pub fn install_builtin_from(wd: &Path, src: &Path) -> Result<Vec<String>> {
     Ok(installed)
 }
 
+// Independent marker for the shipped builtin skill set: bump whenever the
+// bundled set changes (skills added or removed) so existing installs can
+// tell which builtin set they hold, without relying on the app version.
+// Recorded in Settings/skills/.builtin-version by sync_builtin.
+pub const BUILTIN_SET_VERSION: &str = "2";
+
 // Startup sync of the bundled builtin set into an EXISTING working dir:
 // copies only missing or changed builtin skill folders (SKILL.md content
-// differs byte-for-byte), never touches user/, and never deletes builtin
-// dirs the bundle no longer ships (e.g. an older bundle's "scrapling").
-// Idempotent; the app version is recorded in Settings/skills/.builtin-version.
+// differs byte-for-byte) and removes builtin dirs the bundle no longer
+// ships, so skills dropped from the delivery disappear on existing
+// installs. Cleanup only touches app-managed copies (dirs containing a
+// SKILL.md) under Settings/skills/builtin/; dotfiles, unrelated files and
+// Settings/skills/user/ are never touched. Idempotent; the builtin set
+// version is recorded in Settings/skills/.builtin-version.
 pub fn sync_builtin(wd: &Path) -> Result<Vec<String>> {
     let src = resolve_builtin_source().ok_or_else(|| {
         AppError::Invalid(
@@ -381,6 +390,7 @@ fn sync_builtin_from(wd: &Path, src: &Path) -> Result<Vec<String>> {
     let dest_root = paths::skills_builtin_dir(wd);
     fs::create_dir_all(&dest_root)?;
     let mut synced = Vec::new();
+    let mut shipped: HashSet<String> = HashSet::new();
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let path = entry.path();
@@ -388,6 +398,7 @@ fn sync_builtin_from(wd: &Path, src: &Path) -> Result<Vec<String>> {
         if name.starts_with('.') || !path.is_dir() || !path.join(paths::SKILL_FILE).is_file() {
             continue;
         }
+        shipped.insert(name.clone());
         let dest = dest_root.join(&name);
         if builtin_copy_up_to_date(&path, &dest) {
             continue;
@@ -398,9 +409,21 @@ fn sync_builtin_from(wd: &Path, src: &Path) -> Result<Vec<String>> {
         copy_dir_all(&path, &dest)?;
         synced.push(name);
     }
+    if let Ok(entries) = fs::read_dir(&dest_root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') || !path.is_dir() || !path.join(paths::SKILL_FILE).is_file() {
+                continue;
+            }
+            if !shipped.contains(&name) {
+                fs::remove_dir_all(&path)?;
+            }
+        }
+    }
     fs::write(
         paths::skills_builtin_version_file(wd),
-        format!("{}\n", env!("CARGO_PKG_VERSION")),
+        format!("{BUILTIN_SET_VERSION}\n"),
     )?;
     synced.sort();
     Ok(synced)
@@ -903,6 +926,41 @@ mod tests {
     }
 
     #[test]
+    fn bundled_set_ships_the_universal_skills_and_not_the_removed_ones() {
+        let names: HashSet<String> = find_skill_dirs(&bundled_repo_dir())
+            .iter()
+            .map(|d| d.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        for kept in [
+            "doc-digest",
+            "meeting-protocol",
+            "spreadsheet-analysis",
+            "email-drafts",
+            "study-notes",
+            "grilling",
+        ] {
+            assert!(names.contains(kept), "bundled set is missing {kept}");
+        }
+        for gone in [
+            "agent-orchestration",
+            "claude-handoff",
+            "git-guardrails-claude-code",
+            "setup-matt-pocock-skills",
+            "ask-matt",
+            "loop-me",
+            "wayfinder",
+            "triage",
+            "migrate-to-shoehorn",
+            "setup-ts-deep-modules",
+            "setup-pre-commit",
+            "grill-me",
+            "grill-with-docs",
+        ] {
+            assert!(!names.contains(gone), "bundled set still ships {gone}");
+        }
+    }
+
+    #[test]
     fn install_builtin_copies_bundled_set_idempotently_and_keeps_user_skills() {
         let wd = scaffold("skills-install-bundled");
         let installed = install_builtin(&wd).unwrap();
@@ -937,12 +995,19 @@ mod tests {
         let src = wd.join("builtin-src");
         write_skill(&src, "one", "---\nname: one\ndescription: bundled one\n---\nB1.\n");
         write_skill(&src, "two", "---\nname: two\ndescription: bundled two\n---\nB2.\n");
-        // an unknown builtin dir (e.g. an older bundle's skill) must survive
+        // a builtin dir the bundle no longer ships is removed on sync
         write_skill(
             &paths::skills_builtin_dir(&wd),
             "scrapling",
-            "---\nname: scrapling\ndescription: keep me\n---\nOld.\n",
+            "---\nname: scrapling\ndescription: stale\n---\nOld.\n",
         );
+        // non-skill entries under the builtin root are never touched
+        fs::create_dir_all(paths::skills_builtin_dir(&wd).join("not-a-skill")).unwrap();
+        fs::write(
+            paths::skills_builtin_dir(&wd).join("loose.txt"),
+            "keep",
+        )
+        .unwrap();
         // a user skill with a bundled name must never be touched
         write_skill(
             &paths::skills_user_dir(&wd),
@@ -956,17 +1021,19 @@ mod tests {
             fs::read_to_string(paths::skills_builtin_dir(&wd).join("one/SKILL.md")).unwrap();
         assert!(copy.contains("bundled one"), "{copy}");
         assert_eq!(load_full(&wd, "one").unwrap(), "Mine."); // the user copy still wins
-        assert!(paths::skills_builtin_dir(&wd).join("scrapling/SKILL.md").is_file());
+        assert!(!paths::skills_builtin_dir(&wd).join("scrapling").exists());
+        assert!(paths::skills_builtin_dir(&wd).join("not-a-skill").is_dir());
+        assert!(paths::skills_builtin_dir(&wd).join("loose.txt").is_file());
         assert_eq!(
             fs::read_to_string(paths::skills_builtin_version_file(&wd))
                 .unwrap()
                 .trim(),
-            env!("CARGO_PKG_VERSION")
+            BUILTIN_SET_VERSION
         );
 
-        // idempotent: a second run copies nothing
+        // idempotent: a second run copies nothing and deletes nothing more
         assert!(sync_builtin_from(&wd, &src).unwrap().is_empty());
-        assert!(paths::skills_builtin_dir(&wd).join("scrapling/SKILL.md").is_file());
+        assert!(paths::skills_builtin_dir(&wd).join("not-a-skill").is_dir());
 
         // a changed bundled skill refreshes only its builtin copy
         fs::write(src.join("two/SKILL.md"), "---\nname: two\ndescription: v2\n---\nB2 v2.\n").unwrap();
@@ -985,13 +1052,47 @@ mod tests {
         for name in &synced {
             assert!(find(&wd, name).is_ok(), "{name} did not load back");
         }
+        for universal in [
+            "doc-digest",
+            "meeting-protocol",
+            "spreadsheet-analysis",
+            "email-drafts",
+            "study-notes",
+        ] {
+            assert!(find(&wd, universal).is_ok(), "{universal} did not load back");
+        }
         assert_eq!(
             fs::read_to_string(paths::skills_builtin_version_file(&wd))
                 .unwrap()
                 .trim(),
-            env!("CARGO_PKG_VERSION")
+            BUILTIN_SET_VERSION
         );
         assert!(sync_builtin(&wd).unwrap().is_empty());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn sync_builtin_removes_stale_dirs_but_keeps_user_skills_and_current_builtins() {
+        let wd = scaffold("skills-sync-stale");
+        let src = wd.join("builtin-src");
+        write_skill(&src, "one", "---\nname: one\ndescription: bundled one\n---\nB1.\n");
+        write_skill(&src, "two", "---\nname: two\ndescription: bundled two\n---\nB2.\n");
+        sync_builtin_from(&wd, &src).unwrap();
+        // an app-managed builtin copy the bundle no longer ships disappears
+        write_skill(
+            &paths::skills_builtin_dir(&wd),
+            "grill-me",
+            "---\nname: grill-me\ndescription: dropped\n---\nOld.\n",
+        );
+        write_skill(
+            &paths::skills_user_dir(&wd),
+            "grill-me",
+            "---\nname: grill-me\ndescription: my own\n---\nMine.\n",
+        );
+        assert!(sync_builtin_from(&wd, &src).unwrap().is_empty());
+        assert!(!paths::skills_builtin_dir(&wd).join("grill-me").exists());
+        assert_eq!(load_full(&wd, "grill-me").unwrap(), "Mine.");
+        assert_eq!(load_full(&wd, "one").unwrap(), "B1.");
         fs::remove_dir_all(&wd).unwrap();
     }
 
