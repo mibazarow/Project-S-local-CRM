@@ -3,6 +3,8 @@ import type { ProjectDto } from "../../api/types";
 
 const projects = vi.hoisted((): ProjectDto[] => []);
 
+const listState = vi.hoisted(() => ({ activeProjectId: null as number | null }));
+
 const actions = vi.hoisted(() => ({
   createProject: vi.fn(async () => {}),
   moveProject: vi.fn(async () => {}),
@@ -14,7 +16,11 @@ const actions = vi.hoisted(() => ({
 
 vi.mock("../../state/AppStore", () => ({
   useApp: () => ({
-    state: { projects, activeProjectId: null, newProjectRequested: false },
+    state: {
+      projects,
+      activeProjectId: listState.activeProjectId,
+      newProjectRequested: false,
+    },
     actions,
   }),
 }));
@@ -30,6 +36,7 @@ let root: Root;
 
 beforeEach(() => {
   projects.length = 0;
+  listState.activeProjectId = null;
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -132,5 +139,26 @@ describe("ProjectList current/archive tabs (Q.md item 5)", () => {
     const btn = container.querySelector<HTMLButtonElement>(".project-item .archive-toggle-btn")!;
     await click(btn);
     expect(actions.archiveProject).toHaveBeenCalledWith(2, false);
+  });
+
+  it("archiving the active project keeps the «Текущие» tab active", async () => {
+    listState.activeProjectId = 1;
+    projects.push(makeProject(1, "Alpha", false), makeProject(2, "Beta", false));
+    await mount();
+    const btn = container.querySelector<HTMLButtonElement>(".project-item .archive-toggle-btn")!;
+    await click(btn);
+    expect(actions.archiveProject).toHaveBeenCalledWith(1, true);
+    expect(segs()[0].className).toBe("seg active");
+    expect(segs()[1].className).toBe("seg");
+  });
+
+  it("archiving a non-active project keeps the «Текущие» tab active", async () => {
+    listState.activeProjectId = 1;
+    projects.push(makeProject(1, "Alpha", false), makeProject(2, "Beta", false));
+    await mount();
+    const btns = container.querySelectorAll<HTMLButtonElement>(".project-item .archive-toggle-btn");
+    await click(btns[1]);
+    expect(actions.archiveProject).toHaveBeenCalledWith(2, true);
+    expect(segs()[0].className).toBe("seg active");
   });
 });

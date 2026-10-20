@@ -194,6 +194,7 @@ const AppActionsContext = createContext<AppActions | null>(null);
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const configuredRef = useRef(false);
+  const activeProjectIdRef = useRef<number | null>(null);
 
   const loadProjects = useCallback(async () => {
     if (!configuredRef.current) return;
@@ -283,7 +284,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     dispatch({ type: "error", message: null });
     try {
       await ipc.projectSetArchived(id, archived);
-      dispatch({ type: "projects", projects: await ipc.listProjects() });
+      const projects = await ipc.listProjects();
+      dispatch({ type: "projects", projects });
+      if (archived && id === activeProjectIdRef.current) {
+        const top = projects.find((p) => !p.archived);
+        dispatch({ type: "activeProject", id: top ? top.id : null });
+      }
     } catch (e) {
       dispatch({ type: "error", message: toMessage(e) });
     }
@@ -334,9 +340,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void boot();
   }, [boot]);
 
+  useEffect(() => {
+    activeProjectIdRef.current = state.activeProjectId;
+  }, [state.activeProjectId]);
+
   // Keep a valid project selection: auto-select the remembered project for
-  // the current working dir, else the top of the list; clear it when no
-  // projects remain. Persists the active selection so it survives restarts.
+  // the current working dir, else the top of the current (non-archived) list;
+  // clear it when no current projects remain. Persists the active selection
+  // so it survives restarts. An archived project stays selected only while it
+  // was opened explicitly from the «Архивные» tab, never as a fallback.
   // Tab switches never touch activeProjectId, so the selection is stable
   // across Проекты/Харнес/Заметки и файлы.
   useEffect(() => {
@@ -350,11 +362,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       writeLastProjectId(onboarding.workingDir, activeProjectId);
       return;
     }
+    const current = projects.filter((p) => !p.archived);
+    if (current.length === 0) return;
     const remembered = readLastProjectId(onboarding.workingDir);
     const next =
-      remembered !== null && projects.some((p) => p.id === remembered)
+      remembered !== null && current.some((p) => p.id === remembered)
         ? remembered
-        : projects[0].id;
+        : current[0].id;
     dispatch({ type: "activeProject", id: next });
   }, [state.projects, state.activeProjectId, state.onboarding]);
 

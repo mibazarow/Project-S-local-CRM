@@ -32,6 +32,23 @@ const projects = vi.hoisted((): ProjectDto[] => [
   },
 ]);
 
+const makeProject = (id: number, name: string, position: number): ProjectDto => ({
+  id,
+  name,
+  path: `/p/${name}`,
+  createdAt: "2026-01-01T00:00:00Z",
+  openedAt: null,
+  position,
+  fileCount: 1,
+  taskCount: 0,
+  overdueCount: 0,
+  hasActiveTasks: false,
+  taskColumns: ["a", "b", "c"],
+  filesView: "list",
+  archived: false,
+  archivedAt: null,
+});
+
 vi.mock("../api/ipc", () => ({
   onboardingStatus: vi.fn(async () => ({ configured: true, workingDir: "/ws-test" })),
   listProjects: vi.fn(async () => projects),
@@ -93,7 +110,7 @@ function StateOnlyProbe() {
 function CombinedProbe() {
   combinedRenders += 1;
   const { state } = useApp();
-  return <span>{state.activeProjectId}</span>;
+  return <span className="active-project">{state.activeProjectId}</span>;
 }
 
 // Surfaces the active-task indicator flag so a test can assert it survives a
@@ -135,7 +152,11 @@ beforeEach(() => {
   stateRenders = 0;
   combinedRenders = 0;
   seenActions = [];
+  projects.length = 1;
   projects[0].hasActiveTasks = false;
+  projects[0].archived = false;
+  projects[0].archivedAt = null;
+  localStorage.clear();
   vi.mocked(ipc.listProjects).mockClear();
 });
 
@@ -218,6 +239,50 @@ describe("app store split", () => {
       await acts.archiveProject(1, false);
     });
     expect(ipc.projectSetArchived).toHaveBeenCalledWith(1, false);
+  });
+
+  it("archiving the active project selects the top current project", async () => {
+    projects.push(makeProject(2, "Beta", 1));
+    await mount();
+    expect(container.querySelector(".active-project")!.textContent).toBe("1");
+    const acts = seenActions[0] as {
+      archiveProject: (id: number, archived: boolean) => Promise<void>;
+    };
+    projects[0].archived = true;
+    projects[0].archivedAt = "2026-01-01 10:00:00";
+    await act(async () => {
+      await acts.archiveProject(1, true);
+    });
+    expect(container.querySelector(".active-project")!.textContent).toBe("2");
+  });
+
+  it("archiving the last current project clears the active selection", async () => {
+    await mount();
+    expect(container.querySelector(".active-project")!.textContent).toBe("1");
+    const acts = seenActions[0] as {
+      archiveProject: (id: number, archived: boolean) => Promise<void>;
+    };
+    projects[0].archived = true;
+    projects[0].archivedAt = "2026-01-01 10:00:00";
+    await act(async () => {
+      await acts.archiveProject(1, true);
+    });
+    expect(container.querySelector(".active-project")!.textContent).toBe("");
+  });
+
+  it("archiving another project keeps the active selection", async () => {
+    projects.push(makeProject(2, "Beta", 1));
+    await mount();
+    expect(container.querySelector(".active-project")!.textContent).toBe("1");
+    const acts = seenActions[0] as {
+      archiveProject: (id: number, archived: boolean) => Promise<void>;
+    };
+    projects[1].archived = true;
+    projects[1].archivedAt = "2026-01-01 10:00:00";
+    await act(async () => {
+      await acts.archiveProject(2, true);
+    });
+    expect(container.querySelector(".active-project")!.textContent).toBe("1");
   });
 
   it("a schedule-open event routes the UI to the schedule's chat session", async () => {

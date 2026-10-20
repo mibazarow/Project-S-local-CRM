@@ -74,6 +74,11 @@ export default function ProjectList() {
     void actions.openProject(id);
   };
 
+  const handleArchive = (id: number, archived: boolean) => {
+    void actions.archiveProject(id, archived);
+    if (archived && id === state.activeProjectId) setFilter("current");
+  };
+
   const dropIndex = dropTarget ? dropTarget.index : null;
   const rows: ReactNode[] = [];
   let visibleIndex = 0;
@@ -87,7 +92,7 @@ export default function ProjectList() {
           dragging
           onOpen={handleOpen}
           onRename={(id, name) => void actions.renameProject(id, name)}
-          onArchive={(id, archived) => void actions.archiveProject(id, archived)}
+          onArchive={handleArchive}
           onPointerDown={(e) => onPointerDown(e, p.id)}
         />,
       );
@@ -104,7 +109,7 @@ export default function ProjectList() {
         dragging={false}
         onOpen={handleOpen}
         onRename={(id, name) => void actions.renameProject(id, name)}
-        onArchive={(id, archived) => void actions.archiveProject(id, archived)}
+        onArchive={handleArchive}
         onPointerDown={(e) => onPointerDown(e, p.id)}
       />,
     );
