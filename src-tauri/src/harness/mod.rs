@@ -2,10 +2,12 @@
 // global memory. A session is its own identity row (title + TTL timestamps);
 // its messages reuse the chats/messages tables through a kind='harness' chat
 // linked by session_id, so message storage is not duplicated and deleting a
-// session cascades to its messages. Schedules survive session deletion
-// (session_id SET NULL, schema v12): a schedule whose session is gone creates
-// a fresh session when it fires. The run path mirrors the project chat run
-// and shares the agent loop and confirmation bridge.
+// session cascades to its messages. Deleting a session through delete_session
+// also removes the schedules created in it (Q.md: chat and schedules go
+// together). The schedules.session_id FK stays SET NULL (schema v12) so the
+// TTL purge, which deletes sessions without the cascade, detaches schedules and
+// lets them fire into a fresh session later. The run path mirrors the project
+// chat run and shares the agent loop and confirmation bridge.
 use crate::agent::catalog::Catalog;
 use crate::sync_util::lock_recover;
 use crate::agent::prompts::harness_system_prompt;
@@ -156,14 +158,18 @@ pub fn rename_session(conn: &Connection, id: i64, title: &str) -> Result<Session
     session_dto(conn, id)
 }
 
-// Cascades to the session's chat (→ messages, summaries); the session's
-// schedules survive and detach (session_id SET NULL) to fire into a fresh
-// session later.
+// Cascades to the session's chat (→ messages, summaries) and to the schedules
+// created in it (Q.md: a chat and its schedules are removed together, so no
+// schedule is left orphaned to fire into a fresh session). The two deletes run
+// in one transaction: either the chat and all its schedules go, or nothing.
 pub fn delete_session(conn: &Connection, id: i64) -> Result<()> {
-    let deleted = conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM schedules WHERE session_id = ?1", params![id])?;
+    let deleted = tx.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
     if deleted != 1 {
         return Err(AppError::Invalid(format!("session {id} not found")));
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -551,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_session_removes_messages_but_keeps_schedules_detached() {
+    fn delete_session_cascades_to_messages_and_its_schedules() {
         let (wd, conn) = setup("harness-delete");
         let s = create_session(&conn, Some("s")).unwrap();
         let chat_id = session_chat_id(&conn, s.id).unwrap();
@@ -569,12 +575,11 @@ mod tests {
         let chats: i64 = conn
             .query_row("SELECT count(*) FROM chats WHERE session_id = ?1", params![s.id], |r| r.get(0))
             .unwrap();
-        // v12: the schedule survives session deletion with session_id NULL.
-        let schedule_session: Option<i64> = conn
-            .query_row("SELECT session_id FROM schedules WHERE kind = 'cron'", [], |r| r.get(0))
+        // Q.md: the schedule created in the chat is removed with it (no orphan).
+        let schedules: i64 = conn
+            .query_row("SELECT count(*) FROM schedules WHERE session_id = ?1", params![s.id], |r| r.get(0))
             .unwrap();
-        assert_eq!((messages, chats), (0, 0));
-        assert_eq!(schedule_session, None);
+        assert_eq!((messages, chats, schedules), (0, 0, 0));
         assert!(matches!(delete_session(&conn, s.id), Err(AppError::Invalid(_))));
         fs::remove_dir_all(&wd).unwrap();
     }

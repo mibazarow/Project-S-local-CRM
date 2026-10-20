@@ -31,6 +31,14 @@ import { IconPin } from "../files/icons";
 
 const UNTITLED = "Новая сессия";
 
+function pluralRu(n: number, one: string, few: string, many: string): string {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod10 === 1 && mod100 !== 11) return one;
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 10 || mod100 >= 20)) return few;
+  return many;
+}
+
 // The schedules panel «+»: a dedicated Harness chat seeded with a static
 // assistant greeting (persisted by the backend, no LLM call) — the schedule
 // itself is then created by the agent's schedule tools from the user's words.
@@ -378,15 +386,18 @@ export default function HarnessView() {
 
   const deleteSession = async (s: SessionDto) => {
     const label = s.title ?? UNTITLED;
-    const ok = await confirmRemove({
-      title: `Удалить чат «${label}»?`,
-      message: "История чата будет удалена. Расписания сохранятся и при следующем срабатывании создадут новый чат.",
-    });
+    const linked = schedules.filter((sc) => sc.sessionId === s.id).length;
+    const message =
+      linked > 0
+        ? `Чат и ${linked} ${pluralRu(linked, "расписание", "расписания", "расписаний")} будут удалены.`
+        : "История чата будет удалена.";
+    const ok = await confirmRemove({ title: `Удалить чат «${label}»?`, message });
     if (!ok) return;
     try {
       await ipc.harnessDeleteSession(s.id);
       if (activeId === s.id) setActiveId(null);
       await loadSessions();
+      await loadSchedules();
     } catch (e) {
       setSessionsError(toMessage(e));
     }
@@ -569,24 +580,37 @@ export default function HarnessView() {
   };
 
   const deleteSchedule = async (s: ScheduleDto) => {
-    if (!(await confirmRemove({ title: "Удалить расписание?" }))) return;
+    const label = s.title ?? s.spec;
+    const message =
+      s.sessionId != null
+        ? `Расписание «${label}» и его чат будут удалены.`
+        : "Расписание будет удалено.";
+    if (!(await confirmRemove({ title: "Удалить расписание?", message }))) return;
     try {
       await ipc.scheduleDelete(s.id);
       await loadSchedules();
+      await loadSessions();
     } catch (e) {
       setSchedulesError(toMessage(e));
     }
   };
 
-  // Click-through: open the schedule's chat (the backend reuses its session
-  // or creates one titled after the schedule) and ask the agent to explain
-  // the task there — the question and the answer are visible in the chat.
+  // Click-through: open the schedule's chat (the backend reuses its session or
+  // creates one titled after the schedule). The chat's own history is loaded and
+  // shown first; the explanatory auto-question is sent only for a genuinely
+  // empty/new session, so opening a schedule never hides its earlier messages.
   const openSchedule = async (s: ScheduleDto) => {
     try {
       const { sessionId } = await ipc.scheduleOpen(s.id);
       setActiveId(sessionId);
       await loadSessions();
       if (stateRef.current[sessionId]?.run) return; // a run is already live there
+      const dtos = await ipc.harnessSessionHistory(sessionId).catch(() => []);
+      const firstChatId = dtos[0]?.chatId;
+      if (firstChatId != null) rememberChatId(sessionId, firstChatId);
+      const items = historyToItems(dtos);
+      dispatch({ type: "loaded", key: sessionId, items });
+      if (items.length > 0) return;
       const question = `Коротко (1–2 предложения) объясни, что это за задача по расписанию: «${s.title ?? s.spec}» (id ${s.id}).`;
       dispatch({ type: "send", key: sessionId, text: question, attachments: [] });
       void ipc

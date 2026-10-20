@@ -403,11 +403,16 @@ pub fn resume(conn: &Connection, id: i64, now: DateTime<Utc>) -> Result<Schedule
     set_status_and_next(conn, id, "active", Some(next))
 }
 
+// Q.md: a schedule and the chat it was created in are removed together. When
+// the schedule has a linked session, deleting that session cascades to all its
+// schedules (this one included) in one transaction; the trailing DELETE covers
+// a schedule with no session (or one the cascade already removed).
 pub fn delete(conn: &Connection, id: i64) -> Result<()> {
-    let deleted = conn.execute("DELETE FROM schedules WHERE id = ?1", params![id])?;
-    if deleted != 1 {
-        return Err(AppError::Invalid(format!("schedule {id} not found")));
+    let s = schedule_dto(conn, id)?;
+    if let Some(sid) = s.session_id {
+        harness::delete_session(conn, sid)?;
     }
+    conn.execute("DELETE FROM schedules WHERE id = ?1", params![id])?;
     Ok(())
 }
 
@@ -1284,7 +1289,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_a_session_keeps_its_schedule_with_a_null_session() {
+    fn deleting_a_session_deletes_its_schedules() {
         let conn = setup();
         let session = create_session_row(&conn);
         let s = create(
@@ -1302,13 +1307,91 @@ mod tests {
         .unwrap();
 
         harness::delete_session(&conn, session).unwrap();
-        let after = schedule_dto(&conn, s.id).unwrap();
-        assert_eq!(after.session_id, None);
-        assert_eq!(after.status, "active");
+        // Q.md: the schedule is removed with its chat, not left orphaned.
+        let remaining: i64 = conn
+            .query_row("SELECT count(*) FROM schedules WHERE id = ?1", params![s.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
     }
 
     #[test]
-    fn firing_a_schedule_whose_session_was_deleted_creates_a_fresh_one() {
+    fn deleting_a_schedule_deletes_its_linked_session() {
+        let conn = setup();
+        let session = create_session_row(&conn);
+        let s = create(
+            &conn,
+            &CreateIn {
+                kind: "cron",
+                spec: "0 10 * * *",
+                prompt: Some("daily"),
+                timezone: Some("Europe/Moscow"),
+                session_id: Some(session),
+                related_task_id: None, title: None,
+            },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+
+        delete(&conn, s.id).unwrap();
+        let sessions: i64 = conn
+            .query_row("SELECT count(*) FROM sessions WHERE id = ?1", params![session], |r| r.get(0))
+            .unwrap();
+        let schedules: i64 = conn
+            .query_row("SELECT count(*) FROM schedules WHERE id = ?1", params![s.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!((sessions, schedules), (0, 0));
+    }
+
+    #[test]
+    fn deleting_a_schedule_without_a_session_removes_only_the_schedule() {
+        let conn = setup();
+        let s = create(
+            &conn,
+            &CreateIn {
+                kind: "notify",
+                spec: "2026-10-16T10:00:00",
+                prompt: Some("ping"),
+                timezone: Some("Europe/Moscow"),
+                session_id: None,
+                related_task_id: None, title: None,
+            },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+
+        delete(&conn, s.id).unwrap();
+        let schedules: i64 = conn
+            .query_row("SELECT count(*) FROM schedules WHERE id = ?1", params![s.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(schedules, 0);
+    }
+
+    #[test]
+    fn deleting_a_chat_removes_every_schedule_created_in_it() {
+        let conn = setup();
+        let session = create_session_row(&conn);
+        create(
+            &conn,
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("a"), timezone: Some("Europe/Moscow"), session_id: Some(session), related_task_id: None, title: None },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+        create(
+            &conn,
+            &CreateIn { kind: "run_at", spec: "2026-10-20T10:00:00", prompt: Some("b"), timezone: Some("Europe/Moscow"), session_id: Some(session), related_task_id: None, title: None },
+            utc("2026-10-16T08:00:00Z"),
+        )
+        .unwrap();
+
+        harness::delete_session(&conn, session).unwrap();
+        let remaining: i64 = conn
+            .query_row("SELECT count(*) FROM schedules WHERE session_id = ?1", params![session], |r| r.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
+    }
+
+    #[test]
+    fn firing_a_schedule_whose_session_was_detached_creates_a_fresh_one() {
         let conn = setup();
         let old = create_session_row(&conn);
         let s = create(
@@ -1324,7 +1407,16 @@ mod tests {
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
-        harness::delete_session(&conn, old).unwrap();
+        // The TTL purge detaches a schedule (session_id SET NULL) without
+        // deleting it; a later fire then creates a fresh session. (Deleting the
+        // session through delete_session would have removed the schedule too.)
+        conn.execute(
+            "UPDATE schedules SET session_id = NULL WHERE id = ?1",
+            params![s.id],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM sessions WHERE id = ?1", params![old])
+            .unwrap();
 
         let runner = RecordingRunner::new();
         let fired = tick(
@@ -1586,10 +1678,15 @@ mod tests {
         .unwrap();
         assert_eq!(open_session(&conn, s.id).unwrap(), session);
 
-        // The session was deleted: a fresh one titled after the schedule is
-        // created and linked back, and later opens reuse it. (The fresh rowid
-        // may equal the deleted one — SQLite reuses rowids without
-        // AUTOINCREMENT — so the link and the title carry the assertion.)
+        // The session was detached (a TTL purge nulls session_id without
+        // deleting the schedule): a fresh one titled after the schedule is
+        // created and linked back, and later opens reuse it. (Deleting the
+        // session through delete_session would have removed the schedule too.)
+        conn.execute(
+            "UPDATE schedules SET session_id = NULL WHERE id = ?1",
+            params![s.id],
+        )
+        .unwrap();
         harness::delete_session(&conn, session).unwrap();
         let fresh = open_session(&conn, s.id).unwrap();
         let after = schedule_dto(&conn, s.id).unwrap();

@@ -233,6 +233,13 @@ impl Tool for DeleteChatTool {
         let r = with_conn(ctx, |conn| crate::harness::delete_session(conn, session_id));
         if r.is_ok() {
             emit_sessions_changed(ctx);
+            // delete_session cascades to the chat's schedules: the schedules
+            // panel must drop them too, not leave them orphaned on screen.
+            if let Ok(state) = state_of(ctx) {
+                if let Some(emitter) = lock_recover(&state.emitter).as_ref() {
+                    emitter.emit_event("schedules-changed", json!({}));
+                }
+            }
         }
         Ok(match r {
             Ok(()) => ToolResult::ok(json!({ "deleted": true, "current": current })),

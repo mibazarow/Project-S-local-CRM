@@ -109,6 +109,11 @@ describe("chatReducer", () => {
     });
   });
 
+  it("send does not mark the slice loaded, so the history effect still loads it", () => {
+    const s = chatReducer({}, { type: "send", key: KEY, text: "hi", attachments: [] });
+    expect(s[KEY].loaded).toBe(false);
+  });
+
   it("stepStart opens a run when none exists and appends steps", () => {
     let s = chatReducer({}, { type: "stepStart", key: KEY, name: "read_file", summary: "path=a" });
     expect(s[KEY].run?.local).toBe(false);

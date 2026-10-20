@@ -11,6 +11,8 @@ vi.mock("../../api/ipc", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../api/ipc")>()),
   harnessListSessions: vi.fn(async () => []),
   scheduleList: vi.fn(async () => []),
+  scheduleOpen: vi.fn(async () => ({ sessionId: 1 })),
+  scheduleDelete: vi.fn(async () => undefined),
   harnessDeleteSession: vi.fn(async () => undefined),
   harnessPinSession: vi.fn(async () => []),
   harnessSessionHistory: vi.fn(async () => []),
@@ -40,6 +42,7 @@ vi.mock("../chat/TodoPanel", () => ({ default: () => null }));
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import * as ipc from "../../api/ipc";
+import { registerConfirmHost, type ConfirmOptions } from "../../shared/confirm";
 import HarnessView from "./HarnessView";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -168,5 +171,154 @@ describe("HarnessView schedules «+» opens a greeting chat (Q.md schedules slic
     expect(rows).toHaveLength(1);
     expect(rows[0].classList.contains("active")).toBe(true);
     expect(rows[0].textContent).toContain("Новое расписание");
+  });
+});
+
+describe("HarnessView openSchedule loads history (Q.md item 3)", () => {
+  const schedule = {
+    id: 5,
+    sessionId: 9,
+    kind: "cron",
+    spec: "0 9 * * *",
+    prompt: null,
+    status: "active",
+    relatedTaskId: null,
+    createdAt: "",
+    lastRunAt: null,
+    nextRunAt: null,
+    timezone: null,
+    error: null,
+    title: "Ежедневный отчёт",
+  };
+  const session = {
+    id: 9,
+    title: "Расписание: Ежедневный отчёт",
+    createdAt: "",
+    updatedAt: "",
+    lastActiveAt: "2026-01-01",
+    pinned: false,
+    pinnedAt: null,
+  };
+
+  beforeEach(() => {
+    vi.mocked(ipc.scheduleList).mockResolvedValue([schedule] as never);
+    vi.mocked(ipc.scheduleOpen).mockResolvedValue({ sessionId: 9 } as never);
+    vi.mocked(ipc.harnessListSessions).mockResolvedValue([session] as never);
+  });
+
+  it("shows the existing history and never sends the auto-question", async () => {
+    vi.mocked(ipc.harnessSessionHistory).mockResolvedValue([
+      {
+        id: 1,
+        chatId: 77,
+        role: "user",
+        content: "старое сообщение из истории",
+        reasoning: null,
+        toolCalls: [],
+        toolCallId: null,
+        name: null,
+        createdAt: "",
+        position: 0,
+        attachments: [],
+        pinned: false,
+      },
+    ] as never);
+    await mount();
+
+    const item = container.querySelector<HTMLElement>(".schedule-item")!;
+    await act(async () => {
+      item.click();
+    });
+
+    expect(ipc.scheduleOpen).toHaveBeenCalledWith(5);
+    expect(ipc.sendSessionMessage).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("старое сообщение из истории");
+  });
+
+  it("sends the auto-question only for a genuinely empty session", async () => {
+    vi.mocked(ipc.harnessSessionHistory).mockResolvedValue([] as never);
+    await mount();
+
+    const item = container.querySelector<HTMLElement>(".schedule-item")!;
+    await act(async () => {
+      item.click();
+    });
+
+    expect(ipc.sendSessionMessage).toHaveBeenCalledTimes(1);
+    const [sid, text] = vi.mocked(ipc.sendSessionMessage).mock.calls[0];
+    expect(sid).toBe(9);
+    expect(text).toContain("что это за задача по расписанию");
+  });
+});
+
+describe("HarnessView cascade delete confirmations (Q.md item 4)", () => {
+  let captured: ConfirmOptions | null;
+  let resolveWith: boolean;
+
+  beforeEach(() => {
+    captured = null;
+    resolveWith = true;
+    registerConfirmHost((req) => {
+      captured = req.opts;
+      req.resolve(resolveWith);
+    });
+  });
+
+  afterEach(() => {
+    registerConfirmHost(null);
+  });
+
+  it("deleting a chat with linked schedules warns about both and cascades", async () => {
+    vi.mocked(ipc.harnessListSessions).mockResolvedValue([
+      { id: 1, title: "Чат с расписаниями", createdAt: "", updatedAt: "", lastActiveAt: "2026-01-01", pinned: false, pinnedAt: null },
+    ] as never);
+    vi.mocked(ipc.scheduleList).mockResolvedValue([
+      { id: 10, sessionId: 1, kind: "cron", spec: "0 9 * * *", prompt: null, status: "active", relatedTaskId: null, createdAt: "", lastRunAt: null, nextRunAt: null, timezone: null, error: null, title: "A" },
+      { id: 11, sessionId: 1, kind: "run_at", spec: "2026-11-01T10:00:00", prompt: null, status: "active", relatedTaskId: null, createdAt: "", lastRunAt: null, nextRunAt: null, timezone: null, error: null, title: "B" },
+    ] as never);
+    await mount();
+
+    const del = container.querySelector<HTMLElement>(".session-item .mini-btn.danger")!;
+    await act(async () => {
+      del.click();
+    });
+
+    expect(captured!.message).toBe("Чат и 2 расписания будут удалены.");
+    expect(ipc.harnessDeleteSession).toHaveBeenCalledWith(1);
+  });
+
+  it("deleting a schedule with a linked chat warns the chat goes too", async () => {
+    vi.mocked(ipc.harnessListSessions).mockResolvedValue([] as never);
+    vi.mocked(ipc.scheduleList).mockResolvedValue([
+      { id: 12, sessionId: 9, kind: "cron", spec: "0 9 * * *", prompt: null, status: "active", relatedTaskId: null, createdAt: "", lastRunAt: null, nextRunAt: null, timezone: null, error: null, title: "Ежедневный отчёт" },
+    ] as never);
+    await mount();
+
+    const del = container.querySelector<HTMLElement>(".schedule-item .mini-btn.danger")!;
+    await act(async () => {
+      del.click();
+    });
+
+    expect(captured!.message).toBe("Расписание «Ежедневный отчёт» и его чат будут удалены.");
+    expect(ipc.scheduleDelete).toHaveBeenCalledWith(12);
+  });
+
+  it("cancel deletes nothing", async () => {
+    resolveWith = false;
+    vi.mocked(ipc.harnessListSessions).mockResolvedValue([
+      { id: 1, title: "Чат", createdAt: "", updatedAt: "", lastActiveAt: "2026-01-01", pinned: false, pinnedAt: null },
+    ] as never);
+    vi.mocked(ipc.scheduleList).mockResolvedValue([
+      { id: 10, sessionId: 1, kind: "cron", spec: "0 9 * * *", prompt: null, status: "active", relatedTaskId: null, createdAt: "", lastRunAt: null, nextRunAt: null, timezone: null, error: null, title: "A" },
+    ] as never);
+    await mount();
+
+    const del = container.querySelector<HTMLElement>(".session-item .mini-btn.danger")!;
+    await act(async () => {
+      del.click();
+    });
+
+    expect(ipc.harnessDeleteSession).not.toHaveBeenCalled();
+    expect(ipc.scheduleDelete).not.toHaveBeenCalled();
   });
 });

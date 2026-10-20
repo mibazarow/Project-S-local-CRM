@@ -172,7 +172,6 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
     case "send":
       return withSlice(state, action.key, (s) => ({
         ...s,
-        loaded: true,
         sendError: null,
         items: [
           ...s.items,

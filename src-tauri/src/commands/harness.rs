@@ -1,7 +1,7 @@
 use crate::{attachments, chat, harness};
 use crate::error::{Result};
 use crate::state::{AgentRegistry, AppState, RunKey};
-use super::{with_db, session_ttl_days};
+use super::{emit_schedules_changed, session_ttl_days, with_db};
 use std::sync::Arc;
 use tauri::{AppHandle, State};
 
@@ -32,8 +32,11 @@ pub(crate) fn harness_rename_session(
 }
 
 #[tauri::command]
-pub(crate) fn harness_delete_session(state: State<AppState>, id: i64) -> Result<()> {
-    with_db(&state, |conn| harness::delete_session(conn, id))
+pub(crate) fn harness_delete_session(app: AppHandle, state: State<AppState>, id: i64) -> Result<()> {
+    with_db(&state, |conn| harness::delete_session(conn, id))?;
+    // The cascade removes the chat's schedules too: refresh the schedules panel.
+    emit_schedules_changed(&app);
+    Ok(())
 }
 
 // Pin or unpin a Harness chat; returns the fresh session list so the sidebar
