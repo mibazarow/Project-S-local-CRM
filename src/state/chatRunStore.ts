@@ -106,7 +106,7 @@ export function send(key: string, text: string, attachments: MessageAttachmentDt
   } else if (kind === "s") {
     p = ipc.sendSessionMessage(id, text, attachments).then((chat) => rememberChatId(key, chat));
   } else {
-    p = ipc.sendNotesMessage(text);
+    p = ipc.sendNotesMessage(text, attachments);
   }
   p.then(() => {
     for (const l of sentListeners) l(key);

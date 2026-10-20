@@ -1,24 +1,38 @@
 use crate::{attachments, index, paths};
 use crate::error::{AppError, Result};
 use crate::state::{AppState};
-use super::{with_db, emit_fs_changed};
+use super::{with_db, emit_fs_changed, emit_notes_changed};
 use tauri::{AppHandle, State};
 
 // Chat attachments (SPEC 6.1): copy files into the project's `Входящие/` (or
-// `Harness/Входящие/` for a harness session), journal project copies in
-// `INBOX.md`, and index them so they are searchable. Exactly one of projectId /
-// sessionId selects the target.
+// `Harness/Входящие/` for a harness session, `Notes/Входящие/` for the notes
+// chat), journal project copies in INBOX.md, and index them so they are
+// searchable. Exactly one of projectId / sessionId / notes selects the target.
 #[tauri::command]
 pub(crate) fn attach_files(
     app: AppHandle,
     state: State<AppState>,
     project_id: Option<i64>,
     session_id: Option<i64>,
+    notes: Option<bool>,
     paths: Vec<String>,
 ) -> Result<Vec<attachments::AttachmentDto>> {
     let wd = state.working_dir()?;
-    match (project_id, session_id) {
-        (Some(pid), None) => {
+    // Finder drops may carry folders and vanished paths: silently keep only
+    // real files so a mixed drop never fails the send or journals junk.
+    let paths: Vec<String> = paths
+        .into_iter()
+        .filter(|p| std::path::Path::new(p).is_file())
+        .collect();
+    match (project_id, session_id, notes.unwrap_or(false)) {
+        (None, None, true) => {
+            let items = attachments::attach_notes(&wd, &paths)?;
+            for item in &items {
+                emit_notes_changed(&app, format!("{}/{}", paths::PROJECT_INBOX, item.name));
+            }
+            Ok(items)
+        }
+        (Some(pid), None, false) => {
             let items = with_db(&state, |conn| {
                 attachments::attach_project(conn, &wd, pid, &paths)
             })?;
@@ -28,11 +42,11 @@ pub(crate) fn attach_files(
             emit_fs_changed(&app, pid, paths::PROJECT_INBOX);
             Ok(items)
         }
-        (None, Some(sid)) => with_db(&state, |conn| {
+        (None, Some(sid), false) => with_db(&state, |conn| {
             attachments::attach_harness(conn, &wd, sid, &paths)
         }),
         _ => Err(AppError::Invalid(
-            "exactly one of projectId or sessionId is required".into(),
+            "exactly one of projectId, sessionId or notes is required".into(),
         )),
     }
 }

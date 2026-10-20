@@ -1,4 +1,4 @@
-use crate::{chat, fs_ops, notes, reliability, undo};
+use crate::{attachments, chat, fs_ops, notes, reliability, undo};
 use crate::error::{Result};
 use crate::fs_ops::FsEntry;
 use crate::state::{AgentRegistry, AppState, RunKey};
@@ -270,8 +270,15 @@ pub(crate) fn send_notes_message(
     state: State<AppState>,
     registry: State<'_, Arc<AgentRegistry>>,
     text: String,
+    attachments: Option<Vec<attachments::AttachmentRef>>,
 ) -> Result<i64> {
-    notes::run_notes_chat(&app, &state, registry.inner(), &text)
+    notes::run_notes_chat(
+        &app,
+        &state,
+        registry.inner(),
+        &text,
+        attachments.as_deref().unwrap_or(&[]),
+    )
 }
 
 #[tauri::command]

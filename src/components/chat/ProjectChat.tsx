@@ -59,7 +59,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
   const [text, setText] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
   const chatRootRef = useRef<HTMLElement | null>(null);
-  const att = useChatAttachments(chatRootRef);
+  const att = useChatAttachments(chatRootRef, projectId != null);
   const visionSupported = useVisionSupport();
 
   const slice = useChatSlice(key);

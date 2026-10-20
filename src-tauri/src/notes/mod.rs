@@ -423,6 +423,7 @@ pub fn run_notes_chat(
     state: &AppState,
     registry: &Arc<crate::state::AgentRegistry>,
     text: &str,
+    attachments_in: &[crate::attachments::AttachmentRef],
 ) -> Result<i64> {
     let text = text.trim();
     if text.is_empty() {
@@ -437,8 +438,10 @@ pub fn run_notes_chat(
         let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
         let chat_id = ensure_notes_chat(conn)?;
         // The user turn is persisted first: build_context then sees the full
-        // transcript (including it) when estimating and compacting.
-        crate::chat::append_message(
+        // transcript (including it) when estimating and compacting. Already
+        // saved attachment copies (attach_files with notes: true) are linked to
+        // it; load_history expands the turn for the model like project turns.
+        let user_message = crate::chat::append_message(
             conn,
             chat_id,
             crate::llm::Role::User,
@@ -447,6 +450,7 @@ pub fn run_notes_chat(
             None,
             None,
         )?;
+        crate::attachments::save_message_attachments(conn, user_message.id, attachments_in)?;
         let memory_records = crate::memory::relevant_records(conn, None, text)?;
         (chat_id, memory_records)
     };

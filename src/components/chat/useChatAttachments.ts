@@ -24,10 +24,17 @@ let nextPendingKey = 1;
 // Attach widget state for one chat. The webview drag-drop channel is global
 // (same as in useOsFileDrag), so drops are scoped to this chat: a drop only
 // counts when the pointer is over the chat's own root element, which the
-// caller marks with data-chat-drop.
-export function useChatAttachments(rootRef: RefObject<HTMLElement | null>) {
+// caller marks with data-chat-drop. `enabled` gates the whole channel: a chat
+// with nothing to attach to (no project selected, notes chat not yet created)
+// ignores drops and stays unhighlighted.
+export function useChatAttachments(
+  rootRef: RefObject<HTMLElement | null>,
+  enabled = true,
+) {
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [dragOver, setDragOver] = useState(false);
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
 
   const addPaths = (paths: string[]) => {
     const items = paths
@@ -76,6 +83,10 @@ export function useChatAttachments(rootRef: RefObject<HTMLElement | null>) {
     void getCurrentWebview()
       .onDragDropEvent((event) => {
         const payload = event.payload;
+        if (!enabledRef.current) {
+          setDragOver(false);
+          return;
+        }
         if (payload.type === "enter" || payload.type === "over") {
           setDragOver(insideChat(payload.position.x, payload.position.y));
         } else if (payload.type === "drop") {

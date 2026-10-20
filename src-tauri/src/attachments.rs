@@ -311,6 +311,20 @@ pub fn attach_harness(
     Ok(out)
 }
 
+// Copies notes-chat attachments into the Notes vault inbox (`Notes/Входящие/`).
+// savedPaths are absolute (like harness ones): the notes run expands user turns
+// without a project root, and the chat renderer resolves absolute paths as-is.
+pub fn attach_notes(wd: &Path, sources: &[String]) -> Result<Vec<AttachmentDto>> {
+    let inbox = paths::notes_dir(wd).join(paths::PROJECT_INBOX);
+    fs::create_dir_all(&inbox)?;
+    let mut out = Vec::with_capacity(sources.len());
+    for source in sources {
+        let target = copy_into(&inbox, source)?;
+        out.push(dto(&target, None));
+    }
+    Ok(out)
+}
+
 // Extracts an attachment's text for the model. Images return None (they are
 // sent as image content parts by build_user_content instead); unsupported/other
 // formats return None. `base` is the project root for project attachments
@@ -632,6 +646,32 @@ mod tests {
             attach_harness(&conn, &wd, 999, &[src.join("log.txt").display().to_string()]),
             Err(AppError::Invalid(_))
         ));
+        fs::remove_dir_all(&wd).unwrap();
+        fs::remove_dir_all(&src).unwrap();
+    }
+
+    #[test]
+    fn notes_attachment_lands_in_notes_inbox_with_absolute_path() {
+        let wd = temp_test_dir("att-notes");
+        let src = source_dir("att-notes-src");
+        fs::write(src.join("счёт.pdf"), "x").unwrap();
+        fs::create_dir_all(src.join("папка")).unwrap();
+        let items = attach_notes(&wd, &[src.join("счёт.pdf").display().to_string()]).unwrap();
+        assert_eq!(items.len(), 1);
+        // Directories are rejected here; the attach_files command filters them
+        // out before this point so a mixed Finder drop sends cleanly.
+        assert!(matches!(
+            attach_notes(&wd, &[src.join("папка").display().to_string()]),
+            Err(AppError::Invalid(_))
+        ));
+        let saved = Path::new(&items[0].saved_path);
+        assert!(saved.is_absolute());
+        assert_eq!(
+            saved,
+            paths::notes_dir(&wd).join(paths::PROJECT_INBOX).join("счёт.pdf")
+        );
+        assert!(saved.is_file());
+        assert_eq!(items[0].name, "счёт.pdf");
         fs::remove_dir_all(&wd).unwrap();
         fs::remove_dir_all(&src).unwrap();
     }

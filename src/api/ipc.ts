@@ -342,20 +342,28 @@ export const ensureNotesChat = () => invoke<number>("ensure_notes_chat");
 
 export const notesChatHistory = () => invoke<MessageDto[]>("notes_chat_history");
 
-export const sendNotesMessage = (text: string) => invoke<number>("send_notes_message", { text });
+export const sendNotesMessage = (text: string, attachments?: MessageAttachmentDto[]) =>
+  invoke<number>("send_notes_message", { text, attachments: attachments ?? null });
 
 export const cancelNotesRun = () => invoke<boolean>("cancel_notes_run");
 
-// Chat attachments (SPEC 6.1): attach_files copies sources into the project's
-// or the harness inbox; exactly one of projectId / sessionId selects the
-// target. The data-url/open commands resolve project-relative and absolute
-// savedPaths alike (absolute also covers harness attachments and pending
-// source paths before saving).
+// Chat attachments (SPEC 6.1): attach_files copies sources into the project's,
+// the harness or the Notes inbox; exactly one of projectId / sessionId / notes
+// selects the target. The data-url/open commands resolve project-relative and
+// absolute savedPaths alike (absolute also covers harness and notes
+// attachments and pending source paths before saving).
 export const attachFiles = (
   projectId: number | null,
   sessionId: number | null,
   paths: string[],
-) => invoke<AttachmentDto[]>("attach_files", { projectId, sessionId, paths });
+  notes?: boolean,
+) =>
+  invoke<AttachmentDto[]>("attach_files", {
+    projectId,
+    sessionId,
+    notes: notes ?? null,
+    paths,
+  });
 
 export const attachmentDataUrl = (savedPath: string, projectId?: number, maxBytes?: number) =>
   invoke<string>("attachment_data_url", {

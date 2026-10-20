@@ -20,11 +20,16 @@ import {
   toMessage,
   ChatTranscript,
   ConfirmCard,
+  AttachFileIcon,
+  AttachXIcon,
   resolvePinMessageId,
   resolveRegenerateTurn,
+  useVisionSupport,
   type ChatItem,
 } from "../chat/chatShared";
 import { ChatComposer } from "../chat/ChatComposer";
+import { useChatAttachments } from "../chat/useChatAttachments";
+import type { MessageAttachmentDto } from "../../api/types";
 
 // One continuous notes chat per working dir (SPEC notes chat slice): the
 // backend get-or-creates the singleton chat and routes its runs as
@@ -37,6 +42,9 @@ export default function NotesChat() {
   const chatIdRef = useRef<number | null>(null);
   const [text, setText] = useState("");
   const listRef = useRef<HTMLDivElement>(null);
+  const chatRootRef = useRef<HTMLElement | null>(null);
+  const att = useChatAttachments(chatRootRef, chatId != null);
+  const visionSupported = useVisionSupport();
 
   const slice = useChatSlice(NOTES_KEY);
   const running = slice?.run != null;
@@ -96,8 +104,31 @@ export default function NotesChat() {
     if (chatId == null || running) return;
     const trimmed = value.trim();
     if (!trimmed) return;
-    setText("");
-    storeSend(NOTES_KEY, trimmed, []);
+    void (async () => {
+      let refs: MessageAttachmentDto[] = [];
+      if (att.pending.length > 0) {
+        try {
+          const saved = await ipc.attachFiles(
+            null,
+            null,
+            att.pending.map((a) => a.path),
+            true,
+          );
+          refs = saved.map((a) => ({
+            name: a.name,
+            savedPath: a.savedPath,
+            kind: a.kind,
+            isImage: a.isImage,
+          }));
+        } catch (e) {
+          dispatch({ type: "sendFailed", key: NOTES_KEY, message: toMessage(e) });
+          return;
+        }
+      }
+      setText("");
+      att.clear();
+      storeSend(NOTES_KEY, trimmed, refs);
+    })();
   };
 
   // While a run is live the composer stays enabled: sending queues the text
@@ -175,7 +206,11 @@ export default function NotesChat() {
   );
 
   return (
-    <aside className="chat">
+    <aside
+      className={att.dragOver ? "chat drag-over" : "chat"}
+      ref={chatRootRef}
+      data-chat-drop
+    >
       <div className="chat-head">
         <span className="chat-title">Чат с заметками</span>
         {running && <span className="chat-sub">агент работает…</span>}
@@ -192,6 +227,26 @@ export default function NotesChat() {
         onFlushQueue={() => flushHeldQueue(NOTES_KEY)}
       />
 
+      {att.pending.length > 0 && (
+        <div className="attach-bar">
+          {att.pending.map((a) => (
+            <div key={a.key} className="attach-chip">
+              {a.isImage && a.previewUrl ? <img src={a.previewUrl} alt="" /> : <AttachFileIcon />}
+              <span className="nm">{a.name}</span>
+              <button className="x" type="button" title="Убрать" onClick={() => att.remove(a.key)}>
+                <AttachXIcon />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {att.pending.some((a) => a.isImage) && visionSupported !== true && (
+        <div className="vision-warn">
+          Модель не поддерживает vision — изображение не будет распознано (сохранится в заметки)
+        </div>
+      )}
+
       {slice?.sendError && (
         <div className="chat-error">
           {slice.sendError}
@@ -207,13 +262,17 @@ export default function NotesChat() {
         onTextChange={setText}
         onSend={send}
         onStop={stop}
-        onClear={() => setText("")}
+        onClear={() => {
+          setText("");
+          att.clear();
+        }}
         running={running}
         stopping={slice?.stopping ?? false}
         queueCount={slice?.queue.length ?? 0}
         placeholder="Спросите агента о заметках…"
         disabled={chatId == null}
         sendDisabled={chatId == null}
+        attach={{ onPick: () => att.pick().catch(() => {}), disabled: chatId == null }}
       />
     </aside>
   );
