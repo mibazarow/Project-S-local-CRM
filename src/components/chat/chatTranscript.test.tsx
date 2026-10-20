@@ -140,7 +140,7 @@ describe("provider-silence retry (SPEC 6.0.1, Q23)", () => {
           steps: [],
           compactions: [],
           note: null,
-          error: "Провайдер не отвечает 40 секунд — проверьте баланс, API-ключ и статус провайдера.",
+          error: "Провайдер не отвечает 180 секунд — проверьте баланс, API-ключ и статус провайдера.",
           retryable,
         },
       ],
@@ -171,7 +171,7 @@ describe("provider-silence retry (SPEC 6.0.1, Q23)", () => {
       root.render(render(errorSlice(true), onRetry));
     });
     const warning = container.querySelector(".error.timeout");
-    expect(warning?.textContent).toContain("Провайдер не отвечает 40 секунд");
+    expect(warning?.textContent).toContain("Провайдер не отвечает 180 секунд");
     const buttons = [...container.querySelectorAll<HTMLButtonElement>(".error.timeout button")];
     expect(buttons).toHaveLength(1);
     expect(buttons[0].textContent).toBe("Повторить");

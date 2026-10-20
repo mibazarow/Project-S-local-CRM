@@ -202,7 +202,7 @@ describe("progressive answer reveal (SPEC 6.0, Q22)", () => {
     // reveal settles immediately — no typewriter over a failed answer.
     const answer = "T".repeat(120);
     const item = agentItem(answer, {
-      error: "Провайдер не отвечает 40 секунд — проверьте баланс, API-ключ и статус провайдера.",
+      error: "Провайдер не отвечает 180 секунд — проверьте баланс, API-ключ и статус провайдера.",
       retryable: true,
     });
     await act(async () => {

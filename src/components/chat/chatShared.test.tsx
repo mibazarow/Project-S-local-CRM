@@ -254,10 +254,10 @@ describe("chatReducer", () => {
     const timeout = apply(
       {},
       { type: "send", key: KEY, text: "hi", attachments: [] },
-      { type: "runError", key: KEY, message: "Провайдер не отвечает 40 секунд", code: LLM_TIMEOUT_CODE },
+      { type: "runError", key: KEY, message: "Провайдер не отвечает 180 секунд", code: LLM_TIMEOUT_CODE },
     );
     const item = timeout[KEY].items[1];
-    expect(item.error).toBe("Провайдер не отвечает 40 секунд");
+    expect(item.error).toBe("Провайдер не отвечает 180 секунд");
     expect(item.retryable).toBe(true);
 
     const other = apply(
@@ -279,7 +279,7 @@ describe("chatReducer", () => {
     let s = apply(
       {},
       { type: "send", key: KEY, text: "вопрос", attachments: [] },
-      { type: "runError", key: KEY, message: "Провайдер не отвечает 40 секунд", code: LLM_TIMEOUT_CODE },
+      { type: "runError", key: KEY, message: "Провайдер не отвечает 180 секунд", code: LLM_TIMEOUT_CODE },
     );
     // user bubble + failed agent bubble
     expect(s[KEY].items).toHaveLength(2);

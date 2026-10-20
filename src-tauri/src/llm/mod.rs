@@ -80,7 +80,7 @@ pub struct LlmClient {
 }
 
 // Provider-silence abort threshold (SPEC 6.0.1, Q23).
-pub const DEFAULT_STREAM_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(40);
+pub const DEFAULT_STREAM_INACTIVITY_TIMEOUT: Duration = Duration::from_secs(180);
 
 // Reads llm.json fresh on every call so hand-edits and settings writes apply
 // without restarting the app. Resolves the ACTIVE provider (Q-24), falling back
@@ -106,7 +106,7 @@ impl LlmClient {
     }
 
     // Test seam: override the streaming inactivity threshold so a test can
-    // abort a silent provider without waiting the real 40 s.
+    // abort a silent provider without waiting the real 180 s.
     pub fn with_stream_timeout(base_url: &str, api_key: &str, stream_timeout: Duration) -> Self {
         LlmClient {
             base_url: base_url.trim_end_matches('/').to_string(),
@@ -115,7 +115,7 @@ impl LlmClient {
             // token or a long stream is fine as long as data keeps arriving.
             agent: ureq::AgentBuilder::new()
                 .timeout_connect(Duration::from_secs(15))
-                .timeout_read(Duration::from_secs(120))
+                .timeout_read(Duration::from_secs(180))
                 .build(),
             // Streaming: the per-read socket timeout is the inactivity watchdog
             // (resets on every read), so slow-but-live generation survives and
@@ -1659,7 +1659,7 @@ mod tests {
         assert!(matches!(err, AppError::LlmTimeout(_)), "{err}");
         assert_eq!(err.code(), "llm-timeout");
         let msg = err.to_string();
-        assert!(msg.contains("40"), "message names the threshold: {msg}");
+        assert!(msg.contains("180"), "message names the threshold: {msg}");
         assert!(msg.contains("секунд"), "message is Russian: {msg}");
         // The serialized payload carries the distinct code for the UI.
         let json = serde_json::to_value(&err).unwrap();
@@ -1724,15 +1724,15 @@ mod tests {
 
     #[test]
     fn stream_inactivity_timeout_is_injectable() {
-        // The test seam lets a caller shrink the watchdog without a real 40 s.
+        // The test seam lets a caller shrink the watchdog without a real 180 s.
         let client = LlmClient::with_stream_timeout("https://example.test/v1", "k", Duration::from_millis(5));
         assert_eq!(client.stream_timeout, Duration::from_millis(5));
-        // The default constructor keeps the shipped 40 s threshold.
+        // The default constructor keeps the shipped 180 s threshold.
         assert_eq!(
             LlmClient::new("https://example.test/v1", "k").stream_timeout,
             DEFAULT_STREAM_INACTIVITY_TIMEOUT
         );
-        assert_eq!(DEFAULT_STREAM_INACTIVITY_TIMEOUT, Duration::from_secs(40));
+        assert_eq!(DEFAULT_STREAM_INACTIVITY_TIMEOUT, Duration::from_secs(180));
     }
 
     #[test]
