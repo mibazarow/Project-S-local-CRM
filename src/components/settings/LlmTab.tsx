@@ -332,8 +332,7 @@ export default function LlmTab({
 
   // Seed the selected model's own window: the provider-reported maximum wins,
   // an existing per-model value is kept (and clamped), and a newly selected
-  // model with no reported maximum starts at 100k. The legacy global
-  // contextWindow is preserved as the backend fallback.
+  // model with no reported maximum starts at 100k.
   useEffect(() => {
     const f = llmForm;
     if (!f || !f.model) return;

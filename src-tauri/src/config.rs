@@ -69,7 +69,8 @@ pub struct LlmConfig {
     pub model: String,
     pub context_window: u64,
     // Per-model context windows chosen in Settings, keyed by model id. The
-    // global `context_window` above is the fallback for models with no entry.
+    // global `context_window` above is legacy and no longer used as the
+    // effective fallback (see effective_context_window).
     pub model_context_windows: BTreeMap<String, u64>,
     // Maximum context window reported by the provider for a model, keyed by
     // model id. Absent means the provider did not report one.
@@ -120,14 +121,17 @@ impl LlmConfig {
     }
 
     // Effective context window for the active model: its per-model entry when
-    // present, otherwise the legacy global `contextWindow` fallback.
+    // present, then the provider-reported maximum, then the 100k default. The
+    // legacy global `contextWindow` is kept on disk for compatibility but no
+    // longer drives the effective window.
     pub fn effective_context_window(&self, model: &str) -> u64 {
         let window = self
             .model_context_windows
             .get(model)
             .copied()
             .filter(|v| *v > 0)
-            .unwrap_or(self.context_window);
+            .or_else(|| self.reported_max_context(model))
+            .unwrap_or(DEFAULT_MODEL_CONTEXT_WINDOW);
         self.clamp_context_window(model, window)
     }
 
@@ -729,22 +733,41 @@ mod tests {
             "modelContextMax": { "m": 128000 },
         }))
         .unwrap();
-        // Per-model entry wins over the global fallback and cannot exceed the
+        // Per-model entry wins over the default and cannot exceed the
         // provider-reported maximum.
         assert_eq!(cfg.effective_context_window("m"), 128000);
         assert_eq!(cfg.effective_context_window("other"), 50000);
-        // No entry and no reported max: legacy global fallback, capped at 250k.
+        // No entry: the 100k default, not the legacy global contextWindow.
         let fallback: LlmConfig = serde_json::from_value(json!({
             "baseUrl": "b", "model": "x", "contextWindow": 400000,
         }))
         .unwrap();
-        assert_eq!(fallback.effective_context_window("x"), 250_000);
-        assert_eq!(fallback.effective_context_window("unknown"), 250_000);
+        assert_eq!(fallback.effective_context_window("x"), 100_000);
+        assert_eq!(fallback.effective_context_window("unknown"), 100_000);
         assert_eq!(cfg.clamp_context_window("m", 0), 1);
         let legacy: LlmConfig =
             serde_json::from_value(json!({ "baseUrl": "b", "model": "m", "contextWindow": 65536 }))
                 .unwrap();
-        assert_eq!(legacy.effective_context_window("m"), 65536);
+        assert_eq!(legacy.effective_context_window("m"), 100_000);
+    }
+
+    #[test]
+    fn unknown_model_defaults_to_100k_and_a_reported_max_caps_it() {
+        let unknown: LlmConfig =
+            serde_json::from_value(json!({ "baseUrl": "b", "model": "m" })).unwrap();
+        assert_eq!(unknown.effective_context_window("m"), 100_000);
+        assert_eq!(unknown.effective_context_window("nope"), 100_000);
+        let capped: LlmConfig = serde_json::from_value(json!({
+            "baseUrl": "b", "model": "m", "modelContextMax": { "m": 64000 },
+        }))
+        .unwrap();
+        assert_eq!(capped.effective_context_window("m"), 64000);
+        assert_eq!(capped.effective_context_window("nope"), 100_000);
+        let large: LlmConfig = serde_json::from_value(json!({
+            "baseUrl": "b", "model": "m", "modelContextMax": { "m": 400000 },
+        }))
+        .unwrap();
+        assert_eq!(large.effective_context_window("m"), 400000);
     }
 
     #[test]

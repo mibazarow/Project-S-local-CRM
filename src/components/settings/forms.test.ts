@@ -50,7 +50,7 @@ describe("llm per-model context windows", () => {
     expect(form.modelContextMax.m).toBe(200000);
   });
 
-  it("falls back to the legacy contextWindow when the model has no entry", () => {
+  it("defaults to 100k when the model has no entry and no reported max", () => {
     const form = toLlmForm({
       baseUrl: "b",
       apiKey: "",
@@ -59,7 +59,29 @@ describe("llm per-model context windows", () => {
       temperature: null,
       maxTokens: null,
     });
-    expect(form.contextWindow).toBe("65536");
+    expect(form.contextWindow).toBe("100000");
+    const legacy = toLlmForm({
+      baseUrl: "b",
+      apiKey: "",
+      model: "m",
+      contextWindow: 240000,
+      temperature: null,
+      maxTokens: null,
+    });
+    expect(legacy.contextWindow).toBe("100000");
+  });
+
+  it("uses the reported maximum when the model has no saved window", () => {
+    const form = toLlmForm({
+      baseUrl: "b",
+      apiKey: "",
+      model: "m",
+      contextWindow: 240000,
+      temperature: null,
+      maxTokens: null,
+      modelContextMax: { m: 64000 },
+    });
+    expect(form.contextWindow).toBe("64000");
   });
 
   it("clamps a saved window above the provider maximum on write", () => {

@@ -55,7 +55,7 @@ export interface LlmForm {
 export function toLlmForm(cfg: LlmConfig): LlmForm {
   const windows = cfg.modelContextWindows ?? {};
   const max = cfg.modelContextMax ?? {};
-  const current = windows[cfg.model] ?? cfg.contextWindow;
+  const current = windows[cfg.model] ?? max[cfg.model] ?? DEFAULT_CONTEXT_WINDOW;
   return {
     model: cfg.model,
     lastModelByProvider: cfg.lastModelByProvider ?? {},
