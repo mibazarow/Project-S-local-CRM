@@ -601,10 +601,12 @@ export default function HarnessView() {
     }
   };
 
-  // Q.md item 6: click-through opens the schedule's chat (the backend reuses
-  // its session or creates one titled after the schedule). The chat's full
-  // history is loaded and shown first, then the explanatory prompt is sent
-  // on every click — queued through the run store while a run is live there.
+  // Q.md items 2/3/6: click-through opens the schedule's chat (the backend
+  // reuses its session or creates one titled after the schedule, clearing the
+  // unread highlight). The chat's full history is loaded and shown first. An
+  // unread schedule (unreadAt set) only shows its result — no prompt is sent.
+  // A read schedule gets the short titled explanation prompt, queued through
+  // the run store while a run is live there.
   const openSchedule = async (s: ScheduleDto) => {
     try {
       const { sessionId } = await ipc.scheduleOpen(s.id);
@@ -615,7 +617,11 @@ export default function HarnessView() {
       const firstChatId = dtos[0]?.chatId;
       if (firstChatId != null) rememberChatId(sessionId, firstChatId);
       dispatch({ type: "loaded", key: k, items: historyToItems(dtos) });
-      const question = "Расскажи мне, что это за расписание";
+      if (s.unreadAt != null) return;
+      const label = s.title || s.spec;
+      const question =
+        `Кратко расскажи, что это за расписание: «${label}». ` +
+        "Ответ — 1–2 предложения, без списков и подробных пояснений.";
       if (getSlice(k)?.run) dispatch({ type: "enqueue", key: k, text: question });
       else storeSend(k, question, []);
     } catch (e) {
