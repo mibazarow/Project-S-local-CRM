@@ -26,6 +26,7 @@
 | Схема БД | **v40** (SQLite + FTS5 + sqlite-vec) |
 | Встроенные скиллы | **38** |
 | Встроенная модель | EmbeddingGemma 2 ONNX, **~330 МБ** |
+| Модель в git | **нет**; доставляется отдельно до сборки (см. §0.4.1) |
 | Размер приложения | **~390 МБ** |
 | Размер DMG | **~300 МБ** |
 | Архитектура macOS-сборки | **только aarch64**; universal/x86_64 нет |
@@ -83,6 +84,26 @@ macOS: `~/Library/Application Support/app.project-s.ru` (debug — `.../dev`). �
 Рабочая папка по умолчанию — **захардкоженный** `$HOME/Documents/PROJECT-S`, а не `dirs::document_dir()`. На Windows это будет `%USERPROFILE%\Documents\PROJECT-S` только потому, что так получится из `HOME`/профиля, а не из API документов.
 
 Абсолютные пути в БД: `projects.path`, `trash.*`, `versions.*`, `message_attachments.saved_path`, `processes.cwd/log_path`, таблицы индекса.
+
+### 0.4.1. Модель эмбеддингов отсутствует в git — доставить до сборки
+
+> **Для агента, который клонировал репозиторий:** если в `src-tauri/resources/models/embeddinggemma-2/` нет `model_quantized.onnx_data`, это ожидаемо. Модель (~330 МБ) намеренно не хранится в git. Её нужно доставить до сборки, иначе приложение соберётся без семантического поиска (останется FTS), а релизный бандл будет неполным.
+
+Нужные файлы в `src-tauri/resources/models/embeddinggemma-2/`:
+
+- `model_quantized.onnx`
+- `model_quantized.onnx_data`
+- `tokenizer.json`
+- `tokenizer_config.json`
+
+Откуда взять:
+
+- с Mac — из демо-хранилища `~/Documents/PROJECT-S/Settings/models/embeddinggemma-2/`;
+- или скачать из Hugging Face `onnx-community/embeddinggemma-2-ONNX`: файлы `onnx/model_quantized.onnx`, `onnx/model_quantized.onnx_data`, `tokenizer.json`, `tokenizer_config.json`.
+
+`scripts/stage-embed-model.sh` — bash/macOS; источник переопределяется через `PROJECT_S_MODEL_SRC`. Для Windows нужен PowerShell-аналог (`stage-embed-model.ps1`) или Git Bash/WSL; нативная Windows-сборка без этого шага модель не получит. `src-tauri/resources/models/` игнорируется git, поэтому после клонирования там будет только `.gitkeep`.
+
+Проверка после доставки: все четыре файла ненулевые, `model_quantized.onnx_data` ~299 МБ, `tokenizer.json` ~31 МБ. Без модели приложение не падает, но `embed_status` покажет отсутствие модели, а поиск деградирует до FTS.
 
 ### 0.5. Секреты и безопасность (как есть)
 
@@ -521,6 +542,7 @@ P0 (до первой сборки):
 - [ ] `HOME` → `dirs`/platform resolver; убрать macOS-пути.
 - [ ] Канонизация `\\?\`, абсолютные пути в БД, reparse points.
 - [ ] Путь ресурсов `exe_dir/resources/...`; 38 скиллов находятся.
+- [ ] Модель доставлена в `src-tauri/resources/models/embeddinggemma-2` (4 файла); на Windows есть `stage-embed-model.ps1` или ручная копия.
 - [ ] `bundle.windows`, `bundle.targets`, иконки, titlebar, single-instance.
 
 P1 (паритет и поставка):

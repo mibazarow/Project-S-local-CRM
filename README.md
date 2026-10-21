@@ -67,6 +67,32 @@ npm run app:install   # сборка + установка в /Applications/Proje
 npm run app:update    # установить уже собранный бандл
 ```
 
+## После клонирования: что не лежит в git
+
+В репозитории **нет** `node_modules`, `src-tauri/target` и **модели эмбеддингов** (~330 МБ). Это нормально: они не должны раздувать git. `node_modules` и `target` восстановятся через `npm ci` и сборку.
+
+### Модель эмбеддингов
+
+В клоне `src-tauri/resources/models/embeddinggemma-2/` содержит только `.gitkeep`. Перед сборкой положите туда четыре файла:
+
+- `model_quantized.onnx`
+- `model_quantized.onnx_data`
+- `tokenizer.json`
+- `tokenizer_config.json`
+
+Откуда взять:
+
+- с Mac из демо-хранилища: `~/Documents/PROJECT-S/Settings/models/embeddinggemma-2/`;
+- или скачать из Hugging Face `onnx-community/embeddinggemma-2-ONNX`: `onnx/model_quantized.onnx`, `onnx/model_quantized.onnx_data`, `tokenizer.json`, `tokenizer_config.json`.
+
+Для `scripts/stage-embed-model.sh` можно задать `PROJECT_S_MODEL_SRC=/путь/к/embeddinggemma-2`; сам скрипт — bash/macOS. На Windows нативно он не запустится: нужен PowerShell-аналог или Git Bash/WSL.
+
+Без модели приложение не падает, но семантический поиск деградирует до FTS; релизная сборка не упакует модель.
+
+> **Для агента:** если после `git clone` нет `src-tauri/resources/models/embeddinggemma-2/model_quantized.onnx_data`, это ожидаемо — модель нужно доставить до сборки. Не удаляйте `.gitkeep`.
+
+> **Windows:** порт ещё не реализован (см. `DOCS/WINDOWS-PORT.md`); одного клонирования недостаточно для сборки под Windows. Нужны платформенный слой, PowerShell-скрипты и WebView2-упаковка.
+
 ## Конфиг приложения: dev и release
 
 Две копии приложения, одновременно они не запускаются: либо debug, либо release.
@@ -94,7 +120,7 @@ npm run app:update    # установить уже собранный банд�
 
 ### Эмбеддинги
 
-Модель `embeddinggemma-2` (~330 МБ) теперь встроена в приложение и используется автоматически, если в рабочей директории нет локальной копии `Settings/models/embeddinggemma-2`; вручную копировать её для личной копии не нужно. Локальная копия по-прежнему имеет приоритет — dev использует модель из демо-хранилища.
+В **собранном** приложении модель `embeddinggemma-2` (~330 МБ) встроена и используется автоматически, если в рабочей директории нет локальной копии `Settings/models/embeddinggemma-2`. В git модели нет: после клонирования её нужно доставить до сборки (см. раздел «После клонирования» выше). Локальная копия в рабочей директории имеет приоритет — dev использует модель из демо-хранилища.
 
 Релизные сборки готовят модель скриптом `scripts/stage-embed-model.sh`: источник по умолчанию `~/Documents/PROJECT-S/Settings/models/embeddinggemma-2`, переопределяется через `PROJECT_S_MODEL_SRC`. Скопированная папка `src-tauri/resources/models/` игнорируется git. Из-за модели приложение и DMG растут примерно на 330 МБ.
 
