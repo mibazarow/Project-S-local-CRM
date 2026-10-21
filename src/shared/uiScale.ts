@@ -1,9 +1,28 @@
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { toMessage } from "./errors";
 
-// The only UI scale steps the settings control offers (Q.md item 4). Anything
-// else read from app.json normalizes to the default 100.
-export const UI_SCALE_STEPS = [100, 110, 125, 150, 175, 200];
+export const UI_SCALE_STEPS = [100, 110, 130, 175];
 export const DEFAULT_UI_SCALE_PERCENT = 100;
+
+let lastError: string | null = null;
+const listeners = new Set<() => void>();
+
+function setLastError(message: string | null): void {
+  if (lastError === message) return;
+  lastError = message;
+  for (const listener of listeners) listener();
+}
+
+export function getUiScaleError(): string | null {
+  return lastError;
+}
+
+export function subscribeUiScaleError(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
 
 export function normalizeUiScale(value: unknown): number {
   const n = typeof value === "number" ? value : Number(value);
@@ -16,13 +35,17 @@ export function uiScaleLabel(percent: number): string {
 
 // Applies the whole-UI scale live via the Tauri 2 webview zoom. The webview
 // zoom is the single scaling mechanism (no CSS root scale is applied on top, so
-// the two never double-apply). Outside Tauri (dev/tests) the API is unavailable
-// and the call degrades to a no-op, leaving the default scale.
-export async function applyUiScale(percent: number): Promise<void> {
+// the two never double-apply). A rejected zoom (for example a missing ACL
+// permission) is logged and recorded so Settings can show it.
+export async function applyUiScale(percent: number): Promise<boolean> {
   const zoom = normalizeUiScale(percent) / 100;
   try {
     await getCurrentWebview().setZoom(zoom);
-  } catch {
-    // Webview zoom unavailable: keep the current scale.
+    setLastError(null);
+    return true;
+  } catch (e) {
+    console.error("ui scale: setZoom failed", e);
+    setLastError(toMessage(e));
+    return false;
   }
 }

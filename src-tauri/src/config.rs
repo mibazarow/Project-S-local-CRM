@@ -192,7 +192,7 @@ pub struct AppConfig {
 
 // The only UI scale steps the settings control offers. Anything else on disk is
 // treated as the default 100 on read.
-pub const UI_SCALE_STEPS: [u32; 6] = [100, 110, 125, 150, 175, 200];
+pub const UI_SCALE_STEPS: [u32; 4] = [100, 110, 130, 175];
 pub const DEFAULT_UI_SCALE_PERCENT: u32 = 100;
 
 pub fn normalize_ui_scale(value: u64) -> u32 {
@@ -590,7 +590,7 @@ mod tests {
         for step in UI_SCALE_STEPS {
             assert_eq!(normalize_ui_scale(step as u64), step);
         }
-        for bad in [0u64, 1, 99, 101, 120, 137, 201, 1000, u64::MAX] {
+        for bad in [0u64, 1, 99, 101, 120, 125, 137, 150, 200, 201, 1000, u64::MAX] {
             assert_eq!(normalize_ui_scale(bad), DEFAULT_UI_SCALE_PERCENT, "bad {bad}");
         }
     }

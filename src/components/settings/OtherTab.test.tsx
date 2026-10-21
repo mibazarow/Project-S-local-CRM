@@ -27,6 +27,7 @@ vi.mock("../../api/ipc", () => ({
 }));
 
 import OtherTab from "./OtherTab";
+import { applyUiScale } from "../../shared/uiScale";
 
 let updateForm: (patch: Partial<AppForm>) => void;
 let appStub: DebouncedConfig<AppForm>;
@@ -54,10 +55,14 @@ function makeApp(uiScalePercent: number): DebouncedConfig<AppForm> {
 let container: HTMLDivElement;
 let root: Root;
 
-beforeEach(() => {
+beforeEach(async () => {
   setZoomMock.mockReset();
   setZoomMock.mockImplementation(async () => {});
-  updateForm = vi.fn();
+  await applyUiScale(100);
+  setZoomMock.mockClear();
+  updateForm = vi.fn((patch: Partial<AppForm>) => {
+    if (appStub.form) Object.assign(appStub.form, patch);
+  });
   appStub = makeApp(100);
   container = document.createElement("div");
   document.body.appendChild(container);
@@ -87,20 +92,41 @@ async function click(el: HTMLElement) {
 }
 
 describe("OtherTab UI scale control", () => {
-  it("renders the six discrete steps and the current value label", async () => {
-    appStub = makeApp(125);
+  it("renders the four discrete steps and the current value label", async () => {
+    appStub = makeApp(130);
     await mount(appStub);
-    for (const step of ["100", "110", "125", "150", "175", "200"]) {
+    for (const step of ["100", "110", "130", "175"]) {
       expect(btnByText(step)).toBeTruthy();
     }
-    expect(container.textContent).toContain("125 %");
+    for (const removed of ["125", "150", "200"]) {
+      expect(btnByText(removed)).toBeUndefined();
+    }
+    expect(container.textContent).toContain("130 %");
   });
 
   it("clicking a step persists it and applies the zoom live", async () => {
     await mount(appStub);
-    await click(btnByText("150"));
-    expect(updateForm).toHaveBeenCalledWith({ uiScalePercent: 150 });
-    expect(setZoomMock).toHaveBeenCalledWith(1.5);
+    await click(btnByText("130"));
+    expect(updateForm).toHaveBeenCalledWith({ uiScalePercent: 130 });
+    expect(setZoomMock).toHaveBeenCalledWith(1.3);
+  });
+
+  it("shows the zoom failure and retries it", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    appStub = makeApp(110);
+    await mount(appStub);
+    setZoomMock.mockRejectedValueOnce(new Error("denied by ACL"));
+
+    await click(btnByText("175"));
+    expect(updateForm).toHaveBeenCalledWith({ uiScalePercent: 175 });
+    expect(container.textContent).toContain("Не удалось применить масштаб");
+    expect(container.textContent).toContain("denied by ACL");
+
+    setZoomMock.mockImplementation(async () => {});
+    await click(btnByText("Повторить"));
+    expect(setZoomMock).toHaveBeenLastCalledWith(1.75);
+    expect(container.textContent).not.toContain("Не удалось применить масштаб");
+    spy.mockRestore();
   });
 
   it("reset returns the scale to 100 %", async () => {

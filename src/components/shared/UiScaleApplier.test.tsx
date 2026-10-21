@@ -24,15 +24,18 @@ vi.mock("@tauri-apps/api/webview", () => ({
 }));
 
 import UiScaleApplier from "./UiScaleApplier";
+import { applyUiScale, getUiScaleError } from "../../shared/uiScale";
 
 let container: HTMLDivElement;
 let root: Root;
 
-beforeEach(() => {
+beforeEach(async () => {
   readConfigMock.mockReset();
   setZoomMock.mockReset();
   setZoomMock.mockImplementation(async () => {});
   configBus.cb = undefined;
+  await applyUiScale(100);
+  setZoomMock.mockClear();
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -52,9 +55,9 @@ async function mount() {
 
 describe("UiScaleApplier", () => {
   it("applies the saved zoom at startup", async () => {
-    readConfigMock.mockResolvedValue({ uiScalePercent: 150 });
+    readConfigMock.mockResolvedValue({ uiScalePercent: 175 });
     await mount();
-    expect(setZoomMock).toHaveBeenCalledWith(1.5);
+    expect(setZoomMock).toHaveBeenCalledWith(1.75);
   });
 
   it("normalizes an invalid saved scale to 100%", async () => {
@@ -67,12 +70,12 @@ describe("UiScaleApplier", () => {
     readConfigMock.mockResolvedValue({ uiScalePercent: 100 });
     await mount();
     expect(setZoomMock).toHaveBeenLastCalledWith(1);
-    readConfigMock.mockResolvedValue({ uiScalePercent: 125 });
+    readConfigMock.mockResolvedValue({ uiScalePercent: 130 });
     await act(async () => {
       configBus.cb?.({ which: "app" });
     });
     await act(async () => {});
-    expect(setZoomMock).toHaveBeenLastCalledWith(1.25);
+    expect(setZoomMock).toHaveBeenLastCalledWith(1.3);
   });
 
   it("ignores config changes for other kinds", async () => {
@@ -83,6 +86,15 @@ describe("UiScaleApplier", () => {
       configBus.cb?.({ which: "llm" });
     });
     expect(setZoomMock.mock.calls.length).toBe(calls);
+  });
+
+  it("records a startup zoom failure for Settings", async () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+    readConfigMock.mockResolvedValue({ uiScalePercent: 130 });
+    setZoomMock.mockRejectedValueOnce(new Error("denied by ACL"));
+    await mount();
+    expect(getUiScaleError()).toBe("denied by ACL");
+    spy.mockRestore();
   });
 
   it("stays silent when the config cannot be read", async () => {

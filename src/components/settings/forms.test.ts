@@ -15,10 +15,16 @@ describe("app form ui scale (Q.md item 4)", () => {
     expect(toAppForm({ uiScalePercent: 175 }).uiScalePercent).toBe(175);
   });
 
+  it("drops a removed step to 100", () => {
+    expect(toAppForm({ uiScalePercent: 125 }).uiScalePercent).toBe(100);
+    expect(toAppForm({ uiScalePercent: 150 }).uiScalePercent).toBe(100);
+    expect(toAppForm({ uiScalePercent: 200 }).uiScalePercent).toBe(100);
+  });
+
   it("writes a normalized uiScalePercent and preserves other raw keys", () => {
-    const form = toAppForm({ uiScalePercent: 125 });
+    const form = toAppForm({ uiScalePercent: 175 });
     const patch = appToPatch(form, { uiScalePercent: 137, futureKey: 7 });
-    expect(patch.uiScalePercent).toBe(125);
+    expect(patch.uiScalePercent).toBe(175);
     expect(patch.futureKey).toBe(7);
   });
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import * as ipc from "../../api/ipc";
 import type { BackupStatus, ProjectDto, TrashDto } from "../../api/types";
@@ -8,7 +8,13 @@ import { Card, Field } from "./shared";
 import Segmented from "../shared/Segmented";
 import { type DebouncedConfig } from "./useDebouncedConfig";
 import { exportStamp, fmtLocal, fmtMb, fmtRfc, type AppForm } from "./forms";
-import { UI_SCALE_STEPS, applyUiScale, uiScaleLabel } from "../../shared/uiScale";
+import {
+  UI_SCALE_STEPS,
+  applyUiScale,
+  getUiScaleError,
+  subscribeUiScaleError,
+  uiScaleLabel,
+} from "../../shared/uiScale";
 
 export default function OtherTab({
   active,
@@ -34,6 +40,11 @@ export default function OtherTab({
   const [trash, setTrash] = useState<TrashDto[] | null>(null);
   const [trashError, setTrashError] = useState<string | null>(null);
   const [trashBusyId, setTrashBusyId] = useState<number | null>(null);
+  const scaleError = useSyncExternalStore(
+    subscribeUiScaleError,
+    getUiScaleError,
+    getUiScaleError,
+  );
 
   // Import/export: folder/.zip/Obsidian imports into a project or
   // the Notes vault, and project/vault → .zip exports.
@@ -255,7 +266,13 @@ export default function OtherTab({
         title="Интерфейс"
         desc="Масштаб всего интерфейса: сайдбар, чат, задачи, файлы и окна. Применяется сразу, без перезапуска."
       >
-        <Field label="Масштаб" hint="Дискретные шаги от 100 % до 200 %.">
+        <Field
+          label="Масштаб"
+          hint="Дискретные шаги от 100 % до 175 %."
+          error={
+            scaleError ? `Не удалось применить масштаб: ${scaleError}` : null
+          }
+        >
           <Segmented
             value={String(app.form?.uiScalePercent ?? 100)}
             options={UI_SCALE_STEPS.map((step) => ({
@@ -274,6 +291,15 @@ export default function OtherTab({
           >
             Сбросить
           </button>
+          {scaleError && (
+            <button
+              type="button"
+              className="ghost-btn small"
+              onClick={() => setScale(app.form?.uiScalePercent ?? 100)}
+            >
+              Повторить
+            </button>
+          )}
         </Field>
       </Card>
       <Card
