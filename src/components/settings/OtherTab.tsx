@@ -5,8 +5,10 @@ import type { BackupStatus, ProjectDto, TrashDto } from "../../api/types";
 import { toMessage as errMsg } from "../../shared/errors";
 import { confirmRemove } from "../../shared/confirm";
 import { Card, Field } from "./shared";
+import Segmented from "../shared/Segmented";
 import { type DebouncedConfig } from "./useDebouncedConfig";
 import { exportStamp, fmtLocal, fmtMb, fmtRfc, type AppForm } from "./forms";
+import { UI_SCALE_STEPS, applyUiScale, uiScaleLabel } from "../../shared/uiScale";
 
 export default function OtherTab({
   active,
@@ -231,6 +233,13 @@ export default function OtherTab({
       .finally(() => setAutostartBusy(false));
   };
 
+  // UI scale (Q.md item 4): persist through the shared debounced app writer and
+  // apply the webview zoom immediately for a live preview.
+  const setScale = (percent: number) => {
+    app.updateForm({ uiScalePercent: percent });
+    void applyUiScale(percent);
+  };
+
   if (!active) return null;
   return (
     <div className="settings-content">
@@ -240,6 +249,31 @@ export default function OtherTab({
         </Field>
         <Field label="Директория настроек" wide>
           <div className="path-value">{configDir || "—"}</div>
+        </Field>
+      </Card>
+      <Card
+        title="Интерфейс"
+        desc="Масштаб всего интерфейса: сайдбар, чат, задачи, файлы и окна. Применяется сразу, без перезапуска."
+      >
+        <Field label="Масштаб" hint="Дискретные шаги от 100 % до 200 %.">
+          <Segmented
+            value={String(app.form?.uiScalePercent ?? 100)}
+            options={UI_SCALE_STEPS.map((step) => ({
+              value: String(step),
+              label: `${step}`,
+            }))}
+            onChange={(value) => setScale(Number(value))}
+            title="Масштаб интерфейса"
+          />
+          <span className="scale-value">{uiScaleLabel(app.form?.uiScalePercent ?? 100)}</span>
+          <button
+            type="button"
+            className="ghost-btn small"
+            onClick={() => setScale(100)}
+            disabled={(app.form?.uiScalePercent ?? 100) === 100}
+          >
+            Сбросить
+          </button>
         </Field>
       </Card>
       <Card

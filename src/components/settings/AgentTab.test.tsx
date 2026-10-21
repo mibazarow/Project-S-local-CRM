@@ -47,6 +47,7 @@ const appStub: DebouncedConfig<AppForm> = {
     logRetentionDays: "30",
     backupIntervalDays: "1",
     backupKeep: "5",
+    uiScalePercent: 100,
   },
   updateForm: () => {},
   reload: () => {},

@@ -169,6 +169,9 @@ export interface AppConfig {
   backupIntervalDays: number;
   // How many newest backups auto-backup retention keeps (SPEC 3.6).
   backupKeep: number;
+  // Whole-UI scale as a percentage (Q.md item 4). Only the six shipped steps
+  // (100/110/125/150/175/200) are valid; anything else normalizes to 100.
+  uiScalePercent: number;
 }
 
 // ops::BackupInfo — result of create_backup.

@@ -1,4 +1,5 @@
 import type { AppConfig, IndexingConfig, LlmConfig, VisionStatus } from "../../api/types";
+import { normalizeUiScale } from "../../shared/uiScale";
 
 export const MB = 1024 * 1024;
 
@@ -128,6 +129,7 @@ export interface AppForm {
   logRetentionDays: string;
   backupIntervalDays: string;
   backupKeep: string;
+  uiScalePercent: number;
 }
 
 export function toAppForm(cfg: Partial<AppConfig>): AppForm {
@@ -138,6 +140,7 @@ export function toAppForm(cfg: Partial<AppConfig>): AppForm {
     logRetentionDays: String(cfg.logRetentionDays ?? 14),
     backupIntervalDays: String(cfg.backupIntervalDays ?? 1),
     backupKeep: String(cfg.backupKeep ?? 7),
+    uiScalePercent: normalizeUiScale(cfg.uiScalePercent),
   };
 }
 
@@ -157,6 +160,7 @@ export function appToPatch(f: AppForm, raw: Record<string, unknown>): Record<str
   if (bInterval !== null) patch.backupIntervalDays = Math.max(0, Math.round(bInterval));
   const bKeep = parseNum(f.backupKeep);
   if (bKeep !== null) patch.backupKeep = Math.max(0, Math.round(bKeep));
+  patch.uiScalePercent = normalizeUiScale(f.uiScalePercent);
   return patch;
 }
 

@@ -185,6 +185,22 @@ pub struct AppConfig {
     pub backup_interval_days: u32,
     // How many newest backups auto-backup retention keeps (SPEC 3.6).
     pub backup_keep: u32,
+    // Whole-UI scale as a percentage (Q.md item 4). Only the six shipped steps
+    // are valid; read_config normalizes anything else to 100.
+    pub ui_scale_percent: u32,
+}
+
+// The only UI scale steps the settings control offers. Anything else on disk is
+// treated as the default 100 on read.
+pub const UI_SCALE_STEPS: [u32; 6] = [100, 110, 125, 150, 175, 200];
+pub const DEFAULT_UI_SCALE_PERCENT: u32 = 100;
+
+pub fn normalize_ui_scale(value: u64) -> u32 {
+    UI_SCALE_STEPS
+        .iter()
+        .find(|&&step| step as u64 == value)
+        .copied()
+        .unwrap_or(DEFAULT_UI_SCALE_PERCENT)
 }
 
 impl Default for AppConfig {
@@ -198,6 +214,7 @@ impl Default for AppConfig {
             autostart: false,
             backup_interval_days: 1,
             backup_keep: 7,
+            ui_scale_percent: DEFAULT_UI_SCALE_PERCENT,
         }
     }
 }
@@ -410,10 +427,26 @@ pub fn migrate_llm_providers(wd: &Path) -> Result<()> {
 
 pub fn read_config(wd: &Path, kind: ConfigKind) -> Result<Value> {
     let file = file_path(wd, kind);
-    match fs::read_to_string(&file) {
-        Ok(text) => Ok(serde_json::from_str(&text)?),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => default_value(kind),
-        Err(e) => Err(e.into()),
+    let mut value = match fs::read_to_string(&file) {
+        Ok(text) => serde_json::from_str(&text)?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => default_value(kind)?,
+        Err(e) => return Err(e.into()),
+    };
+    if kind == ConfigKind::App {
+        normalize_app_ui_scale(&mut value);
+    }
+    Ok(value)
+}
+
+// Clamp app.json's uiScalePercent to a shipped step (100 when it is a number
+// outside the allowed set) so the UI never reads a bogus scale. The file on disk
+// is left untouched; the settings control writes a valid value back.
+fn normalize_app_ui_scale(value: &mut Value) {
+    let Some(obj) = value.as_object_mut() else {
+        return;
+    };
+    if let Some(raw) = obj.get("uiScalePercent").and_then(Value::as_u64) {
+        obj.insert("uiScalePercent".into(), json!(normalize_ui_scale(raw)));
     }
 }
 
@@ -506,6 +539,60 @@ mod tests {
         // absent keys still fall back to defaults
         assert_eq!(cfg.compaction_threshold_percent, 80);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn app_config_ui_scale_defaults_to_100() {
+        let dir = temp_test_dir("config-ui-scale-default");
+        ensure_defaults(&dir).unwrap();
+        let app = read_config(&dir, ConfigKind::App).unwrap();
+        assert_eq!(app["uiScalePercent"], 100);
+        let typed: AppConfig = serde_json::from_value(app).unwrap();
+        assert_eq!(typed.ui_scale_percent, 100);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn read_config_clamps_invalid_ui_scale_to_100_and_keeps_other_keys() {
+        let dir = temp_test_dir("config-ui-scale-clamp");
+        fs::create_dir_all(paths::config_dir(&dir)).unwrap();
+        fs::write(
+            file_path(&dir, ConfigKind::App),
+            r#"{ "autopilot": true, "uiScalePercent": 137, "customKey": 5 }"#,
+        )
+        .unwrap();
+        let app = read_config(&dir, ConfigKind::App).unwrap();
+        assert_eq!(app["uiScalePercent"], 100);
+        // Other keys (known and hand-added) survive the read normalization.
+        assert_eq!(app["autopilot"], true);
+        assert_eq!(app["customKey"], 5);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn read_config_keeps_every_valid_ui_scale_step() {
+        let dir = temp_test_dir("config-ui-scale-valid");
+        fs::create_dir_all(paths::config_dir(&dir)).unwrap();
+        for step in UI_SCALE_STEPS {
+            fs::write(
+                file_path(&dir, ConfigKind::App),
+                &format!(r#"{{ "uiScalePercent": {step} }}"#),
+            )
+            .unwrap();
+            let app = read_config(&dir, ConfigKind::App).unwrap();
+            assert_eq!(app["uiScalePercent"], step, "step {step}");
+        }
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn normalize_ui_scale_maps_everything_else_to_100() {
+        for step in UI_SCALE_STEPS {
+            assert_eq!(normalize_ui_scale(step as u64), step);
+        }
+        for bad in [0u64, 1, 99, 101, 120, 137, 201, 1000, u64::MAX] {
+            assert_eq!(normalize_ui_scale(bad), DEFAULT_UI_SCALE_PERCENT, "bad {bad}");
+        }
     }
 
     #[test]
