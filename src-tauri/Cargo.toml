@@ -63,6 +63,8 @@ rust_xlsxwriter = "0.100.0"
 unicode-normalization = "0.1.25"
 printpdf = { version = "0.12.8", default-features = false }
 sysinfo = "0.39"
+# cross-platform home/Documents resolution (Windows known folders)
+dirs = "6"
 
 [features]
 # ONNX text embedder + model provisioning is the default embedding backend.

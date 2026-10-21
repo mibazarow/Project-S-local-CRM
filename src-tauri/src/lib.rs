@@ -27,6 +27,7 @@ mod onboarding;
 mod open_with;
 mod ops;
 mod path_policy;
+mod platform;
 mod paths;
 mod processes;
 mod projects;
@@ -200,9 +201,17 @@ pub fn run() {
             // Background emitters (the rename_chat, todowrite tools) reach
             // the windows through the app state handle.
             *lock_recover(&state.emitter) = Some(Arc::new(app.handle().clone()));
-            if let Ok(resource_dir) = app.path().resource_dir() {
+            // Bundled model: Contents/Resources on macOS, the install dir
+            // (resource_dir) on Windows. The exe-dir fallback covers installs
+            // where resource_dir is unavailable.
+            let resource_root = app.path().resource_dir().ok().or_else(|| {
+                std::env::current_exe()
+                    .ok()
+                    .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf))
+            });
+            if let Some(resource_root) = resource_root {
                 embed::model_store::set_bundled_model_dir(
-                    resource_dir
+                    resource_root
                         .join("resources/models")
                         .join(embed::model_store::MODEL_DIR_NAME),
                 );

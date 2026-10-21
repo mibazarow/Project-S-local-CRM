@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(resolve_path("a/b", &wd), PathBuf::from("/wd/a/b"));
         assert_eq!(resolve_path("./a/../b", &wd), PathBuf::from("/wd/b"));
         assert_eq!(resolve_path("/x/y", &wd), PathBuf::from("/x/y"));
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap();
+        let home = crate::platform::home_dir().unwrap();
         assert_eq!(resolve_path("~/notes.md", &wd), home.join("notes.md"));
         assert_eq!(resolve_path("~", &wd), home);
     }

@@ -314,10 +314,19 @@ fn resolve_builtin_source() -> Option<PathBuf> {
             if cand.is_dir() {
                 return Some(cand);
             }
+            // Windows/NSIS: bundled resources keep their "resources/skills"
+            // prefix under the install dir (which is resource_dir()).
+            let resource = exe_dir
+                .join("resources")
+                .join("skills")
+                .join(paths::SKILLS_BUILTIN);
+            if resource.is_dir() {
+                return Some(resource);
+            }
         }
     }
     // 3. Dev fallback: the standard kilo skill folders.
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = crate::platform::home_dir();
     home_skill_source(home.as_deref())
 }
 

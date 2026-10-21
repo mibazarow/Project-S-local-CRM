@@ -4200,6 +4200,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "cron",
+ "dirs 6.0.0",
  "docx-rs",
  "iana-time-zone",
  "notify",

@@ -23,11 +23,7 @@ pub const SCRIPT_EXEC_TIMEOUT_SEC: u64 = 120;
 const EXEC_OUTPUT_CAP: usize = 30_000;
 
 fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    match fs::metadata(path) {
-        Ok(meta) => meta.is_file() && meta.permissions().mode() & 0o111 != 0,
-        Err(_) => false,
-    }
+    crate::platform::is_executable(path)
 }
 
 // Joins the declared entrypoint onto the skill folder and keeps it strictly

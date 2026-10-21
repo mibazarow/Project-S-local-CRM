@@ -34,9 +34,7 @@ pub(crate) fn resolve_path(raw: &str, wd: &Path) -> PathBuf {
 }
 
 pub(crate) fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"))
+    crate::platform::home_dir().unwrap_or_else(|| PathBuf::from("/"))
 }
 
 pub(crate) fn normalize(path: &Path) -> PathBuf {
@@ -540,7 +538,7 @@ mod tests {
         assert_eq!(resolve_path("a/b", &wd), PathBuf::from("/wd/a/b"));
         assert_eq!(resolve_path("./a/../b", &wd), PathBuf::from("/wd/b"));
         assert_eq!(resolve_path("/x/y", &wd), PathBuf::from("/x/y"));
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap();
+        let home = crate::platform::home_dir().unwrap();
         assert_eq!(resolve_path("~/notes.md", &wd), home.join("notes.md"));
         assert_eq!(resolve_path("~", &wd), home);
         assert_eq!(

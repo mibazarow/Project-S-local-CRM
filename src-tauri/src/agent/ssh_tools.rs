@@ -282,9 +282,7 @@ fn valid_host_or_user(value: &str) -> bool {
 }
 
 fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("/"))
+    crate::platform::home_dir().unwrap_or_else(|| PathBuf::from("/"))
 }
 
 fn expand_tilde(raw: &str) -> PathBuf {
@@ -468,17 +466,16 @@ impl Askpass {
             .as_nanos();
         let dir = tmp.join(format!("{ASKPASS_DIR_PREFIX}{}-{nonce}", std::process::id()));
         fs::create_dir(&dir)?;
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+        crate::platform::restrict_permissions(&dir, 0o700)?;
         let pass = dir.join("pass");
         fs::write(&pass, password)?;
-        fs::set_permissions(&pass, fs::Permissions::from_mode(0o600))?;
+        crate::platform::restrict_permissions(&pass, 0o600)?;
         let script = dir.join("askpass.sh");
         fs::write(
             &script,
             format!("#!/bin/sh\ncat {}\n", shell_quote(&pass.display().to_string())),
         )?;
-        fs::set_permissions(&script, fs::Permissions::from_mode(0o700))?;
+        crate::platform::restrict_permissions(&script, 0o700)?;
         Ok(Askpass { dir, script })
     }
 

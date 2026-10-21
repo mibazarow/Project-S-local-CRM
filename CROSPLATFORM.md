@@ -160,18 +160,17 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Встроенных скиллов: **38**.
 - Модель эмбеддингов: **не в git**, ~330 МБ; доставляется до сборки (см. `README.md` → «После клонирования»).
 - macOS: рабочая сборка, aarch64.
-- Windows: **только demo-сборка** (без боевых данных и production-hardening); порт не реализован; сборка — с macOS по SSH (см. §3.1). **Windows-агента нет**; код пишет macOS.
+- Windows: **только demo-сборка** (без боевых данных и production-hardening); минимальный платформенный шов для компиляции есть (`platform/mod.rs`, cfg-ветки, Windows-конфиг), полного порта нет; сборка — с macOS по SSH (см. §3.1). **Windows-агента нет**; код пишет macOS.
 - Доступ к Windows VM проверен 2026-10-21: `DOCS/WINDOWS-ACCESS.md`; Windows HEAD `d448c15`, рабочее дерево чистое.
 - Linux: план, реализации нет.
-- Платформенной абстракции пока нет (P0).
 - Модель/ONNX: `ort-backend`, модель в бандле; на Windows нужны `onnxruntime.dll` и MSVC runtime.
 
 ## 6. Windows P0 (код пишет macOS, собирает Windows)
 
-- [ ] Убрать Unix-импорты из production (`processes.rs`, `skills/exec.rs`, `cdp/mod.rs`, `ssh_tools.rs`).
+- [x] Убрать Unix-импорты из production (`processes.rs`, `skills/exec.rs`, `cdp/mod.rs`, `ssh_tools.rs`).
 - [ ] Job Objects + kill tree вместо process group/`kill -0`.
 - [ ] Убрать `sh`/`bash -lc`; PowerShell/cmd, quoting, `CREATE_NO_WINDOW`.
-- [ ] `HOME` → `dirs`/platform resolver; убрать macOS-пути.
+- [x] `HOME` → `dirs`/platform resolver; убрать macOS-пути.
 - [ ] `canonicalize`/`\\?\`, абсолютные пути в БД, reparse points.
 - [ ] Путь ресурсов `exe_dir/resources/...`; 38 скиллов находятся.
 - [ ] Модель доставлена в `src-tauri/resources/models/embeddinggemma-2` (4 файла); PowerShell-скрипт или ручная копия.
@@ -192,6 +191,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Действие: <что сделать / user|macos> — или [DONE]
 - Статус: waiting | done
 ```
+
+### 2026-10-21 17:10 UTC — macOS
+- Ветка: `master`
+- Коммит: см. `git log`
+- Сделано: минимальный шов для компиляции Windows demo: `platform/mod.rs` (`home_dir`, `default_working_dir`, `is_executable`, `restrict_permissions`, `hide_console`); `processes.rs` — cfg-ветки Unix/Windows (`cmd /C`, `CREATE_NO_WINDOW`, `taskkill /T /F`, `tasklist` вместо `kill -0`), macOS-поведение не менялось; `ssh_tools`/`skills/exec`/`cdp` — permissions/executable через шов; `dirs` для HOME/Documents; ресурсы скиллов и модели ищутся в `exe_dir/resources`; добавлены `src-tauri/tauri.windows.conf.json` (NSIS, WebView2 downloadBootstrapper) и `scripts/windows/stage-embed-model.ps1`.
+- Влияние: общий код и сборка; macOS-тесты/сборка зелёные (1 известный flaky-тест `fs_watch_quiet` падает и на HEAD). Windows-паритета нет: `askpass.sh`, `sh`-инструменты, macOS harness tools, ONNX DLL и модель на хосте — runtime-риски demo.
+- Действие: `[ACTION: macos]` после push собрать на Windows по SSH: `git pull; npm ci; npx tauri build --config src-tauri/tauri.windows.conf.json`; `[ACTION: windows]` нет (хост только собирает).
+- Статус: waiting
 
 ### 2026-10-21 16:35 UTC — macOS
 - Ветка: `master`

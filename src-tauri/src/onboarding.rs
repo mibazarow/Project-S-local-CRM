@@ -23,11 +23,7 @@ pub struct OnboardingStatus {
 }
 
 pub fn default_working_dir() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("/"));
-    home.join("Documents").join("PROJECT-S")
+    crate::platform::default_working_dir()
 }
 
 // The chosen working dir is persisted outside the working dir itself,

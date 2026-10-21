@@ -15,18 +15,26 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
+#[cfg(not(windows))]
 pub const DEFAULT_CHROME_CANDIDATES: [&str; 3] = [
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
     "/Applications/Chromium.app/Contents/MacOS/Chromium",
     "/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary",
 ];
 
+// Windows installs Chrome under Program Files or the per-user LocalAppData;
+// Edge is Chromium-based and speaks the same CDP, so it is a usable last
+// resort for the demo build.
+#[cfg(windows)]
+pub const DEFAULT_CHROME_CANDIDATES: [&str; 4] = [
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+];
+
 fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    match std::fs::metadata(path) {
-        Ok(meta) => meta.is_file() && meta.permissions().mode() & 0o111 != 0,
-        Err(_) => false,
-    }
+    crate::platform::is_executable(path)
 }
 
 // CHROME_PATH wins over the common macOS install locations.
