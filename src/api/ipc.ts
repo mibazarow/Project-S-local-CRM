@@ -26,6 +26,7 @@ import type {
   MessageAttachmentDto,
   MessageDto,
   ModelInfo,
+   LicenseStatus,
    NotesChanged,
    OnboardingStatus,
   OpenWithApp,
@@ -61,6 +62,12 @@ import type {
 // One typed wrapper per IPC command. JSX must not call invoke() directly.
 
 export const onboardingStatus = () => invoke<OnboardingStatus>("onboarding_status");
+
+export const licenseStatus = () => invoke<LicenseStatus>("license_status");
+
+export const licenseAccept = () => invoke<LicenseStatus>("license_accept");
+
+export const licenseDecline = () => invoke<void>("license_decline");
 
 export const defaultWorkingDir = () => invoke<string>("default_working_dir");
 

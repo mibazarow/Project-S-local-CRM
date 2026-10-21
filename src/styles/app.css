@@ -1209,6 +1209,47 @@ mark { background: rgba(55, 106, 159, .25); border-radius: 2px; }
 }
 .onboarding-actions { display: flex; gap: 10px; margin-top: 4px; }
 
+/* ---------- Лицензия перед онбордингом ---------- */
+
+.license-card { width: 640px; max-height: calc(100vh - 48px - var(--titlebar-inset)); }
+.license-warning {
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-tint);
+  border-left: 4px solid var(--danger);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.license-warning-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  color: var(--danger);
+  margin-bottom: 4px;
+}
+.license-warning p { font-size: 13px; line-height: 1.55; color: var(--text); }
+.license-text {
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.license-text p { font-size: 12.5px; line-height: 1.6; color: var(--text); }
+.license-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+}
+
 /* ---------- Модалка настроек ---------- */
 
 .modal-backdrop {

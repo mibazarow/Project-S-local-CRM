@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import * as ipc from "./api/ipc";
 import { useApp } from "./state/AppStore";
 import { ensureSubscribed } from "./state/chatRunStore";
-import Onboarding from "./components/onboarding/Onboarding";
+import LicenseGate from "./components/onboarding/License";
 import TopBar, { type Tab } from "./components/TopBar";
 import CommandPalette from "./components/CommandPalette";
 import QuickCapture from "./components/QuickCapture";
@@ -103,7 +103,7 @@ export default function App() {
     );
   }
 
-  if (!state.onboarding.configured) return <Onboarding />;
+  if (!state.onboarding.configured) return <LicenseGate />;
 
   const activeProject = state.projects.find((p) => p.id === state.activeProjectId) ?? null;
 

@@ -4,6 +4,7 @@ pub(crate) mod chat;
 pub(crate) mod files;
 pub(crate) mod harness;
 pub(crate) mod index;
+pub(crate) mod license;
 pub(crate) mod links;
 pub(crate) mod llm;
 pub(crate) mod mcp;

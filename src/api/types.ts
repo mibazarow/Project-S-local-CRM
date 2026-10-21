@@ -5,6 +5,12 @@ export interface OnboardingStatus {
   workingDir: string | null;
 }
 
+export interface LicenseStatus {
+  required: boolean;
+  accepted: boolean;
+  version: number;
+}
+
 export interface WorkingDirInfo {
   workingDir: string;
   configDir: string;

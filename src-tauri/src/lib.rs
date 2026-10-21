@@ -16,6 +16,7 @@ mod harness;
 mod index;
 mod importer;
 mod journal;
+mod license;
 mod links;
 mod llm;
 mod mcp;
@@ -261,6 +262,9 @@ pub fn run() {
             commands::onboarding::default_working_dir,
             commands::onboarding::choose_working_dir,
             commands::onboarding::get_working_dir,
+            commands::license::license_status,
+            commands::license::license_accept,
+            commands::license::license_decline,
             commands::settings::config_dir_path,
             commands::settings::read_config,
             commands::settings::write_config,
