@@ -34,3 +34,27 @@ __pycache__/
 .venv/
 .idea/
 .vscode/
+
+# Секреты и рабочие данные приложения (никогда не коммитить)
+.env
+.env.*
+/Settings/
+/Harness/
+/Notes/
+datas.md
+llm.json
+mcp.json
+ssh.json
+license-accepted.json
+working_dir.txt
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+*.dmg
+*.app
+*.zip
+*.onnx
+*.onnx_data
