@@ -73,3 +73,6 @@ dirs = "6"
 default = ["ort-backend"]
 # ureq TLS is now a default feature, so this feature only adds the ONNX stack.
 ort-backend = ["dep:ort", "dep:tokenizers", "dep:sha2"]
+
+[patch.crates-io]
+esaxx-rs = { path = "../vendor/esaxx-rs" }

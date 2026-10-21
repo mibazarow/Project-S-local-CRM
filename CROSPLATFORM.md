@@ -192,6 +192,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Статус: waiting | done
 ```
 
+### 2026-10-21 17:20 UTC — macOS
+- Ветка: `master`
+- Коммит: см. `git log`
+- Сделано: `esaxx-rs 0.1.10` вендорен в `vendor/esaxx-rs` (тот же name/version, C++ и API не менялись) и подключён через `[patch.crates-io]` в `src-tauri/Cargo.toml`; в `build.rs` для Windows больше не задаётся `/MT` (`static_crt`), macOS/Linux-поведение прежнее. Причина: LNK2038/LNK2005 — `cc` собирал esaxx со static CRT, а prebuilt ONNX Runtime (`ort-sys`) идёт с dynamic CRT (`/MD`).
+- Влияние: сборка Windows; macOS `cargo check`/`cargo test` (1068 passed), `npm test` (532), `npm run build` — зелёные.
+- Действие: `[ACTION: macos]` на Windows после pull собрать demo и убедиться, что LNK2038/LNK2005 ушли; если появятся новые CRT-конфликты — смотреть другие `cc`-крейты (`sqlite-vec`) с тем же паттерном.
+- Статус: waiting
+
 ### 2026-10-21 17:10 UTC — macOS
 - Ветка: `master`
 - Коммит: см. `git log`
