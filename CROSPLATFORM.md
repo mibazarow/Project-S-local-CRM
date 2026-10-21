@@ -117,9 +117,10 @@ scripts/linux/
 - известен путь репозитория на Windows.
 
 На Mac:
-- alias в `~/.ssh/config` (например, `Host win`), ключ, без пароля в репозитории;
-- проверка: `ssh win 'git --version; node --version; cargo --version'`;
-- на Windows достаточно read-only deploy key или доступа на `git pull`; коммитов и push с Windows нет.
+- alias в `~/.ssh/config` (например, `Host win11`), ключ, без пароля в репозитории;
+- проверка: `ssh win11 'hostname; whoami'`;
+- на Windows достаточно read-only deploy key или доступа на `git pull`; коммитов и push с Windows нет;
+- доступы, ключ, fingerprint и предусловия — в `DOCS/WINDOWS-ACCESS.md`.
 
 Сборка:
 
@@ -159,7 +160,8 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Встроенных скиллов: **38**.
 - Модель эмбеддингов: **не в git**, ~330 МБ; доставляется до сборки (см. `README.md` → «После клонирования»).
 - macOS: рабочая сборка, aarch64.
-- Windows: **только demo-сборка** (без боевых данных и production-hardening); порт не реализован; сборка — с macOS по SSH (см. §3.1). Доступ/alias/путь ещё не переданы. **Windows-агента нет**; код пишет macOS.
+- Windows: **только demo-сборка** (без боевых данных и production-hardening); порт не реализован; сборка — с macOS по SSH (см. §3.1). **Windows-агента нет**; код пишет macOS.
+- Доступ к Windows VM проверен 2026-10-21: `DOCS/WINDOWS-ACCESS.md`; Windows HEAD `d448c15`, рабочее дерево чистое.
 - Linux: план, реализации нет.
 - Платформенной абстракции пока нет (P0).
 - Модель/ONNX: `ort-backend`, модель в бандле; на Windows нужны `onnxruntime.dll` и MSVC runtime.

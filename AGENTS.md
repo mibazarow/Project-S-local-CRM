@@ -15,6 +15,7 @@
 - `DOCS/REFACTOR_PLAN.md` — живая очередь срезов рефакторинга.
 - `DOCS/BAG_REPORT.md` — сырые заметки пользователя после тестирования.
 - `DOCS/WINDOWS-PORT.md` — план переноса на Windows 11.
+- `DOCS/WINDOWS-ACCESS.md` — доступ к локальной Windows VM (host/port/key/path; private, local-only).
 - `DOCS/LINUX-PORT.md` — план переноса на Linux.
 - `DOCS/Q.md` — живая очередь задач/багов.
 - `README.md` — обзор проекта для человека.
