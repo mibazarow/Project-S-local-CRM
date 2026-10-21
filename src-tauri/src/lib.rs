@@ -266,6 +266,7 @@ pub fn run() {
             commands::projects::list_projects,
             commands::projects::create_project,
             commands::projects::rename_project,
+            commands::projects::delete_project,
             commands::projects::project_path,
             commands::projects::touch_project_opened,
             commands::projects::project_brief,

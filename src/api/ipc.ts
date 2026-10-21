@@ -170,6 +170,8 @@ export const projectSetFilesView = (projectId: number, view: "list" | "grid") =>
 export const projectSetArchived = (projectId: number, archived: boolean) =>
   invoke<ProjectDto>("project_set_archived", { projectId, archived });
 
+export const deleteProject = (id: number) => invoke<void>("delete_project", { id });
+
 export const tasksList = (projectId: number) => invoke<TaskDto[]>("tasks_list", { projectId });
 
 export const taskCreate = (

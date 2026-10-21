@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { useApp } from "../../state/AppStore";
 import { usePointerDrag, type DropTarget } from "../../hooks/usePointerDrag";
+import { confirmRemove } from "../../shared/confirm";
+import ContextMenu from "../shared/ContextMenu";
 import Segmented from "../shared/Segmented";
+import { toast } from "../shared/toast";
 import ProjectItem from "./ProjectItem";
 
 export default function ProjectList() {
@@ -9,6 +12,7 @@ export default function ProjectList() {
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
   const [filter, setFilter] = useState<"current" | "archived">("current");
+  const [menu, setMenu] = useState<{ id: number; x: number; y: number } | null>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
   const visible = state.projects.filter((p) => p.archived === (filter === "archived"));
@@ -85,6 +89,29 @@ export default function ProjectList() {
     if (archived && id === state.activeProjectId) setFilter("current");
   };
 
+  // Permanent deletion: the confirm spells out that nothing is recoverable
+  // (no Trash, no undo), matching the backend that wipes DB rows and folder.
+  const handleDelete = async (id: number) => {
+    const project = state.projects.find((p) => p.id === id);
+    if (!project) return;
+    const ok = await confirmRemove({
+      title: `Удалить проект «${project.name}»?`,
+      message:
+        "Проект и его папка на диске удаляются безвозвратно: задачи, чаты, память проекта, файлы и история изменений. Корзина и восстановление не предусмотрены.",
+      confirmLabel: "Удалить навсегда",
+    });
+    if (!ok) return;
+    if (await actions.deleteProject(id)) {
+      toast("ok", `Проект «${project.name}» удалён`);
+      if (id === state.activeProjectId) setFilter("current");
+    }
+  };
+
+  const handleContextMenu = (e: MouseEvent<HTMLDivElement>, id: number) => {
+    e.preventDefault();
+    setMenu({ id, x: e.clientX, y: e.clientY });
+  };
+
   const dropIndex = dropTarget ? dropTarget.index : null;
   const rows: ReactNode[] = [];
   let visibleIndex = 0;
@@ -99,6 +126,8 @@ export default function ProjectList() {
           onOpen={handleOpen}
           onRename={(id, name) => void actions.renameProject(id, name)}
           onArchive={handleArchive}
+          onDelete={(id) => void handleDelete(id)}
+          onContextMenu={(e) => handleContextMenu(e, p.id)}
           onPointerDown={(e) => onPointerDown(e, p.id)}
         />,
       );
@@ -116,6 +145,8 @@ export default function ProjectList() {
         onOpen={handleOpen}
         onRename={(id, name) => void actions.renameProject(id, name)}
         onArchive={handleArchive}
+        onDelete={(id) => void handleDelete(id)}
+        onContextMenu={(e) => handleContextMenu(e, p.id)}
         onPointerDown={(e) => onPointerDown(e, p.id)}
       />,
     );
@@ -194,6 +225,14 @@ export default function ProjectList() {
           </div>
         )}
       </div>
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={[{ label: "Удалить проект…", onSelect: () => void handleDelete(menu.id) }]}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </aside>
   );
 }

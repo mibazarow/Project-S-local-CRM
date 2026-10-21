@@ -165,6 +165,7 @@ interface AppActions {
   createProjectFromTemplate: (templateName: string, projectName?: string) => Promise<void>;
   renameProject: (id: number, newName: string) => Promise<void>;
   archiveProject: (id: number, archived: boolean) => Promise<void>;
+  deleteProject: (id: number) => Promise<boolean>;
   openProject: (id: number) => Promise<void>;
   moveProject: (id: number, position: number) => Promise<void>;
   refreshProjects: () => Promise<void>;
@@ -306,6 +307,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Permanent deletion (no undo): returns whether it succeeded so the list
+  // can toast. If the deleted project was active, fall back to the first
+  // non-archived one, same as archiving does.
+  const deleteProject = useCallback(async (id: number) => {
+    dispatch({ type: "error", message: null });
+    try {
+      await ipc.deleteProject(id);
+      const projects = await ipc.listProjects();
+      dispatch({ type: "projects", projects });
+      if (id === activeProjectIdRef.current) {
+        const top = projects.find((p) => !p.archived);
+        dispatch({ type: "activeProject", id: top ? top.id : null });
+      }
+      return true;
+    } catch (e) {
+      dispatch({ type: "error", message: toMessage(e) });
+      return false;
+    }
+  }, []);
+
   const openProject = useCallback(async (id: number) => {
     dispatch({ type: "activeProject", id });
     try {
@@ -433,6 +454,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       createProjectFromTemplate,
       renameProject,
       archiveProject,
+      deleteProject,
       openProject,
       moveProject,
       refreshProjects: loadProjects,
@@ -462,6 +484,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       createProjectFromTemplate,
       renameProject,
       archiveProject,
+      deleteProject,
       openProject,
       moveProject,
       loadProjects,

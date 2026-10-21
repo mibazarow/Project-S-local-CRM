@@ -12,6 +12,7 @@ const actions = vi.hoisted(() => ({
   requestProjectRoot: vi.fn(),
   renameProject: vi.fn(async () => {}),
   archiveProject: vi.fn(async () => {}),
+  deleteProject: vi.fn(async () => true),
   clearNewProject: vi.fn(),
 }));
 
@@ -28,6 +29,7 @@ vi.mock("../../state/AppStore", () => ({
 
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { registerConfirmHost, type ConfirmRequest } from "../../shared/confirm";
 import ProjectList from "./ProjectList";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -46,6 +48,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  registerConfirmHost(null);
   vi.clearAllMocks();
 });
 
@@ -201,5 +204,76 @@ describe("ProjectList active-project name click (Q.md item 7)", () => {
     expect(actions.archiveProject).toHaveBeenCalledWith(1, true);
     expect(actions.requestProjectRoot).not.toHaveBeenCalled();
     expect(actions.openProject).not.toHaveBeenCalled();
+  });
+});
+
+describe("ProjectList permanent delete (Q.md item 1)", () => {
+  const click = (el: Element) =>
+    act(async () => {
+      el.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  const row = (name: string) =>
+    Array.from(container.querySelectorAll<HTMLElement>(".project-item")).find(
+      (el) => el.querySelector(".name")?.textContent === name,
+    )!;
+
+  // Fake confirm host: records the request and answers with a fixed verdict.
+  function answer(ok: boolean): () => ConfirmRequest | null {
+    let last: ConfirmRequest | null = null;
+    registerConfirmHost((req) => {
+      last = req;
+      req.resolve(ok);
+    });
+    return () => last;
+  }
+
+  it("the row trash button asks for an irreversible confirmation, then deletes", async () => {
+    const lastRequest = answer(true);
+    projects.push(makeProject(1, "Alpha", false));
+    await mount();
+    await click(container.querySelector<HTMLButtonElement>(".project-item .delete-btn")!);
+    const req = lastRequest();
+    expect(req).not.toBeNull();
+    expect(req!.opts.title).toBe("Удалить проект «Alpha»?");
+    expect(req!.opts.message).toContain("безвозвратно");
+    expect(req!.opts.danger).toBe(true);
+    expect(req!.opts.confirmLabel).toBe("Удалить навсегда");
+    expect(actions.deleteProject).toHaveBeenCalledWith(1);
+  });
+
+  it("cancelling the confirmation deletes nothing", async () => {
+    answer(false);
+    projects.push(makeProject(1, "Alpha", false));
+    await mount();
+    await click(container.querySelector<HTMLButtonElement>(".project-item .delete-btn")!);
+    expect(actions.deleteProject).not.toHaveBeenCalled();
+  });
+
+  it("right-click opens a context menu whose «Удалить проект…» item runs the same flow", async () => {
+    answer(true);
+    projects.push(makeProject(1, "Alpha", false));
+    await mount();
+    await act(async () => {
+      row("Alpha").dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 40, clientY: 60 }),
+      );
+    });
+    const items = Array.from(document.querySelectorAll<HTMLButtonElement>(".context-menu-item"));
+    expect(items.map((el) => el.textContent)).toContain("Удалить проект…");
+    await click(items.find((el) => el.textContent === "Удалить проект…")!);
+    expect(actions.deleteProject).toHaveBeenCalledWith(1);
+    expect(document.querySelector(".context-menu")).toBeNull();
+  });
+
+  it("deleting the active project keeps the «Текущие» tab active", async () => {
+    answer(true);
+    listState.activeProjectId = 1;
+    projects.push(makeProject(1, "Alpha", false), makeProject(2, "Beta", false));
+    await mount();
+    const btns = container.querySelectorAll<HTMLButtonElement>(".project-item .delete-btn");
+    await click(btns[0]);
+    expect(actions.deleteProject).toHaveBeenCalledWith(1);
+    const segs = Array.from(container.querySelectorAll(".sidebar-seg .seg"));
+    expect(segs[0].className).toBe("seg active");
   });
 });

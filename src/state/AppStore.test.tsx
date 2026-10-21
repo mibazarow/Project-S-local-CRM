@@ -53,6 +53,7 @@ vi.mock("../api/ipc", () => ({
   onboardingStatus: vi.fn(async () => ({ configured: true, workingDir: "/ws-test" })),
   listProjects: vi.fn(async () => projects),
   projectSetArchived: vi.fn(async () => undefined),
+  deleteProject: vi.fn(async () => undefined),
   touchProjectOpened: vi.fn(async () => undefined),
   onFsChanged: vi.fn(async (cb: (p: { projectId: number; relPath: string }) => void) => {
     bus.fs = cb;
@@ -152,7 +153,8 @@ beforeEach(() => {
   stateRenders = 0;
   combinedRenders = 0;
   seenActions = [];
-  projects.length = 1;
+  projects.length = 0;
+  projects.push(makeProject(1, "Alpha", 0));
   projects[0].hasActiveTasks = false;
   projects[0].archived = false;
   projects[0].archivedAt = null;
@@ -282,6 +284,55 @@ describe("app store split", () => {
     await act(async () => {
       await acts.archiveProject(2, true);
     });
+    expect(container.querySelector(".active-project")!.textContent).toBe("1");
+  });
+
+  it("deleteProject calls the IPC, reloads the list and reports success", async () => {
+    await mount();
+    const acts = seenActions[0] as { deleteProject: (id: number) => Promise<boolean> };
+    projects.length = 0;
+    vi.mocked(ipc.listProjects).mockClear();
+    let ok = false;
+    await act(async () => {
+      ok = await acts.deleteProject(1);
+    });
+    expect(ipc.deleteProject).toHaveBeenCalledWith(1);
+    expect(ipc.listProjects).toHaveBeenCalledTimes(1);
+    expect(ok).toBe(true);
+  });
+
+  it("deleting the active project selects the top current project", async () => {
+    projects.push(makeProject(2, "Beta", 1));
+    await mount();
+    expect(container.querySelector(".active-project")!.textContent).toBe("1");
+    const acts = seenActions[0] as { deleteProject: (id: number) => Promise<boolean> };
+    projects.shift();
+    await act(async () => {
+      await acts.deleteProject(1);
+    });
+    expect(container.querySelector(".active-project")!.textContent).toBe("2");
+  });
+
+  it("deleting the last project clears the active selection", async () => {
+    await mount();
+    expect(container.querySelector(".active-project")!.textContent).toBe("1");
+    const acts = seenActions[0] as { deleteProject: (id: number) => Promise<boolean> };
+    projects.length = 0;
+    await act(async () => {
+      await acts.deleteProject(1);
+    });
+    expect(container.querySelector(".active-project")!.textContent).toBe("");
+  });
+
+  it("a failed delete returns false and keeps the active selection", async () => {
+    await mount();
+    const acts = seenActions[0] as { deleteProject: (id: number) => Promise<boolean> };
+    vi.mocked(ipc.deleteProject).mockRejectedValueOnce({ code: "io", message: "folder busy" });
+    let ok = true;
+    await act(async () => {
+      ok = await acts.deleteProject(1);
+    });
+    expect(ok).toBe(false);
     expect(container.querySelector(".active-project")!.textContent).toBe("1");
   });
 

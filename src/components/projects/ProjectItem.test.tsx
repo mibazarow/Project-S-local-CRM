@@ -1,4 +1,4 @@
-import { act } from "react";
+import { act, type MouseEvent as ReactMouseEvent } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ProjectDto } from "../../api/types";
@@ -39,7 +39,12 @@ const makeProject = (overrides: Partial<ProjectDto> = {}): ProjectDto => ({
   ...overrides,
 });
 
-async function mount(project: ProjectDto, onArchive = (_id: number, _archived: boolean) => {}) {
+async function mount(
+  project: ProjectDto,
+  onArchive = (_id: number, _archived: boolean) => {},
+  onDelete = (_id: number) => {},
+  onContextMenu = (_e: ReactMouseEvent<HTMLDivElement>) => {},
+) {
   await act(async () => {
     root.render(
       <ProjectItem
@@ -49,6 +54,8 @@ async function mount(project: ProjectDto, onArchive = (_id: number, _archived: b
         onOpen={() => {}}
         onRename={() => {}}
         onArchive={onArchive}
+        onDelete={onDelete}
+        onContextMenu={onContextMenu}
         onPointerDown={() => {}}
       />,
     );
@@ -135,5 +142,57 @@ describe("ProjectItem archive action", () => {
       archiveBtn().click();
     });
     expect(calls).toEqual([[1, false]]);
+  });
+});
+
+describe("ProjectItem delete action (Q.md item 1)", () => {
+  const deleteBtn = () =>
+    container.querySelector<HTMLButtonElement>(".proj-actions .delete-btn")!;
+
+  it("renders a danger trash button with the «Удалить проект» tooltip", async () => {
+    await mount(makeProject());
+    const btn = deleteBtn();
+    expect(btn).not.toBeNull();
+    expect(btn.getAttribute("title")).toBe("Удалить проект");
+    expect(btn.className).toContain("danger");
+    expect(btn.querySelector("svg")).not.toBeNull();
+  });
+
+  it("clicking it calls onDelete with the project id and does not open the project", async () => {
+    const deleted: number[] = [];
+    await act(async () => {
+      root.render(
+        <ProjectItem
+          project={makeProject()}
+          active={false}
+          dragging={false}
+          onOpen={() => {
+            throw new Error("row click must be suppressed");
+          }}
+          onRename={() => {}}
+          onArchive={() => {}}
+          onDelete={(id) => deleted.push(id)}
+          onContextMenu={() => {}}
+          onPointerDown={() => {}}
+        />,
+      );
+    });
+    await act(async () => {
+      deleteBtn().click();
+    });
+    expect(deleted).toEqual([1]);
+  });
+
+  it("right-clicking the row forwards the contextmenu event", async () => {
+    let seen = 0;
+    await mount(makeProject(), () => {}, () => {}, () => {
+      seen++;
+    });
+    await act(async () => {
+      container
+        .querySelector(".project-item")!
+        .dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    });
+    expect(seen).toBe(1);
   });
 });

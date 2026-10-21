@@ -111,6 +111,370 @@ pub fn set_archived(conn: &Connection, id: i64, archived: bool) -> Result<Projec
     dto(conn, id)
 }
 
+// Permanent project deletion (Q.md item 1): no Trash, no undo path. The DB
+// cleanup runs in one transaction (delete_project); the filesystem cleanup
+// (delete_project_fs) runs only after the commit, so a failed folder removal
+// never resurrects the DB record.
+
+// What delete_project collected for the post-commit filesystem cleanup.
+#[derive(Debug)]
+pub struct DeletePlan {
+    // Canonicalized project folder to remove; None when it is already gone.
+    root: Option<PathBuf>,
+    // stored_path of the purged trash rows (the <id> store dir is removed).
+    trash_stored: Vec<PathBuf>,
+    // stored_path of the purged version snapshots.
+    version_stored: Vec<PathBuf>,
+    pub deleted_sessions: usize,
+    pub deleted_schedules: usize,
+    pub deleted_memory: usize,
+}
+
+fn placeholders(n: usize) -> String {
+    vec!["?"; n].join(", ")
+}
+
+// SELECT of a single id column with one id-list IN clause; empty list = no rows.
+fn ids_where_in(conn: &Connection, select: &str, values: &[i64]) -> Result<Vec<i64>> {
+    if values.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sql = format!("{select} IN ({})", placeholders(values.len()));
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(rusqlite::params_from_iter(values.iter()), |r| r.get::<_, i64>(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn delete_rows_where_in(conn: &Connection, sql_head: &str, ids: &[i64]) -> Result<usize> {
+    let mut total = 0;
+    for chunk in ids.chunks(500) {
+        let sql = format!("{sql_head} IN ({})", placeholders(chunk.len()));
+        total += conn.execute(&sql, rusqlite::params_from_iter(chunk.iter()))?;
+    }
+    Ok(total)
+}
+
+// links has no FK: drop every row that names one of the deleted entities on
+// either side (kind ids are stored as text).
+fn delete_links_for(conn: &Connection, kind: &str, ids: &[String]) -> Result<()> {
+    for chunk in ids.chunks(250) {
+        let ph = placeholders(chunk.len());
+        let sql = format!(
+            "DELETE FROM links WHERE (from_kind = ?1 AND from_id IN ({ph}))
+             OR (to_kind = ?1 AND to_id IN ({ph}))"
+        );
+        let mut args: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(1 + chunk.len() * 2);
+        args.push(&kind);
+        for v in chunk {
+            args.push(v);
+        }
+        for v in chunk {
+            args.push(v);
+        }
+        conn.execute(&sql, rusqlite::params_from_iter(args.iter()))?;
+    }
+    Ok(())
+}
+
+// The project folder must be a direct child of Projects/: canonicalize
+// resolves traversal and symlinks, and the parent check rejects "/", the
+// working dir, the Projects dir itself and any symlink pointing elsewhere.
+// A folder that is already gone is allowed (DB-only cleanup) but only for a
+// plain Projects/<name> path with no symlink at the spot. Returns the folder
+// to remove (None = already gone) plus the path prefix used to match the
+// trash/versions rows that referenced it.
+fn resolve_delete_target(conn: &Connection, wd: &Path, id: i64) -> Result<(Option<PathBuf>, PathBuf)> {
+    let stored: String = conn
+        .query_row("SELECT path FROM projects WHERE id = ?1", params![id], |r| r.get(0))
+        .optional()?
+        .ok_or_else(|| AppError::Invalid(format!("project {id} not found")))?;
+    let projects = paths::projects_dir(wd);
+    let candidate = PathBuf::from(&stored);
+    match fs::symlink_metadata(&candidate) {
+        Ok(meta) if meta.file_type().is_symlink() => Err(AppError::Invalid(format!(
+            "project {id} folder is a symlink; refusing to delete it"
+        ))),
+        Ok(meta) if meta.is_dir() => {
+            let projects_canon = projects.canonicalize()?;
+            let canon = candidate.canonicalize()?;
+            if canon.parent() != Some(projects_canon.as_path()) {
+                return Err(AppError::Invalid(format!(
+                    "project {id} path escapes the Projects folder"
+                )));
+            }
+            Ok((Some(canon.clone()), canon))
+        }
+        Ok(_) => Err(AppError::Invalid(format!(
+            "project {id} path is not a folder"
+        ))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            if candidate.parent() != Some(projects.as_path()) {
+                return Err(AppError::Invalid(format!(
+                    "project {id} path escapes the Projects folder"
+                )));
+            }
+            // Trash/version rows were recorded with the canonicalized root
+            // while the folder existed: match against it best-effort.
+            let match_root = match (projects.canonicalize(), candidate.file_name()) {
+                (Ok(projects_canon), Some(name)) => projects_canon.join(name),
+                _ => candidate.clone(),
+            };
+            Ok((None, match_root))
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn delete_project(conn: &Connection, wd: &Path, id: i64) -> Result<DeletePlan> {
+    let (root, match_root) = resolve_delete_target(conn, wd, id)?;
+
+    let task_ids: Vec<i64> = {
+        let mut stmt = conn.prepare("SELECT id FROM tasks WHERE project_id = ?1")?;
+        let rows = stmt.query_map(params![id], |r| r.get::<_, i64>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let memory_ids: Vec<i64> = {
+        let mut stmt = conn.prepare("SELECT id FROM memory WHERE project_id = ?1")?;
+        let rows = stmt.query_map(params![id], |r| r.get::<_, i64>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+
+    // Schedules belong to the project through their linked task; a schedule's
+    // harness session goes with it, together with every schedule created in
+    // that session (same pairing as harness::delete_session).
+    let mut schedule_ids = ids_where_in(
+        conn,
+        "SELECT id FROM schedules WHERE related_task_id",
+        &task_ids,
+    )?;
+    let session_ids: Vec<i64> = {
+        let mut ids = ids_where_in(
+            conn,
+            "SELECT session_id FROM schedules WHERE session_id IS NOT NULL AND related_task_id",
+            &task_ids,
+        )?;
+        ids.sort_unstable();
+        ids.dedup();
+        ids
+    };
+    if !session_ids.is_empty() {
+        let mut owned = ids_where_in(conn, "SELECT id FROM schedules WHERE session_id", &session_ids)?;
+        schedule_ids.append(&mut owned);
+        schedule_ids.sort_unstable();
+        schedule_ids.dedup();
+    }
+
+    // Chat/message ids of everything the projects-row cascade will remove
+    // (project chats plus the harness sessions going away).
+    let sess_ph = if session_ids.is_empty() {
+        String::new()
+    } else {
+        format!(" OR session_id IN ({})", placeholders(session_ids.len()))
+    };
+    let chat_ids: Vec<i64> = {
+        let sql = format!("SELECT id FROM chats WHERE project_id = ?1{sess_ph}");
+        let mut stmt = conn.prepare(&sql)?;
+        let mut args: Vec<&dyn rusqlite::ToSql> = vec![&id];
+        for s in &session_ids {
+            args.push(s);
+        }
+        let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |r| r.get::<_, i64>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let msg_ids: Vec<i64> = {
+        let sql = format!(
+            "SELECT m.id FROM messages m JOIN chats c ON c.id = m.chat_id \
+             WHERE c.project_id = ?1{sess_ph}"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut args: Vec<&dyn rusqlite::ToSql> = vec![&id];
+        for s in &session_ids {
+            args.push(s);
+        }
+        let rows = stmt.query_map(rusqlite::params_from_iter(args.iter()), |r| r.get::<_, i64>(0))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    // Harness search mirrors only cover session transcripts.
+    let mirror_msg_ids: Vec<i64> = {
+        let sql = "SELECT m.id FROM messages m JOIN chats c ON c.id = m.chat_id \
+                   WHERE c.kind = 'harness' AND c.session_id IS NOT NULL";
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+        let all: Vec<i64> = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        all.into_iter().filter(|m| msg_ids.contains(m)).collect()
+    };
+
+    // Trash/version snapshots of the project's files and tasks: a restore
+    // would recreate the deleted folder, so they go with the project. The
+    // path match runs in Rust (LIKE wildcards in project names would over-
+    // match other projects' rows).
+    let root_disp = match_root.display().to_string();
+    let root_prefix = format!("{root_disp}/");
+    let task_keys: std::collections::HashSet<String> =
+        task_ids.iter().map(|t| format!("task:{t}")).collect();
+    let trash_rows: Vec<(i64, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, scope, original_path, stored_path FROM trash WHERE scope IN ('project', 'task')",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id_, scope, original, stored) = row?;
+            let mine = (scope == "task" && task_keys.contains(&original))
+                || (scope == "project" && (original == root_disp || original.starts_with(&root_prefix)));
+            if mine {
+                out.push((id_, stored));
+            }
+        }
+        out
+    };
+    let version_rows: Vec<(i64, String)> = {
+        let mut stmt = conn.prepare("SELECT id, path, stored_path FROM versions WHERE scope = 'project'")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (id_, path, stored) = row?;
+            if path == root_disp || path.starts_with(&root_prefix) {
+                out.push((id_, stored));
+            }
+        }
+        out
+    };
+    let trash_ids: Vec<i64> = trash_rows.iter().map(|(id_, _)| *id_).collect();
+    let version_ids: Vec<i64> = version_rows.iter().map(|(id_, _)| *id_).collect();
+
+    let tx = conn.unchecked_transaction()?;
+
+    // links: no FK, so every row naming a deleted entity on either side.
+    delete_links_for(&tx, "project", &[id.to_string()])?;
+    delete_links_for(&tx, "task", &task_ids.iter().map(i64::to_string).collect::<Vec<_>>())?;
+    delete_links_for(&tx, "schedule", &schedule_ids.iter().map(i64::to_string).collect::<Vec<_>>())?;
+    delete_links_for(&tx, "chat", &chat_ids.iter().map(i64::to_string).collect::<Vec<_>>())?;
+    delete_links_for(&tx, "message", &msg_ids.iter().map(i64::to_string).collect::<Vec<_>>())?;
+    let file_prefix = format!("{id}:%");
+    tx.execute(
+        "DELETE FROM links WHERE (from_kind = 'file' AND from_id LIKE ?1) OR (to_kind = 'file' AND to_id LIKE ?1)",
+        params![file_prefix],
+    )?;
+
+    // Per-conversation TODO plans of the project chat scope (no FK by design).
+    tx.execute("DELETE FROM todos WHERE scope_kind = 'project' AND scope_id = ?1", params![id])?;
+
+    // Search mirrors without cascade: tasks_fts (contentless, keyed by task
+    // rowid), the file index legs, and the memory legs.
+    for t in &task_ids {
+        tx.execute("DELETE FROM tasks_fts WHERE rowid = ?1", params![t])?;
+    }
+    tx.execute("DELETE FROM files_fts WHERE project_id = ?1", params![id.to_string()])?;
+    tx.execute(
+        "DELETE FROM vec_items WHERE rowid IN (SELECT vec_rowid FROM file_vectors WHERE project_id = ?1 AND vec_rowid IS NOT NULL)",
+        params![id],
+    )?;
+    tx.execute("DELETE FROM file_vectors WHERE project_id = ?1", params![id])?;
+    tx.execute("DELETE FROM indexed_files WHERE project_id = ?1", params![id])?;
+    for m in &memory_ids {
+        tx.execute("DELETE FROM memory_fts WHERE rowid = ?1", params![m])?;
+        tx.execute("DELETE FROM memory_vectors WHERE memory_id = ?1", params![m])?;
+        tx.execute("DELETE FROM vec_memory WHERE rowid = ?1", params![m])?;
+    }
+    let deleted_memory = tx.execute("DELETE FROM memory WHERE project_id = ?1", params![id])?;
+
+    // Harness session transcripts leave mirrors behind (messages_fts /
+    // message_vectors / vec_messages have no FK): clear them first, then the
+    // sessions (cascade: chats → messages, summaries, attachments) and the
+    // project's schedules.
+    for m in &mirror_msg_ids {
+        tx.execute("DELETE FROM messages_fts WHERE message_id = ?1", params![m])?;
+        tx.execute("DELETE FROM message_vectors WHERE message_id = ?1", params![m])?;
+        tx.execute("DELETE FROM vec_messages WHERE rowid = ?1", params![m])?;
+    }
+    let deleted_sessions = delete_rows_where_in(&tx, "DELETE FROM sessions WHERE id", &session_ids)?;
+    let deleted_schedules = delete_rows_where_in(&tx, "DELETE FROM schedules WHERE id", &schedule_ids)?;
+
+    // Trash and version history of the project: rows now, stored files after
+    // the commit (a rollback must not have destroyed the snapshots).
+    delete_rows_where_in(&tx, "DELETE FROM trash WHERE id", &trash_ids)?;
+    delete_rows_where_in(&tx, "DELETE FROM versions WHERE id", &version_ids)?;
+
+    // Undo entries that would restore into the deleted project or reference a
+    // purged trash/version row: no restore path survives the deletion.
+    tx.execute("DELETE FROM undo_log WHERE json_extract(payload, '$.projectId') = ?1", params![id])?;
+    delete_rows_where_in(
+        &tx,
+        "DELETE FROM undo_log WHERE json_extract(payload, '$.trashId')",
+        &trash_ids,
+    )?;
+    delete_rows_where_in(
+        &tx,
+        "DELETE FROM undo_log WHERE json_extract(payload, '$.versionId')",
+        &version_ids,
+    )?;
+
+    // projects cascades tasks, chats (→ messages → attachments, summaries).
+    let deleted = tx.execute("DELETE FROM projects WHERE id = ?1", params![id])?;
+    if deleted != 1 {
+        return Err(AppError::Invalid(format!("project {id} not found")));
+    }
+    tx.commit()?;
+
+    Ok(DeletePlan {
+        root,
+        trash_stored: trash_rows
+            .into_iter()
+            .map(|(_, stored)| stored)
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .collect(),
+        version_stored: version_rows
+            .into_iter()
+            .map(|(_, stored)| stored)
+            .map(PathBuf::from)
+            .collect(),
+        deleted_sessions,
+        deleted_schedules,
+        deleted_memory,
+    })
+}
+
+// Filesystem half of the deletion, run only after the DB commit. A folder
+// that cannot be removed is reported without resurrecting the DB record.
+pub fn delete_project_fs(wd: &Path, plan: &DeletePlan) -> Result<()> {
+    if let Some(root) = &plan.root {
+        fs::remove_dir_all(root).map_err(|e| {
+            AppError::Io(format!(
+                "project folder {} could not be deleted: {e}",
+                root.display()
+            ))
+        })?;
+    }
+    let trash = paths::trash_dir(wd);
+    for stored in &plan.trash_stored {
+        if !stored.starts_with(&trash) {
+            continue;
+        }
+        if let Some(dir) = stored.parent() {
+            let _ = fs::remove_dir_all(dir);
+        }
+    }
+    let versions = paths::versions_dir(wd);
+    for stored in &plan.version_stored {
+        if !stored.starts_with(&versions) {
+            continue;
+        }
+        let _ = fs::remove_file(stored);
+    }
+    Ok(())
+}
+
 // Project names double as folder names, so keep them filesystem-safe.
 pub fn sanitize_project_name(raw: &str) -> Result<String> {
     let name = raw.trim();
@@ -430,6 +794,7 @@ fn count_files(root: &Path) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{links, memory, reliability, tasks};
     use crate::db::schema;
     use crate::onboarding::temp_test_dir;
 
@@ -825,6 +1190,341 @@ mod tests {
         set_archived(&conn, p2.id, false).unwrap();
         assert_eq!(list_ids(&conn), vec![p1.id, p2.id, p3.id]);
         assert_eq!(get_project(&conn, p2.id).unwrap().task_count, 1);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    fn zero_vec_blob() -> Vec<u8> {
+        vec![0u8; crate::embed::EMBED_DIM * 4]
+    }
+
+    #[test]
+    fn delete_project_removes_everything_and_keeps_other_projects_intact() {
+        let (wd, conn) = setup("proj-delete");
+        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        let p1 = create_project(&conn, &wd, "gone").unwrap();
+        let p2 = create_project(&conn, &wd, "kept").unwrap();
+        let p1_root = paths::projects_dir(&wd).join("gone");
+
+        // Task (syncs tasks_fts), project chat with message/summary/attachment.
+        let t = tasks::task_create(&conn, p1.id, "редизайн главной", None).unwrap();
+        conn.execute(
+            "INSERT INTO chats (project_id, kind, created_at, updated_at)
+             VALUES (?1, 'project', datetime('now'), datetime('now'))",
+            params![p1.id],
+        )
+        .unwrap();
+        let chat_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO messages (chat_id, role, content, created_at, position)
+             VALUES (?1, 'user', 'привет', datetime('now'), 1)",
+            params![chat_id],
+        )
+        .unwrap();
+        let msg_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO summaries (chat_id, up_to_position, summary, created_at)
+             VALUES (?1, 1, 'x', datetime('now'))",
+            params![chat_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_attachments (message_id, name, saved_path, kind, is_image, created_at)
+             VALUES (?1, 'a.png', 'a.png', 'image', 1, datetime('now'))",
+            params![msg_id],
+        )
+        .unwrap();
+
+        // Memory: project-scoped goes, global and other-project stay.
+        let m1 = memory::add(&conn, "правки по редизайну", Some(p1.id), None, None).unwrap();
+        let m2 = memory::add(&conn, "глобальная запись", None, None, None).unwrap();
+        let m3 = memory::add(&conn, "память kept", Some(p2.id), None, None).unwrap();
+
+        // Index legs: indexed_files, files_fts, file_vectors + vec_items.
+        fs::write(p1_root.join("a.md"), "редизайн контент").unwrap();
+        conn.execute(
+            "INSERT INTO indexed_files (project_id, rel_path, name, kind, size, mtime, content_hash, indexed_at)
+             VALUES (?1, 'a.md', 'a.md', 'text', 10, 1, NULL, datetime('now'))",
+            params![p1.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO files_fts (rel_path, project_id, name, content) VALUES ('a.md', ?1, 'a.md', 'редизайн')",
+            params![p1.id.to_string()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO vec_items (project_id, embedding) VALUES (?1, ?2)",
+            params![p1.id, zero_vec_blob()],
+        )
+        .unwrap();
+        let vec_rowid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO file_vectors (project_id, rel_path, kind, dim, backend, vec_rowid, updated_at)
+             VALUES (?1, 'a.md', 'text', 768, 'noop', ?2, datetime('now'))",
+            params![p1.id, vec_rowid],
+        )
+        .unwrap();
+
+        // Todos plan of the project chat scope.
+        conn.execute(
+            "INSERT INTO todos (scope_kind, scope_id, text, done, position, created_at, updated_at)
+             VALUES ('project', ?1, 'сделать', 0, 1, datetime('now'), datetime('now'))",
+            params![p1.id],
+        )
+        .unwrap();
+
+        // Links on both sides of deleted entities.
+        links::create(&conn, "project", &p1.id.to_string(), "task", &t.id.to_string()).unwrap();
+        links::create(
+            &conn,
+            "file",
+            &links::file_id(p1.id, "a.md"),
+            "chat",
+            &chat_id.to_string(),
+        )
+        .unwrap();
+        links::create(&conn, "project", &p2.id.to_string(), "task", "999").unwrap();
+
+        // Harness session with transcript mirrors and a schedule linked to the
+        // project task: the session, its chat, messages and schedule all go.
+        conn.execute(
+            "INSERT INTO sessions (title, created_at, updated_at, last_active_at)
+             VALUES ('s', datetime('now'), datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        let sid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO chats (kind, session_id, created_at, updated_at)
+             VALUES ('harness', ?1, datetime('now'), datetime('now'))",
+            params![sid],
+        )
+        .unwrap();
+        let hchat = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO messages (chat_id, role, content, created_at, position)
+             VALUES (?1, 'user', 'редизайн в сессии', datetime('now'), 1)",
+            params![hchat],
+        )
+        .unwrap();
+        let hmsg = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO messages_fts (message_id, session_id, content) VALUES (?1, ?2, 'редизайн в сессии')",
+            params![hmsg, sid],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO message_vectors (message_id, session_id, updated_at) VALUES (?1, ?2, datetime('now'))",
+            params![hmsg, sid],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO vec_messages (rowid, embedding) VALUES (?1, ?2)",
+            params![hmsg, zero_vec_blob()],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO schedules (session_id, kind, spec, status, related_task_id, created_at)
+             VALUES (?1, 'run_at', '2026-01-01T10:00:00', 'active', ?2, datetime('now'))",
+            params![sid, t.id],
+        )
+        .unwrap();
+        // A schedule linked to the task but already detached from its session.
+        conn.execute(
+            "INSERT INTO schedules (kind, spec, status, related_task_id, created_at)
+             VALUES ('cron', '0 10 * * *', 'active', ?1, datetime('now'))",
+            params![t.id],
+        )
+        .unwrap();
+        // An unrelated harness session must survive.
+        conn.execute(
+            "INSERT INTO sessions (title, created_at, updated_at, last_active_at)
+             VALUES ('other', datetime('now'), datetime('now'), datetime('now'))",
+            [],
+        )
+        .unwrap();
+        let other_sid = conn.last_insert_rowid();
+
+        // Trash (project file + task snapshot), versions, undo entries. Paths
+        // are canonicalized like production fs_ops records them.
+        let p1_canon = p1_root.canonicalize().unwrap();
+        let trash_file =
+            reliability::trash_put(&conn, &wd, "project", "file", &p1_canon.join("a.md"), None).unwrap();
+        let trash_task =
+            reliability::trash_put_meta(&conn, "task", "task", &format!("task:{}", t.id), "t", "{}").unwrap();
+        let other_trash =
+            reliability::trash_put_meta(&conn, "task", "task", "task:999", "other", "{}").unwrap();
+        let version =
+            reliability::version_save(&conn, &wd, "project", &p1_canon.join("datas.md").display().to_string(), "old")
+                .unwrap();
+        conn.execute(
+            "INSERT INTO undo_log (kind, payload, created_at)
+             VALUES ('delete', json_object('trashId', ?1, 'projectId', ?2), datetime('now'))",
+            params![trash_file, p1.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO undo_log (kind, payload, created_at)
+             VALUES ('file_write', json_object('versionId', ?1, 'projectId', ?2), datetime('now'))",
+            params![version, p1.id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO undo_log (kind, payload, created_at)
+             VALUES ('file_write', json_object('projectId', ?1), datetime('now'))",
+            params![p2.id],
+        )
+        .unwrap();
+
+        let plan = delete_project(&conn, &wd, p1.id).unwrap();
+        delete_project_fs(&wd, &plan).unwrap();
+        assert_eq!((plan.deleted_sessions, plan.deleted_schedules, plan.deleted_memory), (1, 2, 1));
+
+        // Folder gone from Projects/, not moved to any Trash: the store root
+        // and the other project are untouched.
+        assert!(!p1_root.exists());
+        assert!(paths::projects_dir(&wd).join("kept").is_dir());
+        assert_eq!(count(&conn, "SELECT count(*) FROM projects"), 1);
+
+        // Cascade-covered rows.
+        assert_eq!(count(&conn, "SELECT count(*) FROM tasks WHERE project_id = 9999"), 0);
+        assert_eq!(count(&conn, &format!("SELECT count(*) FROM tasks WHERE project_id = {}", p1.id)), 0);
+        assert_eq!(count(&conn, &format!("SELECT count(*) FROM chats WHERE id = {chat_id}")), 0);
+        assert_eq!(count(&conn, &format!("SELECT count(*) FROM messages WHERE id IN ({msg_id}, {hmsg})")), 0);
+        assert_eq!(count(&conn, "SELECT count(*) FROM summaries"), 0);
+        assert_eq!(count(&conn, "SELECT count(*) FROM message_attachments"), 0);
+        assert_eq!(count(&conn, &format!("SELECT count(*) FROM sessions WHERE id = {sid}")), 0);
+
+        // Manually cleaned legs: no orphans anywhere.
+        assert_eq!(count(&conn, "SELECT count(*) FROM tasks_fts"), 0);
+        assert_eq!(count(&conn, "SELECT count(*) FROM files_fts"), 0);
+        assert_eq!(count(&conn, "SELECT count(*) FROM indexed_files"), 0);
+        assert_eq!(count(&conn, "SELECT count(*) FROM file_vectors"), 0);
+        assert_eq!(count(&conn, "SELECT count(*) FROM vec_items"), 0);
+        assert_eq!(count(&conn, "SELECT count(*) FROM messages_fts"), 0);
+        assert_eq!(count(&conn, "SELECT count(*) FROM message_vectors"), 0);
+        assert_eq!(count(&conn, "SELECT count(*) FROM vec_messages"), 0);
+        assert_eq!(count(&conn, "SELECT count(*) FROM schedules"), 0);
+        assert_eq!(count(&conn, &format!("SELECT count(*) FROM todos WHERE scope_kind = 'project' AND scope_id = {}", p1.id)), 0);
+        assert_eq!(count(&conn, "SELECT count(*) FROM links"), 1); // only the p2 link
+        assert_eq!(count(&conn, "SELECT count(*) FROM undo_log"), 1); // only the p2 entry
+
+        // Memory: project rows and their mirrors gone, global/other intact.
+        assert_eq!(count(&conn, "SELECT count(*) FROM memory"), 2);
+        assert_eq!(
+            count(&conn, &format!("SELECT count(*) FROM memory WHERE id IN ({}, {})", m2.id, m3.id)),
+            2
+        );
+        assert_eq!(count(&conn, &format!("SELECT count(*) FROM memory_fts WHERE rowid = {}", m1.id)), 0);
+        assert_eq!(count(&conn, &format!("SELECT count(*) FROM memory_vectors WHERE memory_id = {}", m1.id)), 0);
+        assert_eq!(count(&conn, &format!("SELECT count(*) FROM vec_memory WHERE rowid = {}", m1.id)), 0);
+
+        // Trash/versions: rows purged and stored snapshots removed from disk;
+        // the unrelated trash row survives.
+        assert_eq!(count(&conn, "SELECT count(*) FROM trash"), 1);
+        assert_eq!(
+            count(&conn, &format!("SELECT count(*) FROM trash WHERE id IN ({trash_file}, {trash_task})")),
+            0
+        );
+        let stored_kept = conn
+            .query_row("SELECT 1 FROM trash WHERE id = ?1", params![other_trash], |_| Ok(()))
+            .is_ok();
+        assert!(stored_kept);
+        assert_eq!(count(&conn, "SELECT count(*) FROM versions"), 0);
+        let versions_left: Vec<_> = fs::read_dir(paths::versions_dir(&wd)).unwrap().collect();
+        assert!(versions_left.is_empty());
+
+        // The deleted project is invisible to search; the kept one still works.
+        let hits = crate::search::search_with(
+            &conn,
+            &crate::embed::NoopEmbedder,
+            crate::embed::NAME_WEIGHT,
+            p1.id,
+            "редизайн",
+            10,
+        )
+        .unwrap();
+        assert!(hits.is_empty());
+        assert_eq!(
+            count(&conn, &format!("SELECT count(*) FROM sessions WHERE id = {other_sid}")),
+            1
+        );
+
+        // Deleting an unknown project errors without touching anything.
+        assert!(matches!(delete_project(&conn, &wd, 9999), Err(AppError::Invalid(_))));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn delete_project_refuses_paths_outside_the_projects_root() {
+        let (wd, conn) = setup("proj-delete-safety");
+        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        let projects = paths::projects_dir(&wd);
+
+        let insert_row = |name: &str, path: &str| -> i64 {
+            conn.execute(
+                "INSERT INTO projects (name, path, created_at) VALUES (?1, ?2, datetime('now'))",
+                params![name, path],
+            )
+            .unwrap();
+            conn.last_insert_rowid()
+        };
+
+        // The working dir itself, the Projects root, and "/" are refused.
+        for path in [wd.display().to_string(), projects.display().to_string(), "/".into()] {
+            let id = insert_row("bad", &path);
+            assert!(
+                matches!(delete_project(&conn, &wd, id), Err(AppError::Invalid(_))),
+                "accepted {path}"
+            );
+        }
+        assert!(wd.is_dir() && projects.is_dir());
+
+        // Traversal outside Projects/ is refused (folder present and absent).
+        let outside = wd.join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("keep.txt"), "x").unwrap();
+        let id = insert_row("trav", projects.join("../outside").display().to_string().as_str());
+        assert!(matches!(delete_project(&conn, &wd, id), Err(AppError::Invalid(_))));
+        let id = insert_row("trav2", projects.join("../nope").display().to_string().as_str());
+        assert!(matches!(delete_project(&conn, &wd, id), Err(AppError::Invalid(_))));
+        assert!(outside.join("keep.txt").is_file());
+
+        // A symlink inside Projects/ pointing elsewhere is refused and kept.
+        std::os::unix::fs::symlink(&outside, projects.join("evil")).unwrap();
+        let id = insert_row("evil", projects.join("evil").display().to_string().as_str());
+        assert!(matches!(delete_project(&conn, &wd, id), Err(AppError::Invalid(_))));
+        assert!(outside.join("keep.txt").is_file());
+        assert!(projects.join("evil").is_symlink());
+
+        // A real folder that is not a direct child of Projects/ is refused.
+        let nested = projects.join("outer/inner");
+        fs::create_dir_all(&nested).unwrap();
+        let id = insert_row("nested", nested.display().to_string().as_str());
+        assert!(matches!(delete_project(&conn, &wd, id), Err(AppError::Invalid(_))));
+        assert!(nested.is_dir());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn delete_project_cleans_db_when_folder_is_already_gone() {
+        let (wd, conn) = setup("proj-delete-missing-folder");
+        conn.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        let p = create_project(&conn, &wd, "ghost").unwrap();
+        fs::remove_dir_all(paths::projects_dir(&wd).join("ghost")).unwrap();
+        conn.execute(
+            "INSERT INTO tasks (project_id, title, status, created_at) VALUES (?1, 't', 'new', '2026-01-01')",
+            params![p.id],
+        )
+        .unwrap();
+        let plan = delete_project(&conn, &wd, p.id).unwrap();
+        delete_project_fs(&wd, &plan).unwrap();
+        assert_eq!(count(&conn, "SELECT count(*) FROM projects"), 0);
+        assert_eq!(count(&conn, "SELECT count(*) FROM tasks"), 0);
         fs::remove_dir_all(&wd).unwrap();
     }
 }

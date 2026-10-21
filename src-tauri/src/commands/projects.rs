@@ -2,7 +2,9 @@ use crate::{brief, db, paths, projects, watcher};
 use crate::error::{AppError, Result};
 use crate::projects::ProjectDto;
 use crate::state::{AppState};
-use super::{with_db, emit_fs_changed, emit_projects_changed};
+use super::{
+    with_db, emit_fs_changed, emit_memory_changed, emit_projects_changed, emit_schedules_changed,
+};
 use tauri::{AppHandle, Emitter, State};
 
 #[tauri::command]
@@ -66,6 +68,28 @@ pub(crate) fn rename_project(
 pub(crate) fn project_path(state: State<AppState>, id: i64) -> Result<String> {
     let wd = state.working_dir()?;
     with_db(&state, |conn| projects::project_path(conn, &wd, id))
+}
+
+// Permanent project deletion (Q.md item 1): DB rows in one transaction, then
+// the folder and the trash/version snapshots without macOS Trash. The folder
+// is removed only after the DB commit; a failed folder removal is reported
+// but never resurrects the record.
+#[tauri::command]
+pub(crate) fn delete_project(app: AppHandle, state: State<AppState>, id: i64) -> Result<()> {
+    let wd = state.working_dir()?;
+    let plan = with_db(&state, |conn| projects::delete_project(conn, &wd, id))?;
+    projects::delete_project_fs(&wd, &plan)?;
+    emit_projects_changed(&app);
+    if plan.deleted_schedules > 0 {
+        emit_schedules_changed(&app);
+    }
+    if plan.deleted_sessions > 0 {
+        let _ = app.emit("sessions-changed", serde_json::json!({}));
+    }
+    if plan.deleted_memory > 0 {
+        emit_memory_changed(&app, None);
+    }
+    Ok(())
 }
 
 #[tauri::command]

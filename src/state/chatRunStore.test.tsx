@@ -257,7 +257,7 @@ describe("chatRunStore", () => {
 describe("chat list indicators", () => {
   it("shows a running dot while a run is live and a ready dot after a background finish", async () => {
     await act(async () => {
-      root.render(<ProjectItem project={project(3)} active={false} dragging={false} onOpen={() => {}} onRename={() => {}} onArchive={() => {}} onPointerDown={() => {}} />);
+      root.render(<ProjectItem project={project(3)} active={false} dragging={false} onOpen={() => {}} onRename={() => {}} onArchive={() => {}} onDelete={() => {}} onContextMenu={() => {}} onPointerDown={() => {}} />);
     });
     expect(container.querySelector(".chat-status.running")).toBeNull();
     expect(container.querySelector(".chat-status.ready")).toBeNull();
