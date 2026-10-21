@@ -1,6 +1,6 @@
 # context.md — Project S: передача в новую сессию
 
-Дата: 2026-10-19. Этот файл — краткий, но полный снимок состояния проекта, решений и договорённостей. Прочитай его целиком перед первым действием.
+Дата: 2026-10-19; обновлено: 2026-10-21 (добавлен §12 — Windows-порт и окружение). Этот файл — краткий, но полный снимок состояния проекта, решений и договорённостей. Прочитай его целиком перед первым действием.
 
 ## 1. Что за проект
 
@@ -180,3 +180,46 @@ git add -A && git commit -m "…"
 - Не добавлять реальные данные клиентов в моки, скриншоты и docs.
 - Не менять версию и не собирать релиз без явной просьбы.
 - Не трогать `/Applications/Project-S.app` вручную; только через `npm run app:update` / `app:install`.
+
+## 12. Windows-порт: анализ и состояние окружения (2026-10-21)
+
+Прочитан `DOCS/WINDOWS-PORT.md` (план от 2026-10-21, v1.0.2), сверен с кодом и `CROSPLATFORM.md`. Вопросы Windows закрыты macOS-агентом: решения зафиксированы в `CROSPLATFORM.md` §0.1, временные записи журнала удалены.
+
+Окружение Windows 11 x64 подготовлено:
+
+- Node.js 24.22.1 / npm 11.19.1; PowerShell execution policy `CurrentUser → RemoteSigned`.
+- Rust 1.99.1 `stable-x86_64-pc-windows-msvc` + `rustfmt`, `clippy`.
+- Visual Studio Build Tools 2022 + `VCTools` + Windows SDK; WebView2 155.0.4283.62.
+- Python 3.13.15; Git Bash в PATH; `npm ci` выполнен.
+- Модель `embeddinggemma-2` доставлена в `src-tauri/resources/models/embeddinggemma-2/` (4 файла, ~346 МБ; gitignore).
+- `npm run build` — OK; `npm test` — 532/532; `npx tauri info` — среда зелёная.
+- `cargo check` — 11 ошибок P0 в 4 файлах: `processes.rs`, `skills/exec.rs`, `cdp/mod.rs`, `agent/ssh_tools.rs`.
+
+Суть плана:
+
+- Паритет 1:1 с macOS; только Windows 11 24H2/25H2, x64 MSVC.
+- P0-1…P0-7: cfg-разделение Unix-кода, Job Objects + kill tree, PowerShell/cmd вместо `sh`, `dirs` вместо `HOME`, обёртка над `canonicalize` (`\\?\`), ресурсы `exe_dir/resources/skills`, `tauri.windows.conf.json` + `bundle.windows`.
+- Этапы 0–6; оценка 10–14 недель + буфер = 13–19 календарных недель.
+- 18 открытых вопросов: WebView2 (fixedRuntime/fallback), NSIS/MSI, ARM64, секреты (plaintext/DPAPI), доставка модели и ONNX DLL, updater, подпись, Store/MSIX, OCR, OpenSSH, Recycle Bin и др.
+
+Решения macOS (`CROSPLATFORM.md` §0.1):
+
+1. Платформенный шов: `platform/mod.rs` + `platform/macos` появляются в `master` до merge Windows-кода. В бизнес-логике никаких `#[cfg(unix)]`; временный cfg допустим только как scaffold в `port/windows`, не в `master`.
+2. Shell: платформенно-нейтральный инструмент `shell` (`auto`/PowerShell/cmd/sh), `bash` — алиас на Unix. Windows реализует PowerShell/cmd; скиллы не форкаются, жёсткие bash-примеры правит macOS в `master`.
+3. UI/UX: решения за macOS. На Windows нативный titlebar, Segoe UI, Ctrl вместо Cmd, DPI через платформенный слой; без редизайна.
+4. WebView2: baseline **109.0.1518.78** (Tauri 2); ниже или отсутствует — fixed runtime. Перед релизом сверить с release notes Tauri.
+5. Ресурсы: единый `resource_dir()` + fallback `exe_dir/resources` для dev. Helper добавляет macOS; `paths.rs` — `notes_dir` и `harness_inbox_dir`. `package.json` — кросс-платформенный `scripts/stage-embed-model.mjs`, bash-обёртка остаётся.
+
+Уточнения по коду:
+
+- §0.4 не упоминает `Notes/` и `Harness/Входящие` (`paths.rs`).
+- `package.json` жёстко вызывает `bash scripts/stage-embed-model.sh` — на Windows первый build упадёт на npm-шаге.
+- Скелета `platform/`, `tauri.<os>.conf.json` и `scripts/windows/` в репозитории нет — объём P0-7 больше, чем в плане.
+
+Следующий шаг:
+
+1. Дождаться в `master` платформенного шва `platform/mod.rs` + `platform/macos` и helper'а ресурсов от macOS; до этого допустим только scaffold в `port/windows`.
+2. Ветка `port/windows` от `master`.
+3. `scripts/windows/stage-embed-model.ps1` / `.mjs`, убрать зависимость npm-скриптов от `bash`.
+4. `tauri.windows.conf.json` + `bundle.windows`.
+5. P0-1…P0-7, первый end-to-end build и smoke.
