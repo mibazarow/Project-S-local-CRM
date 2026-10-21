@@ -29,6 +29,7 @@ const projects = vi.hoisted((): ProjectDto[] => [
     filesView: "list",
     archived: false,
     archivedAt: null,
+    builtin: false,
   },
 ]);
 
@@ -47,6 +48,7 @@ const makeProject = (id: number, name: string, position: number): ProjectDto => 
   filesView: "list",
   archived: false,
   archivedAt: null,
+  builtin: false,
 });
 
 vi.mock("../api/ipc", () => ({

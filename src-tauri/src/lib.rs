@@ -226,6 +226,7 @@ pub fn run() {
                 let ttl = session_ttl_days(&wd);
                 let guard = lock_recover(&state.db);
                 if let Some(conn) = guard.as_ref() {
+                    let _ = projects::ensure_builtin_project(conn, &wd);
                     let _ = harness::purge_inactive_sessions(conn, ttl);
                     // Background process rows from a previous run: the
                     // processes themselves were reparented to launchd and

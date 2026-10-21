@@ -94,6 +94,7 @@ const makeProject = (id: number, name: string, archived: boolean): ProjectDto =>
   filesView: "list",
   archived,
   archivedAt: archived ? "2026-01-01 10:00:00" : null,
+  builtin: false,
 });
 
 describe("ProjectList current/archive tabs (Q.md item 5)", () => {
@@ -164,6 +165,32 @@ describe("ProjectList current/archive tabs (Q.md item 5)", () => {
     await click(btns[1]);
     expect(actions.archiveProject).toHaveBeenCalledWith(2, true);
     expect(segs()[0].className).toBe("seg active");
+  });
+});
+
+describe("ProjectList builtin project (Q.md item 2)", () => {
+  const builtinRow = () =>
+    container.querySelector<HTMLElement>(".project-item.builtin")!;
+
+  it("renders the builtin row first with no archive/delete actions", async () => {
+    projects.push({ ...makeProject(1, "Мои задачи", false), builtin: true });
+    projects.push(makeProject(2, "Alpha", false));
+    await mount();
+    const rows = Array.from(container.querySelectorAll<HTMLElement>(".project-item"));
+    expect(rows[0].classList.contains("builtin")).toBe(true);
+    expect(builtinRow().querySelector(".archive-toggle-btn")).toBeNull();
+    expect(builtinRow().querySelector(".delete-btn")).toBeNull();
+  });
+
+  it("right-clicking it opens no delete context menu", async () => {
+    projects.push({ ...makeProject(1, "Мои задачи", false), builtin: true });
+    await mount();
+    await act(async () => {
+      builtinRow().dispatchEvent(
+        new MouseEvent("contextmenu", { bubbles: true, cancelable: true }),
+      );
+    });
+    expect(document.querySelector(".context-menu")).toBeNull();
   });
 });
 

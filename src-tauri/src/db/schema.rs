@@ -1,7 +1,7 @@
 use crate::error::Result;
 use rusqlite::{params, Connection};
 
-pub const SCHEMA_VERSION: i64 = 39;
+pub const SCHEMA_VERSION: i64 = 40;
 
 const MIGRATION_1: &str = "
 CREATE TABLE IF NOT EXISTS projects (
@@ -1051,6 +1051,21 @@ fn migrate_v39(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+fn migrate_v40(conn: &Connection) -> Result<()> {
+    let has_builtin: i64 = conn.query_row(
+        "SELECT count(*) FROM pragma_table_info('projects') WHERE name = 'builtin'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_builtin == 0 {
+        conn.execute("ALTER TABLE projects ADD COLUMN builtin INTEGER NOT NULL DEFAULT 0", [])?;
+    }
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uniq_projects_builtin ON projects(builtin) WHERE builtin = 1",
+    )?;
+    Ok(())
+}
+
 // Ordered (user_version target, migration body) table: each body runs when
 // the stored user_version is below its target, then the runner bumps
 // user_version to the target, exactly like the previous hand-rolled
@@ -1097,7 +1112,8 @@ const MIGRATIONS: &[(u32, Migration)] = &[
     (36, migrate_v36),
     (37, migrate_v37),
     (38, migrate_v38),
-    (SCHEMA_VERSION as u32, migrate_v39),
+    (39, migrate_v39),
+    (SCHEMA_VERSION as u32, migrate_v40),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {

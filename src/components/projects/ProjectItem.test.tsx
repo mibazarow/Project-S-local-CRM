@@ -36,6 +36,7 @@ const makeProject = (overrides: Partial<ProjectDto> = {}): ProjectDto => ({
   filesView: "list",
     archived: false,
     archivedAt: null,
+    builtin: false,
   ...overrides,
 });
 
@@ -61,6 +62,25 @@ async function mount(
     );
   });
 }
+
+describe("ProjectItem builtin project (Q.md item 2)", () => {
+  it("marks the row with the builtin class and hides file/archive/delete actions", async () => {
+    await mount(makeProject({ builtin: true, name: "Мои задачи", fileCount: 7, taskCount: 2 }));
+    const row = container.querySelector(".project-item")!;
+    expect(row.className).toContain("builtin");
+    expect(container.querySelector(".proj-actions .archive-toggle-btn")).toBeNull();
+    expect(container.querySelector(".proj-actions .delete-btn")).toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('.proj-actions button[title="Переименовать проект"]')).not.toBeNull();
+    expect(row.querySelector(".meta")!.textContent).toBe("2 задач");
+  });
+
+  it("plain projects are not marked as builtin", async () => {
+    await mount(makeProject());
+    expect(container.querySelector(".project-item")!.className).not.toContain("builtin");
+    expect(container.querySelector(".proj-actions .archive-toggle-btn")).not.toBeNull();
+    expect(container.querySelector(".proj-actions .delete-btn")).not.toBeNull();
+  });
+});
 
 describe("ProjectItem overdue line", () => {
   it("renders the overdue count on its own line after the meta line", async () => {

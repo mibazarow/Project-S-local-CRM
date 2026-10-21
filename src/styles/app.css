@@ -210,6 +210,8 @@ input, textarea { font-family: inherit; }
   touch-action: none;
 }
 .project-item:hover { background: rgba(0, 0, 0, .045); }
+.project-item.builtin { box-shadow: inset 3px 0 0 var(--builtin-project-color); }
+.project-item.builtin .name { font-weight: 600; }
 .project-item.active { background: var(--accent); color: #fff; }
 .project-list > .project-item + .project-item::before,
 .session-list > .session-item + .session-item::before {

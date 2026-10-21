@@ -59,6 +59,7 @@ const projects = vi.hoisted(() => [
     filesView: "list",
     archived: false,
     archivedAt: null,
+    builtin: false,
   } satisfies ProjectDto,
   {
     id: 2,
@@ -75,6 +76,7 @@ const projects = vi.hoisted(() => [
     filesView: "grid",
     archived: false,
     archivedAt: null,
+    builtin: false,
   } satisfies ProjectDto,
 ]);
 
@@ -274,6 +276,34 @@ describe("FilesPanel per-project file view mode", () => {
     )!;
     expect(tile.querySelector('button[title="Открыть в редакторе"]')).not.toBeNull();
     expect(tile.querySelector('button[title="Открыть с помощью…"]')).toBeNull();
+  });
+});
+
+describe("FilesPanel builtin project (Q.md item 2)", () => {
+  const builtinProject = (p: ProjectDto): ProjectDto => ({
+    ...p,
+    name: "Мои задачи",
+    builtin: true,
+  });
+  const tabSegs = () =>
+    Array.from(container.querySelectorAll(".center-head > .segmented:not(.task-view-seg) .seg"));
+
+  it("hides the Files tab and lands on Tasks", async () => {
+    await mount(builtinProject(projects[0]));
+    expect(tabSegs()).toHaveLength(1);
+    expect(tabSegs()[0].textContent).toBe("Задачи");
+    expect(tabSegs()[0].className).toBe("seg active");
+    expect(container.querySelector(".seg-filter")).not.toBeNull();
+    expect(container.querySelector(".file-tree")).toBeNull();
+    expect(container.querySelector(".file-grid")).toBeNull();
+  });
+
+  it("keeps the Files view hidden across a remount", async () => {
+    await mount(builtinProject(projects[1]));
+    await switchTo(builtinProject(projects[0]));
+    expect(tabSegs()).toHaveLength(1);
+    expect(tabSegs()[0].textContent).toBe("Задачи");
+    expect(container.querySelector(".seg-filter")).not.toBeNull();
   });
 });
 

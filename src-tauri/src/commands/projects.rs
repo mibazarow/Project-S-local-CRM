@@ -46,6 +46,12 @@ pub(crate) fn rename_project(
     new_name: String,
 ) -> Result<ProjectDto> {
     let wd = state.working_dir()?;
+    if with_db(&state, |conn| projects::is_builtin(conn, id))? {
+        let row = with_db(&state, |conn| projects::rename_builtin(conn, id, &new_name))?;
+        let dto = projects::dto_from_row(id, row);
+        emit_projects_changed(&app);
+        return Ok(dto);
+    }
     // Resolve under a short DB read, rename on disk outside the mutex, then
     // the single UPDATE; on DB failure rename back (same compensation).
     let plan = with_db(&state, |conn| projects::rename_plan(conn, &wd, id, &new_name))?;

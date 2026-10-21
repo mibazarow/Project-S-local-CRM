@@ -81,6 +81,7 @@ function project(id: number): ProjectDto {
     filesView: "list",
     archived: false,
     archivedAt: null,
+    builtin: false,
   };
 }
 

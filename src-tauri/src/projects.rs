@@ -22,6 +22,7 @@ pub struct ProjectDto {
     pub files_view: String,
     pub archived: bool,
     pub archived_at: Option<String>,
+    pub builtin: bool,
 }
 
 const TASK_COUNT_SQL: &str = "SELECT count(*) FROM tasks WHERE project_id = ?1";
@@ -30,6 +31,13 @@ const OVERDUE_SQL: &str = "SELECT count(*) FROM tasks WHERE project_id = ?1 AND 
 // Per-project kanban column names (v31): a JSON array of exactly 3 strings.
 pub const DEFAULT_TASK_COLUMNS: [&str; 3] = ["Новые", "В работе", "Готово"];
 pub const MAX_TASK_COLUMN_NAME_CHARS: usize = 40;
+
+// Permanent builtin project (Q.md item 2): a personal task inbox that always
+// exists, always sorts first, is never archived or deleted, and keeps its
+// chat attachments in a hidden service folder under Projects/.
+pub const BUILTIN_PROJECT_NAME: &str = "Мои задачи";
+pub const BUILTIN_PROJECT_DIR: &str = ".my-tasks";
+pub const BUILTIN_PROJECT_GREETING: &str = "Это ваш личный задачник: здесь можно ставить задачи, не привязанные ни к какому проекту — разовые дела, напоминания, быстрые поручения. Всё работает как в обычном проекте: колонки, сроки, приоритеты. Создайте задачу или просто напишите, что нужно сделать.";
 
 fn parse_task_columns(raw: &str) -> [String; 3] {
     serde_json::from_str::<Vec<String>>(raw)
@@ -100,6 +108,11 @@ pub fn set_files_view(conn: &Connection, id: i64, raw: &str) -> Result<ProjectDt
 }
 
 pub fn set_archived(conn: &Connection, id: i64, archived: bool) -> Result<ProjectDto> {
+    if archived && is_builtin(conn, id)? {
+        return Err(AppError::Invalid(
+            "the builtin project cannot be archived".into(),
+        ));
+    }
     let updated = conn.execute(
         "UPDATE projects SET archived_at = CASE WHEN ?1 THEN datetime('now','localtime') ELSE NULL END
          WHERE id = ?2",
@@ -226,6 +239,11 @@ fn resolve_delete_target(conn: &Connection, wd: &Path, id: i64) -> Result<(Optio
 }
 
 pub fn delete_project(conn: &Connection, wd: &Path, id: i64) -> Result<DeletePlan> {
+    if is_builtin(conn, id)? {
+        return Err(AppError::Invalid(
+            "the builtin project cannot be deleted".into(),
+        ));
+    }
     let (root, match_root) = resolve_delete_target(conn, wd, id)?;
 
     let task_ids: Vec<i64> = {
@@ -519,7 +537,7 @@ pub fn project_path(conn: &Connection, wd: &Path, id: i64) -> Result<String> {
 pub(crate) fn list_project_rows(conn: &Connection) -> Result<Vec<(i64, ProjectDbRow)>> {
     let mut ids = Vec::new();
     {
-        let mut stmt = conn.prepare("SELECT id FROM projects ORDER BY position, id")?;
+        let mut stmt = conn.prepare("SELECT id FROM projects ORDER BY builtin DESC, position, id")?;
         let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
         for row in rows {
             ids.push(row?);
@@ -606,6 +624,62 @@ pub fn create_project(conn: &Connection, wd: &Path, raw_name: &str) -> Result<Pr
     Ok(dto_from_row(id, row))
 }
 
+pub fn is_builtin(conn: &Connection, id: i64) -> Result<bool> {
+    Ok(conn
+        .query_row(
+            "SELECT builtin FROM projects WHERE id = ?1",
+            params![id],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .map(|v| v != 0)
+        .unwrap_or(false))
+}
+
+pub fn builtin_project_id(conn: &Connection) -> Result<Option<i64>> {
+    Ok(conn
+        .query_row("SELECT id FROM projects WHERE builtin = 1", [], |r| r.get(0))
+        .optional()?)
+}
+
+// Get-or-create the permanent builtin project. Existing installs reach it on
+// the first startup after the migration; repeated calls return the same row.
+// The hidden folder is recreated if it went missing, and the chat is ensured
+// so the static greeting is seeded exactly once.
+pub fn ensure_builtin_project(conn: &Connection, wd: &Path) -> Result<i64> {
+    let projects = paths::projects_dir(wd);
+    fs::create_dir_all(&projects)?;
+    let root = projects.join(BUILTIN_PROJECT_DIR);
+    fs::create_dir_all(&root)?;
+    let id = match builtin_project_id(conn)? {
+        Some(id) => id,
+        None => {
+            conn.execute(
+                "INSERT INTO projects (name, path, created_at, position, builtin)
+                 VALUES (?1, ?2, datetime('now','localtime'), 0, 1)",
+                params![BUILTIN_PROJECT_NAME, root.display().to_string()],
+            )?;
+            conn.last_insert_rowid()
+        }
+    };
+    crate::chat::ensure_project_chat(conn, id)?;
+    Ok(id)
+}
+
+// Renaming the builtin project changes only the display name: the hidden
+// service folder and the builtin flag stay put.
+pub fn rename_builtin(conn: &Connection, id: i64, raw_name: &str) -> Result<ProjectDbRow> {
+    let name = sanitize_project_name(raw_name)?;
+    let updated = conn.execute(
+        "UPDATE projects SET name = ?1 WHERE id = ?2 AND builtin = 1",
+        params![name, id],
+    )?;
+    if updated != 1 {
+        return Err(AppError::Invalid(format!("project {id} not found")));
+    }
+    db_row(conn, id)
+}
+
 // Everything rename_project does except the folder rename and the tree walk:
 // the command resolves under a short DB read, renames outside the DB mutex,
 // then applies the single UPDATE. On DB failure the caller renames back with
@@ -680,7 +754,7 @@ pub fn move_project(conn: &Connection, id: i64, position: f64) -> Result<()> {
 pub fn first_project_id(conn: &Connection) -> Result<Option<i64>> {
     Ok(conn
         .query_row(
-            "SELECT id FROM projects ORDER BY position, id LIMIT 1",
+            "SELECT id FROM projects ORDER BY builtin DESC, position, id LIMIT 1",
             [],
             |r| r.get(0),
         )
@@ -705,14 +779,15 @@ pub(crate) struct ProjectDbRow {
     task_columns: String,
     files_view: String,
     archived_at: Option<String>,
+    builtin: bool,
     task_count: i64,
     overdue_count: i64,
     has_active_tasks: bool,
 }
 
 fn db_row(conn: &Connection, id: i64) -> Result<ProjectDbRow> {
-    let (name, path, created_at, opened_at, position, task_columns, files_view, archived_at, has_active_tasks) = conn.query_row(
-        "SELECT name, path, created_at, opened_at, position, task_columns, files_view, archived_at,
+    let (name, path, created_at, opened_at, position, task_columns, files_view, archived_at, builtin, has_active_tasks) = conn.query_row(
+        "SELECT name, path, created_at, opened_at, position, task_columns, files_view, archived_at, builtin,
                 EXISTS(SELECT 1 FROM tasks WHERE project_id = ?1 AND status = 'progress')
          FROM projects WHERE id = ?1",
         params![id],
@@ -725,7 +800,8 @@ fn db_row(conn: &Connection, id: i64) -> Result<ProjectDbRow> {
             r.get::<_, String>(5)?,
             r.get::<_, String>(6)?,
             r.get::<_, Option<String>>(7)?,
-            r.get::<_, bool>(8)?,
+            r.get::<_, i64>(8)? != 0,
+            r.get::<_, bool>(9)?,
         )),
     )?;
     let task_count = conn.query_row(TASK_COUNT_SQL, params![id], |r| r.get(0))?;
@@ -739,6 +815,7 @@ fn db_row(conn: &Connection, id: i64) -> Result<ProjectDbRow> {
         task_columns,
         files_view,
         archived_at,
+        builtin,
         task_count,
         overdue_count,
         has_active_tasks,
@@ -763,6 +840,7 @@ pub(crate) fn dto_from_row(id: i64, row: ProjectDbRow) -> ProjectDto {
         files_view: parse_files_view(&row.files_view),
         archived: row.archived_at.is_some(),
         archived_at: row.archived_at,
+        builtin: row.builtin,
     }
 }
 
@@ -1193,11 +1271,100 @@ mod tests {
         fs::remove_dir_all(&wd).unwrap();
     }
 
-    fn count(conn: &Connection, sql: &str) -> i64 {
-        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    #[test]
+    fn builtin_project_is_created_once_and_sorts_first() {
+        let (wd, conn) = setup("proj-builtin");
+        let p1 = create_project(&conn, &wd, "p1").unwrap();
+        let id = ensure_builtin_project(&conn, &wd).unwrap();
+        assert_eq!(ensure_builtin_project(&conn, &wd).unwrap(), id);
+
+        let list = list_projects(&conn).unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].id, id);
+        assert!(list[0].builtin);
+        assert_eq!(list[0].name, BUILTIN_PROJECT_NAME);
+        assert!(!list[1].builtin);
+        assert_eq!(list[1].id, p1.id);
+        assert!(paths::projects_dir(&wd).join(BUILTIN_PROJECT_DIR).is_dir());
+        assert_eq!(first_project_id(&conn).unwrap(), Some(id));
+
+        move_project(&conn, p1.id, -100.0).unwrap();
+        assert_eq!(list_ids(&conn), vec![id, p1.id]);
+        fs::remove_dir_all(&wd).unwrap();
     }
 
-    fn zero_vec_blob() -> Vec<u8> {
+    #[test]
+    fn builtin_project_is_separate_from_a_same_named_user_project() {
+        let (wd, conn) = setup("proj-builtin-name");
+        let named = create_project(&conn, &wd, BUILTIN_PROJECT_NAME).unwrap();
+        let builtin = ensure_builtin_project(&conn, &wd).unwrap();
+        assert_ne!(named.id, builtin);
+        assert!(!named.builtin);
+        assert!(is_builtin(&conn, builtin).unwrap());
+        assert_eq!(count(&conn, "SELECT count(*) FROM projects"), 2);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn builtin_project_cannot_be_archived_or_deleted() {
+        let (wd, conn) = setup("proj-builtin-protected");
+        let id = ensure_builtin_project(&conn, &wd).unwrap();
+        assert!(matches!(set_archived(&conn, id, true), Err(AppError::Invalid(_))));
+        assert!(matches!(delete_project(&conn, &wd, id), Err(AppError::Invalid(_))));
+        let dto = list_projects(&conn).unwrap().into_iter().find(|p| p.id == id).unwrap();
+        assert!(!dto.archived);
+        assert!(is_builtin(&conn, id).unwrap());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn builtin_chat_greets_once_and_plain_projects_do_not() {
+        let (wd, conn) = setup("proj-builtin-greeting");
+        let id = ensure_builtin_project(&conn, &wd).unwrap();
+        let chat_id = crate::chat::ensure_project_chat(&conn, id).unwrap();
+        let messages = |chat_id: i64| -> Vec<(String, Option<String>)> {
+            let mut stmt = conn
+                .prepare("SELECT role, content FROM messages WHERE chat_id = ?1 ORDER BY position")
+                .unwrap();
+            let rows = stmt.query_map(params![chat_id], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+            rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        };
+        let first = messages(chat_id);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].0, "assistant");
+        assert_eq!(first[0].1.as_deref(), Some(BUILTIN_PROJECT_GREETING));
+
+        assert_eq!(crate::chat::ensure_project_chat(&conn, id).unwrap(), chat_id);
+        assert_eq!(messages(chat_id).len(), 1);
+
+        let plain = create_project(&conn, &wd, "p").unwrap();
+        let plain_chat = crate::chat::ensure_project_chat(&conn, plain.id).unwrap();
+        assert!(messages(plain_chat).is_empty());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn builtin_rename_keeps_flag_and_hidden_folder() {
+        let (wd, conn) = setup("proj-builtin-rename");
+        let id = ensure_builtin_project(&conn, &wd).unwrap();
+        let renamed = rename_builtin(&conn, id, "Личное").unwrap();
+        assert_eq!(renamed.name, "Личное");
+        let dto = list_projects(&conn).unwrap().into_iter().find(|p| p.id == id).unwrap();
+        assert_eq!(dto.name, "Личное");
+        assert!(dto.builtin);
+        assert_eq!(
+            dto.path,
+            paths::projects_dir(&wd).join(BUILTIN_PROJECT_DIR).display().to_string()
+        );
+        assert!(paths::projects_dir(&wd).join(BUILTIN_PROJECT_DIR).is_dir());
+        assert!(!paths::projects_dir(&wd).join("Личное").exists());
+        assert!(matches!(rename_builtin(&conn, 999, "x"), Err(AppError::Invalid(_))));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }    fn zero_vec_blob() -> Vec<u8> {
         vec![0u8; crate::embed::EMBED_DIM * 4]
     }
 

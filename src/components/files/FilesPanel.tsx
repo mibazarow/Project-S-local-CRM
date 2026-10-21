@@ -19,7 +19,7 @@ const tasksViewKey = (projectId: number) => `project-s.tasks.view.${projectId}`;
 
 export default function FilesPanel({ project }: Props) {
   const { state, actions } = useApp();
-  const [tab, setTab] = useState<"files" | "tasks">("files");
+  const [tab, setTab] = useState<"files" | "tasks">(project.builtin ? "tasks" : "files");
   // Per-project file view mode (SPEC 4.2): hydrated from the project DTO;
   // the panel is keyed by project id in App, so switching projects remounts
   // and restores each project's remembered mode (no reset to "list").
@@ -47,8 +47,12 @@ export default function FilesPanel({ project }: Props) {
   }, [highlightTaskId]);
 
   useEffect(() => {
-    if (project.archived && tab === "tasks") setTab("files");
-  }, [project.archived, tab]);
+    if (project.builtin) setTab("tasks");
+  }, [project.builtin]);
+
+  useEffect(() => {
+    if (project.archived && tab === "tasks" && !project.builtin) setTab("files");
+  }, [project.archived, project.builtin, tab]);
 
   // Grid navigation is per-project: an entered folder must not leak across projects.
   useEffect(() => {
@@ -61,7 +65,7 @@ export default function FilesPanel({ project }: Props) {
   // with the palette click.
   useEffect(() => {
     const path = state.pendingFilePath;
-    if (!path) return;
+    if (!path || project.builtin) return;
     actions.clearPendingFile();
     void (async () => {
       if (!(await confirmDiscard())) return;
@@ -172,8 +176,10 @@ export default function FilesPanel({ project }: Props) {
         <Segmented
           value={tab}
           options={[
-            { value: "files", label: "Файлы" },
-            ...(!project.archived ? [{ value: "tasks" as const, label: "Задачи" }] : []),
+            ...(!project.builtin ? [{ value: "files" as const, label: "Файлы" }] : []),
+            ...(!project.archived || project.builtin
+              ? [{ value: "tasks" as const, label: "Задачи" }]
+              : []),
           ]}
           onChange={switchTab}
         />

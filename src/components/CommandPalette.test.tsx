@@ -38,6 +38,7 @@ const project = (id: number, name: string): ProjectDto => ({
   filesView: "list",
     archived: false,
     archivedAt: null,
+    builtin: false,
 });
 
 const noteEntry = (relPath: string): FsEntry => ({

@@ -80,6 +80,7 @@ pub fn init_working_dir(app_config_dir: &Path, wd: &Path) -> Result<(WorkingDirI
     let _ = crate::skills::install_builtin(wd);
     save_working_dir(app_config_dir, wd)?;
     let conn = db::open(&paths::db_path(wd))?;
+    crate::projects::ensure_builtin_project(&conn, wd)?;
     let info = WorkingDirInfo {
         working_dir: wd.display().to_string(),
         config_dir: paths::config_dir(wd).display().to_string(),

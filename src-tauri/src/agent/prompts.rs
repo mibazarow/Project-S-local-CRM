@@ -160,6 +160,7 @@ mod tests {
             files_view: crate::projects::DEFAULT_FILES_VIEW.into(),
             archived: false,
             archived_at: None,
+            builtin: false,
         }
     }
 

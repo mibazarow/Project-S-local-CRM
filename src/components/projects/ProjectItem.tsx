@@ -52,6 +52,7 @@ export default function ProjectItem({
 const classes = ["project-item"];
   if (active) classes.push("active");
   if (dragging) classes.push("dragging");
+  if (project.builtin) classes.push("builtin");
 
   return (
     <div
@@ -85,7 +86,9 @@ const classes = ["project-item"];
         </span>
       )}
       <span className="meta">
-        {project.fileCount} файлов · {project.taskCount} задач
+        {project.builtin
+          ? `${project.taskCount} задач`
+          : `${project.fileCount} файлов · ${project.taskCount} задач`}
         {project.hasActiveTasks && (
           <svg
             className="active-tasks"
@@ -128,62 +131,66 @@ const classes = ["project-item"];
             <path d="M17 3a2.8 2.8 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
           </svg>
         </button>
-        <button
-          className="mini-btn archive-toggle-btn"
-          title={project.archived ? "Вернуть из архива" : "В архив"}
-          onClick={(e) => {
-            e.stopPropagation();
-            onArchive(project.id, !project.archived);
-          }}
-        >
-          <svg
-            viewBox="0 0 24 24"
-            width="14"
-            height="14"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+        {!project.builtin && (
+          <button
+            className="mini-btn archive-toggle-btn"
+            title={project.archived ? "Вернуть из архива" : "В архив"}
+            onClick={(e) => {
+              e.stopPropagation();
+              onArchive(project.id, !project.archived);
+            }}
           >
-            <rect x="2" y="3" width="20" height="5" rx="1" />
-            <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
-            {project.archived ? (
-              <>
-                <path d="M12 12v6" />
-                <path d="m9 15 3-3 3 3" />
-              </>
-            ) : (
-              <path d="M10 12h4" />
-            )}
-          </svg>
-          <span className="btn-label">{project.archived ? "Вернуть" : "В архив"}</span>
-        </button>
-        <button
-          className="mini-btn danger delete-btn"
-          title="Удалить проект"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete(project.id);
-          }}
-        >
-          <svg
-            viewBox="0 0 24 24"
-            width="14"
-            height="14"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
+            <svg
+              viewBox="0 0 24 24"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <rect x="2" y="3" width="20" height="5" rx="1" />
+              <path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8" />
+              {project.archived ? (
+                <>
+                  <path d="M12 12v6" />
+                  <path d="m9 15 3-3 3 3" />
+                </>
+              ) : (
+                <path d="M10 12h4" />
+              )}
+            </svg>
+            <span className="btn-label">{project.archived ? "Вернуть" : "В архив"}</span>
+          </button>
+        )}
+        {!project.builtin && (
+          <button
+            className="mini-btn danger delete-btn"
+            title="Удалить проект"
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(project.id);
+            }}
           >
-            <path d="M3 6h18" />
-            <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
-            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
-            <path d="M10 11v6" />
-            <path d="M14 11v6" />
-          </svg>
-        </button>
+            <svg
+              viewBox="0 0 24 24"
+              width="14"
+              height="14"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M3 6h18" />
+              <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+              <path d="M10 11v6" />
+              <path d="M14 11v6" />
+            </svg>
+          </button>
+        )}
       </span>
     </div>
   );

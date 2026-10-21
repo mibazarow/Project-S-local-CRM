@@ -31,6 +31,9 @@ export interface ProjectDto {
   filesView: "list" | "grid";
   archived: boolean;
   archivedAt: string | null;
+  // Permanent personal task inbox (Q.md item 2): always first, never archived
+  // or deleted, files tab hidden.
+  builtin: boolean;
 }
 
 export interface FsEntry {

@@ -42,6 +42,7 @@ const projects = vi.hoisted(() => [
     filesView: "list",
     archived: false,
     archivedAt: null,
+    builtin: false,
   },
 ]);
 

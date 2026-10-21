@@ -109,6 +109,8 @@ export default function ProjectList() {
 
   const handleContextMenu = (e: MouseEvent<HTMLDivElement>, id: number) => {
     e.preventDefault();
+    const project = state.projects.find((p) => p.id === id);
+    if (!project || project.builtin) return;
     setMenu({ id, x: e.clientX, y: e.clientY });
   };
 

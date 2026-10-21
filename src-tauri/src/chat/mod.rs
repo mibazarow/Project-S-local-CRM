@@ -119,8 +119,11 @@ fn project_chat_id(conn: &Connection, project_id: i64) -> Result<Option<i64>> {
 
 // Get-or-create: the partial unique index guarantees at most one row, so a
 // second call returns the existing chat (SPEC 4.6 "один непрерывный чат").
+// The builtin project's chat is seeded with one static assistant greeting
+// (no LLM call) when it is created or still empty.
 pub fn ensure_project_chat(conn: &Connection, project_id: i64) -> Result<i64> {
     if let Some(id) = project_chat_id(conn, project_id)? {
+        seed_builtin_greeting(conn, project_id, id)?;
         return Ok(id);
     }
     conn.execute(
@@ -128,7 +131,41 @@ pub fn ensure_project_chat(conn: &Connection, project_id: i64) -> Result<i64> {
          VALUES (?1, 'project', datetime('now','localtime'), datetime('now','localtime'))",
         params![project_id],
     )?;
-    Ok(conn.last_insert_rowid())
+    let id = conn.last_insert_rowid();
+    seed_builtin_greeting(conn, project_id, id)?;
+    Ok(id)
+}
+
+fn seed_builtin_greeting(conn: &Connection, project_id: i64, chat_id: i64) -> Result<()> {
+    let builtin = conn
+        .query_row(
+            "SELECT builtin FROM projects WHERE id = ?1",
+            params![project_id],
+            |r| r.get::<_, i64>(0),
+        )
+        .optional()?
+        .map(|v| v != 0)
+        .unwrap_or(false);
+    if !builtin {
+        return Ok(());
+    }
+    let messages: i64 = conn.query_row(
+        "SELECT count(*) FROM messages WHERE chat_id = ?1",
+        params![chat_id],
+        |r| r.get(0),
+    )?;
+    if messages == 0 {
+        append_message(
+            conn,
+            chat_id,
+            Role::Assistant,
+            Some(crate::projects::BUILTIN_PROJECT_GREETING),
+            &[],
+            None,
+            None,
+        )?;
+    }
+    Ok(())
 }
 
 pub fn append_message(
