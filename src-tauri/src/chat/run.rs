@@ -339,7 +339,9 @@ fn run_agent_inner(
     }
 
     // Build the model-facing transcript with checkpoint compaction (SPEC 4.6,
-    // 6.4); on summarization failure build_context falls back to full history.
+    // 6.4). The window is the active model's own value when configured, with
+    // the global `contextWindow` as the legacy fallback.
+    let context_window = llm_cfg.effective_context_window(&params.model);
     let ctx = {
         let guard = lock_recover(&thread_state.db);
         let conn = guard.as_ref().ok_or(AppError::NotConfigured)?;
@@ -348,7 +350,7 @@ fn run_agent_inner(
             chat_id,
             &system_prompt,
             &volatile_block,
-            llm_cfg.context_window,
+            context_window,
             app_cfg.compaction_threshold_percent,
             &client,
             &params,
@@ -360,8 +362,23 @@ fn run_agent_inner(
             "agent-context-compacted",
             json!({
                 "chatId": chat_id,
+                "projectId": run.project_id(),
+                "sessionId": run.session_id(),
+                "notes": run.is_notes().then_some(true),
                 "upToPosition": up_to_position,
-                "summary": ctx.new_summary.unwrap_or_default(),
+                "summary": ctx.new_summary.clone().unwrap_or_default(),
+            }),
+        );
+    }
+    if let Some(message) = ctx.compaction_error.clone() {
+        let _ = app.emit(
+            "agent-compaction-failed",
+            json!({
+                "chatId": chat_id,
+                "projectId": run.project_id(),
+                "sessionId": run.session_id(),
+                "notes": run.is_notes().then_some(true),
+                "message": message,
             }),
         );
     }

@@ -11,6 +11,7 @@ import {
 } from "../components/chat/chatShared";
 import type {
   AgentCompactionEvent,
+  AgentCompactionFailedEvent,
   AgentEventPayload,
   AgentFileEvent,
   ConfirmationRequestPayload,
@@ -219,9 +220,32 @@ function onAgentFile(p: AgentFileEvent) {
   if (key != null) dispatch({ type: "agentFile", key, payload: p });
 }
 
+function routeChatKey(p: {
+  chatId: number;
+  projectId?: number;
+  sessionId?: number;
+  notes?: boolean;
+}): string | null {
+  if (p.projectId != null) return projectKey(p.projectId);
+  if (p.sessionId != null) return sessionKey(p.sessionId);
+  if (p.notes === true) return NOTES_KEY;
+  return chatIdToKey.get(p.chatId) ?? null;
+}
+
 function onCompaction(p: AgentCompactionEvent) {
-  const key = chatIdToKey.get(p.chatId);
-  if (key != null) dispatch({ type: "compaction", key, summary: p.summary });
+  const key = routeChatKey(p);
+  if (key != null) {
+    chatIdToKey.set(p.chatId, key);
+    dispatch({ type: "compaction", key, summary: p.summary });
+  }
+}
+
+function onCompactionFailed(p: AgentCompactionFailedEvent) {
+  const key = routeChatKey(p);
+  if (key != null) {
+    chatIdToKey.set(p.chatId, key);
+    dispatch({ type: "compaction", key, summary: p.message, failed: true });
+  }
 }
 
 function onSkillProposal(p: SkillProposalEvent) {
@@ -233,7 +257,7 @@ function onSkillProposal(p: SkillProposalEvent) {
   if (key != null) dispatch({ type: "skillProposal", key, messageId: p.messageId, text: p.text });
 }
 
-// The five subscriptions are established once for the whole app lifetime and
+// The six subscriptions are established once for the whole app lifetime and
 // never torn down, so a run keeps streaming regardless of which view is
 // mounted. Idempotent; called from the chat views on mount and from App boot.
 let subscribed = false;
@@ -244,6 +268,7 @@ export function ensureSubscribed() {
   void ipc.onAgentConfirmation(onConfirmation).catch(() => {});
   void ipc.onAgentFile(onAgentFile).catch(() => {});
   void ipc.onAgentCompaction(onCompaction).catch(() => {});
+  void ipc.onAgentCompactionFailed(onCompactionFailed).catch(() => {});
   void ipc.onSkillProposal(onSkillProposal).catch(() => {});
 }
 

@@ -58,6 +58,7 @@ export interface Step {
 export interface Compaction {
   key: number;
   summary: string;
+  failed?: boolean;
 }
 
 // A rendered attachment. Agent-sent files (send_file) additionally carry the
@@ -144,7 +145,7 @@ export type ChatAction =
   | { type: "confirmResolved"; key: string; id: number }
   | { type: "agentFile"; key: string; payload: AgentFileEvent }
   | { type: "skillProposal"; key: string; messageId: number; text: string }
-  | { type: "compaction"; key: string; summary: string }
+  | { type: "compaction"; key: string; summary: string; failed?: boolean }
   | { type: "enqueue"; key: string; text: string }
   | { type: "clearQueue"; key: string }
   | { type: "removeFromQueue"; key: string; index: number }
@@ -395,7 +396,11 @@ export function chatReducer(state: ChatState, action: ChatAction): ChatState {
       // A new checkpoint summary written by this run's build_context: a
       // collapsed status item inside the agent bubble, never a message.
       return withSlice(state, action.key, (s) => {
-        const c: Compaction = { key: nextKey++, summary: action.summary };
+        const c: Compaction = {
+          key: nextKey++,
+          summary: action.summary,
+          ...(action.failed ? { failed: true } : {}),
+        };
         return s.run
           ? { ...s, run: { ...s.run, compactions: [...s.run.compactions, c] } }
           : {
@@ -711,6 +716,14 @@ export function ReasoningBlock({ text }: { text: string }) {
 // резюме» line; expanding it reveals the checkpoint summary. Collapsed by
 // default, it never dumps the summary inline.
 export function CompactionNote({ compaction }: { compaction: Compaction }) {
+  if (compaction.failed) {
+    return (
+      <details className="compaction failed">
+        <summary>Не удалось сжать контекст</summary>
+        <div className="compaction-body">{compaction.summary}</div>
+      </details>
+    );
+  }
   return (
     <details className="compaction">
       <summary>Лимит контекста — делаю резюме</summary>

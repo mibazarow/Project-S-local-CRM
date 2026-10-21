@@ -45,16 +45,23 @@ export interface LlmForm {
   model: string;
   lastModelByProvider: Record<string, string>;
   contextWindow: string;
+  modelContextWindows: Record<string, number>;
+  modelContextMax: Record<string, number>;
   maxTokens: string;
   vision: "auto" | "yes" | "no";
   thinkingLevel: "off" | "low" | "medium" | "high";
 }
 
 export function toLlmForm(cfg: LlmConfig): LlmForm {
+  const windows = cfg.modelContextWindows ?? {};
+  const max = cfg.modelContextMax ?? {};
+  const current = windows[cfg.model] ?? cfg.contextWindow;
   return {
     model: cfg.model,
     lastModelByProvider: cfg.lastModelByProvider ?? {},
-    contextWindow: String(cfg.contextWindow),
+    contextWindow: String(clampContextWindow(current, max[cfg.model])),
+    modelContextWindows: windows,
+    modelContextMax: max,
     maxTokens: cfg.maxTokens == null ? "" : String(cfg.maxTokens),
     vision: cfg.vision == null ? "auto" : cfg.vision ? "yes" : "no",
     thinkingLevel: cfg.thinkingLevel ?? "medium",
@@ -69,7 +76,14 @@ export function llmToPatch(f: LlmForm, raw: Record<string, unknown>): Record<str
   patch.model = f.model;
   patch.lastModelByProvider = f.lastModelByProvider;
   const cw = parseNum(f.contextWindow);
-  if (cw !== null) patch.contextWindow = Math.max(1, Math.round(cw));
+  if (cw !== null) {
+    const clamped = clampContextWindow(cw, f.modelContextMax[f.model]);
+    if (f.model.trim() !== "") {
+      patch.modelContextWindows = { ...f.modelContextWindows, [f.model]: clamped };
+    }
+    patch.contextWindow = clamped;
+  }
+  patch.modelContextMax = f.modelContextMax;
   if (f.maxTokens.trim() === "") patch.maxTokens = null;
   else {
     const m = parseNum(f.maxTokens);
@@ -222,14 +236,13 @@ export function parseKeyLines(s: string, allowColon: boolean): Record<string, st
   return out;
 }
 
-// Context size token in a model id ("gpt-4o-128k", "…-200k", "…-1m"):
-// separator + 2+ digits + k/m, so version numbers ("llama3.1", "gpt-4.1")
-// never match. Returns the token text and the token count in tokens.
-export function detectContextToken(model: string): { token: string; tokens: number } | null {
-  const m = model.toLowerCase().match(/(?:^|[^a-z0-9])(\d{2,})([km])(?:[^a-z0-9]|$)/);
-  if (!m) return null;
-  const num = parseInt(m[1], 10);
-  return { token: m[0].slice(1), tokens: num * (m[2] === "m" ? 1_000_000 : 1_000) };
+export const DEFAULT_CONTEXT_WINDOW = 100_000;
+export const MAX_UNREPORTED_CONTEXT_WINDOW = 250_000;
+
+export function contextWindowLimit(max: number | null | undefined): number {
+  return max != null && max > 0 ? max : MAX_UNREPORTED_CONTEXT_WINDOW;
 }
 
-export const DEFAULT_CONTEXT_WINDOW = 100_000;
+export function clampContextWindow(value: number, max?: number | null): number {
+  return Math.max(1, Math.min(Math.round(value), contextWindowLimit(max)));
+}

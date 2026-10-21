@@ -10,6 +10,7 @@ const bus = vi.hoisted(() => ({
   confirm: undefined as Handler | undefined,
   file: undefined as Handler | undefined,
   compaction: undefined as Handler | undefined,
+  compactionFailed: undefined as Handler | undefined,
   proposal: undefined as Handler | undefined,
 }));
 
@@ -31,6 +32,10 @@ vi.mock("../api/ipc", () => ({
   }),
   onAgentCompaction: vi.fn(async (cb: Handler) => {
     bus.compaction = cb;
+    return () => {};
+  }),
+  onAgentCompactionFailed: vi.fn(async (cb: Handler) => {
+    bus.compactionFailed = cb;
     return () => {};
   }),
   onSkillProposal: vi.fn(async (cb: Handler) => {
@@ -103,6 +108,16 @@ afterEach(() => {
 });
 
 describe("chatRunStore", () => {
+  it("routes compaction events by run key even before any agent event mapped the chat id", () => {
+    act(() => bus.compaction?.({ chatId: 99, notes: true, upToPosition: 3, summary: "SUMMARY" }));
+    expect(getSlice(NOTES_KEY)?.run?.compactions[0]?.summary).toBe("SUMMARY");
+    act(() => bus.compactionFailed?.({ chatId: 99, notes: true, message: "CANNOT COMPACT" }));
+    const notes = getSlice(NOTES_KEY)?.run?.compactions ?? [];
+    expect(notes).toHaveLength(2);
+    expect(notes[1]?.failed).toBe(true);
+    expect(notes[1]?.summary).toBe("CANNOT COMPACT");
+  });
+
   it("keeps streaming into the store with no React subscriber attached (unmount-safe)", () => {
     delta({ projectId: 1, chatId: 10, event: { type: "textDelta", text: "Hel" } });
     delta({ projectId: 1, chatId: 10, event: { type: "textDelta", text: "lo" } });

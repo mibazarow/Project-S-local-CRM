@@ -269,6 +269,11 @@ export interface LlmConfig {
   apiKey: string;
   model: string;
   contextWindow: number;
+  // Per-model context windows chosen in Settings; `contextWindow` above is
+  // the fallback for models without an entry.
+  modelContextWindows?: Record<string, number>;
+  // Provider-reported maximum context window per model id.
+  modelContextMax?: Record<string, number>;
   temperature: number | null;
   maxTokens: number | null;
   // Manual vision override: null/absent = auto-detect, true/false = force.
@@ -309,6 +314,8 @@ export interface VisionStatus {
 
 export interface ModelInfo {
   id: string;
+  // Maximum context window reported by the provider; null when unknown.
+  maxContext: number | null;
 }
 
 // Result of test_connection (llm::ConnectionTest).
@@ -448,8 +455,22 @@ export interface AgentFileEvent {
 // is never persisted as a chat message.
 export interface AgentCompactionEvent {
   chatId: number;
+  projectId?: number;
+  sessionId?: number;
+  notes?: boolean;
   upToPosition: number;
   summary: string;
+}
+
+// chat::run_agent_inner — payload of the "agent-compaction-failed" event:
+// the context crossed the threshold but could not be compacted. The run keeps
+// the uncompacted history and the chat shows this explanation.
+export interface AgentCompactionFailedEvent {
+  chatId: number;
+  projectId?: number;
+  sessionId?: number;
+  notes?: boolean;
+  message: string;
 }
 
 // skills::proposals — payload of the "agent-skill-proposal" event emitted

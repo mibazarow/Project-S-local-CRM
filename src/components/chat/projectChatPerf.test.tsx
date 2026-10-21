@@ -151,6 +151,7 @@ vi.mock("../../api/ipc", () => ({
   onAgentConfirmation: vi.fn(async () => () => {}),
   onAgentFile: vi.fn(async () => () => {}),
   onAgentCompaction: vi.fn(async () => () => {}),
+  onAgentCompactionFailed: vi.fn(async () => () => {}),
   onSkillProposal: vi.fn(async () => () => {}),
 }));
 

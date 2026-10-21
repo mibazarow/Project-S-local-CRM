@@ -64,8 +64,11 @@ pub struct ConnectionTest {
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelInfo {
     pub id: String,
+    // Maximum context window reported by the provider, when present.
+    pub max_context: Option<u64>,
 }
 
 pub struct LlmClient {
@@ -324,9 +327,83 @@ fn parse_models(body: &Value) -> Result<Vec<ModelInfo>> {
         .ok_or_else(|| AppError::Json("models response has no \"data\" array".into()))?;
     Ok(data
         .iter()
-        .filter_map(|m| m.get("id").and_then(Value::as_str))
-        .map(|id| ModelInfo { id: id.to_string() })
+        .filter_map(|m| m.get("id").and_then(Value::as_str).map(|id| (id, m)))
+        .map(|(id, model)| ModelInfo {
+            id: id.to_string(),
+            max_context: model_max_context(model),
+        })
         .collect())
+}
+
+const CONTEXT_LIMIT_KEYS: [&str; 14] = [
+    "context_length",
+    "max_context_length",
+    "context_window",
+    "context_window_tokens",
+    "max_model_len",
+    "max_input_tokens",
+    "max_input_token",
+    "input_token_limit",
+    "max_prompt_tokens",
+    "max_context_tokens",
+    "max_context_size",
+    "context_size",
+    "max_sequence_length",
+    "max_seq_len",
+];
+
+fn model_max_context(model: &Value) -> Option<u64> {
+    fn nested_value(value: &Value) -> Option<u64> {
+        let obj = value.as_object()?;
+        ["tokens", "value", "max", "limit"]
+            .iter()
+            .find_map(|key| obj.get(*key).and_then(context_number))
+    }
+
+    fn walk(value: &Value) -> Option<u64> {
+        match value {
+            Value::Object(obj) => {
+                let mut best = None;
+                for (key, val) in obj {
+                    let normalized = key.to_ascii_lowercase();
+                    let found = if CONTEXT_LIMIT_KEYS.contains(&normalized.as_str()) {
+                        context_number(val).or_else(|| nested_value(val))
+                    } else {
+                        None
+                    };
+                    let found = found.or_else(|| match val {
+                        Value::Object(_) | Value::Array(_) => walk(val),
+                        _ => None,
+                    });
+                    if let Some(tokens) = found {
+                        best = Some(best.map_or(tokens, |b: u64| b.max(tokens)));
+                    }
+                }
+                best
+            }
+            Value::Array(items) => items.iter().filter_map(walk).max(),
+            _ => None,
+        }
+    }
+
+    walk(model)
+}
+
+fn context_number(value: &Value) -> Option<u64> {
+    if let Some(n) = value.as_u64() {
+        return (n > 0).then_some(n);
+    }
+    let text = value.as_str()?.trim().replace(['_', ',', ' '], "");
+    if text.is_empty() {
+        return None;
+    }
+    let (digits, multiplier) = match text.chars().last()?.to_ascii_lowercase() {
+        'k' => (&text[..text.len() - 1], 1_000u64),
+        'm' => (&text[..text.len() - 1], 1_000_000u64),
+        _ => (text.as_str(), 1u64),
+    };
+    let n: f64 = digits.parse().ok()?;
+    (n > 0.0).then(|| (n * multiplier as f64).round() as u64)
 }
 
 // Cap on image bytes sent to the model as a data URL (base64 inflates ~33%).
@@ -1662,10 +1739,33 @@ mod tests {
             models.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
             ["gpt-x", "gpt-y"]
         );
+        assert!(models.iter().all(|m| m.max_context.is_none()));
         assert!(matches!(
             parse_models(&json!({ "error": { "message": "nope" } })),
             Err(AppError::Json(_))
         ));
+    }
+
+    #[test]
+    fn parse_models_detects_context_limits_from_common_fields_and_metadata() {
+        let models = parse_models(&json!({
+            "data": [
+                { "id": "a", "context_length": 131072, "max_tokens": 8192 },
+                { "id": "b", "max_model_len": "32768" },
+                { "id": "c", "metadata": { "context_window": 65536 } },
+                { "id": "d", "top_provider": { "context_length": 200000 }, "limits": { "max_input_tokens": 180000 } },
+                { "id": "e", "context_window": { "tokens": 1000000 } },
+                { "id": "f", "max_completion_tokens": 4096 },
+            ]
+        }))
+        .unwrap();
+        let by_id = |id: &str| models.iter().find(|m| m.id == id).unwrap().max_context;
+        assert_eq!(by_id("a"), Some(131072));
+        assert_eq!(by_id("b"), Some(32768));
+        assert_eq!(by_id("c"), Some(65536));
+        assert_eq!(by_id("d"), Some(200000));
+        assert_eq!(by_id("e"), Some(1_000_000));
+        assert_eq!(by_id("f"), None);
     }
 
     #[test]

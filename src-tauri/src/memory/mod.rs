@@ -591,7 +591,21 @@ pub fn extract_facts(
     params: &ChatParams,
     messages: &[ChatMessage],
 ) -> Result<Vec<String>> {
-    let transcript = crate::chat::context::render_transcript(messages);
+    extract_facts_capped(
+        backend,
+        params,
+        messages,
+        crate::chat::context::SUMMARIZER_MAX_CHARS,
+    )
+}
+
+pub fn extract_facts_capped(
+    backend: &dyn ChatBackend,
+    params: &ChatParams,
+    messages: &[ChatMessage],
+    max_chars: usize,
+) -> Result<Vec<String>> {
+    let transcript = crate::chat::context::render_transcript_capped(messages, max_chars);
     if transcript.trim().is_empty() {
         return Ok(Vec::new());
     }

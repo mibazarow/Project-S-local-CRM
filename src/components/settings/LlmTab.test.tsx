@@ -28,8 +28,8 @@ const argsOf = (cmd: string) => invoked(cmd).at(-1)?.[1] as Record<string, unkno
 
 let container: HTMLDivElement;
 let root: Root;
-let listModelsResult: { id: string }[];
-let listModelsB: { id: string }[];
+let listModelsResult: { id: string; maxContext?: number | null }[];
+let listModelsB: { id: string; maxContext?: number | null }[];
 let listModelsFails: boolean;
 let configModel: string;
 let configLastModelByProvider: Record<string, string>;
@@ -422,5 +422,63 @@ describe("LlmTab model memory per provider", () => {
     await loadModels();
     expect(options().map((o) => o.value)).toEqual(["llama-3.1", "qwen-max"]);
     expect(modelSelect()!.value).toBe("llama-3.1");
+  });
+});
+
+describe("LlmTab per-model context window", () => {
+  const contextInput = () => {
+    const label = Array.from(container.querySelectorAll(".set-field-label")).find((el) =>
+      el.textContent?.includes("Окно контекста"),
+    );
+    return label?.closest(".set-field")?.querySelector<HTMLInputElement>("input") ?? null;
+  };
+
+  async function loadModels() {
+    await click(btn("Загрузить модели"));
+    await act(async () => {});
+    await act(async () => {});
+  }
+
+  it("defaults to the provider-reported maximum and shows it", async () => {
+    listModelsResult = [{ id: "deepseek-chat", maxContext: 131072 }];
+    await mount();
+    await loadModels();
+    expect(contextInput()!.value).toBe("131072");
+    expect(text()).toContain("Максимум провайдера");
+    expect(text()).toContain("131");
+  });
+
+  it("does not let the user raise the window above the reported maximum", async () => {
+    listModelsResult = [{ id: "deepseek-chat", maxContext: 131072 }];
+    await mount();
+    await loadModels();
+    const input = contextInput()!;
+    await act(async () => {
+      input.focus();
+      typeInput(input, "200000");
+    });
+    await act(async () => {
+      input.blur();
+    });
+    await act(async () => {});
+    expect(contextInput()!.value).toBe("131072");
+    const written = argsOf("write_config")?.value as Record<string, unknown>;
+    expect((written.modelContextWindows as Record<string, number>)["deepseek-chat"]).toBe(131072);
+  });
+
+  it("seeds 100k for a newly selected model with no reported maximum", async () => {
+    listModelsResult = [{ id: "deepseek-chat" }, { id: "deepseek-flash" }];
+    await mount();
+    await loadModels();
+    const select = container.querySelector<HTMLSelectElement>(".model-row select")!;
+    await act(async () => {
+      select.focus();
+      selectValue(select, "deepseek-flash");
+      select.blur();
+    });
+    await act(async () => {});
+    expect(contextInput()!.value).toBe("100000");
+    expect(text()).toContain("не сообщил максимум");
+    expect(text()).toContain("250 000");
   });
 });

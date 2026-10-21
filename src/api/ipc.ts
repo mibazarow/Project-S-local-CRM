@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
   AgentCompactionEvent,
+  AgentCompactionFailedEvent,
   AgentEventPayload,
   AgentFileEvent,
   AttachmentDto,
@@ -609,6 +610,12 @@ export const onAgentFile = (handler: (payload: AgentFileEvent) => void) =>
 // checkpoint summary was written (the summary rides the event only).
 export const onAgentCompaction = (handler: (payload: AgentCompactionEvent) => void) =>
   listen<AgentCompactionEvent>("agent-context-compacted", (e) => handler(e.payload));
+
+// Emitted when the context crossed the threshold but compaction failed or was
+// impossible; the message is shown in the chat and the run continues.
+export const onAgentCompactionFailed = (
+  handler: (payload: AgentCompactionFailedEvent) => void,
+) => listen<AgentCompactionFailedEvent>("agent-compaction-failed", (e) => handler(e.payload));
 
 // Emitted by the repeat detector after a run completed the same complex
 // task for the second time (SPEC 6.2 Q20 skill proposal).

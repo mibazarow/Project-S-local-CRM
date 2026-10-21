@@ -68,6 +68,12 @@ pub struct LlmConfig {
     pub api_key: String,
     pub model: String,
     pub context_window: u64,
+    // Per-model context windows chosen in Settings, keyed by model id. The
+    // global `context_window` above is the fallback for models with no entry.
+    pub model_context_windows: BTreeMap<String, u64>,
+    // Maximum context window reported by the provider for a model, keyed by
+    // model id. Absent means the provider did not report one.
+    pub model_context_max: BTreeMap<String, u64>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
     // Manual vision override: null = auto-detect via probe, true/false = force.
@@ -102,7 +108,38 @@ pub fn default_thinking_level() -> String {
     "medium".into()
 }
 
+// Used in Settings when the provider does not report a context maximum, and
+// as the upper bound the user may raise an unreported window to.
+pub const DEFAULT_MODEL_CONTEXT_WINDOW: u64 = 100_000;
+pub const MAX_UNREPORTED_CONTEXT_WINDOW: u64 = 250_000;
+
 impl LlmConfig {
+    // Provider-reported maximum for a model, when known.
+    pub fn reported_max_context(&self, model: &str) -> Option<u64> {
+        self.model_context_max.get(model).copied().filter(|v| *v > 0)
+    }
+
+    // Effective context window for the active model: its per-model entry when
+    // present, otherwise the legacy global `contextWindow` fallback.
+    pub fn effective_context_window(&self, model: &str) -> u64 {
+        let window = self
+            .model_context_windows
+            .get(model)
+            .copied()
+            .filter(|v| *v > 0)
+            .unwrap_or(self.context_window);
+        self.clamp_context_window(model, window)
+    }
+
+    // Backend clamp: never above the reported maximum, and never above 250k
+    // when the provider did not report one; always at least one token.
+    pub fn clamp_context_window(&self, model: &str, window: u64) -> u64 {
+        let max = self
+            .reported_max_context(model)
+            .unwrap_or(MAX_UNREPORTED_CONTEXT_WINDOW);
+        window.clamp(1, max.max(1))
+    }
+
     // Effective vision support for building model turns: the manual override
     // wins, otherwise the cached probe result; unknown means "do not send
     // images" (the UI warns the user via get_vision_status).
@@ -150,7 +187,9 @@ impl Default for LlmConfig {
             base_url: "https://api.openai.com/v1".into(),
             api_key: String::new(),
             model: "gpt-4o-mini".into(),
-            context_window: 100_000,
+            context_window: DEFAULT_MODEL_CONTEXT_WINDOW,
+            model_context_windows: BTreeMap::new(),
+            model_context_max: BTreeMap::new(),
             temperature: None,
             max_tokens: None,
             vision: None,
@@ -511,6 +550,11 @@ mod tests {
         ensure_defaults(&dir).unwrap();
 
         assert_eq!(read_config(&dir, ConfigKind::Llm).unwrap()["contextWindow"], 100_000);
+        assert_eq!(
+            read_config(&dir, ConfigKind::Llm).unwrap()["modelContextWindows"],
+            json!({})
+        );
+        assert_eq!(read_config(&dir, ConfigKind::Llm).unwrap()["modelContextMax"], json!({}));
         assert_eq!(read_config(&dir, ConfigKind::Mcp).unwrap()["servers"], json!([]));
         let app = read_config(&dir, ConfigKind::App).unwrap();
         assert_eq!(app["autopilot"], false);
@@ -675,6 +719,32 @@ mod tests {
         assert_eq!(v, json!({ "servers": [] }));
         assert!(!file_path(&dir, ConfigKind::Mcp).exists());
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn per_model_context_window_wins_and_is_clamped_to_the_reported_max() {
+        let cfg: LlmConfig = serde_json::from_value(json!({
+            "baseUrl": "b", "model": "m", "contextWindow": 240000,
+            "modelContextWindows": { "m": 300000, "other": 50000 },
+            "modelContextMax": { "m": 128000 },
+        }))
+        .unwrap();
+        // Per-model entry wins over the global fallback and cannot exceed the
+        // provider-reported maximum.
+        assert_eq!(cfg.effective_context_window("m"), 128000);
+        assert_eq!(cfg.effective_context_window("other"), 50000);
+        // No entry and no reported max: legacy global fallback, capped at 250k.
+        let fallback: LlmConfig = serde_json::from_value(json!({
+            "baseUrl": "b", "model": "x", "contextWindow": 400000,
+        }))
+        .unwrap();
+        assert_eq!(fallback.effective_context_window("x"), 250_000);
+        assert_eq!(fallback.effective_context_window("unknown"), 250_000);
+        assert_eq!(cfg.clamp_context_window("m", 0), 1);
+        let legacy: LlmConfig =
+            serde_json::from_value(json!({ "baseUrl": "b", "model": "m", "contextWindow": 65536 }))
+                .unwrap();
+        assert_eq!(legacy.effective_context_window("m"), 65536);
     }
 
     #[test]

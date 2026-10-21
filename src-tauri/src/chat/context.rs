@@ -3,8 +3,9 @@
 // context crosses the threshold of the model window, the oldest messages are
 // folded into checkpoint summaries stored in `summaries`; the raw transcript
 // stays append-only and only the model-facing view is compacted, so the
-// untouched prefix stays prompt-cache friendly. On any summarization failure
-// the uncompacted history is returned: compaction must never break a chat.
+// untouched prefix stays prompt-cache friendly. When summarization fails the
+// uncompacted history is still returned, but the outcome carries a visible
+// compaction_error so the run can explain why nothing was compacted.
 // Before an expired range is folded away, durable facts are distilled into
 // global memory through memory::extract_facts (best-effort, SPEC 6.3).
 use super::load_history;
@@ -20,15 +21,30 @@ pub const SUMMARY_PREFIX: &str = "[Summary of the earlier conversation]";
 
 // Hysteresis: after a compaction the kept tail is sized to this share of the
 // window, not to the leftover `window - threshold` (~20% at the 80% trigger).
-// One fold then buys many turns of headroom before the next one fires.
-pub const KEEP_TAIL_PERCENT: usize = 60;
+// 45% leaves enough headroom for the system prompt, stored checkpoints and a
+// fresh summary; at 60% those three alone could push the context back over the
+// 80% trigger (and, on small windows, over the provider limit) right after a
+// fold.
+pub const KEEP_TAIL_PERCENT: usize = 45;
+
+// Part of the window reserved for the summary being written now: existing
+// summaries are measured, the new one is not known until the summarizer
+// returns, so the tail budget leaves this share free.
+const SUMMARY_RESERVE_PERCENT: usize = 15;
 
 // Header of the volatile block prepended to the fresh user turn.
 pub const CONTEXT_BLOCK_PREFIX: &str = "[Context]";
 
 // Cap on what the summarizer itself receives, so the compaction call cannot
 // overflow the window it is trying to protect.
-const SUMMARIZER_MAX_CHARS: usize = 60_000;
+pub(crate) const SUMMARIZER_MAX_CHARS: usize = 60_000;
+
+// A summarizer request must itself fit the model window. The transcript is
+// capped to roughly one character per token (Cyrillic is ~2 chars/token), so a
+// small window does not turn compaction into another over-limit request.
+fn summarizer_char_cap(context_window: u64) -> usize {
+    (context_window as usize).clamp(1_000, SUMMARIZER_MAX_CHARS)
+}
 
 // Cyrillic letters live in the Cyrillic block plus its supplement (А-я, Ё-ё
 // and the extended historic letters).
@@ -82,6 +98,14 @@ pub fn estimate_tokens(messages: &[ChatMessage]) -> usize {
                 None => (0, 0),
             };
             chars + images * PER_IMAGE_TOKENS
+                + if m.role == Role::Assistant {
+                    m.reasoning_content
+                        .as_deref()
+                        .map(estimate_text_tokens)
+                        .unwrap_or(0)
+                } else {
+                    0
+                }
                 + m.tool_calls
                     .iter()
                     .map(|tc| {
@@ -146,6 +170,10 @@ pub struct ContextOutcome {
     // The summary text of that new checkpoint (for the UI event): it rides
     // the event only, never persisted as a chat message.
     pub new_summary: Option<String>,
+    // Set when the context crossed the threshold but could not be compacted.
+    // The run keeps the uncompacted transcript and surfaces this message in
+    // the chat instead of failing silently.
+    pub compaction_error: Option<String>,
 }
 
 // Builds the model-facing transcript: system prompt + checkpoint summaries +
@@ -179,14 +207,29 @@ pub fn build_context(
             messages: full,
             new_checkpoint_up_to: None,
             new_summary: None,
+            compaction_error: None,
         });
     }
 
-    // Hysteresis: the tail keeps ~60% of the window (KEEP_TAIL_PERCENT), not
-    // the leftover window - threshold (~20% at the 80% default), so after one
-    // fold the context sits well below the trigger and cannot re-fire on the
-    // very next turn.
-    let tail_budget = (context_window as usize).saturating_mul(KEEP_TAIL_PERCENT) / 100;
+    let summaries = load_summaries(conn, chat_id)?;
+    // Existing checkpoints and the system prompt are already fixed costs of
+    // the compacted view; the tail budget must leave room for them plus the
+    // summary about to be written.
+    let fixed_tokens = estimate_tokens(std::slice::from_ref(&system))
+        + summaries
+            .iter()
+            .map(|summary| {
+                estimate_tokens(&[ChatMessage::assistant(format!("{SUMMARY_PREFIX}\n{summary}"))])
+            })
+            .sum::<usize>();
+    let reserve_tokens =
+        (context_window as usize).saturating_mul(SUMMARY_RESERVE_PERCENT) / 100;
+    let tail_cap = (context_window as usize).saturating_mul(KEEP_TAIL_PERCENT) / 100;
+    let tail_budget = tail_cap.min(
+        threshold_tokens
+            .saturating_sub(fixed_tokens)
+            .saturating_sub(reserve_tokens),
+    );
     let budget_boundary = pick_boundary(&history, tail_budget);
     // messages is append-only with contiguous positions 1..=N, so a message's
     // index in `history` equals its position minus one.
@@ -201,11 +244,17 @@ pub fn build_context(
             messages: full,
             new_checkpoint_up_to: None,
             new_summary: None,
+            compaction_error: Some(
+                "Не удалось сжать контекст: даже последнее сообщение не помещается в окно модели. \
+Сократи сообщение или начни новый чат."
+                    .into(),
+            ),
         });
     }
 
+    let transcript_cap = summarizer_char_cap(context_window);
     let mut messages = vec![system];
-    for summary in load_summaries(conn, chat_id)? {
+    for summary in &summaries {
         messages.push(ChatMessage::assistant(format!("{SUMMARY_PREFIX}\n{summary}")));
     }
     let mut new_checkpoint_up_to = None;
@@ -216,7 +265,7 @@ pub fn build_context(
         // a summary, distill stable user/project facts into global memory
         // (source = "fact"). Best-effort: any failure must not break
         // compaction, and facts already stored verbatim are not re-added.
-        if let Ok(facts) = crate::memory::extract_facts(backend, params, expired) {
+        if let Ok(facts) = crate::memory::extract_facts_capped(backend, params, expired, transcript_cap) {
             let chat_project: Option<i64> = conn
                 .query_row("SELECT project_id FROM chats WHERE id = ?1", params![chat_id], |r| r.get(0))
                 .unwrap_or(None);
@@ -231,7 +280,7 @@ pub fn build_context(
         }
         // Only the range beyond the last checkpoint is summarized; stored
         // checkpoints are reused, never re-summarized.
-        let transcript = render_transcript(expired);
+        let transcript = render_transcript_capped(expired, transcript_cap);
         match summarize(backend, params, &transcript) {
             Ok(summary) => {
                 conn.execute(
@@ -243,12 +292,17 @@ pub fn build_context(
                 new_checkpoint_up_to = Some(boundary as i64);
                 new_summary = Some(summary);
             }
-            // LLM failure: fall back to the uncompacted history, chat goes on.
-            Err(_) => {
+            // LLM failure: keep the uncompacted history but say so explicitly;
+            // the run emits a visible compaction-failed status item.
+            Err(e) => {
                 return Ok(ContextOutcome {
                     messages: full,
                     new_checkpoint_up_to: None,
                     new_summary: None,
+                    compaction_error: Some(format!(
+                        "Не удалось сжать контекст: {e}. История отправлена без сжатия — ответ \
+может не поместиться в лимит модели; начни новый чат или уменьши окно контекста."
+                    )),
                 })
             }
         }
@@ -258,6 +312,7 @@ pub fn build_context(
         messages,
         new_checkpoint_up_to,
         new_summary,
+        compaction_error: None,
     })
 }
 
@@ -293,6 +348,10 @@ fn load_summaries(conn: &Connection, chat_id: i64) -> Result<Vec<String>> {
 // Flattens messages into plain text for the summarizer prompt (also used by
 // the memory FactExtractor: same transcript, same char cap).
 pub(crate) fn render_transcript(messages: &[ChatMessage]) -> String {
+    render_transcript_capped(messages, SUMMARIZER_MAX_CHARS)
+}
+
+pub(crate) fn render_transcript_capped(messages: &[ChatMessage], max_chars: usize) -> String {
     let mut out = String::new();
     for m in messages {
         let role = match m.role {
@@ -321,11 +380,12 @@ pub(crate) fn render_transcript(messages: &[ChatMessage]) -> String {
             out.push_str(&format!("assistant[tool_call {}]: {}\n", tc.name, tc.raw_arguments));
         }
     }
-    if out.chars().count() > SUMMARIZER_MAX_CHARS {
-        let keep = SUMMARIZER_MAX_CHARS / 2;
+    const SKIPPED: &str = "\n[…part of the conversation skipped…]\n";
+    if out.chars().count() > max_chars {
+        let keep = max_chars.saturating_sub(SKIPPED.chars().count()) / 2;
         let head: String = out.chars().take(keep).collect();
         let tail: String = out.chars().skip(out.chars().count() - keep).collect();
-        out = format!("{head}\n[…part of the conversation skipped…]\n{tail}");
+        out = format!("{head}{SKIPPED}{tail}");
     }
     out
 }
@@ -460,6 +520,18 @@ mod tests {
         (wd, conn, chat_id)
     }
 
+    fn setup_file(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, i64) {
+        let wd = temp_test_dir(tag);
+        fs::create_dir_all(paths::projects_dir(&wd)).unwrap();
+        crate::db::ensure_vec_extension();
+        let db_path = paths::db_path(&wd);
+        let conn = crate::db::open(&db_path).unwrap();
+        let dto = projects::create_project(&conn, &wd, "proj").unwrap();
+        let chat_id = ensure_project_chat(&conn, dto.id).unwrap();
+        drop(conn);
+        (wd, db_path, chat_id)
+    }
+
     fn big_text(tag: &str, words: usize) -> String {
         (0..words)
             .map(|i| format!("{tag}{i}"))
@@ -532,6 +604,11 @@ mod tests {
             json!({ "rel_path": big_text("p", 50) }).to_string(),
         )])]);
         assert!(with_call > estimate_tokens(&[ChatMessage::assistant("ok")]));
+        // Thinking traces are sent back to the provider on assistant turns, so
+        // they count toward the window estimate.
+        let plain = ChatMessage::assistant("ok");
+        let thinking = plain.clone().with_reasoning(Some("x".repeat(400)));
+        assert!(estimate_tokens(&[thinking]) >= estimate_tokens(&[plain]) + 100);
     }
 
     #[test]
@@ -633,9 +710,9 @@ mod tests {
         );
 
         // Growth beyond the checkpoint triggers an incremental summary of
-        // only the newly expired range. With the 60% tail budget (and not
-        // the old 20%) two short turns do NOT move the boundary — that is
-        // the hysteresis — so the new turn carries real content.
+        // only the newly expired range. The kept tail is large enough that two
+        // short turns do NOT move the boundary — that is the hysteresis — so
+        // the new turn carries real content.
         append_message(&conn, chat_id, Role::Assistant, Some("answer"), &[], None, None).unwrap();
         append_message(
             &conn,
@@ -681,7 +758,7 @@ mod tests {
     }
 
     #[test]
-    fn summarization_failure_falls_back_to_uncompacted_history() {
+    fn summarization_failure_returns_uncompacted_history_with_a_visible_error() {
         let (wd, conn, chat_id) = setup("ctx-fallback");
         fill(&conn, chat_id, 20);
         append_message(&conn, chat_id, Role::User, Some("latest"), &[], None, None).unwrap();
@@ -690,7 +767,32 @@ mod tests {
         assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
         assert_eq!(out.new_checkpoint_up_to, None);
         assert_eq!(out.messages.len(), 1 + 41);
+        let error = out.compaction_error.expect("compaction failure must be reported");
+        assert!(error.contains("Не удалось сжать контекст"), "{error}");
+        assert!(error.contains("без сжатия"), "{error}");
         assert!(summary_rows(&conn, chat_id).is_empty());
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn single_giant_message_that_cannot_be_folded_reports_compaction_failure() {
+        let (wd, conn, chat_id) = setup("ctx-giant-last");
+        append_message(
+            &conn,
+            chat_id,
+            Role::User,
+            Some(&big_text("giant", 5000)),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        let backend = FakeBackend::ok("unused");
+        let out = build_context(&conn, chat_id, "sys", "", 1000, 80, &backend, &params(), false).unwrap();
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(out.new_checkpoint_up_to, None);
+        assert!(out.compaction_error.unwrap().contains("не помещается в окно модели"));
+        assert!(out.messages.last().unwrap().text_content().unwrap().starts_with("giant"));
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -800,7 +902,7 @@ mod tests {
             + 1;
         let tail = &out.messages[tail_start..];
         assert_ne!(tail[0].role, Role::Tool, "tail starts on an orphaned tool result");
-        // Budget is KEEP_TAIL_PERCENT = 600 tokens; slack covers the fresh
+        // Budget is KEEP_TAIL_PERCENT = 450 tokens; slack covers the fresh
         // last message (always kept) and one assistant unit pulled back to
         // avoid an orphaned tool result.
         let last_cost = estimate_tokens(&tail[tail.len() - 1..]);
@@ -809,7 +911,7 @@ mod tests {
         } else {
             0
         };
-        assert!(estimate_tokens(tail) <= 600 + last_cost + slack);
+        assert!(estimate_tokens(tail) <= 450 + last_cost + slack);
         assert!(tail.len() < 46);
         assert_eq!(tail.last().unwrap().text_content(), Some("final"));
         fs::remove_dir_all(&wd).unwrap();
@@ -866,11 +968,11 @@ mod tests {
         pending.is_empty()
     }
 
-    // Hysteresis: the kept tail is sized to ~60% of the window, not the old
-    // leftover window - threshold (~20% at the 80% trigger), so one fold
+    // Hysteresis: the kept tail is sized to at most 45% of the window, not
+    // the leftover window - threshold (~20% at the 80% trigger), so one fold
     // leaves real headroom before the next compaction can fire.
     #[test]
-    fn compaction_tail_is_sized_to_sixty_percent_of_the_window() {
+    fn compaction_tail_is_sized_to_forty_five_percent_of_the_window() {
         let (wd, conn, chat_id) = setup("ctx-hysteresis");
         for i in 0..15 {
             append_message(&conn, chat_id, Role::User, Some(&big_text("q", 20)), &[], None, None)
@@ -908,7 +1010,7 @@ mod tests {
         let tail = &out.messages[tail_start..];
         // The latest user turn survives the fold.
         assert_eq!(tail.last().unwrap().text_content(), Some("final"));
-        // Tail fits the 60% budget (plus the always-kept last message and a
+        // Tail fits the 45% budget (plus the always-kept last message and a
         // pulled-back assistant unit), and it is far larger than the old 20%
         // (window - threshold = 200) budget would have allowed.
         let kept = &tail[..tail.len() - 1];
@@ -923,7 +1025,148 @@ mod tests {
         } else {
             0
         };
-        assert!(estimate_tokens(tail) <= 600 + last_cost + slack);
+        assert!(estimate_tokens(tail) <= 450 + last_cost + slack);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn small_window_compacts_a_long_history_and_keeps_the_chat_going() {
+        let (wd, conn, chat_id) = setup("ctx-small-long");
+        fill(&conn, chat_id, 120);
+        append_message(&conn, chat_id, Role::User, Some("latest turn"), &[], None, None).unwrap();
+        let backend = FakeBackend::ok("SUMMARY BODY");
+        let out = build_context(&conn, chat_id, "sys", "", 8000, 80, &backend, &params(), false).unwrap();
+        assert!(out.compaction_error.is_none(), "{:?}", out.compaction_error);
+        assert_eq!(backend.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(summary_rows(&conn, chat_id).len(), 1);
+        assert_eq!(out.messages.last().unwrap().text_content(), Some("latest turn"));
+        assert!(out.messages.len() < 1 + 241);
+        assert!(
+            estimate_tokens(&out.messages) <= 6400,
+            "post-fold context is {} tokens",
+            estimate_tokens(&out.messages)
+        );
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn small_window_folds_a_giant_older_message_into_the_summary() {
+        let (wd, conn, chat_id) = setup("ctx-small-giant");
+        fill(&conn, chat_id, 30);
+        append_message(
+            &conn,
+            chat_id,
+            Role::User,
+            Some(&format!("GIANT {}", big_text("g", 5000))),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+        append_message(&conn, chat_id, Role::Assistant, Some("ok"), &[], None, None).unwrap();
+        fill(&conn, chat_id, 60);
+        append_message(&conn, chat_id, Role::User, Some("latest"), &[], None, None).unwrap();
+        let backend = FakeBackend::ok("SUMMARY BODY");
+        let out = build_context(&conn, chat_id, "sys", "", 8000, 80, &backend, &params(), false).unwrap();
+        assert!(out.compaction_error.is_none(), "{:?}", out.compaction_error);
+        let up_to = out.new_checkpoint_up_to.expect("giant history must be folded");
+        // The giant message (position 61) is inside the summarized range.
+        assert!(up_to > 61);
+        let prompts = backend.prompts.lock().unwrap();
+        let transcript = prompts[1][1].text_content().unwrap();
+        assert!(
+            transcript.chars().count() <= 8000,
+            "summarizer request does not fit the 8k window"
+        );
+        drop(prompts);
+        assert_eq!(out.messages.last().unwrap().text_content(), Some("latest"));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn small_window_compacts_many_tool_results_without_open_groups() {
+        let (wd, conn, chat_id) = setup("ctx-small-tools");
+        for i in 0..60 {
+            append_message(&conn, chat_id, Role::User, Some(&big_text("q", 20)), &[], None, None)
+                .unwrap();
+            let calls = vec![ToolCall::new(
+                format!("c{i}"),
+                "read_file".into(),
+                json!({ "rel_path": big_text("f", 20) }).to_string(),
+            )];
+            append_message(&conn, chat_id, Role::Assistant, None, &calls, None, None).unwrap();
+            append_message(
+                &conn,
+                chat_id,
+                Role::Tool,
+                Some(&big_text("r", 120)),
+                &[],
+                Some(&format!("c{i}")),
+                None,
+            )
+            .unwrap();
+        }
+        append_message(&conn, chat_id, Role::User, Some("final"), &[], None, None).unwrap();
+        let backend = FakeBackend::ok("SUMMARY BODY");
+        let out = build_context(&conn, chat_id, "sys", "", 8000, 80, &backend, &params(), false).unwrap();
+        assert!(out.compaction_error.is_none(), "{:?}", out.compaction_error);
+        assert!(out.new_checkpoint_up_to.is_some());
+        assert!(tool_groups_are_closed(&out.messages));
+        assert_eq!(out.messages.last().unwrap().text_content(), Some("final"));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn restart_reuses_stored_summaries_without_resummarizing() {
+        let (wd, db_path, chat_id) = setup_file("ctx-restart");
+        {
+            let conn = crate::db::open(&db_path).unwrap();
+            fill(&conn, chat_id, 120);
+            append_message(&conn, chat_id, Role::User, Some("latest"), &[], None, None).unwrap();
+            let backend = FakeBackend::ok("PERSISTED SUMMARY");
+            let out = build_context(&conn, chat_id, "sys", "", 8000, 80, &backend, &params(), false).unwrap();
+            assert_eq!(out.new_summary.as_deref(), Some("PERSISTED SUMMARY"));
+        }
+        let conn = crate::db::open(&db_path).unwrap();
+        let restart_backend = FakeBackend::failing();
+        let out = build_context(
+            &conn,
+            chat_id,
+            "sys",
+            "",
+            8000,
+            80,
+            &restart_backend,
+            &params(),
+            false,
+        )
+        .unwrap();
+        assert_eq!(restart_backend.calls.load(Ordering::SeqCst), 0);
+        assert!(out.compaction_error.is_none());
+        assert!(out
+            .messages
+            .iter()
+            .any(|m| m.text_content().unwrap_or_default().contains("PERSISTED SUMMARY")));
+        assert_eq!(summary_rows(&conn, chat_id).len(), 1);
+        drop(conn);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn post_fold_context_stays_below_the_trigger_with_system_and_summary() {
+        let (wd, conn, chat_id) = setup("ctx-post-fold-budget");
+        fill(&conn, chat_id, 120);
+        append_message(&conn, chat_id, Role::User, Some("latest"), &[], None, None).unwrap();
+        let system = "s".repeat(4000);
+        let summary = "x".repeat(6400);
+        let backend = FakeBackend::ok(&summary);
+        let out = build_context(&conn, chat_id, &system, "", 8000, 80, &backend, &params(), false).unwrap();
+        assert!(out.new_checkpoint_up_to.is_some());
+        assert!(
+            estimate_tokens(&out.messages) <= 6400,
+            "post-fold context is {} tokens, threshold is 6400",
+            estimate_tokens(&out.messages)
+        );
         fs::remove_dir_all(&wd).unwrap();
     }
 

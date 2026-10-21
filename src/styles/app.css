@@ -956,6 +956,8 @@ mark { background: rgba(55, 106, 159, .25); border-radius: 2px; }
 .compaction summary::-webkit-details-marker { display: none; }
 .compaction[open] summary { border-bottom: 1px solid var(--border); }
 .compaction-body { padding: 6px 10px 8px; font-size: 12px; color: var(--text-muted); }
+.compaction.failed { border-color: var(--danger, #b42318); }
+.compaction.failed summary { color: var(--danger, #b42318); }
 
 .chat-error {
   margin: 0 12px 8px;

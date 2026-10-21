@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import * as ipc from "../../api/ipc";
-import type { ConnectionTest, LlmConfig, LlmProviderDto, VisionStatus } from "../../api/types";
+import type { ConnectionTest, LlmConfig, LlmProviderDto, ModelInfo, VisionStatus } from "../../api/types";
 import { toMessage as errMsg } from "../../shared/errors";
 import { confirmRemove } from "../../shared/confirm";
 import { Card, Field } from "./shared";
 import { useDebouncedConfig } from "./useDebouncedConfig";
 import {
   DEFAULT_CONTEXT_WINDOW,
-  detectContextToken,
+  clampContextWindow,
   emptyProviderForm,
   llmToPatch,
   parseNum,
@@ -134,24 +134,12 @@ export default function LlmTab({
   error: string | null;
   setError: (message: string) => void;
 }) {
-  // Context window: true once the user typed in the field; auto-fill never
-  // overrides a hand-edited value. Reset when the model id itself changes.
-  const ctxUserEditedRef = useRef(false);
   const lastModelIdRef = useRef<string | null>(null);
   // One-shot auto-load of the model list once the active provider is complete.
   const modelsAutoLoadedRef = useRef(false);
   const modelsAutoTimer = useRef<number | undefined>(undefined);
   // Provider id awaiting a one-shot model auto-pick after its list arrives.
   const pendingModelPickRef = useRef<string | null>(null);
-
-  // A new model id re-arms the context-window auto-fill; edits of the field
-  // itself (same model) keep the "user edited" flag.
-  const onLlmLoaded = useCallback((next: LlmForm) => {
-    if (lastModelIdRef.current !== null && lastModelIdRef.current !== next.model) {
-      ctxUserEditedRef.current = false;
-    }
-    lastModelIdRef.current = next.model;
-  }, []);
 
   const {
     form: llmForm,
@@ -160,13 +148,11 @@ export default function LlmTab({
     flush: flushLlmSave,
     focusField: focusLlmField,
     blurField: blurLlmField,
-    focusedRef: llmFocusedRef,
   } = useDebouncedConfig<LlmForm>(
     "llm",
     (raw) => toLlmForm(raw as unknown as LlmConfig),
     llmToPatch,
     setError,
-    onLlmLoaded,
   );
 
   // Provider profiles (Q-24): the list, the id being edited (null = new draft),
@@ -178,14 +164,19 @@ export default function LlmTab({
   const [provBusy, setProvBusy] = useState(false);
   const [revealKey, setRevealKey] = useState(false);
 
-  const [llmModels, setLlmModels] = useState<string[] | null>(null);
+  const [llmModels, setLlmModels] = useState<ModelInfo[] | null>(null);
   const [llmModelsError, setLlmModelsError] = useState<string | null>(null);
   const [llmTest, setLlmTest] = useState<ConnectionTest | null>(null);
   const [llmBusy, setLlmBusy] = useState<"test" | "models" | null>(null);
-  const [ctxAutoFilled, setCtxAutoFilled] = useState<{ token: string; tokens: number } | null>(null);
   const [vision, setVision] = useState<VisionStatus | null>(null);
   const [visionBusy, setVisionBusy] = useState(false);
 
+  const modelIds = llmModels?.map((m) => m.id) ?? null;
+  const selectedModel = llmForm?.model ?? "";
+  const selectedMax =
+    llmModels?.find((m) => m.id === selectedModel)?.maxContext ??
+    llmForm?.modelContextMax[selectedModel] ??
+    null;
   const activeProvider = providers?.find((p) => p.active) ?? null;
   const activeMissingKey =
     activeProvider !== null &&
@@ -290,7 +281,7 @@ export default function LlmTab({
             : ipc
                 .listModels()
                 .then((ms) => {
-                  setLlmModels(ms.map((m) => m.id));
+                  setLlmModels(ms);
                   setLlmModelsError(null);
                   modelsAutoLoadedRef.current = true;
                 })
@@ -329,29 +320,62 @@ export default function LlmTab({
   useEffect(() => {
     const p = activeProvider;
     if (!p || pendingModelPickRef.current !== p.id) return;
-    if (llmModels === null || llmModels.length === 0 || !llmForm) return;
+    if (modelIds === null || modelIds.length === 0 || !llmForm) return;
     pendingModelPickRef.current = null;
     const remembered = llmForm.lastModelByProvider[p.id];
-    const chosen = remembered && llmModels.includes(remembered) ? remembered : llmModels[0];
+    const chosen = remembered && modelIds.includes(remembered) ? remembered : modelIds[0];
     updateLlmForm({
       model: chosen,
       lastModelByProvider: { ...llmForm.lastModelByProvider, [p.id]: chosen },
     });
-  }, [llmModels, activeProvider, llmForm, updateLlmForm]);
+  }, [modelIds, activeProvider, llmForm, updateLlmForm]);
 
-  // Auto-fill the context window from a size token in the model id
-  // ("…-128k", "…-1m") while the field is still empty or on the default.
+  // Seed the selected model's own window: the provider-reported maximum wins,
+  // an existing per-model value is kept (and clamped), and a newly selected
+  // model with no reported maximum starts at 100k. The legacy global
+  // contextWindow is preserved as the backend fallback.
   useEffect(() => {
     const f = llmForm;
-    if (!f || llmFocusedRef.current === "contextWindow") return;
-    const hit = detectContextToken(f.model);
-    if (!hit || ctxUserEditedRef.current) return;
-    const cur = parseNum(f.contextWindow);
-    if (cur !== null && cur !== DEFAULT_CONTEXT_WINDOW) return;
-    if (cur !== null && Math.round(cur) === hit.tokens) return;
-    setCtxAutoFilled(hit);
-    updateLlmForm({ contextWindow: String(hit.tokens) });
-  }, [llmForm, updateLlmForm]);
+    if (!f || !f.model) return;
+    const model = f.model;
+    const reported = llmModels?.find((m) => m.id === model)?.maxContext ?? null;
+    const persistedMax = f.modelContextMax[model] ?? null;
+    const max = reported ?? persistedMax;
+    const modelChanged = lastModelIdRef.current !== null && lastModelIdRef.current !== model;
+    lastModelIdRef.current = model;
+    const existing = f.modelContextWindows[model];
+    if (existing !== undefined) {
+      if (max != null && existing > max) {
+        const clamped = clampContextWindow(existing, max);
+        updateLlmForm({
+          contextWindow: String(clamped),
+          modelContextWindows: { ...f.modelContextWindows, [model]: clamped },
+          modelContextMax: { ...f.modelContextMax, [model]: max },
+        });
+      } else if (max != null && persistedMax !== max) {
+        updateLlmForm({ modelContextMax: { ...f.modelContextMax, [model]: max } });
+      }
+      return;
+    }
+    if (max != null) {
+      const window = clampContextWindow(max, max);
+      updateLlmForm({
+        contextWindow: String(window),
+        modelContextWindows: { ...f.modelContextWindows, [model]: window },
+        modelContextMax: { ...f.modelContextMax, [model]: max },
+      });
+      return;
+    }
+    if (modelChanged) {
+      updateLlmForm({
+        contextWindow: String(DEFAULT_CONTEXT_WINDOW),
+        modelContextWindows: {
+          ...f.modelContextWindows,
+          [model]: DEFAULT_CONTEXT_WINDOW,
+        },
+      });
+    }
+  }, [llmForm, llmModels, updateLlmForm]);
 
   useEffect(() => {
     loadProviders();
@@ -607,11 +631,11 @@ export default function LlmTab({
           <div className="model-row">
             <ModelPicker
               value={llmForm?.model ?? ""}
-              models={llmModels}
+              models={modelIds}
               error={llmModelsError}
               busy={llmBusy === "models"}
               onChange={(model) => {
-                if (activeProvider && llmModels !== null && llmModels.length > 0) {
+                if (activeProvider && modelIds !== null && modelIds.length > 0) {
                   updateLlmForm({
                     model,
                     lastModelByProvider: {
@@ -641,11 +665,9 @@ export default function LlmTab({
         <Field
           label="Окно контекста, токенов"
           hint={
-            ctxAutoFilled
-              ? `Заполнено по названию модели (${ctxAutoFilled.token}) — можно исправить руками.`
-              : detectContextToken(llmForm?.model ?? "")
-                ? "В поле уже вписано значение — оно не меняется автоматически."
-                : "Размер не угадывается по названию модели — заполни вручную."
+            selectedMax != null
+              ? `Максимум провайдера для этой модели — ${selectedMax.toLocaleString("ru-RU")} токенов. Можно уменьшить, но не больше максимума.`
+              : "Провайдер не сообщил максимум для этой модели: новое значение по умолчанию — 100 000 токенов, допустимо до 250 000."
           }
         >
           <input
@@ -653,13 +675,15 @@ export default function LlmTab({
             type="text"
             inputMode="numeric"
             value={llmForm?.contextWindow ?? ""}
-            onChange={(e) => {
-              ctxUserEditedRef.current = true;
-              setCtxAutoFilled(null);
-              updateLlmForm({ contextWindow: e.target.value });
-            }}
+            onChange={(e) => updateLlmForm({ contextWindow: e.target.value })}
             onFocus={focusLlmField("contextWindow")}
-            onBlur={blurLlmField}
+            onBlur={(e) => {
+              const n = parseNum(e.currentTarget.value);
+              if (n !== null) {
+                updateLlmForm({ contextWindow: String(clampContextWindow(n, selectedMax)) });
+              }
+              blurLlmField();
+            }}
           />
         </Field>
         <Field

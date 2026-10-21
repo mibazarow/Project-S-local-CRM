@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appToPatch, toAppForm } from "./forms";
+import { appToPatch, llmToPatch, toAppForm, toLlmForm } from "./forms";
 
 describe("app form ui scale (Q.md item 4)", () => {
   it("defaults the scale to 100 when the config has no value", () => {
@@ -31,5 +31,65 @@ describe("app form ui scale (Q.md item 4)", () => {
   it("clamps an out-of-range form value back to 100 on write", () => {
     const patch = appToPatch({ ...toAppForm({}), uiScalePercent: 999 }, {});
     expect(patch.uiScalePercent).toBe(100);
+  });
+});
+
+describe("llm per-model context windows", () => {
+  it("reads the selected model's window from modelContextWindows", () => {
+    const form = toLlmForm({
+      baseUrl: "b",
+      apiKey: "",
+      model: "m",
+      contextWindow: 240000,
+      temperature: null,
+      maxTokens: null,
+      modelContextWindows: { m: 128000, other: 50000 },
+      modelContextMax: { m: 200000 },
+    });
+    expect(form.contextWindow).toBe("128000");
+    expect(form.modelContextMax.m).toBe(200000);
+  });
+
+  it("falls back to the legacy contextWindow when the model has no entry", () => {
+    const form = toLlmForm({
+      baseUrl: "b",
+      apiKey: "",
+      model: "m",
+      contextWindow: 65536,
+      temperature: null,
+      maxTokens: null,
+    });
+    expect(form.contextWindow).toBe("65536");
+  });
+
+  it("clamps a saved window above the provider maximum on write", () => {
+    const form = toLlmForm({
+      baseUrl: "b",
+      apiKey: "",
+      model: "m",
+      contextWindow: 100000,
+      temperature: null,
+      maxTokens: null,
+      modelContextWindows: { m: 300000 },
+      modelContextMax: { m: 128000 },
+    });
+    expect(form.contextWindow).toBe("128000");
+    const patch = llmToPatch({ ...form, contextWindow: "400000" }, { futureKey: 7 });
+    expect((patch.modelContextWindows as Record<string, number>).m).toBe(128000);
+    expect(patch.contextWindow).toBe(128000);
+    expect(patch.futureKey).toBe(7);
+  });
+
+  it("caps an unreported model at 250k on write", () => {
+    const form = toLlmForm({
+      baseUrl: "b",
+      apiKey: "",
+      model: "m",
+      contextWindow: 100000,
+      temperature: null,
+      maxTokens: null,
+    });
+    const patch = llmToPatch({ ...form, contextWindow: "400000" }, {});
+    expect((patch.modelContextWindows as Record<string, number>).m).toBe(250000);
   });
 });
