@@ -160,8 +160,9 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Встроенных скиллов: **38**.
 - Модель эмбеддингов: **не в git**, ~330 МБ; доставляется до сборки (см. `README.md` → «После клонирования»).
 - macOS: рабочая сборка, aarch64.
-- Windows: **только demo-сборка** (без боевых данных и production-hardening); минимальный платформенный шов для компиляции есть (`platform/mod.rs`, cfg-ветки, Windows-конфиг), полного порта нет; сборка — с macOS по SSH (см. §3.1). **Windows-агента нет**; код пишет macOS.
-- Доступ к Windows VM проверен 2026-10-21: `DOCS/WINDOWS-ACCESS.md`; Windows HEAD `d448c15`, рабочее дерево чистое.
+- Windows: **demo-сборка собрана 2026-10-21** (без боевых данных); минимальный платформенный шов для компиляции есть (`platform/mod.rs`, cfg-ветки, Windows-конфиг), полного порта нет; сборка — с macOS по SSH (§3.1). **Windows-агента нет**; код пишет macOS.
+- Windows demo: установщик `Project-S_1.0.2_x64-setup.exe` на рабочем столе, установлен в `C:\Users\mb\AppData\Local\Project-S`, не запускался.
+- Доступ к Windows VM проверен 2026-10-21: `DOCS/WINDOWS-ACCESS.md`; Windows HEAD `f0280ea`, рабочее дерево чистое.
 - Linux: план, реализации нет.
 - Модель/ONNX: `ort-backend`, модель в бандле; на Windows нужны `onnxruntime.dll` и MSVC runtime.
 
@@ -215,6 +216,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Влияние: процесс/scope; код не менялся.
 - Действие: `[ACTION: user]` дать SSH-доступ (alias/host/user/port/path); `[ACTION: macos]` после доступа проверить окружение и собрать demo.
 - Статус: waiting
+
+### 2026-10-21 17:25 UTC — macOS
+- Ветка: `master`
+- Коммит: `f0280ea`
+- Сделано: Windows demo-сборка успешна после патча `esaxx-rs` CRT; NSIS установщик 283.67 MiB; скопирован на рабочий стол; установлен per-user; не запускался.
+- Влияние: Windows build; код macOS не менялся.
+- Действие: `[DONE]` сборка/установка; `[ACTION: user]` запустить GUI на Windows и проверить.
+- Статус: done
 
 ## 8. Открытые вопросы
 

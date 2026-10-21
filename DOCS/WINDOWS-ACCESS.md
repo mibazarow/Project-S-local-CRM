@@ -58,18 +58,24 @@ ssh win11 'hostname; whoami'
 
 - SSH: успешно, host key принят штатно, без prompt.
 - Windows hostname: `VM`.
-- Репозиторий: `master`, HEAD `d448c15` (`Make Windows a build-only host without an agent`), рабочее дерево чистое.
+- Репозиторий: `master`, HEAD `f0280ea` (Windows demo build), рабочее дерево чистое.
 - Node: `v24.22.1`.
 - Cargo: `1.99.1`.
 - Модель `embeddinggemma-2` доставлена в `src-tauri/resources/models/` (в git не входит).
+- Demo build 2026-10-21: успешно; NSIS `src-tauri\target\release\bundle\nsis\Project-S_1.0.2_x64-setup.exe` (283.67 MiB); копия на рабочем столе `C:\Users\mb\Desktop\Project-S_1.0.2_x64-setup.exe`; установлено per-user в `C:\Users\mb\AppData\Local\Project-S`; приложение не запускалось.
+- Для линковки на Windows добавлен `vendor/esaxx-rs` (CRT patch для ONNX); не удалять.
 
 ## 4. Как собирать (только по команде пользователя)
 
 Windows — **demo-only**, без боевых данных и production-hardening. Код на Windows не правится и не коммитится; весь код, включая `platform/windows`, пишет macOS-агент.
 
 ```bash
-ssh win11 'cd C:\Users\mb\Projects\Project-S-local-CRM; git pull; npm ci; npm run tauri build'
+ssh win11 'cd C:\Users\mb\Projects\Project-S-local-CRM; git pull; npx tauri build --config src-tauri/tauri.windows.conf.json'
 ```
+
+Из-за поведения sshd длинную сборку лучше запускать detached (WMI `Win32_Process.Create`) и читать `windows-build.log`; иначе дочерние процессы могут умереть вместе с SSH-сессией.
+
+Установщик: `src-tauri\target\release\bundle\nsis\Project-S_1.0.2_x64-setup.exe`. Установка per-user: `Start-Process <installer> -ArgumentList '/S' -Wait`.
 
 Артефакты:
 
