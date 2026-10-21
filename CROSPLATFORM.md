@@ -147,6 +147,21 @@ scripts/linux/
 - Действие: `[ACTION: windows]` при старте делать `pull`/merge `master`, портировать уже существующее, не добавлять продуктовых изменений; если без изменения продукта не обойтись — `[ACTION: macos]` и ждать реализации в `master`.
 - Статус: waiting
 
+### 2026-10-21 19:05 UTC — Windows
+- Ветка: `master` (`port/windows` ещё не создана)
+- Коммит: изменений кода нет; окружение подготовлено локально
+- Сделано: прочитан `DOCS/WINDOWS-PORT.md` и сверен с кодом; подготовлено Windows-окружение (Node 24 / npm 11, Rust 1.99 MSVC, VS Build Tools 2022 + VCTools, WebView2, Python 3.13, Git Bash); модель `embeddinggemma-2` доставлена в `src-tauri/resources/models/` (в git не попадает); `npm run build` и `npm test` (532 теста) зелёные; `cargo check` воспроизводит 11 ошибок P0 в `processes.rs`, `skills/exec.rs`, `cdp/mod.rs`, `agent/ssh_tools.rs`.
+- Влияние: общий код, БД, контракты и конфиги не менялись.
+- Вопросы, блокирующие старт P0:
+  1. Платформенный шов: §9 P0-1 плана предлагает `#[cfg(unix)]` + Windows-реализацию рядом, а §2 протокола требует `platform/<os>/` и запрещает размазывать cfg по бизнес-логике. Создаём `platform/mod.rs` с контрактами (`Shell`, `Processes`, `Paths`, `Clipboard`, `Notifications`, `Trash`, `Secrets`, `OpenWith`, `Screenshot`, `OCR`, `PDF`, `UiAutomation`) в `master` до порта или разрешаем временный cfg-вариант?
+  2. Shell-контракт: инструмент `bash` (`agent/harness_tools/shell_tools.rs`, вызовы через `sh -c`) и 38 встроенных скиллов с bash-блоками — это продуктовый контракт. На Windows переименовывать инструмент, делать алиас `bash` → PowerShell/cmd или менять скиллы?
+  3. UI/UX: выбор титулбара, замена SF Pro, тёмная тема, Cmd→Ctrl (§11) — по протоколу это решения macOS, не Windows. Подтвердить и выдать решение.
+  4. WebView2: указать минимальную версию runtime (в §2.1 и §13 числа нет) — иначе fallback не тестируется.
+  5. Ресурсы: в плане две стратегии — `exe_dir/resources/skills` для скиллов и `app.path().resource_dir()` для модели. Унифицировать на `resource_dir()`?
+- Уточнения к плану (по коду): §0.4 не упоминает `Notes/` и `Harness/Входящие` (`paths.rs`); `package.json` жёстко вызывает `bash scripts/stage-embed-model.sh`; скелета `platform/`, `tauri.<os>.conf.json` и `scripts/windows/` в репозитории нет — P0-7 больше, чем указано.
+- Действие: `[ACTION: macos]` ответить по п. 1–5; `[ACTION: windows]` после ответов создать `port/windows`, `scripts/windows/stage-embed-model.ps1`, убрать зависимость npm-скриптов от `bash`, добавить `tauri.windows.conf.json`, затем P0-1…P0-7.
+- Статус: waiting
+
 ## 8. Открытые вопросы
 
 - [ ] Переименовывать `master` → `main`? Сейчас оставляем `master`, чтобы не плодить ветки; решение — до начала Windows-работы.
