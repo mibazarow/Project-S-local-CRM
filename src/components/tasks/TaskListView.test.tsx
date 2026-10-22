@@ -359,6 +359,42 @@ describe("TaskListView inline editing", () => {
   });
 });
 
+describe("TaskListView expanded item card", () => {
+  beforeEach(resetCb);
+
+  const itemOf = (id: number) =>
+    container.querySelector(`.task-list-row[data-id="${id}"]`)?.closest(".task-list-item") ?? null;
+
+  it("wraps the row and its editor in one expanded item card", async () => {
+    await mountWith([makeTask({ id: 1, status: "new", position: 1 })]);
+    const closed = itemOf(1)!;
+    expect(closed.className).not.toContain("expanded");
+    expect(closed.querySelector(".task-list-editor")).toBeNull();
+
+    await click(rowButton(1, "Редактировать"));
+    const open = itemOf(1)!;
+    expect(open.className).toContain("expanded");
+    expect(open.querySelector(".task-list-row[data-id='1']")).not.toBeNull();
+    expect(open.querySelector(".task-list-editor")).not.toBeNull();
+  });
+
+  it("keeps a single expanded item and moves it to the clicked row", async () => {
+    await mountWith([
+      makeTask({ id: 1, status: "new", position: 1 }),
+      makeTask({ id: 2, status: "new", position: 2 }),
+    ]);
+    await click(rowButton(1, "Редактировать"));
+    expect(container.querySelectorAll(".task-list-item.expanded")).toHaveLength(1);
+
+    await click(rowButton(2, "Редактировать"));
+    const expanded = container.querySelectorAll(".task-list-item.expanded");
+    expect(expanded).toHaveLength(1);
+    expect(expanded[0].querySelector(".task-list-row[data-id='2']")).not.toBeNull();
+    expect(expanded[0].querySelector(".task-list-editor")).not.toBeNull();
+    expect(itemOf(1)!.className).not.toContain("expanded");
+  });
+});
+
 describe("TaskListView creation", () => {
   beforeEach(resetCb);
 

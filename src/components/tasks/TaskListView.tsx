@@ -1,5 +1,4 @@
 import {
-  Fragment,
   useEffect,
   useMemo,
   useRef,
@@ -357,7 +356,10 @@ export default function TaskListView({
         nodes.push(<div key="drop-indicator" className="drop-indicator" />);
       }
       nodes.push(
-        <Fragment key={t.id}>
+        <div
+          key={t.id}
+          className={expandedId === t.id ? "task-list-item expanded" : "task-list-item"}
+        >
           <TaskRow
             task={t}
             statusLabel={statusLabel(t.status)}
@@ -366,6 +368,7 @@ export default function TaskListView({
           />
           {expandedId === t.id && (
             <TaskEditor
+              className="task-list-editor"
               task={t}
               onSave={(patch) => {
                 setExpandedId(null);
@@ -381,7 +384,7 @@ export default function TaskListView({
               onCancel={() => setCommentId(null)}
             />
           )}
-        </Fragment>,
+        </div>,
       );
       visibleIndex++;
     }

@@ -542,6 +542,38 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
 .task-list-rows .task-edit { width: 100%; box-sizing: border-box; }
 .task-list-rows textarea.rename-input { min-height: 46px; resize: vertical; font-size: 11.5px; }
 
+/* Развёрнутая строка списка: строка-заголовок + редактор = одна белая карточка */
+.task-list-item { display: flex; flex-direction: column; }
+.task-list-item.expanded {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.task-list-item.expanded .task-list-row {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
+  border-radius: 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.task-list-item.expanded .task-list-editor {
+  margin-top: 0;
+  padding: 14px 16px 12px;
+  border-top: 0;
+}
+.task-list-item.expanded .task-edit-title { min-height: 40px; }
+.task-list-item.expanded .task-edit-comment { min-height: 44px; }
+.task-list-item.expanded .task-list-editor .rename-input {
+  border-color: var(--border-strong);
+  box-shadow: none;
+}
+.task-list-item.expanded .task-list-editor .rename-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(55, 106, 159, .18);
+}
+
 /* ---------- Редактор деталей задачи ---------- */
 
 .task-details { display: flex; flex-direction: column; gap: 8px; margin-top: 9px; padding-top: 8px; border-top: 1px solid var(--hairline); }

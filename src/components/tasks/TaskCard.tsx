@@ -70,10 +70,12 @@ export function TaskEditor({
   task,
   onSave,
   onCancel,
+  className,
 }: {
   task: TaskDto;
   onSave: (patch: TaskPatch) => void;
   onCancel: () => void;
+  className?: string;
 }) {
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const [title, setTitle] = useState(task.title);
@@ -130,7 +132,7 @@ export function TaskEditor({
 
   return (
     <div
-      className="task-details task-edit"
+      className={className ? `task-details task-edit ${className}` : "task-details task-edit"}
       onPointerDown={(e) => e.stopPropagation()}
       onMouseDown={(e) => e.stopPropagation()}
       onKeyDown={onKeyDown}
