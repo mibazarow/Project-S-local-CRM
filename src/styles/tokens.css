@@ -1,4 +1,5 @@
 :root {
+  /* ---- Поверхности и текст ---- */
   --bg: #ffffff;
   --surface: #ffffff;
   --surface-2: #f5f5f7;
@@ -8,6 +9,8 @@
   --hairline: rgba(0, 0, 0, .08);
   --text: #1d1d1f;
   --text-muted: #6e6e73;
+
+  /* ---- Акценты и семантика ---- */
   --accent: #376a9f;
   --accent-hover: #2e5a88;
   --accent-soft: #e9eff6;
@@ -15,21 +18,76 @@
   --toolbar: #182533;
   --canvas: #fcf8ef;
   --panel: #f2f2f2;
-  --sidebar-text: rgba(255, 255, 255, .90);
-  --sidebar-muted: rgba(255, 255, 255, .55);
-  --sidebar-hover: rgba(255, 255, 255, .07);
-  --sidebar-selected: rgba(255, 255, 255, .14);
-  --sidebar-border: rgba(255, 255, 255, .10);
   --danger: #ff3b30;
   --danger-soft: #fff5f5;
   --danger-tint: #ffd7d4;
   --warn: #ff9500;
   --ok: #34c759;
-  --radius: 8px;
-  --panel-head-h: 56px;
-  --radius-sm: 6px;
-  --shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 1px 3px rgba(0, 0, 0, .05);
+
+  /* ---- Тёмный shell (topbar / sidebar) ---- */
+  --sidebar-text: rgba(255, 255, 255, .90);
+  --sidebar-muted: rgba(255, 255, 255, .55);
+  --sidebar-hover: rgba(255, 255, 255, .07);
+  --sidebar-selected: rgba(255, 255, 255, .14);
+  --sidebar-border: rgba(255, 255, 255, .10);
+  --sidebar-ghost: #22303f;
+
+  /* ---- Типографика ---- */
   --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+  --fs-meta: 11px;
+  --fs-control: 12px;
+  --fs-base: 13px;
+  --fs-heading: 15px;
+  --fs-heading-lg: 17px;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --lh-tight: 1.35;
+  --lh-base: 1.45;
+  --lh-loose: 1.5;
+
+  /* ---- Отступы (4/8/12/16/20/24/32) ---- */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  /* ---- Скругления (6/8/10/12/999) ---- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-md: 10px;
+  --radius-lg: 12px;
+  --radius-pill: 999px;
+
+  /* ---- Тени (2 уровня + pop) ---- */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, .05);
+  --shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 1px 3px rgba(0, 0, 0, .05);
+  --shadow-pop: 0 20px 60px rgba(0, 0, 0, .35);
+
+  /* ---- Контролы и иконки ---- */
+  --control-h: 28px;
+  --control-h-lg: 30px;
+  --icon-sm: 14px;
+  --icon: 16px;
+  --panel-head-h: 56px;
+
+  /* ---- Фокус, сегменты, overlay, переходы ---- */
+  --focus-ring: 0 0 0 3px rgba(55, 106, 159, .22);
+  --focus-ring-strong: 0 0 0 3px rgba(55, 106, 159, .35);
+  --seg-bg: #e9e9ee;
+  --seg-active: #ffffff;
+  --overlay: rgba(0, 0, 0, .35);
+  --overlay-soft: rgba(0, 0, 0, .25);
+  --selection: rgba(55, 106, 159, .18);
+  --dur: 140ms;
+  --ease: cubic-bezier(.4, 0, .2, 1);
+
+  /* ---- Инсеты окна (macOS traffic lights) ---- */
   --traffic-light-inset: 14px;
   --titlebar-inset: 0px;
 }
