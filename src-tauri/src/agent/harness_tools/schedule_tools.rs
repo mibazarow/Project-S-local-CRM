@@ -73,6 +73,7 @@ impl Tool for ScheduleCreateTool {
                     timezone,
                     related_task_id: None,
                     title,
+                    session_id: ctx.session_id,
                 },
                 scheduler::now_utc(),
             )
@@ -276,6 +277,56 @@ mod tests {
             .filter(|(name, _)| name == "sessions-changed")
             .count();
         assert_eq!(refreshed, 2, "the sidebar must learn about each new chat");
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    // Q.md item 1: a schedule created from a chat that only holds the single
+    // user turn that asked for it binds to that chat instead of a new one.
+    #[test]
+    fn schedule_create_binds_a_fresh_creating_chat() {
+        let mut env = setup("ht-schedule-fresh");
+        let sid = with_conn(&env.ctx, |conn| {
+            let s = crate::harness::create_session(conn, None)?;
+            let chat_id = crate::harness::session_chat_id(conn, s.id)?;
+            crate::chat::append_message(
+                conn,
+                chat_id,
+                crate::llm::Role::User,
+                Some("сделай расписание"),
+                &[],
+                None,
+                None,
+            )?;
+            Ok(s.id)
+        })
+        .unwrap();
+        env.ctx.session_id = Some(sid);
+
+        let r = exec(
+            "schedule_create",
+            json!({ "kind": "cron", "spec": "0 10 * * *", "prompt": "daily" }),
+            &env.ctx,
+        );
+        assert!(r.ok, "{:?}", r.error);
+        let id = r.data.unwrap()["id"].as_i64().unwrap();
+
+        let (bound, sessions): (Option<i64>, i64) = with_conn(&env.ctx, |conn| {
+            let bound: Option<i64> = conn
+                .query_row(
+                    "SELECT session_id FROM schedules WHERE id = ?1",
+                    params![id],
+                    |r| r.get(0),
+                )
+                .map_err(crate::error::AppError::from)?;
+            let sessions: i64 = conn
+                .query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+                .map_err(crate::error::AppError::from)?;
+            Ok((bound, sessions))
+        })
+        .unwrap();
+        assert_eq!(bound, Some(sid), "the fresh creating chat becomes the schedule chat");
+        assert_eq!(sessions, 1, "no extra session is created");
+
         fs::remove_dir_all(&env.wd).unwrap();
     }
 }

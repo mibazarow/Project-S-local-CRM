@@ -351,12 +351,36 @@ pub struct CreateIn<'a> {
     pub timezone: Option<&'a str>,
     pub related_task_id: Option<i64>,
     pub title: Option<&'a str>,
+    // The Harness chat the agent is creating the schedule from, when any.
+    // Q.md item 1: a brand-new chat that only holds the single user turn that
+    // asked for the schedule becomes the schedule's own chat; once it has more
+    // history the schedule gets a separate chat as before.
+    pub session_id: Option<i64>,
+}
+
+// True when `session_id` still names a Harness session whose chat holds exactly
+// one user turn: the fresh chat that just asked for the schedule. A missing
+// session or chat (deleted meanwhile) or any extra history makes it not fresh,
+// so the caller falls back to a dedicated new chat.
+fn creating_session_is_fresh(conn: &Connection, session_id: i64) -> Result<bool> {
+    let Ok(chat_id) = harness::session_chat_id(conn, session_id) else {
+        return Ok(false);
+    };
+    let user_turns: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM messages WHERE chat_id = ?1 AND role = 'user'",
+        params![chat_id],
+        |r| r.get(0),
+    )?;
+    Ok(user_turns == 1)
 }
 
 // Q.md items 4/5: every new schedule gets its own dedicated Harness chat,
 // titled after the schedule, even when the agent creates it from another
-// chat (that chat keeps its own context). Only new schedules follow this
-// rule; existing rows keep their session links untouched.
+// chat (that chat keeps its own context). Q.md item 1 refines this: when the
+// creating chat is still empty apart from the one user turn that asked for the
+// schedule, that chat becomes the schedule's chat instead of a new one. Only
+// new schedules follow this rule; existing rows keep their session links
+// untouched.
 pub fn create(conn: &Connection, input: &CreateIn<'_>, now: DateTime<Utc>) -> Result<ScheduleDto> {
     validate_kind(input.kind)?;
     let tz = resolve_timezone(input.timezone)?;
@@ -367,12 +391,24 @@ pub fn create(conn: &Connection, input: &CreateIn<'_>, now: DateTime<Utc>) -> Re
         .filter(|t| !t.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| derive_title(input.prompt, input.spec, 60));
-    let session = harness::create_session(conn, Some(&title))?;
+    let session_id = match input.session_id {
+        Some(sid) if creating_session_is_fresh(conn, sid)? => {
+            // Reuse the creating chat; give it the schedule title only while it
+            // is still untitled, never overwriting a title the user set.
+            conn.execute(
+                "UPDATE sessions SET title = ?1
+                 WHERE id = ?2 AND (title IS NULL OR trim(title) = '')",
+                params![title, sid],
+            )?;
+            sid
+        }
+        _ => harness::create_session(conn, Some(&title))?.id,
+    };
     conn.execute(
         "INSERT INTO schedules (session_id, kind, spec, prompt, status, related_task_id, created_at, next_run_at, timezone, title)
          VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6, ?7, ?8, ?9)",
         params![
-            session.id,
+            session_id,
             input.kind,
             input.spec,
             input.prompt,
@@ -956,6 +992,36 @@ mod tests {
         create_session(conn, Some("sched")).unwrap().id
     }
 
+    // Appends one user turn to a session's harness chat, the way a real chat
+    // run persists the message that triggered the agent.
+    fn add_user_turn(conn: &Connection, session_id: i64, text: &str) {
+        let chat_id = harness::session_chat_id(conn, session_id).unwrap();
+        crate::chat::append_message(
+            conn,
+            chat_id,
+            crate::llm::Role::User,
+            Some(text),
+            &[],
+            None,
+            None,
+        )
+        .unwrap();
+    }
+
+    fn session_count(conn: &Connection) -> i64 {
+        conn.query_row("SELECT COUNT(*) FROM sessions", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn session_title(conn: &Connection, session_id: i64) -> Option<String> {
+        conn.query_row(
+            "SELECT title FROM sessions WHERE id = ?1",
+            params![session_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
     #[test]
     fn cron_next_occurrence_uses_the_fixed_timezone() {
         // 10:00 MSK = 07:00 UTC (Moscow has no DST).
@@ -993,7 +1059,7 @@ mod tests {
                 spec: "2026-10-20T10:00:00",
                 prompt: Some("check rates"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: Some(7), title: None,
+                related_task_id: Some(7), title: None, session_id: None
             },
             now,
         )
@@ -1010,7 +1076,7 @@ mod tests {
                 spec: "0 10 * * *",
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             now,
         )
@@ -1020,7 +1086,7 @@ mod tests {
         assert!(matches!(
             create(
                 &conn,
-                &CreateIn { kind: "bogus", spec: "x", prompt: None, timezone: None, related_task_id: None, title: None },
+                &CreateIn { kind: "bogus", spec: "x", prompt: None, timezone: None, related_task_id: None, title: None, session_id: None },
                 now,
             ),
             Err(AppError::Invalid(_))
@@ -1028,7 +1094,7 @@ mod tests {
         assert!(matches!(
             create(
                 &conn,
-                &CreateIn { kind: "run_at", spec: "tomorrow", prompt: None, timezone: None, related_task_id: None, title: None },
+                &CreateIn { kind: "run_at", spec: "tomorrow", prompt: None, timezone: None, related_task_id: None, title: None, session_id: None },
                 now,
             ),
             Err(AppError::Invalid(_))
@@ -1036,11 +1102,116 @@ mod tests {
         assert!(matches!(
             create(
                 &conn,
-                &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: None, timezone: Some("Mars/Olympus"), related_task_id: None, title: None },
+                &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: None, timezone: Some("Mars/Olympus"), related_task_id: None, title: None, session_id: None },
                 now,
             ),
             Err(AppError::Invalid(_))
         ));
+    }
+
+    #[test]
+    fn create_binds_the_creating_session_while_it_is_fresh() {
+        let conn = setup();
+        let now = utc("2026-10-16T08:00:00Z");
+        let sid = create_session(&conn, None).unwrap().id;
+        add_user_turn(&conn, sid, "сделай расписание");
+
+        let s = create(
+            &conn,
+            &CreateIn {
+                kind: "cron",
+                spec: "0 10 * * *",
+                prompt: Some("daily"),
+                timezone: None,
+                related_task_id: None,
+                title: None,
+                session_id: Some(sid),
+            },
+            now,
+        )
+        .unwrap();
+
+        assert_eq!(s.session_id, Some(sid), "the fresh creating chat becomes the schedule chat");
+        assert_eq!(session_count(&conn), 1, "no extra session is created");
+        assert_eq!(session_title(&conn, sid).as_deref(), Some("daily"), "an untitled session takes the derived schedule title");
+    }
+
+    #[test]
+    fn create_keeps_a_separate_chat_once_the_creating_session_has_history() {
+        let conn = setup();
+        let now = utc("2026-10-16T08:00:00Z");
+        let sid = create_session(&conn, Some("chat")).unwrap().id;
+        add_user_turn(&conn, sid, "первый вопрос");
+        add_user_turn(&conn, sid, "сделай расписание");
+
+        let s = create(
+            &conn,
+            &CreateIn {
+                kind: "cron",
+                spec: "0 10 * * *",
+                prompt: Some("daily"),
+                timezone: None,
+                related_task_id: None,
+                title: None,
+                session_id: Some(sid),
+            },
+            now,
+        )
+        .unwrap();
+
+        let bound = s.session_id.expect("schedule has a session");
+        assert_ne!(bound, sid, "a chat with history keeps its own context; the schedule gets a new chat");
+        assert_eq!(session_count(&conn), 2, "a dedicated new session was created");
+    }
+
+    #[test]
+    fn create_falls_back_to_a_new_session_when_the_bound_session_is_gone() {
+        let conn = setup();
+        let now = utc("2026-10-16T08:00:00Z");
+        let s = create(
+            &conn,
+            &CreateIn {
+                kind: "cron",
+                spec: "0 10 * * *",
+                prompt: Some("daily"),
+                timezone: None,
+                related_task_id: None,
+                title: None,
+                session_id: Some(999),
+            },
+            now,
+        )
+        .unwrap();
+
+        let bound = s.session_id.expect("schedule has a session");
+        assert_eq!(session_count(&conn), 1, "a new session was created for the missing one");
+        assert_eq!(session_title(&conn, bound).as_deref(), Some("daily"));
+    }
+
+    #[test]
+    fn create_never_overwrites_an_existing_title_when_binding() {
+        let conn = setup();
+        let now = utc("2026-10-16T08:00:00Z");
+        let sid = create_session(&conn, Some("моё имя")).unwrap().id;
+        add_user_turn(&conn, sid, "сделай расписание");
+
+        let s = create(
+            &conn,
+            &CreateIn {
+                kind: "cron",
+                spec: "0 10 * * *",
+                prompt: Some("daily"),
+                timezone: None,
+                related_task_id: None,
+                title: None,
+                session_id: Some(sid),
+            },
+            now,
+        )
+        .unwrap();
+
+        assert_eq!(s.session_id, Some(sid), "still binds the fresh chat");
+        assert_eq!(session_title(&conn, sid).as_deref(), Some("моё имя"), "an existing title is left untouched");
     }
 
     #[test]
@@ -1054,7 +1225,7 @@ mod tests {
                 spec: "0 10 * * *",
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             now,
         )
@@ -1089,7 +1260,7 @@ mod tests {
                 spec: "2026-10-16T10:00:00",
                 prompt: Some("call the client"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             now,
         )
@@ -1101,7 +1272,7 @@ mod tests {
                 spec: "2026-10-16T10:30:00",
                 prompt: Some("do the thing"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             now,
         )
@@ -1113,7 +1284,7 @@ mod tests {
                 spec: "0 10 * * *",
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             now,
         )
@@ -1209,7 +1380,7 @@ mod tests {
                 spec: "2026-10-16T10:00:00",
                 prompt: Some("go"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             now,
         )
@@ -1222,7 +1393,7 @@ mod tests {
                 spec: "2026-10-16T10:00:00",
                 prompt: Some("ping"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             now,
         )
@@ -1273,7 +1444,7 @@ mod tests {
                 spec: "0 10 * * *",
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             utc("2026-10-16T08:00:00Z"),
         )
@@ -1335,7 +1506,7 @@ mod tests {
                 spec: "0 10 * * *",
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             utc("2026-10-16T08:00:00Z"),
         )
@@ -1372,7 +1543,7 @@ mod tests {
                 spec: "2026-10-16T10:00:00",
                 prompt: Some("go"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             utc("2026-10-16T08:00:00Z"),
         )
@@ -1411,7 +1582,7 @@ mod tests {
                 spec: "2026-10-16T10:00:00",
                 prompt: Some("go"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             utc("2026-10-16T08:00:00Z"),
         )
@@ -1435,7 +1606,7 @@ mod tests {
                 spec: "0 10 * * *",
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             utc("2026-10-16T08:00:00Z"),
         )
@@ -1462,7 +1633,7 @@ mod tests {
                 spec: "2026-10-16T10:00:00",
                 prompt: Some("ping"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             utc("2026-10-16T08:00:00Z"),
         )
@@ -1487,13 +1658,13 @@ mod tests {
         let session = create_session_row(&conn);
         let a = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("a"), timezone: Some("Europe/Moscow"), related_task_id: None, title: None },
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("a"), timezone: Some("Europe/Moscow"), related_task_id: None, title: None, session_id: None },
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
         let b = create(
             &conn,
-            &CreateIn { kind: "run_at", spec: "2026-10-20T10:00:00", prompt: Some("b"), timezone: Some("Europe/Moscow"), related_task_id: None, title: None },
+            &CreateIn { kind: "run_at", spec: "2026-10-20T10:00:00", prompt: Some("b"), timezone: Some("Europe/Moscow"), related_task_id: None, title: None, session_id: None },
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
@@ -1522,7 +1693,7 @@ mod tests {
                 spec: "2026-10-16T10:00:00",
                 prompt: Some("go"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             utc("2026-10-16T08:00:00Z"),
         )
@@ -1574,7 +1745,7 @@ mod tests {
                 spec: "2026-10-16T10:00:00",
                 prompt: Some("go"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             utc("2026-10-16T08:00:00Z"),
         )
@@ -1609,7 +1780,7 @@ mod tests {
                 spec: "0 10 * * *",
                 prompt: Some("daily"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             utc("2026-10-16T08:00:00Z"),
         )
@@ -1644,7 +1815,7 @@ mod tests {
                 spec: "2026-10-20T10:00:00",
                 prompt: Some("x"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             now,
         )
@@ -1679,7 +1850,7 @@ mod tests {
                 spec: "2026-10-20T10:00:00",
                 prompt: Some("old"),
                 timezone: Some("Europe/Moscow"),
-                related_task_id: None, title: None,
+                related_task_id: None, title: None, session_id: None
             },
             now,
         )
@@ -1722,13 +1893,13 @@ mod tests {
         let now = utc("2026-10-16T08:00:00Z");
         let later = create(
             &conn,
-            &CreateIn { kind: "run_at", spec: "2026-10-20T10:00:00", prompt: Some("later"), timezone: Some("Europe/Moscow"), related_task_id: Some(3), title: None },
+            &CreateIn { kind: "run_at", spec: "2026-10-20T10:00:00", prompt: Some("later"), timezone: Some("Europe/Moscow"), related_task_id: Some(3), title: None, session_id: None },
             now,
         )
         .unwrap();
         let sooner = create(
             &conn,
-            &CreateIn { kind: "run_at", spec: "2026-10-18T10:00:00", prompt: Some("sooner"), timezone: Some("Europe/Moscow"), related_task_id: None, title: None },
+            &CreateIn { kind: "run_at", spec: "2026-10-18T10:00:00", prompt: Some("sooner"), timezone: Some("Europe/Moscow"), related_task_id: None, title: None, session_id: None },
             now,
         )
         .unwrap();
@@ -1745,7 +1916,7 @@ mod tests {
         let now = utc("2026-10-16T08:00:00Z");
         let s = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("  \n  проверить цены на сайте\nлишняя строка\n"), timezone: None, related_task_id: None, title: None },
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("  \n  проверить цены на сайте\nлишняя строка\n"), timezone: None, related_task_id: None, title: None, session_id: None },
             now,
         )
         .unwrap();
@@ -1755,7 +1926,7 @@ mod tests {
         let long = "д".repeat(80);
         let s = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "@daily", prompt: Some(&long), timezone: None, related_task_id: None, title: None },
+            &CreateIn { kind: "cron", spec: "@daily", prompt: Some(&long), timezone: None, related_task_id: None, title: None, session_id: None },
             now,
         )
         .unwrap();
@@ -1764,7 +1935,7 @@ mod tests {
         // No prompt: the spec becomes the title.
         let s = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: None, timezone: None, related_task_id: None, title: None },
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: None, timezone: None, related_task_id: None, title: None, session_id: None },
             now,
         )
         .unwrap();
@@ -1773,7 +1944,7 @@ mod tests {
         // An explicit title wins and is trimmed.
         let s = create(
             &conn,
-            &CreateIn { kind: "run_at", spec: "2026-10-20T10:00:00", prompt: Some("x"), timezone: None, related_task_id: None, title: Some("  Утренняя сводка  ") },
+            &CreateIn { kind: "run_at", spec: "2026-10-20T10:00:00", prompt: Some("x"), timezone: None, related_task_id: None, title: Some("  Утренняя сводка  "), session_id: None },
             now,
         )
         .unwrap();
@@ -1793,13 +1964,13 @@ mod tests {
         let now = utc("2026-10-16T08:00:00Z");
         let a = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "0 */2 * * *", prompt: Some("Привет каждые 2 часа (9:00–17:00)"), timezone: None, related_task_id: None, title: None },
+            &CreateIn { kind: "cron", spec: "0 */2 * * *", prompt: Some("Привет каждые 2 часа (9:00–17:00)"), timezone: None, related_task_id: None, title: None, session_id: None },
             now,
         )
         .unwrap();
         let b = create(
             &conn,
-            &CreateIn { kind: "notify", spec: "2026-10-20T10:00:00", prompt: Some("ping"), timezone: None, related_task_id: None, title: None },
+            &CreateIn { kind: "notify", spec: "2026-10-20T10:00:00", prompt: Some("ping"), timezone: None, related_task_id: None, title: None, session_id: None },
             now,
         )
         .unwrap();
@@ -1833,7 +2004,7 @@ mod tests {
         let conn = setup();
         let s = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("daily"), timezone: None, related_task_id: None, title: Some("Старое имя") },
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("daily"), timezone: None, related_task_id: None, title: Some("Старое имя"), session_id: None },
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
@@ -1857,7 +2028,7 @@ mod tests {
         let conn = setup();
         let s = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("daily"), timezone: None, related_task_id: None, title: Some("Старое имя") },
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("daily"), timezone: None, related_task_id: None, title: Some("Старое имя"), session_id: None },
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
@@ -1884,7 +2055,7 @@ mod tests {
         .unwrap();
         let fresh = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "0 12 * * *", prompt: Some("new"), timezone: None, related_task_id: None, title: None },
+            &CreateIn { kind: "cron", spec: "0 12 * * *", prompt: Some("new"), timezone: None, related_task_id: None, title: None, session_id: None },
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
@@ -1907,7 +2078,7 @@ mod tests {
         let conn = setup();
         let s = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("daily"), timezone: Some("Europe/Moscow"), related_task_id: None, title: Some("Ежедневный отчёт") },
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("daily"), timezone: Some("Europe/Moscow"), related_task_id: None, title: Some("Ежедневный отчёт"), session_id: None },
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
@@ -1942,7 +2113,7 @@ mod tests {
         let conn = setup();
         let s = create(
             &conn,
-            &CreateIn { kind: "run_at", spec: "2026-10-16T10:00:00", prompt: Some("go"), timezone: Some("Europe/Moscow"), related_task_id: None, title: Some("Утренняя сводка") },
+            &CreateIn { kind: "run_at", spec: "2026-10-16T10:00:00", prompt: Some("go"), timezone: Some("Europe/Moscow"), related_task_id: None, title: Some("Утренняя сводка"), session_id: None },
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
@@ -1983,7 +2154,7 @@ mod tests {
         let conn = setup();
         let s = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("daily report"), timezone: None, related_task_id: None, title: None },
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("daily report"), timezone: None, related_task_id: None, title: None, session_id: None },
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
@@ -2023,7 +2194,7 @@ mod tests {
         let conn = setup();
         let s = create(
             &conn,
-            &CreateIn { kind: "notify", spec: "2026-10-16T10:00:00", prompt: Some("ping"), timezone: None, related_task_id: None, title: None },
+            &CreateIn { kind: "notify", spec: "2026-10-16T10:00:00", prompt: Some("ping"), timezone: None, related_task_id: None, title: None, session_id: None },
             utc("2026-10-16T08:00:00Z"),
         )
         .unwrap();
@@ -2047,13 +2218,13 @@ mod tests {
         let session = create_session_row(&conn);
         let older = create(
             &conn,
-            &CreateIn { kind: "run_at", spec: "2026-10-14T10:00:00Z", prompt: Some("a"), timezone: None, related_task_id: None, title: Some("older") },
+            &CreateIn { kind: "run_at", spec: "2026-10-14T10:00:00Z", prompt: Some("a"), timezone: None, related_task_id: None, title: Some("older"), session_id: None },
             utc("2026-10-13T08:00:00Z"),
         )
         .unwrap();
         let newer = create(
             &conn,
-            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("b"), timezone: None, related_task_id: None, title: Some("newer") },
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("b"), timezone: None, related_task_id: None, title: Some("newer"), session_id: None },
             utc("2026-10-13T08:00:00Z"),
         )
         .unwrap();
