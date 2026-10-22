@@ -415,6 +415,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     let unSchedules: (() => void) | undefined;
     let unProjects: (() => void) | undefined;
     let unScheduleOpen: (() => void) | undefined;
+    let unChatOpen: (() => void) | undefined;
     const refresh = () => void loadProjects();
     const onFs = (payload: FsChanged) => {
       refresh();
@@ -437,6 +438,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     void ipc
       .onScheduleOpen((payload) => dispatch({ type: "pendingSession", id: payload.sessionId }))
       .then((u) => (cancelled ? u() : (unScheduleOpen = u)));
+    // Q.md Harness chat search: the open_chat tool routes the UI to the found
+    // session through the same pendingSession intent App + HarnessView consume.
+    void ipc
+      .onChatOpen((payload) => dispatch({ type: "pendingSession", id: payload.sessionId }))
+      .then((u) => (cancelled ? u() : (unChatOpen = u)));
     return () => {
       cancelled = true;
       unFs?.();
@@ -444,6 +450,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       unSchedules?.();
       unProjects?.();
       unScheduleOpen?.();
+      unChatOpen?.();
     };
   }, [state.onboarding.configured, loadProjects]);
 

@@ -14,6 +14,7 @@ use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use super::envelope_r;
 use crate::error::Result;
 use crate::sync_util::lock_recover;
+use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
 
 pub struct ListChatsTool;
@@ -257,7 +258,7 @@ impl Tool for SearchChatsTool {
         "search_chats"
     }
     fn description(&self) -> &str {
-        "Search past harness sessions by message text (keyword + semantic), best hits first."
+        "Find harness chats by meaning (keyword + semantic), most relevant first. Each result is a chat: sessionId, title, digest (its latest summary or first user message), score, plus a matched-message snippet. Report each candidate with its title and digest so the user can tell them apart; when several match, offer the most relevant first. Use open_chat to switch the UI to one when the user asks."
     }
     fn parameters(&self) -> Value {
         json!({
@@ -291,6 +292,72 @@ impl Tool for SearchChatsTool {
             Ok(hits) => ToolResult::ok(json!({ "hits": hits })).capped(self.max_result_len()),
             Err(e) => envelope_r(e),
         })
+    }
+}
+
+// Open a chat the agent found by meaning (search_chats) when the user asks to
+// open it: emits "chat-open" {sessionId} through the run state's emitter (the
+// same seam the schedule-open navigation uses), so App switches to the Harness
+// tab and HarnessView loads that session. UI navigation only — no data change,
+// no confirmation — so it stays Mutating/Skip like the open/notify tools.
+pub struct OpenChatTool;
+
+impl Tool for OpenChatTool {
+    fn name(&self) -> &str {
+        "open_chat"
+    }
+    fn description(&self) -> &str {
+        "Open a harness chat in the UI by sessionId (from search_chats or list_chats): the app switches to that session's chat. UI navigation only, no data changes. Returns {opened, title}."
+    }
+    fn parameters(&self) -> Value {
+        json!({
+            "type": "object",
+            "properties": {
+                "sessionId": { "type": "number" }
+            },
+            "required": ["sessionId"],
+            "additionalProperties": false
+        })
+    }
+    fn class(&self) -> ToolClass {
+        ToolClass::Mutating
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        let session_id = match args.get("sessionId").and_then(Value::as_i64) {
+            Some(id) if id > 0 => id,
+            _ => {
+                return Ok(ToolResult::err(
+                    ToolErrorCode::InvalidArgs,
+                    "sessionId must be a positive integer",
+                ))
+            }
+        };
+        let r = with_conn(ctx, |conn| {
+            crate::harness::session_chat_id(conn, session_id)?;
+            let title = conn
+                .query_row(
+                    "SELECT title FROM sessions WHERE id = ?1",
+                    params![session_id],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .optional()?
+                .flatten();
+            Ok(title)
+        });
+        match r {
+            Ok(title) => {
+                if let Ok(state) = state_of(ctx) {
+                    if let Some(emitter) = lock_recover(&state.emitter).as_ref() {
+                        emitter.emit_event("chat-open", json!({ "sessionId": session_id }));
+                    }
+                }
+                Ok(ToolResult::ok(json!({ "opened": session_id, "title": title })))
+            }
+            Err(e) => Ok(envelope_r(e)),
+        }
     }
 }
 
@@ -332,6 +399,7 @@ mod tests {
         assert_eq!(hits[0]["sessionId"], session_id_of(&state));
         assert_eq!(hits[0]["title"], "витрина");
         assert!(hits[0]["snippet"].as_str().unwrap().contains("<<редизайн>>"));
+        assert_eq!(hits[0]["digest"], "нужен редизайн главной страницы");
 
         let empty = exec("search_chats", json!({ "query": "  " }), &env.ctx);
         assert!(!empty.ok);
@@ -345,6 +413,49 @@ mod tests {
             .unwrap()
             .query_row("SELECT id FROM sessions LIMIT 1", [], |r| r.get(0))
             .unwrap()
+    }
+
+    #[test]
+    fn open_chat_tool_emits_chat_open_and_validates() {
+        let env = setup("ht-open-chat");
+        let created =
+            with_conn(&env.ctx, |conn| crate::harness::create_session(conn, Some("витрина")))
+                .unwrap();
+
+        let r = exec("open_chat", json!({ "sessionId": created.id }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let out = r.data.unwrap();
+        assert_eq!(out["opened"], created.id);
+        assert_eq!(out["title"], "витрина");
+
+        // The UI navigation event carries the sessionId through the emitter seam.
+        let events = env.events.lock().unwrap().clone();
+        let opened = events
+            .iter()
+            .filter(|(name, payload)| name == "chat-open" && payload["sessionId"] == created.id)
+            .count();
+        assert_eq!(opened, 1, "chat-open must fire once with the sessionId: {events:?}");
+
+        // Unknown session maps to not_found; non-positive/non-integer/missing
+        // sessionId are argument errors, and none of them emit an event.
+        let r = exec("open_chat", json!({ "sessionId": 999 }), &env.ctx);
+        assert_eq!(r.error.unwrap().code, "not_found");
+        for bad in [
+            json!({ "sessionId": 0 }),
+            json!({ "sessionId": -3 }),
+            json!({ "sessionId": "x" }),
+            json!({}),
+        ] {
+            let r = exec("open_chat", bad, &env.ctx);
+            assert_eq!(r.error.unwrap().code, "invalid_args");
+        }
+        let events = env.events.lock().unwrap().clone();
+        assert_eq!(
+            events.iter().filter(|(name, _)| name == "chat-open").count(),
+            1,
+            "only the successful open emits: {events:?}"
+        );
+        fs::remove_dir_all(&env.wd).unwrap();
     }
 
     #[test]

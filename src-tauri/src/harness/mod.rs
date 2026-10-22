@@ -629,6 +629,7 @@ mod tests {
             "new_chat",
             "delete_chat",
             "search_chats",
+            "open_chat",
         ] {
             assert!(names.contains(&expected.to_string()), "missing {expected}");
         }

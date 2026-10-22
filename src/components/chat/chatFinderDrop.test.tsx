@@ -68,6 +68,7 @@ vi.mock("../../api/ipc", async (importOriginal) => ({
   onSchedulesChanged: vi.fn(async () => () => {}),
   onProjectsChanged: vi.fn(async () => () => {}),
   onScheduleOpen: vi.fn(async () => () => {}),
+  onChatOpen: vi.fn(async () => () => {}),
   onSessionsChanged: vi.fn(async () => () => {}),
   onConfigChanged: vi.fn(async () => () => {}),
   onAgentEvent: vi.fn(async () => () => {}),

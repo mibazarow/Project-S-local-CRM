@@ -631,6 +631,12 @@ export interface ScheduleOpenEvent {
   sessionId: number;
 }
 
+// "chat-open" — emitted by the open_chat tool: the frontend must switch to the
+// chat the agent found by meaning (Q.md Harness chat search).
+export interface ChatOpenEvent {
+  sessionId: number;
+}
+
 // search_reindex::ReindexStatus — result of reindex_start / reindex_status.
 // nextRunAt/lastRunAt are epoch milliseconds; nextRunAt is the auto-reindex
 // countdown target (0 until armed).

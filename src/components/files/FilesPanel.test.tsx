@@ -90,6 +90,7 @@ vi.mock("../../api/ipc", () => ({
   onSchedulesChanged: vi.fn(async () => () => {}),
   onProjectsChanged: vi.fn(async () => () => {}),
   onScheduleOpen: vi.fn(async () => () => {}),
+  onChatOpen: vi.fn(async () => () => {}),
   fsListDir: vi.fn(async (_projectId: number, dir: string) => (dir === "" ? entries : [])),
   fsMove: vi.fn(async () => entries[0]),
   fsReadText: vi.fn(async () => "hello"),

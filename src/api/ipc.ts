@@ -9,6 +9,7 @@ import type {
   BackupInfo,
   BackupStatus,
   ChatBranchResult,
+  ChatOpenEvent,
   ChecklistItem,
   ConfigChanged,
   ConfigKind,
@@ -637,6 +638,11 @@ export const onSchedulesChanged = (handler: () => void) =>
 // (a freshly created schedule chat, Q.md item 4).
 export const onScheduleOpen = (handler: (payload: ScheduleOpenEvent) => void) =>
   listen<ScheduleOpenEvent>("schedule-open", (e) => handler(e.payload));
+
+// Emitted by the open_chat tool: the UI must switch to the chat the agent
+// found by meaning (Q.md Harness chat search).
+export const onChatOpen = (handler: (payload: ChatOpenEvent) => void) =>
+  listen<ChatOpenEvent>("chat-open", (e) => handler(e.payload));
 
 // Emitted when the session list may have changed: the scheduler after a
 // fired tick (a fire touches lastActiveAt and may create a fresh session),

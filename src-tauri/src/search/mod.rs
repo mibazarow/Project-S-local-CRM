@@ -257,7 +257,11 @@ pub struct ChatHit {
     pub last_active: String,
     pub score: f64,
     pub message_id: i64,
+    // Matched-message context (kept for the ⌘K palette snippet).
     pub snippet: String,
+    // Chat-level identity: the latest checkpoint summary, else the first user
+    // message, so the agent can tell the user which chat a hit is.
+    pub digest: String,
 }
 
 pub fn search_chats(state: &AppState, query: &str, limit: usize) -> Result<Vec<ChatHit>> {
@@ -351,6 +355,7 @@ pub(crate) fn search_chats_with(
             score,
             message_id: best.message_id,
             snippet,
+            digest: chat_digest(conn, session_id),
         });
     }
     hits.sort_by(|a, b| {
@@ -433,6 +438,53 @@ fn message_content(conn: &Connection, message_id: i64) -> Option<String> {
         |r| r.get(0),
     )
     .ok()
+}
+
+// Chat-level digest for a search hit: the latest checkpoint summary when the
+// chat was compacted, else the first user message. Whitespace is collapsed and
+// the result is truncated on a char boundary; no LLM call.
+const CHAT_DIGEST_MAX_CHARS: usize = 160;
+
+fn chat_digest(conn: &Connection, session_id: i64) -> String {
+    let summary: Option<String> = conn
+        .query_row(
+            "SELECT s.summary FROM summaries s
+             JOIN chats c ON c.id = s.chat_id
+             WHERE c.session_id = ?1 AND c.kind = 'harness'
+             ORDER BY s.up_to_position DESC
+             LIMIT 1",
+            params![session_id],
+            |r| r.get(0),
+        )
+        .optional()
+        .unwrap_or(None);
+    let raw = match summary.filter(|s| !s.trim().is_empty()) {
+        Some(s) => s,
+        None => conn
+            .query_row(
+                "SELECT m.content FROM messages m
+                 JOIN chats c ON c.id = m.chat_id
+                 WHERE c.session_id = ?1 AND c.kind = 'harness' AND m.role = 'user'
+                 ORDER BY m.position ASC
+                 LIMIT 1",
+                params![session_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
+    };
+    let flat = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    truncate_chars(&flat, CHAT_DIGEST_MAX_CHARS)
+}
+
+fn truncate_chars(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let mut out: String = text.chars().take(max).collect();
+    out.push('…');
+    out
 }
 
 // Task row joined into search: status/overdue come from tasks, so closed
@@ -1631,7 +1683,45 @@ mod tests {
         assert_eq!(hit.title.as_deref(), Some("редизайн витрины"));
         assert!(!hit.last_active.is_empty());
         assert!(hit.snippet.contains("<<редизайн>>"), "{:?}", hit.snippet);
+        assert_eq!(hit.digest, "нужен редизайн главной страницы");
         assert!(hit.score > 0.0);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn chat_digest_prefers_latest_summary_else_first_user_message() {
+        let (wd, conn, _id, _state) = setup("chat-search-digest");
+        // Summarized chat: the checkpoint with the highest up_to_position wins.
+        let (sid_sum, chat_sum) = harness_session(&conn, "summarized");
+        say(&conn, chat_sum, Role::User, "реплика пользователя");
+        for (pos, text) in [(5, "ранний чекпоинт"), (12, "поздний чекпоинт")] {
+            conn.execute(
+                "INSERT INTO summaries (chat_id, up_to_position, summary, created_at) VALUES (?1, ?2, ?3, '2026-01-01')",
+                params![chat_sum, pos, text],
+            )
+            .unwrap();
+        }
+        // Plain chat: the first user message is the digest, not a later one.
+        let (sid_first, chat_first) = harness_session(&conn, "plain");
+        say(&conn, chat_first, Role::User, "реплика пользователя");
+        say(&conn, chat_first, Role::User, "вторая реплика не должна попасть");
+        // Long first message: truncated on a char boundary with an ellipsis.
+        let (sid_long, chat_long) = harness_session(&conn, "long");
+        say(&conn, chat_long, Role::User, &"реплика ".repeat(200));
+
+        let digest_of = |sid: i64| {
+            search_chats_with(&conn, &embed::NoopEmbedder, "реплика", 10)
+                .unwrap()
+                .into_iter()
+                .find(|h| h.session_id == sid)
+                .expect("hit")
+                .digest
+        };
+        assert_eq!(digest_of(sid_sum), "поздний чекпоинт");
+        assert_eq!(digest_of(sid_first), "реплика пользователя");
+        let long = digest_of(sid_long);
+        assert_eq!(long.chars().count(), CHAT_DIGEST_MAX_CHARS + 1);
+        assert!(long.ends_with('…'), "{long}");
         fs::remove_dir_all(&wd).unwrap();
     }
 

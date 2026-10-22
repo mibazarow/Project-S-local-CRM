@@ -5,7 +5,9 @@
 // order are the contract checked by agent/invariants.rs and the catalog
 // test below — keep them identical.
 use super::archive_tools::ArchiveTool;
-use super::chat_tools::{DeleteChatTool, ListChatsTool, NewChatTool, RenameChatTool, SearchChatsTool};
+use super::chat_tools::{
+    DeleteChatTool, ListChatsTool, NewChatTool, OpenChatTool, RenameChatTool, SearchChatsTool,
+};
 use super::crm_tools::{
     CrmListProjectsTool, CrmSearchTool, CrmTaskCreateTool, CrmTaskDeleteTool, CrmTaskMoveTool,
     CrmTaskUpdateTool, CrmTasksTool, DatasAddTool, DatasReadTool, ProjectSetArchivedTool,
@@ -46,6 +48,9 @@ pub fn harness_catalog() -> Catalog {
         Arc::new(NewChatTool),
         Arc::new(DeleteChatTool),
         Arc::new(SearchChatsTool),
+        // Open a chat the agent found by meaning (Q.md Harness chat search):
+        // active next to search_chats so it is available in the same turn.
+        Arc::new(OpenChatTool),
         // Per-conversation plan panel (SPEC: todowrite/todoread).
         Arc::new(crate::todos::TodoWriteTool),
         Arc::new(crate::todos::TodoReadTool),
@@ -287,7 +292,7 @@ mod tests {
     fn catalog_registers_everything_without_duplicate_names() {
         let mut catalog = harness_catalog();
         let active: Vec<String> = catalog.to_specs().into_iter().map(|s| s.name).collect();
-        for expected in ["finish_task", "skill", "skill_exec", "remember", "recall", "set_user_gender", "forget", "list_chats", "rename_chat", "new_chat", "delete_chat", "search_chats", LIST_TOOLS, ENABLE_TOOLS] {
+        for expected in ["finish_task", "skill", "skill_exec", "remember", "recall", "set_user_gender", "forget", "list_chats", "rename_chat", "new_chat", "delete_chat", "search_chats", "open_chat", LIST_TOOLS, ENABLE_TOOLS] {
             assert!(active.iter().any(|n| n == expected), "missing active {expected}");
         }
         let summary = catalog.list_summary();
@@ -423,6 +428,9 @@ mod tests {
         assert_eq!(tool("delete_chat").policy(), PermissionPolicy::Check);
         assert_eq!(tool("search_chats").class(), ToolClass::ReadOnly);
         assert_eq!(tool("search_chats").policy(), PermissionPolicy::Skip);
+        // open_chat is UI navigation only: no data change, so it skips.
+        assert_eq!(tool("open_chat").class(), ToolClass::Mutating);
+        assert_eq!(tool("open_chat").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("todowrite").class(), ToolClass::Mutating);
         assert_eq!(tool("todowrite").policy(), PermissionPolicy::Skip);
         assert_eq!(tool("todoread").class(), ToolClass::ReadOnly);

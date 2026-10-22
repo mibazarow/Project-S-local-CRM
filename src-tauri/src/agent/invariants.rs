@@ -89,6 +89,9 @@ const MUTATING_SKIP_ALLOWLIST: &[&str] = &[
     // LaunchServices open: launches the default handler for an existing path
     // or an http(s)/file URL; non-destructive, the user closes what opens.
     "open",
+    // open_chat switches the UI to a chat the agent found by meaning: pure
+    // navigation, touches no data, same guard class as the open/notify tools.
+    "open_chat",
     // PDF pages to PNG (Q.md computer-control slice): the source is only
     // read, the PNGs land in the app's own Settings/tmp scratch folder.
     "pdf_to_image",

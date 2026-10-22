@@ -11,6 +11,7 @@ const bus = vi.hoisted(() => ({
   schedules: undefined as (() => void) | undefined,
   projects: undefined as (() => void) | undefined,
   scheduleOpen: undefined as ((p: { sessionId: number }) => void) | undefined,
+  chatOpen: undefined as ((p: { sessionId: number }) => void) | undefined,
 }));
 
 const projects = vi.hoisted((): ProjectDto[] => [
@@ -85,6 +86,12 @@ vi.mock("../api/ipc", () => ({
     bus.scheduleOpen = cb;
     return () => {
       bus.scheduleOpen = undefined;
+    };
+  }),
+  onChatOpen: vi.fn(async (cb: (p: { sessionId: number }) => void) => {
+    bus.chatOpen = cb;
+    return () => {
+      bus.chatOpen = undefined;
     };
   }),
 }));
@@ -343,5 +350,12 @@ describe("app store split", () => {
     expect(container.querySelector(".pending-session")!.textContent).toBe("null");
     await act(async () => bus.scheduleOpen?.({ sessionId: 9 }));
     expect(container.querySelector(".pending-session")!.textContent).toBe("9");
+  });
+
+  it("a chat-open event routes the UI to the found chat session", async () => {
+    await mount();
+    expect(container.querySelector(".pending-session")!.textContent).toBe("null");
+    await act(async () => bus.chatOpen?.({ sessionId: 12 }));
+    expect(container.querySelector(".pending-session")!.textContent).toBe("12");
   });
 });
