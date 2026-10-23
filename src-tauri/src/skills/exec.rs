@@ -327,7 +327,7 @@ mod tests {
         let data = r.data.unwrap();
         assert_eq!(data["skill"], "echoer");
         assert_eq!(data["entrypoint"], "run.sh");
-        assert_eq!(data["exitCode"], 0);
+        assert_eq!(data["exitCode"], 0, "{data}");
         let stdout = data["stdout"].as_str().unwrap();
         assert!(stdout.contains("cwd:echoer"), "cwd must be the skill folder: {stdout}");
         assert!(
@@ -349,7 +349,7 @@ mod tests {
             .unwrap();
         assert!(r.ok, "{:?}", r.error);
         let data = r.data.unwrap();
-        assert_eq!(data["exitCode"], 0);
+        assert_eq!(data["exitCode"], 0, "{data}");
         assert!(data["stdout"].as_str().unwrap().contains("tooly-ran"));
         fs::remove_dir_all(&wd).unwrap();
     }
@@ -373,7 +373,7 @@ mod tests {
         assert!(r.ok, "{:?}", r.error);
         // python3 would choke on the sh shebang; the direct run succeeds.
         let data = r.data.unwrap();
-        assert_eq!(data["exitCode"], 0);
+        assert_eq!(data["exitCode"], 0, "{data}");
         assert_eq!(data["stdout"], "direct\n");
         fs::remove_dir_all(&wd).unwrap();
     }
@@ -396,7 +396,7 @@ mod tests {
             .unwrap();
         assert!(r.ok, "{:?}", r.error);
         let data = r.data.unwrap();
-        assert_eq!(data["exitCode"], 0);
+        assert_eq!(data["exitCode"], 0, "{data}");
         assert_eq!(data["stdout"], "py 42\n");
         fs::remove_dir_all(&wd).unwrap();
     }
@@ -416,7 +416,7 @@ mod tests {
             .unwrap();
         assert!(r.ok, "{:?}", r.error);
         let data = r.data.unwrap();
-        assert_eq!(data["stdout"].as_str().unwrap().chars().count(), 30_000);
+        assert_eq!(data["stdout"].as_str().unwrap().chars().count(), 30_000, "{data}");
         assert_eq!(data["truncated"], true);
         fs::remove_dir_all(&wd).unwrap();
     }
