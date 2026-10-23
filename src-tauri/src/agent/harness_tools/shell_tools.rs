@@ -42,7 +42,11 @@ impl Tool for BashTool {
         "bash"
     }
     fn description(&self) -> &str {
-        "Run a shell command via sh -c (default cwd: Harness/). TMPDIR/TEMP/TMP point at Harness/tmp/, never the system /tmp. Returns exitCode, stdout, stderr; 120 s timeout."
+        if cfg!(windows) {
+            "Run a shell command. On Windows it uses Git Bash when installed, otherwise Windows PowerShell with UTF-8 output (default cwd: Harness/). TMPDIR/TEMP/TMP point at Harness/tmp/, never the system temp. Returns exitCode, stdout, stderr; 120 s timeout."
+        } else {
+            "Run a shell command via sh -c (default cwd: Harness/). TMPDIR/TEMP/TMP point at Harness/tmp/, never the system /tmp. Returns exitCode, stdout, stderr; 120 s timeout."
+        }
     }
     fn parameters(&self) -> Value {
         json!({

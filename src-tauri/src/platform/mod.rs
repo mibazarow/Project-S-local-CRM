@@ -66,6 +66,27 @@ pub fn is_executable(path: &Path) -> bool {
     path.is_file()
 }
 
+// A path string for UI/JSON boundaries. Windows canonicalize() returns a
+// verbatim path (`\\?\C:\...` or `\\?\UNC\server\share\...`), which leaks the
+// extended-length prefix into copy-path/UI output and SQL filters. Strip only
+// that presentation prefix; the underlying PathBuf is unchanged.
+#[cfg(windows)]
+pub fn path_string(path: &Path) -> String {
+    let raw = path.display().to_string();
+    if let Some(rest) = raw.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = raw.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        raw
+    }
+}
+
+#[cfg(not(windows))]
+pub fn path_string(path: &Path) -> String {
+    path.display().to_string()
+}
+
 // POSIX mode bits; a no-op on Windows, where ACLs are managed by the OS and
 // the demo build has no equivalent of chmod 0600/0700.
 pub fn restrict_permissions(_path: &Path, _mode: u32) -> std::io::Result<()> {

@@ -192,7 +192,7 @@ pub fn copy_as(conn: &Connection, wd: &Path, project_id: i64, rel_path: &str) ->
 // read_text); used by «Скопировать путь».
 pub fn absolute_path(conn: &Connection, wd: &Path, project_id: i64, rel_path: &str) -> Result<String> {
     let (_, path) = existing(conn, wd, project_id, rel_path)?;
-    Ok(path.display().to_string())
+    Ok(crate::platform::path_string(&path))
 }
 
 // Reveals the entry in the OS file manager (Finder on macOS); the command

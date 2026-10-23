@@ -111,7 +111,7 @@ pub(crate) fn project_root(conn: &Connection, wd: &Path, id: i64) -> Result<Path
 }
 
 pub fn project_path(conn: &Connection, wd: &Path, id: i64) -> Result<String> {
-    Ok(project_root(conn, wd, id)?.display().to_string())
+    Ok(crate::platform::path_string(&project_root(conn, wd, id)?))
 }
 
 pub(crate) fn create_project_fs(wd: &Path, raw_name: &str) -> Result<CreatedProject> {

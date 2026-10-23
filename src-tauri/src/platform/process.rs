@@ -9,6 +9,10 @@
 // browser/CDP). They are product features, not shared infrastructure, so
 // their platform specifics stay with the feature.
 use std::process::{Child, Command, Stdio};
+#[cfg(windows)]
+use std::path::PathBuf;
+#[cfg(windows)]
+use std::sync::OnceLock;
 
 // Detached background command: `sh -c` in its own process group on Unix
 // (process_group(0) makes the stored pgid equal to the pid). Windows runs
@@ -112,7 +116,84 @@ pub fn tool_command(command: &str) -> Command {
     cmd
 }
 
-#[cfg(not(unix))]
+// Windows has no guaranteed POSIX shell. Prefer Git Bash when it is installed:
+// the agent and the built-in skills use bash syntax, and Git for Windows also
+// brings the familiar coreutils. Without it, fall back to Windows PowerShell
+// with UTF-8 output so the tool still works out of the box.
+#[cfg(windows)]
+pub fn bash_program() -> Option<PathBuf> {
+    static FOUND: OnceLock<Option<PathBuf>> = OnceLock::new();
+    FOUND
+        .get_or_init(|| {
+            if let Some(path) = std::env::var_os("PROJECT_S_BASH").map(PathBuf::from) {
+                if path.is_file() {
+                    return Some(path);
+                }
+            }
+            let known = [
+                r"C:\Program Files\Git\bin\bash.exe",
+                r"C:\Program Files\Git\usr\bin\bash.exe",
+                r"C:\Program Files (x86)\Git\bin\bash.exe",
+                r"C:\Program Files (x86)\Git\usr\bin\bash.exe",
+            ];
+            if let Some(path) = known
+                .into_iter()
+                .map(PathBuf::from)
+                .find(|path| path.is_file())
+            {
+                return Some(path);
+            }
+            which("bash.exe")
+        })
+        .clone()
+}
+
+// Resolve an executable through PATH without pulling in a shell.
+#[cfg(windows)]
+pub fn which(name: &str) -> Option<PathBuf> {
+    let mut cmd = Command::new("where.exe");
+    cmd.arg(name).stdout(Stdio::piped()).stderr(Stdio::null());
+    super::hide_console(&mut cmd);
+    let out = cmd.output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(PathBuf::from)
+}
+
+#[cfg(windows)]
+pub fn tool_command(command: &str) -> Command {
+    if let Some(bash) = bash_program() {
+        let mut cmd = Command::new(bash);
+        cmd.arg("-c").arg(command);
+        return cmd;
+    }
+
+    use base64::Engine as _;
+    let script = format!(
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; {command}"
+    );
+    let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    let encoded = base64::engine::general_purpose::STANDARD.encode(utf16);
+    let mut cmd = Command::new("powershell.exe");
+    cmd.args([
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-EncodedCommand",
+    ])
+    .arg(encoded);
+    super::hide_console(&mut cmd);
+    cmd
+}
+
+#[cfg(not(any(unix, windows)))]
 pub fn tool_command(command: &str) -> Command {
     let mut cmd = Command::new("sh");
     cmd.arg("-c").arg(command);

@@ -57,10 +57,33 @@ fn command_for(candidate: &Path) -> std::result::Result<(Command, String), Strin
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    let interpreter = match ext.as_str() {
-        "py" => "python3",
-        "sh" | "bash" => "bash",
-        "js" | "mjs" => "node",
+    #[cfg(windows)]
+    let (interpreter, extra_args): (String, &[&str]) = match ext.as_str() {
+        // The py launcher is present on most Windows installs; python.exe is
+        // preferred when it is on PATH, otherwise `py -3` finds the default
+        // Python 3 installation without hard-coding a version.
+        "py" => {
+            if crate::platform::process::which("python.exe").is_some() {
+                ("python".into(), &[])
+            } else if crate::platform::process::which("py.exe").is_some() {
+                ("py".into(), &["-3"])
+            } else {
+                return Err(
+                    "Python not found: install Python 3 (python.exe or the py launcher) to run .py skills"
+                        .into(),
+                );
+            }
+        }
+        "sh" | "bash" => match crate::platform::process::bash_program() {
+            Some(path) => (path.to_string_lossy().into_owned(), &[]),
+            None => {
+                return Err(
+                    "bash not found: install Git for Windows (Git Bash) to run .sh/.bash skills, or use a .py/.js skill"
+                        .into(),
+                )
+            }
+        },
+        "js" | "mjs" => ("node".into(), &[]),
         _ => {
             return Err(format!(
                 "no runner for entrypoint \"{}\": set the executable bit or use a .py/.sh/.bash/.js/.mjs file",
@@ -68,9 +91,21 @@ fn command_for(candidate: &Path) -> std::result::Result<(Command, String), Strin
             ))
         }
     };
-    let mut cmd = Command::new(interpreter);
-    cmd.arg(candidate);
-    Ok((cmd, interpreter.to_string()))
+    #[cfg(not(windows))]
+    let (interpreter, extra_args): (String, &[&str]) = match ext.as_str() {
+        "py" => ("python3".into(), &[]),
+        "sh" | "bash" => ("bash".into(), &[]),
+        "js" | "mjs" => ("node".into(), &[]),
+        _ => {
+            return Err(format!(
+                "no runner for entrypoint \"{}\": set the executable bit or use a .py/.sh/.bash/.js/.mjs file",
+                candidate.display()
+            ))
+        }
+    };
+    let mut cmd = Command::new(&interpreter);
+    cmd.args(extra_args).arg(candidate);
+    Ok((cmd, interpreter))
 }
 
 // Reads a pipe up to the cap plus one byte so truncation is detectable even
@@ -90,7 +125,11 @@ impl Tool for SkillExecTool {
         "skill_exec"
     }
     fn description(&self) -> &str {
-        "Run a script skill's declared entrypoint (entry: or scripts: in its SKILL.md) with the given args, passed as argv — never through a shell. Runs with cwd = the skill folder, TMPDIR/TEMP/TMP pointed at Harness/tmp/, killed after 120 s (a script skill may declare a shorter timeout_sec), stdout/stderr capped at 30k each. The executable bit runs the file directly; otherwise .py runs via python3, .sh/.bash via bash, .js/.mjs via node. Returns exitCode, stdout, stderr, truncated. Dangerous: always confirmed."
+        if cfg!(windows) {
+            "Run a script skill's declared entrypoint (entry: or scripts: in its SKILL.md) with the given args, passed as argv — never through a shell. Runs with cwd = the skill folder, TMPDIR/TEMP/TMP pointed at Harness/tmp/, killed after 120 s (a script skill may declare a shorter timeout_sec), stdout/stderr capped at 30k each. The executable bit runs the file directly; otherwise .py runs via python or py -3, .sh/.bash via Git Bash when installed, .js/.mjs via node. Returns exitCode, stdout, stderr, truncated. Dangerous: always confirmed."
+        } else {
+            "Run a script skill's declared entrypoint (entry: or scripts: in its SKILL.md) with the given args, passed as argv — never through a shell. Runs with cwd = the skill folder, TMPDIR/TEMP/TMP pointed at Harness/tmp/, killed after 120 s (a script skill may declare a shorter timeout_sec), stdout/stderr capped at 30k each. The executable bit runs the file directly; otherwise .py runs via python3, .sh/.bash via bash, .js/.mjs via node. Returns exitCode, stdout, stderr, truncated. Dangerous: always confirmed."
+        }
     }
     fn parameters(&self) -> Value {
         json!({
