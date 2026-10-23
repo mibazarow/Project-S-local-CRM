@@ -13,7 +13,7 @@
 > 9. **Каждое обновление этого файла — сразу `git add CROSPLATFORM.md && git commit && git push`.** Перед работой — `git pull`. Пользователь не является прокси: агенты общаются через файл и remote, а не через пересылку сообщений.
 > 10. **CROSPLATFORM.md — живой файл, не архив.** В нём только текущее состояние, открытые вопросы/actions и краткие решения. Закрытые Q&A после подтверждения удаляются; важные выводы — одной строкой в §0.1 «Решения».
 > 11. **Режим по умолчанию — macOS.** Windows-сборка/порт запускаются **только по явной команде пользователя** («а теперь делаем для Windows»). Не собирать Windows автоматически после каждого изменения и не начинать Windows-работу самостоятельно.
-> 12. **На Windows нет агента.** Windows — только build/test-хост: `git pull`, сборка, тесты, артефакты. Весь код, включая `platform/windows`, пишет macOS-агент; на Windows код не правится и не коммитится.
+> 12. **На Windows нет агента.** Windows — только build/test-хост: `git pull`, сборка, тесты, артефакты. Весь код, включая `platform/`, пишет macOS-агент; на Windows код не правится и не коммитится.
 
 Это не чат, а **журнал решений и статуса**, который ведёт macOS-агент, плюс handoff для сборки на Windows. Windows-агента нет; пользователь только просит собрать и проверяет GUI.
 
@@ -50,7 +50,7 @@
 
 | Роль | Где | Ветка | Что делает |
 |---|---|---|---|
-| macOS-агент | Mac | `master` + короткие `feat/*`, `fix/*` | **Единственный разработчик**: продукт, `platform/windows`, сборка, релизы macOS |
+| macOS-агент | Mac | `master` + короткие `feat/*`, `fix/*` | **Единственный разработчик**: продукт, `platform/`, сборка, релизы macOS |
 | Windows build host | Windows | — | **Нет агента.** Только `git pull`, сборка, тесты, артефакты. Код не правится и не коммитится |
 | Linux build host (позже) | Linux | — | **Нет агента.** Только сборка |
 
@@ -59,7 +59,7 @@
 Правила:
 
 - `master` — единый источник правды и защищённая ветка. Все изменения — через PR/merge.
-- Постоянных веток `macos`/`windows`/`linux` и временной `port/windows` **нет**. Весь код, включая `platform/windows`, пишет macOS-агент в `feat/*`/`fix/*` или `master`.
+- Постоянных веток `macos`/`windows`/`linux` и временной `port/windows` **нет**. Весь код, включая `platform/`, пишет macOS-агент в `feat/*`/`fix/*` или `master`.
 - Windows build host не коммитит: только `git pull`, сборка, тесты, артефакты. Все коммиты и push делает macOS.
 - Релизные теги (`v1.0.2`) ставятся на `master`; артефакты собираются под каждую ОС из одного коммита.
 - Если Windows временно отстаёт — используем pre-release-тег (`v1.0.3-win.1`), а не отдельную версию кода.
@@ -82,7 +82,7 @@ scripts/windows/stage-embed-model.ps1      # есть
 двух файлах шва, отдельные каталоги заведём только когда кода станет больше.
 
 - Общая бизнес-логика (задачи, чаты, БД, агент, скиллы, память, поиск) — **одна** для всех ОС.
-- `platform/windows` пишет macOS-агент; Windows-хост только компилирует, тестирует и отдаёт артефакты. Кода на Windows нет.
+- `platform/` пишет macOS-агент; Windows-хост только компилирует, тестирует и отдаёт артефакты. Кода на Windows нет.
 - Платформенные вызовы — только через `platform/`. Не размазывать `#[cfg(target_os)]` по бизнес-логике.
 - Cargo-зависимости — через `[target.'cfg(target_os = "...")'.dependencies]`.
 - Упаковка, WebView2, fixed runtime, подпись, installer — в `tauri.windows.conf.json` / `scripts/windows/`.
@@ -96,7 +96,7 @@ scripts/windows/stage-embed-model.ps1      # есть
 
 1. `git switch master && git pull`.
 2. Прочитать этот файл и `AGENTS.md`.
-3. Работать в своей ветке на macOS: продукт и весь код, включая `platform/windows`.
+3. Работать в своей ветке на macOS: продукт и весь код, включая `platform/`.
 4. Обновить «Журнал»: что сделано, коммит, влияние, что проверить на Windows.
 5. Прогнать тесты/сборку, коммит, push. Windows-сборка — только по команде, с macOS по SSH (см. §3.1).
 6. Windows build host делает `git pull` для сборки; код не правит и не коммитит.
@@ -164,10 +164,10 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Ветка: **master**; remote `origin` — приватный GitVerse.
 - Схема БД: **v40**.
 - Встроенных скиллов: **38**.
-- Модель эмбеддингов: **не в git**, ~330 МБ; доставляется до сборки (см. `README.md` → «После клонирования»).
+- Модель эмбеддингов: **не в git**, ~330 МБ; доставляется до сборки (см. `DOCS/about.md` → «Поиск и индексация»).
 - macOS: рабочая сборка, aarch64.
 - Windows: **demo-сборка собрана 2026-10-23 на `0003135`** (без боевых данных); минимальный платформенный шов для компиляции есть (`platform/mod.rs`, cfg-ветки, Windows-конфиг), полного порта нет; сборка — с macOS по SSH (§3.1). **Windows-агента нет**; код пишет macOS.
-- Windows demo, последний собранный установщик: `Project-S_1.0.2_x64-setup.exe`, 297 438 162 байт (283.66 MiB), SHA256 `2b5f208c20029628a21f5046afa72927d0fd9f45ee0a7389369636bdcf55d041` — собран 2026-10-23 на `0003135`, разложен (сверено по SHA256) на рабочий стол Windows (`C:\Users\mb\Desktop`), рабочий стол Mac (`~/Desktop`) и в `~/Downloads/Project-S-windows/`. **Не установлен**, GUI не запускался. Единственное предупреждение сборки — прежнее нефатальное `esaxx-rs` `-std=c++11` D9002.
+- Windows demo, последний собранный установщик: `Project-S_1.0.2_x64-setup.exe`, 297 438 162 байт (283.66 MiB), SHA256 `2b5f208c20029628a21f5046afa72927d0fd9f45ee0a7389369636bdcf55d041` — собран 2026-10-23 на `0003135`, разложен (сверено по SHA256) на рабочий стол Windows (`C:\Users\mb\Desktop`) и рабочий стол Mac (`~/Desktop`). **Не установлен**, GUI не запускался. Единственное предупреждение сборки — прежнее нефатальное `esaxx-rs` `-std=c++11` D9002.
 - Windows demo, установленная копия: всё ещё предыдущая сборка `ce8ed5b` per-user в `C:\Users\mb\AppData\Local\Project-S`; заменится только после установки нового установщика пользователем.
 - Доступ к Windows VM проверен 2026-10-23: `DOCS/WINDOWS-ACCESS.md`; Windows HEAD `0003135`, рабочее дерево чистое.
 - Linux: план, реализации нет.
@@ -176,13 +176,17 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 ## 6. Windows P0 (код пишет macOS, собирает Windows)
 
 - [x] Убрать Unix-импорты из production (`processes.rs`, `skills/exec.rs`, `cdp/mod.rs`, `ssh_tools.rs`).
-- [ ] Job Objects + kill tree вместо process group/`kill -0`.
-- [ ] Убрать `sh`/`bash -lc`; PowerShell/cmd, quoting, `CREATE_NO_WINDOW`.
+- [ ] Shell: убрать `sh -c` в инструменте `bash` и `bash`/`python3` в скиллах; PowerShell/cmd, quoting, UTF-8.
+- [ ] Job Objects + kill tree вместо process group/`kill -0` (сейчас живость и kill — через `taskkill`/`tasklist`).
+- [ ] askpass без `sh`: `.cmd`/`.exe` + ACL вместо `askpass.sh` с 0600/0700.
 - [x] `HOME` → `dirs`/platform resolver; убрать macOS-пути.
-- [ ] `canonicalize`/`\\?\`, абсолютные пути в БД, reparse points.
-- [ ] Путь ресурсов `exe_dir/resources/...`; 38 скиллов находятся.
-- [ ] Модель доставлена в `src-tauri/resources/models/embeddinggemma-2` (4 файла); PowerShell-скрипт или ручная копия.
-- [ ] `bundle.windows`, `bundle.targets`, иконки, titlebar, single-instance.
+- [ ] `canonicalize`/`\\?\`, длинные пути, UNC, reparse points, абсолютные пути в БД.
+- [x] Путь ресурсов `exe_dir/resources/...`; 38 скиллов и модель находятся после установки.
+- [x] Модель доставлена в `src-tauri/resources/models/embeddinggemma-2` (4 файла); `scripts/windows/stage-embed-model.ps1`.
+- [x] `bundle.windows`, `bundle.targets`, иконки (`icon.ico` + Square*Logo).
+- [ ] Нативный Windows-titlebar / Snap Layouts.
+- [ ] Single-instance (второй запуск плодит окно и делит WebView2-профиль).
+- [ ] WebView2: зафиксировать режим (`fixedRuntime` vs системный + fallback) и путь UDF.
 
 Подробности: `DOCS/WINDOWS-PORT.md`.
 
@@ -203,7 +207,7 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 ### 2026-10-23 15:34 UTC — macOS
 - Ветка: `master`
 - Коммит: `0003135`
-- Сделано: на Windows-хосте `git pull` `ce8ed5b` → `0003135` (master, чистое дерево) и demo-сборка `npx tauri build --config src-tauri/tauri.windows.conf.json` — успешно, ~4 мин 28 с. Впервые скомпилирована Windows-ветка `#[cfg(windows)] kill_tool_child`. NSIS-установщик `Project-S_1.0.2_x64-setup.exe`, 297 438 162 байт (283.66 MiB), SHA256 `2b5f208c20029628a21f5046afa72927d0fd9f45ee0a7389369636bdcf55d041`; разложен и сверен по хешу на рабочий стол Windows, рабочий стол Mac и в `~/Downloads/Project-S-windows/`. Не устанавливался, GUI не запускался, процессы не убивались.
+- Сделано: на Windows-хосте `git pull` `ce8ed5b` → `0003135` (master, чистое дерево) и demo-сборка `npx tauri build --config src-tauri/tauri.windows.conf.json` — успешно, ~4 мин 28 с. Впервые скомпилирована Windows-ветка `#[cfg(windows)] kill_tool_child`. NSIS-установщик `Project-S_1.0.2_x64-setup.exe`, 297 438 162 байт (283.66 MiB), SHA256 `2b5f208c20029628a21f5046afa72927d0fd9f45ee0a7389369636bdcf55d041`; разложен и сверен по хешу на рабочий стол Windows и рабочий стол Mac. Не устанавливался, GUI не запускался, процессы не убивались.
 - Влияние: только упаковка/сборка Windows; macOS-код, контракты и БД не менялись (docs-only коммит). Изменение в §5.
 - Действие: `[ACTION: user]` установить с рабочего стола и проверить GUI.
 - Статус: waiting
@@ -251,7 +255,7 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 ### 2026-10-21 16:35 UTC — macOS
 - Ветка: `master`
 - Коммит: см. `git log`
-- Сделано: Windows-агента нет. Windows — только build/test-хост; весь код, включая `platform/windows`, пишет macOS. Сборка — только по команде пользователя через SSH; Windows — demo-only.
+- Сделано: Windows-агента нет. Windows — только build/test-хост; весь код, включая `platform/`, пишет macOS. Сборка — только по команде пользователя через SSH; Windows — demo-only.
 - Влияние: процесс/scope; код не менялся.
 - Действие: `[ACTION: user]` дать SSH-доступ (alias/host/user/port/path); `[ACTION: macos]` после доступа проверить окружение и собрать demo.
 - Статус: waiting
@@ -276,7 +280,7 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 ## 9. Ссылки
 
 - `AGENTS.md` — правила работы агентов.
-- `README.md` — запуск, модель после клонирования.
-- `DOCS/WINDOWS-PORT.md` — полный план порта.
+- `README.md` — презентация продукта, запуск; `DOCS/about.md` — архитектура, сборка, модель после клонирования.
+- `DOCS/WINDOWS-PORT.md` — статус и остаток работ по Windows.
 - `DOCS/LINUX-PORT.md` — план Linux.
 - `DOCS/Q.md` — текущая очередь задач.

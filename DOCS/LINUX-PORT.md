@@ -281,7 +281,7 @@
 
 Итого: **8–14 недель** при одном опытном разработчике; Flatpak-путь снижает риск, AppImage — повышает. Риск-буфер +30–40% на Wayland/portal/GPU.
 
-## 12. Чек-лист «не проебать»
+## 12. Финальный чек-лист
 
 - [ ] WebKitGTK 4.1: детект → системный → Flatpak/вложенный fallback.
 - [ ] Flatpak sandbox/portals: файлы, DnD, clipboard, screenshot, notifications, autostart.

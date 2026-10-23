@@ -67,7 +67,7 @@ ssh win11 'hostname; whoami'
 
 ## 4. Как собирать (только по команде пользователя)
 
-Windows — **demo-only**, без боевых данных и production-hardening. Код на Windows не правится и не коммитится; весь код, включая `platform/windows`, пишет macOS-агент.
+Windows — **demo-only**, без боевых данных и production-hardening. Код на Windows не правится и не коммитится; весь код, включая `platform/`, пишет macOS-агент.
 
 ```bash
 ssh win11 'cd C:\Users\mb\Projects\Project-S-local-CRM; git pull; npx tauri build --config src-tauri/tauri.windows.conf.json'

@@ -52,7 +52,7 @@
 | `unwrap/expect` вне тестов | **33** (грубый grep 5310 почти весь в тестах) |
 | `any`/`@ts-ignore`/`eslint-disable` | 4 |
 | Cargo warnings | 6 (unused mut + dead code) |
-| Платформенные cfg | `processes.rs`, `platform/mod.rs`; подпапок `platform/windows/linux` пока нет |
+| Платформенные cfg | `processes.rs`, `platform/mod.rs`, `platform/process.rs`; отдельных подпапок `platform/<os>` нет — различия ОС cfg-ветками в двух файлах шва |
 
 **Крупнейшие монолиты Rust:** `db/schema.rs` 2835, `agent/ssh_tools.rs` 2726, `scheduler/mod.rs` 2347, `agent/loop.rs` 2287, `llm/mod.rs` 2043, `search/mod.rs` 1938, `projects.rs` 1697, `agent/project_tools.rs` 1667, `memory/mod.rs` 1604, `agent/net_tools.rs` 1473, `agent/doc_tools.rs` 1433, `tasks.rs` 1370, `chat/run.rs` 1323, `chat/mod.rs`/`fs_ops.rs` 1305, `agent/git_tools.rs` 1304, `notes/mod.rs` 1279, `agent/pdf_tools.rs` 1276, `chat/context.rs` 1241, `skills/import.rs` 1163, `mcp/mod.rs` 1071, `agent/browser_tool.rs` 1066, `agent/harness_tools/fs_tools.rs` 1040, `cdp/mod.rs` 1009. `agent/harness_tools/` целиком — 16 файлов / 9 119 строк.
 

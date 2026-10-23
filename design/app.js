@@ -47,9 +47,9 @@ const PROJECTS = {
       { who: 'agent', steps: ['зрение: разбор изображения', 'запись: example.ru/Входящие/screen-glavnaya.png', 'запись: example.ru/INBOX.md'], text: 'Сохранил в «Входящие», записал в INBOX.md. На скрине: шапка без CTA, баннер перекрывает заголовок H1, форма заявки ниже первого экрана. Рекомендую вынести CTA в шапку — заведу задачу?' },
     ],
   },
-  'kedr-group.ru': {
+  'kedr.example.ru': {
     files: {
-      'datas.md': { type: 'file', preview: '# Доступы — kedr-group.ru\n\n## Домен\nРегистратор: reg.ru\n\n## Почта\noffice@kedr-group.ru' },
+      'datas.md': { type: 'file', preview: '# Доступы — kedr.example.ru\n\n## Домен\nРегистратор: reg.ru\n\n## Почта\noffice@kedr.example.ru' },
       'Документы': { type: 'dir', children: {
         'Договор_КЕДР_Групп.docx': { type: 'file' },
         'Доп_соглашение_1.docx': { type: 'file' },
@@ -66,12 +66,12 @@ const PROJECTS = {
       { t: 'Акт по брендбуку', s: 'progress', m: 'шаблон готов' },
     ],
     chat: [
-      { who: 'agent', text: 'Проект kedr-group.ru (клиент «КЕДР Групп»): брендбук передан, остался акт. Спроси что-нибудь.' },
+      { who: 'agent', text: 'Проект kedr.example.ru (клиент «КЕДР Групп»): брендбук передан, остался акт. Спроси что-нибудь.' },
     ],
   },
-  'zdrav-apteka.ru': {
+  'apteka.example.ru': {
     files: {
-      'datas.md': { type: 'file', preview: '# Доступы — zdrav-apteka.ru\n\n## Сервер (VPS)\nIP: 192.0.2.15, SSH-ключ в ~/.ssh\n\n## WordPress + мобильное приложение\nAPI-ключи — раздел DATAS_PROJECT_1' },
+      'datas.md': { type: 'file', preview: '# Доступы — apteka.example.ru\n\n## Сервер (VPS)\nIP: 192.0.2.15, SSH-ключ в ~/.ssh\n\n## WordPress + мобильное приложение\nAPI-ключи — раздел DATAS_PROJECT_1' },
       'Документы': { type: 'dir', children: {
         'Договор_ЗДРАВСИСТЕМА_ИП Петров.pdf': { type: 'file' },
         'Карточка предприятия.docx': { type: 'file' },
@@ -87,7 +87,7 @@ const PROJECTS = {
       { t: 'Оплатить ИИ-сервисы', s: 'done', m: '12.10' },
     ],
     chat: [
-      { who: 'agent', text: 'zdrav-apteka.ru: 7 счетов выставлено, акты за этапы 1–3 подписаны, по моб. приложению ждём предоплату.' },
+      { who: 'agent', text: 'apteka.example.ru: 7 счетов выставлено, акты за этапы 1–3 подписаны, по моб. приложению ждём предоплату.' },
     ],
   },
   'temp-test.ru': {
@@ -123,10 +123,10 @@ const HARNESS_CHATS = {
   ],
   s2: [
     { who: 'user', text: 'разбери OLD_FOLDER: где у меня лежат все счета по ЗДРАВСИСТЕМА?' },
-    { who: 'agent', steps: ['bash: ls OLD_FOLDER/zdrav-apteka.ru/Документы/Сделано', 'чтение 7 файлов .docx'], text: 'Все 7 счетов по ЗДРАВСИСТЕМА — в zdrav-apteka.ru/Документы/Сделано/. Ещё 3 без актов — в «Сделано нет актов». Могу перенести в Project S и завести задачи по актам.' },
+    { who: 'agent', steps: ['bash: ls OLD_FOLDER/apteka.example.ru/Документы/Сделано', 'чтение 7 файлов .docx'], text: 'Все 7 счетов по ЗДРАВСИСТЕМА — в apteka.example.ru/Документы/Сделано/. Ещё 3 без актов — в «Сделано нет актов». Могу перенести в Project S и завести задачи по актам.' },
   ],
   s3: [
-    { who: 'agent', steps: ['браузер: reg.ru — срок домена example.ru'], text: 'Домены клиентов в порядке. example.ru — до 28.09.2027, zdrav-apteka.ru — до 14.03.2027. Напомню за 30 дней.' },
+    { who: 'agent', steps: ['браузер: reg.ru — срок домена example.ru'], text: 'Домены клиентов в порядке. example.ru — до 28.09.2027, apteka.example.ru — до 14.03.2027. Напомню за 30 дней.' },
   ],
 };
 
@@ -137,7 +137,7 @@ const SCHEDULES = [
 ];
 
 const MEMORY = [
-  'Клиент ЗДРАВСИСТЕМА (ООО, аптечная сеть) — проект zdrav-apteka.ru',
+  'Клиент ЗДРАВСИСТЕМА (ООО, аптечная сеть) — проект apteka.example.ru',
   'Пользователь — ИП Петров, исполнитель по всем договорам',
   'Счета всегда в .docx, нумерация сквозная по году',
 ];
