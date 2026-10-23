@@ -102,7 +102,8 @@ pub fn signal_group(pid: i64, _pgid: i64, signal: &str) {
 
 // Foreground tool command (the `bash` agent tool): `sh -c` in its own process
 // group on Unix, so the tool can signal the whole tree on cancel/timeout.
-// Windows keeps the plain spawn: its group kill is still open (R-24).
+// Windows keeps `sh -c` as well, but without a process group: there the tree
+// is stopped by pid in `kill_tool_child` below.
 #[cfg(unix)]
 pub fn tool_command(command: &str) -> Command {
     use std::os::unix::process::CommandExt;
@@ -121,14 +122,36 @@ pub fn tool_command(command: &str) -> Command {
 // Hard kill of a foreground tool child: the whole group on Unix, where
 // `tool_command` made the pgid equal to the pid, so a dev server and its
 // children die together and the stdout/stderr pipes the tool's reader threads
-// are blocked on finally close. Non-Unix still kills only the direct child.
+// are blocked on finally close.
 #[cfg(unix)]
 pub fn kill_tool_child(child: &mut Child) {
     let pid = child.id() as i64;
     signal_group(pid, pid, "-KILL");
 }
 
-#[cfg(not(unix))]
+// Windows has no POSIX process groups. `/T` walks the child tree by parent
+// pid, so the `sh` wrapper, the command it started, and that command's own
+// children (a dev server) are stopped together; `/F` is the hard kill that
+// matches SIGKILL. Killing only the direct child would orphan the grandchildren
+// and leave the stdout/stderr pipes the tool's reader threads block on open.
+#[cfg(windows)]
+pub fn kill_tool_child(child: &mut Child) {
+    let mut cmd = Command::new("taskkill");
+    cmd.arg("/PID")
+        .arg(child.id().to_string())
+        .arg("/T")
+        .arg("/F")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    super::hide_console(&mut cmd);
+    let _ = cmd.status();
+    // taskkill can fail (already-exited child, missing binary, permissions);
+    // the direct kill is the safety net either way.
+    let _ = child.kill();
+}
+
+// No process-group or tree kill on other targets: direct child only.
+#[cfg(not(any(unix, windows)))]
 pub fn kill_tool_child(child: &mut Child) {
     let _ = child.kill();
 }

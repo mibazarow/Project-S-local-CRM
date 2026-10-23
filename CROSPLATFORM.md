@@ -199,6 +199,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Статус: waiting | done
 ```
 
+### 2026-10-23 15:28 UTC — macOS
+- Ветка: `master`
+- Коммит: см. `git log`
+- Сделано: R-24 для Windows закрыт. `platform/process.rs::kill_tool_child` под `cfg(windows)` вызывает `taskkill /PID <pid> /T /F` со скрытой консолью и заглушёнными stdout/stderr, затем `child.kill()` как fallback; `/T` обходит дерево по parent pid, поэтому `sh`, запущенная им команда и её дети (dev-сервер) умирают вместе на cancel/timeout `bash`. `tool_command` на Windows по-прежнему `sh -c` (раннер не менялся); для не-Unix/не-Windows оставлен прежний `child.kill()`.
+- Влияние: только платформенная ветка, общий контракт/БД/UX не менялись; Unix-ветка не тронута. Гейты macOS: `cargo test` 1092 passed / 19 ignored, `cargo clippy --all-targets -- -D warnings` с allows из `scripts/check.sh` — чисто. Windows-ветка на macOS не компилируется.
+- Действие: `[ACTION: macos]` следующая плановая Windows-сборка проверяет компиляцию и stop/timeout `bash` на дереве процессов; отдельная сборка в этом срезе не запускалась.
+- Статус: waiting
+
 ### 2026-10-23 15:25 UTC — macOS
 - Ветка: `master`
 - Коммит: `ce8ed5b`
