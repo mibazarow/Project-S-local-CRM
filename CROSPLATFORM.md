@@ -199,6 +199,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Статус: waiting | done
 ```
 
+### 2026-10-23 13:54 UTC — macOS
+- Ветка: `master`
+- Коммит: R-24 (см. `git log`)
+- Сделано: платформенный шов `platform/process.rs` пополнился двумя хелперами для foreground-инструмента `bash`: `tool_command(command)` (Unix — `sh -c` в собственной группе процессов через `process_group(0)`, pgid == pid; не-Unix — ровно как раньше) и `kill_tool_child(child)` (Unix — `kill -KILL -<pgid>` через уже существующий `signal_group`; не-Unix — прежний `child.kill()`). `agent/harness_tools/shell_tools.rs` переведён на них: stop/таймаут рвёт всё дерево, а не только обёртку `sh`.
+- Влияние: общий код и контракт платформенного шва (два новых `pub fn`); на macOS поведение успешного запуска, кодов возврата, stdout/stderr/truncation и тексты ошибок не менялись, по stop/таймауту теперь умирают внуки (dev-сервер) и освобождается порт. Гейты: `cargo test` 1092 passed / 19 ignored, `cargo clippy --all-targets -- -D warnings` с allows из `scripts/check.sh` — чисто.
+- Действие: `[ACTION: windows]` только по явной команде пользователя — реализовать не-Unix ветки `tool_command`/`kill_tool_child` (`taskkill /T /F` либо Job Objects, см. §6 P0) и прогнать тесты группы на хосте; в этом срезе Windows-путь намеренно не тронут.
+- Статус: waiting
+
 ### 2026-10-21 17:20 UTC — macOS
 - Ветка: `master`
 - Коммит: см. `git log`

@@ -1,14 +1,14 @@
 // OS-specific process control for the background-process domain
-// (crate::processes): how a detached background command is built, how a
-// process or process group is probed for liveness, and how it is signalled.
-// The macOS behavior is unchanged; Windows gets the native equivalents,
-// because it has neither POSIX process groups nor POSIX signals.
+// (crate::processes) and for the foreground `bash` tool: how a command is
+// built, how a process or process group is probed for liveness, and how it is
+// signalled. The macOS behavior is unchanged; Windows gets the native
+// equivalents, because it has neither POSIX process groups nor POSIX signals.
 //
 // Deliberately not here: the agent feature tools that happen to be
 // macOS-only (clipboard, OCR, PDF, Spotlight, screenshot, open_with,
 // browser/CDP). They are product features, not shared infrastructure, so
 // their platform specifics stay with the feature.
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 
 // Detached background command: `sh -c` in its own process group on Unix
 // (process_group(0) makes the stored pgid equal to the pid). Windows runs
@@ -98,6 +98,39 @@ pub fn signal_group(pid: i64, _pgid: i64, signal: &str) {
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
     super::hide_console(&mut cmd);
     let _ = cmd.status();
+}
+
+// Foreground tool command (the `bash` agent tool): `sh -c` in its own process
+// group on Unix, so the tool can signal the whole tree on cancel/timeout.
+// Windows keeps the plain spawn: its group kill is still open (R-24).
+#[cfg(unix)]
+pub fn tool_command(command: &str) -> Command {
+    use std::os::unix::process::CommandExt;
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(command).process_group(0);
+    cmd
+}
+
+#[cfg(not(unix))]
+pub fn tool_command(command: &str) -> Command {
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c").arg(command);
+    cmd
+}
+
+// Hard kill of a foreground tool child: the whole group on Unix, where
+// `tool_command` made the pgid equal to the pid, so a dev server and its
+// children die together and the stdout/stderr pipes the tool's reader threads
+// are blocked on finally close. Non-Unix still kills only the direct child.
+#[cfg(unix)]
+pub fn kill_tool_child(child: &mut Child) {
+    let pid = child.id() as i64;
+    signal_group(pid, pid, "-KILL");
+}
+
+#[cfg(not(unix))]
+pub fn kill_tool_child(child: &mut Child) {
+    let _ = child.kill();
 }
 
 #[cfg(test)]

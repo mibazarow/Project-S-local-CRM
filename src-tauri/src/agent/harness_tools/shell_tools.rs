@@ -1,16 +1,18 @@
 // The bash tool (SPEC 5.2 item 2): sh -c with the default cwd Harness/,
 // TMPDIR/TEMP/TMP pointed at Harness/tmp/ (never the system /tmp), a wall
-// timeout that kills the command, and capped stdout/stderr. The background
-// twin lives in process_tools.rs.
+// timeout that kills the command and everything it spawned (see the platform
+// process seam), and capped stdout/stderr. The background twin lives in
+// process_tools.rs.
 use crate::agent::project_tools::require_wd;
 use crate::agent::result::{read_capped, ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use super::resolve_path;
 use crate::error::Result;
 use crate::paths;
+use crate::platform;
 use serde_json::{json, Value};
 use std::fs;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 const BASH_TIMEOUT_SECS: u64 = 120;
@@ -75,9 +77,7 @@ impl Tool for BashTool {
             _ => paths::harness_dir(&wd),
         };
         fs::create_dir_all(&cwd)?;
-        let mut child = Command::new("sh")
-            .arg("-c")
-            .arg(command)
+        let mut child = platform::process::tool_command(command)
             .current_dir(&cwd)
             .env("TMPDIR", &tmp)
             .env("TEMP", &tmp)
@@ -96,7 +96,7 @@ impl Tool for BashTool {
                 break status;
             }
             if cancel.as_ref().is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
-                let _ = child.kill();
+                platform::process::kill_tool_child(&mut child);
                 let _ = child.wait();
                 return Ok(ToolResult::err(
                     ToolErrorCode::ExecutionError,
@@ -104,7 +104,7 @@ impl Tool for BashTool {
                 ));
             }
             if Instant::now() >= deadline {
-                let _ = child.kill();
+                platform::process::kill_tool_child(&mut child);
                 let _ = child.wait();
                 return Ok(ToolResult::err(
                     ToolErrorCode::ExecutionError,
@@ -130,6 +130,8 @@ impl Tool for BashTool {
 mod tests {
     use super::*;
     use crate::agent::harness_tools::test_support::{exec, setup};
+    #[cfg(unix)]
+    use crate::onboarding::temp_test_dir;
     use serde_json::json;
     use std::path::{Path, PathBuf};
 
@@ -205,6 +207,110 @@ mod tests {
         assert!(err.message.contains("cancelled"), "{}", err.message);
         // The child must die on cancel, not after the 120 s command timeout.
         assert!(elapsed < Duration::from_secs(5), "cancel took {elapsed:?}");
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    // Unix group kill (R-24): the tool signals the whole process group, so a
+    // grandchild dies with the `sh` wrapper and stops holding the stdout/stderr
+    // pipes the two reader threads are blocked on. The probe command leaves the
+    // grandchild pid in a file and then sleeps; `sleep 30 &` stays in the
+    // wrapper's group because a non-interactive shell has no job control.
+    #[cfg(unix)]
+    fn group_probe(pidfile: &Path) -> String {
+        format!("sleep 30 & echo $! > '{}'; sleep 30", pidfile.display())
+    }
+
+    #[cfg(unix)]
+    fn grandchild_pid(pidfile: &Path) -> u32 {
+        for _ in 0..100 {
+            if let Ok(raw) = fs::read_to_string(pidfile) {
+                if let Ok(pid) = raw.trim().parse::<u32>() {
+                    if pid > 1 {
+                        return pid;
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("no grandchild pid in {}", pidfile.display());
+    }
+
+    #[cfg(unix)]
+    fn pid_is_gone(pid: u32) -> bool {
+        for _ in 0..100 {
+            if !platform::process::kill_alive(&pid.to_string()) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    // Characterization of what this slice fixes: the old direct-child kill
+    // leaves the grandchild alive.
+    #[cfg(unix)]
+    #[test]
+    fn killing_only_the_direct_child_leaves_the_grandchild_alive() {
+        use std::process::Command;
+        let dir = temp_test_dir("ht-bash-group-old");
+        let pidfile = dir.join("grandchild.pid");
+        let mut child = Command::new("sh")
+            .arg("-c")
+            .arg(group_probe(&pidfile))
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let pid = grandchild_pid(&pidfile);
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            platform::process::kill_alive(&pid.to_string()),
+            "grandchild {pid} should have survived a direct-child kill"
+        );
+        let _ = Command::new("kill").args(["-9", &pid.to_string()]).status();
+        assert!(pid_is_gone(pid), "cleanup of grandchild {pid} failed");
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bash_timeout_kills_the_whole_process_group() {
+        let env = setup("ht-bash-group-timeout");
+        let pidfile = env.wd.join("grandchild.pid");
+        let tool = BashTool::with_timeout(Duration::from_millis(300));
+        let r = tool
+            .execute(&json!({ "command": group_probe(&pidfile) }), &env.ctx)
+            .unwrap();
+        assert!(!r.ok);
+        assert!(r.error.unwrap().message.contains("timed out"));
+        let pid = grandchild_pid(&pidfile);
+        assert!(pid_is_gone(pid), "grandchild {pid} survived the timeout kill");
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bash_cancel_kills_the_whole_process_group() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let env = setup("ht-bash-group-cancel");
+        let pidfile = env.wd.join("grandchild.pid");
+        let cancel = std::sync::Arc::new(AtomicBool::new(false));
+        let mut ctx = env.ctx.clone();
+        ctx.cancel = Some(std::sync::Arc::clone(&cancel));
+        let flag = std::sync::Arc::clone(&cancel);
+        let setter = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let r = BashTool::default()
+            .execute(&json!({ "command": group_probe(&pidfile) }), &ctx)
+            .unwrap();
+        setter.join().unwrap();
+        assert!(!r.ok);
+        assert!(r.error.unwrap().message.contains("cancelled"));
+        let pid = grandchild_pid(&pidfile);
+        assert!(pid_is_gone(pid), "grandchild {pid} survived the cancel kill");
         fs::remove_dir_all(&env.wd).unwrap();
     }
 }
