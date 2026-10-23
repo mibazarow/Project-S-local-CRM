@@ -244,7 +244,7 @@ mod tests {
     use crate::mcp::mock_server::{
         mcp_answer, respond, write_sse_headers, CapturedRequest, Handler, MockServer,
     };
-    use crate::mcp::McpClient;
+    use crate::mcp::client::McpClient;
     use serde_json::{json, Value};
     use std::collections::VecDeque;
     use std::io::Write;

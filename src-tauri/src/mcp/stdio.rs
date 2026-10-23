@@ -126,7 +126,9 @@ impl Drop for StdioTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::jsonrpc::RpcChannel;
     use crate::onboarding::temp_test_dir;
+    use crate::paths;
     use serde_json::json;
 
     fn spawn_sh(script: &str, tmp: &Path) -> StdioTransport {
@@ -183,6 +185,29 @@ mod tests {
         transport.close();
         let err = transport.send(&json!({ "jsonrpc": "2.0" })).unwrap_err();
         assert!(err.to_string().contains("pipe is closed"), "{err}");
+        std::fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn stdio_child_runs_with_tmp_pointed_at_harness_tmp() {
+        let wd = temp_test_dir("mcp-tmp-env");
+        let tmp = paths::harness_tmp_dir(&wd);
+        // The script waits for the initialize request, then answers with the
+        // temp env vars and a configured custom var it received.
+        let script = r#"read request; printf '{"jsonrpc":"2.0","id":1,"result":{"tmpdir":"%s","temp":"%s","tmp":"%s","custom":"%s"}}\n' "$TMPDIR" "$TEMP" "$TMP" "$MY_SECRET""#;
+        let env = BTreeMap::from([("MY_SECRET".to_string(), "s3cret-value".to_string())]);
+        let transport = StdioTransport::spawn("sh", &["-c".to_string(), script.to_string()], &env, &tmp)
+            .unwrap();
+        let mut channel = RpcChannel::new(Box::new(transport));
+        let result = channel
+            .request("initialize", json!({}), Duration::from_secs(15))
+            .unwrap();
+        let want = tmp.display().to_string();
+        assert_eq!(result["tmpdir"], want);
+        assert_eq!(result["temp"], want);
+        assert_eq!(result["tmp"], want);
+        assert_eq!(result["custom"], "s3cret-value");
+        assert!(tmp.exists());
         std::fs::remove_dir_all(&wd).unwrap();
     }
 }

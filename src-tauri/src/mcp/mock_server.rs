@@ -175,7 +175,7 @@ pub(crate) fn mcp_answer(method: &str, id: &Value) -> Value {
         "initialize" => json!({
             "jsonrpc": "2.0", "id": id,
             "result": {
-                "protocolVersion": crate::mcp::PROTOCOL_VERSION,
+                "protocolVersion": crate::mcp::client::PROTOCOL_VERSION,
                 "capabilities": {},
                 "serverInfo": { "name": "mock", "version": "0" },
             }
