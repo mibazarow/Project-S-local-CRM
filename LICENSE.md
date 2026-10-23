@@ -1,71 +1,71 @@
-# Project-S Source-Available License 1.0
+# Лицензия Project-S Source-Available 1.0
 
-Copyright (c) 2026 mibazarow. All rights reserved.
+© 2026 mibazarow. Все права защищены.
 
-Project-S is **source-available**, not open source. This license is not approved by the Open Source Initiative (OSI). It gives you broad rights to use the official application, but it does not give you ownership of the source code or the right to redistribute the source without permission.
+Project-S распространяется по модели **source-available** (исходный код доступен), а не как программа с открытым исходным кодом. Эта лицензия не одобрена Open Source Initiative (OSI). Она даёт широкие права на использование официального приложения, но не передаёт права собственности на исходный код и не разрешает распространять исходники без разрешения.
 
-## 1. Official binaries
+## 1. Официальные сборки
 
-You may download, install, run and use official, unmodified Project-S binaries free of charge for personal, educational and other non-commercial purposes. No subscription or royalty is required for such use.
+Вы можете бесплатно скачивать, устанавливать, запускать и использовать официальные немодифицированные сборки Project-S в личных, образовательных и иных некоммерческих целях. Подписка и роялти для такого использования не требуются.
 
-**Commercial use requires the copyright holder's prior written permission.** Commercial use includes, without limitation, using Project-S in a business, agency, studio or other revenue-generating activity, or providing services to clients with its help. Written permission may be given electronically (for example, through GitVerse or email).
+**Коммерческое использование требует предварительного письменного разрешения правообладателя.** Коммерческим использованием считается, в частности, использование Project-S в бизнесе, студии, агентстве или иной деятельности, приносящей доход, а также оказание услуг клиентам с его помощью. Письменное разрешение может быть дано в электронной форме — например, через GitVerse или по электронной почте.
 
-## 2. Attribution
+## 2. Указание авторства
 
-Any permitted use, copy, distribution or modification must preserve this notice and clearly credit the project as:
+При любом разрешённом использовании, копировании, распространении или изменении необходимо сохранять это уведомление и явно указывать проект:
 
 > Project-S by mibazarow
 
-The credit must remain visible in the product (for example, an About screen), in the README, or in the accompanying documentation. You may not remove, hide, or replace the copyright and attribution notices.
+Указание авторства должно оставаться видимым в продукте (например, на экране «О программе»), в README или в сопроводительной документации. Запрещается удалять, скрывать или заменять уведомления об авторских правах и авторстве.
 
-## 3. Source code
+## 3. Исходный код
 
-The source code is made available for viewing and evaluation. Access to the source is granted individually, at the copyright holder's discretion. Downloading an official binary does not grant any rights to the source.
+Исходный код предоставляется для просмотра и ознакомления. Доступ к исходникам выдаётся индивидуально, по усмотрению правообладателя. Скачивание официальной сборки не даёт никаких прав на исходный код.
 
-If you have been given access to the source, you may:
+Если вам предоставили доступ к исходникам, вы можете:
 
-- read, study and build it;
-- modify it for your own personal, non-commercial use;
-- use those modifications locally, without publishing them.
+- читать, изучать и собирать проект;
+- изменять его для собственного личного некоммерческого использования;
+- использовать такие изменения локально, не публикуя их.
 
-If you have written permission for commercial use, these rights also apply to that permitted commercial use.
+Если у вас есть письменное разрешение на коммерческое использование, эти права также распространяются на такое разрешённое коммерческое использование.
 
-You may **not**, without prior written permission from the copyright holder:
+Без предварительного письменного разрешения правообладателя вы **не можете**:
 
-- publish, distribute, sublicense, sell, rent or otherwise make the source available to third parties;
-- distribute modified source code or binaries built from modified source;
-- use the source to create a competing product or service.
+- публиковать, распространять, сублицензировать, продавать, сдавать в аренду или иным образом передавать исходный код третьим лицам;
+- распространять изменённый исходный код или сборки, созданные из изменённого исходного кода;
+- использовать исходный код для создания конкурирующего продукта или сервиса.
 
-Written permission may be given electronically (for example, through GitVerse or email).
+Письменное разрешение может быть дано в электронной форме (например, через GitVerse или по электронной почте).
 
-## 4. Redistribution of official binaries
+## 4. Распространение официальных сборок
 
-You may redistribute official, unmodified binaries for non-commercial purposes, together with this license and the attribution notice. Commercial redistribution, selling, renting or bundling the binaries into a paid product requires prior written permission. You may not present the binaries as your own product or remove the Project-S branding.
+Вы можете распространять официальные немодифицированные сборки в некоммерческих целях вместе с этой лицензией и уведомлением об авторстве. Коммерческое распространение, продажа, сдача в аренду или включение сборок в платный продукт требуют предварительного письменного разрешения. Запрещается выдавать сборки за собственный продукт или удалять брендинг Project-S.
 
-## 5. Contributions
+## 5. Вклад в проект
 
-By submitting a contribution (patch, pull request, issue text, documentation, design or other material), you confirm that you have the right to submit it and grant the copyright holder a perpetual, irrevocable, worldwide, royalty-free right to use, modify, distribute and sublicense that contribution as part of Project-S. Contributions are accepted under this license.
+Отправляя вклад (патч, пул-реквест, текст обращения, документацию, дизайн или иной материал), вы подтверждаете, что имеете право его отправлять, и предоставляете правообладателю бессрочное, безотзывное, всемирное и безвозмездное право использовать, изменять, распространять и сублицензировать этот вклад в составе Project-S. Вклад принимается на условиях этой лицензии.
 
-## 6. No trademark license
+## 6. Товарные знаки
 
-This license does not grant rights to the Project-S name, logo or other brand assets, except for the attribution required by section 2. You may not use the Project-S name or logo to imply endorsement or to name a derived product without permission.
+Эта лицензия не предоставляет прав на название Project-S, логотип или иные элементы бренда, кроме указания авторства, требуемого разделом 2. Запрещается использовать название или логотип Project-S так, чтобы создавать впечатление одобрения, или называть производный продукт без разрешения.
 
-## 7. No warranty
+## 7. Отказ от гарантий
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT. The entire risk as to the quality and performance of the software is with you.
+ПРОГРАММНОЕ ОБЕСПЕЧЕНИЕ ПРЕДОСТАВЛЯЕТСЯ «КАК ЕСТЬ», БЕЗ КАКИХ-ЛИБО ГАРАНТИЙ, ЯВНЫХ ИЛИ ПОДРАЗУМЕВАЕМЫХ, ВКЛЮЧАЯ, НО НЕ ОГРАНИЧИВАЯСЬ, ГАРАНТИИ ТОВАРНОЙ ПРИГОДНОСТИ, ПРИГОДНОСТИ ДЛЯ КОНКРЕТНОЙ ЦЕЛИ, ПРАВА СОБСТВЕННОСТИ И НЕНАРУШЕНИЯ ПРАВ. Весь риск, связанный с качеством и производительностью программного обеспечения, несёт пользователь.
 
-## 8. Limitation of liability
+## 8. Ограничение ответственности
 
-IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+НИ ПРИ КАКИХ ОБСТОЯТЕЛЬСТВАХ ПРАВООБЛАДАТЕЛЬ ИЛИ УЧАСТНИКИ ПРОЕКТА НЕ НЕСУТ ОТВЕТСТВЕННОСТИ ПО КАКОМУ-ЛИБО ТРЕБОВАНИЮ, УБЫТКАМ ИЛИ ИНОЙ ОТВЕТСТВЕННОСТИ — ПО ДОГОВОРУ, ДЕЛИКТУ ИЛИ ИНОМУ ОСНОВАНИЮ, — ВОЗНИКАЮЩИМ ИЗ ИСПОЛЬЗОВАНИЯ ПРОГРАММНОГО ОБЕСПЕЧЕНИЯ ИЛИ В СВЯЗИ С НИМ.
 
-## 9. Termination
+## 9. Прекращение действия
 
-Any breach of this license terminates the rights granted to you. On termination you must stop using the software and delete all copies of the source and modified builds in your possession, except copies you are legally required to retain.
+Любое нарушение этой лицензии прекращает предоставленные вам права. После прекращения вы обязаны прекратить использование программного обеспечения и удалить все копии исходников и изменённых сборок, находящиеся у вас, кроме копий, которые вы обязаны хранить по закону.
 
-## 10. General
+## 10. Общие положения
 
-If any provision of this license is held invalid or unenforceable, the remaining provisions remain in full force. This license is governed by the laws of the Russian Federation, without regard to conflict-of-law rules. The copyright holder may publish new versions of Project-S under different terms.
+Если какое-либо положение этой лицензии будет признано недействительным или неисполнимым, остальные положения сохраняют полную силу. Эта лицензия регулируется законодательством Российской Федерации без учёта коллизионных норм. Правообладатель вправе выпускать новые версии Project-S на иных условиях.
 
-For source access, redistribution permission, or other licensing questions, contact the copyright holder through GitVerse: [@mibazarow](https://gitverse.ru/mibazarow).
+По вопросам доступа к исходникам, разрешения на распространение и иным лицензионным вопросам свяжитесь с правообладателем через GitVerse: [@mibazarow](https://gitverse.ru/mibazarow).
 
-Version 1.0 — 2026-10-23.
+Версия 1.0 — 2026-10-23.

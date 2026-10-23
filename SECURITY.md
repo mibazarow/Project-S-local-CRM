@@ -1,52 +1,52 @@
-# Security Policy
+# Политика безопасности
 
-## Supported versions
+## Поддерживаемые версии
 
-Security fixes are provided for the current **1.0.x** line. Older builds may not receive fixes.
+Исправления безопасности выпускаются для текущей линии **1.0.x**. Более старые сборки могут не получать исправления.
 
-## Reporting a vulnerability
+## Как сообщить об уязвимости
 
-Please **do not open a public issue** with exploit details, credentials, private data or a working attack against another installation.
+Пожалуйста, **не открывайте публичное обращение (issue)** с деталями эксплойта, учётными данными, приватными данными или рабочей атакой на чужую установку.
 
-Report privately to the repository owner through GitVerse: [@mibazarow](https://gitverse.ru/mibazarow).
+Сообщите приватно владельцу репозитория через GitVerse: [@mibazarow](https://gitverse.ru/mibazarow).
 
-Include, where possible:
+По возможности укажите:
 
-- affected version and platform (macOS / Windows, architecture);
-- steps to reproduce;
-- impact and affected data or component;
-- a minimal proof of concept with real secrets and client data removed;
-- whether the issue is already public.
+- затронутую версию и платформу (macOS / Windows, архитектура);
+- шаги воспроизведения;
+- влияние и затронутые данные или компоненты;
+- минимальный пример эксплуатации без реальных секретов и клиентских данных;
+- известна ли проблема публично.
 
-We aim to acknowledge reports within a reasonable time and will coordinate a fix and disclosure. This is a small independent project: there is no bug bounty and no guaranteed response time.
+Мы постараемся подтвердить получение в разумный срок и согласовать исправление и раскрытие. Это небольшой независимый проект: вознаграждения за уязвимости нет, гарантированное время ответа не обещается.
 
-## Scope
+## Область действия
 
-In scope:
+В области действия:
 
-- local data storage, configuration and secret handling;
-- IPC between the UI and the Rust backend;
-- the agent loop, permissions/confirmation flow and tool execution;
-- shell, SSH, browser, file and network tools;
-- installers and update artifacts;
-- path traversal, command injection and unsafe deserialization.
+- локальное хранение данных, конфигурация и работа с секретами;
+- межпроцессное взаимодействие интерфейса и Rust-бэкенда;
+- агентный луп, разрешения, подтверждения и выполнение инструментов;
+- инструменты shell, SSH, браузера, файлов и сети;
+- установщики и артефакты обновлений;
+- обход путей, инъекция команд и небезопасная десериализация.
 
-Out of scope:
+Вне области действия:
 
-- vulnerabilities in third-party LLM providers, GitVerse, Hugging Face or the operating system;
-- attacks that require the user's own machine to be already compromised;
-- social engineering;
-- denial of service against your own local installation;
-- issues that only affect unsupported or modified builds.
+- уязвимости сторонних LLM-провайдеров, GitVerse, Hugging Face или операционной системы;
+- атаки, которые требуют, чтобы машина пользователя уже была скомпрометирована;
+- социальная инженерия;
+- отказ в обслуживании вашей собственной локальной установки;
+- проблемы, которые воспроизводятся только на неподдерживаемых или изменённых сборках.
 
-## Safe testing
+## Безопасное тестирование
 
-Test only against your own installation and your own test data. Do not access, modify or exfiltrate another person's data, accounts or infrastructure. Do not use the project to attack third-party services.
+Тестируйте только свою установку и свои тестовые данные. Не получайте доступ, не изменяйте и не выгружайте данные, аккаунты или инфраструктуру других людей. Не используйте проект для атаки на сторонние сервисы.
 
-## Secrets in reports
+## Секреты в отчётах
 
-Remove API keys, tokens, passwords, private keys, client names, real domains and personal paths from screenshots and logs. If a secret may have leaked, revoke it first; do not send it to us.
+Удаляйте API-ключи, токены, пароли, приватные ключи, имена клиентов, реальные домены и личные пути из скриншотов и логов. Если секрет мог утечь — сначала отзовите его; не отправляйте его нам.
 
-## Commercial use
+## Коммерческое использование
 
-Commercial use of Project-S requires prior written permission from the copyright holder. See [LICENSE.md](LICENSE.md).
+Коммерческое использование Project-S требует предварительного письменного разрешения правообладателя. См. [LICENSE.md](LICENSE.md).
