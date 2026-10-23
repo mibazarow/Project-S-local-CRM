@@ -206,7 +206,7 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 ### 2026-10-23 20:55 UTC — macOS
 - Ветка: `master`
 - Коммит: `27500d3` (тег `v1.0.6`)
-- Сделано: Windows 1.0.6 — askpass теперь запускает сам бинарь приложения в режиме `PROJECT_S_ASKPASS_FILE` (без `sh`/`.cmd`), foreground `bash` получил Job Object с `KILL_ON_JOB_CLOSE`, добавлен `tauri-plugin-single-instance`; WebView2 оставлен онлайн-загрузчиком по решению пользователя. Собраны macOS DMG и Windows NSIS 1.0.6, оба с проверкой версии/хешей. GitVerse release id `548937654` заменён новым релизом 1.0.6.
+- Сделано: Windows 1.0.6 — askpass теперь запускает сам бинарь приложения в режиме `PROJECT_S_ASKPASS_FILE` (без `sh`/`.cmd`), foreground `bash` получил Job Object с `KILL_ON_JOB_CLOSE`, добавлен `tauri-plugin-single-instance`; WebView2 оставлен онлайн-загрузчиком по решению пользователя. Собраны macOS DMG и Windows NSIS 1.0.6, оба с проверкой версии/хешей. GitVerse release id `548937735` (тег `v1.0.6`).
 - Влияние: Windows-рантайм закрывает askpass, дерево процессов и второй запуск; macOS получает single-instance. GUI на Windows не проверялся (по договорённости).
 - Действие: `[ACTION: user]` установить Windows 1.0.6 и проверить GUI; Linux Flatpak — следующий этап.
 - Статус: waiting
