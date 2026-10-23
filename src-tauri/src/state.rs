@@ -142,8 +142,16 @@ impl AgentRegistry {
             .insert(run, Arc::clone(flag));
     }
 
-    pub fn clear_cancel(&self, run: RunKey) {
-        lock_recover(&self.cancels).remove(&run);
+    // Releases this run's entry only: a run that finishes late must not drop
+    // the flag a newer run for the same key has already registered.
+    pub fn clear_cancel(&self, run: RunKey, flag: &Arc<AtomicBool>) {
+        let mut cancels = lock_recover(&self.cancels);
+        if cancels
+            .get(&run)
+            .is_some_and(|current| Arc::ptr_eq(current, flag))
+        {
+            cancels.remove(&run);
+        }
     }
 
     // Returns false when no run is active for the key.
@@ -155,5 +163,14 @@ impl AgentRegistry {
             }
             None => false,
         }
+    }
+
+    // Whether a stop was requested for this run: lets a blocking wait (the
+    // confirmation bridge) interrupt itself instead of running out its
+    // timeout. False when no run is registered for the key.
+    pub fn is_cancelled(&self, run: RunKey) -> bool {
+        lock_recover(&self.cancels)
+            .get(&run)
+            .is_some_and(|flag| flag.load(Ordering::Relaxed))
     }
 }

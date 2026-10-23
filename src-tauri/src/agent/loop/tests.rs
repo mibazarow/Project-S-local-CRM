@@ -1276,6 +1276,61 @@ fn tool_timeout_yields_execution_error_and_loop_continues() {
         .contains("tool timed out after 0.05s"));
 }
 
+// A tool that never looks at the cancel flag: the run must still stop
+// promptly, so the wait for the worker is what observes the stop request.
+struct HangingTool;
+
+impl Tool for HangingTool {
+    fn name(&self) -> &str {
+        "hanger"
+    }
+    fn description(&self) -> &str {
+        "sets the run cancel flag and then hangs (test-only tool)"
+    }
+    fn parameters(&self) -> Value {
+        json!({ "type": "object", "properties": {}, "additionalProperties": false })
+    }
+    fn policy(&self) -> PermissionPolicy {
+        PermissionPolicy::Skip
+    }
+    fn execute(&self, _args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
+        if let Some(flag) = &ctx.cancel {
+            flag.store(true, Ordering::Relaxed);
+        }
+        std::thread::sleep(Duration::from_secs(5));
+        Ok(ToolResult::ok(json!({ "late": true })))
+    }
+}
+
+#[test]
+fn stop_while_a_tool_runs_does_not_wait_out_the_tool_timeout() {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let backend = ScriptedBackend::new(vec![tools_outcome(vec![call("c1", "hanger", json!({}))])]);
+    let mut catalog = Catalog::new();
+    catalog.register(Arc::new(FinishTaskTool), true).unwrap();
+    catalog.register(Arc::new(HangingTool), true).unwrap();
+    let mut state = AgentState {
+        backend: &backend,
+        catalog: &mut catalog,
+    };
+    let mut cfg = config(8);
+    cfg.limits.tool_timeout = Duration::from_secs(30);
+    cfg.cancel = Some(Arc::clone(&cancel));
+    let started = std::time::Instant::now();
+    let mut events = Vec::new();
+    let result = run(&mut state, &cfg, &DenyAllConfirmer, |e| events.push(e)).unwrap();
+    let elapsed = started.elapsed();
+    let envelope = envelope_for(&events, "hanger");
+    assert_eq!(envelope["error"]["code"], "execution_error");
+    assert!(envelope["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("tool was cancelled by user"));
+    assert_eq!(result.finish_reason, "cancelled");
+    // Interrupted by the stop request, not by the 30 s tool timeout.
+    assert!(elapsed < Duration::from_secs(2), "stop took {elapsed:?}");
+}
+
 // --- tool error hints ---
 
 #[test]

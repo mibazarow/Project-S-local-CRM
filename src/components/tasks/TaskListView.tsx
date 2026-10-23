@@ -17,6 +17,7 @@ import {
   IconTrash,
 } from "../files/icons";
 import { CommentInput, TaskEditor } from "./TaskCard";
+import Button from "../shared/Button";
 import { blankTask, positionForDrop } from "./taskHelpers";
 import { usePointerDrag, type DropTarget } from "../../hooks/usePointerDrag";
 
@@ -146,35 +147,40 @@ function TaskRow({
       )}
       <span className="task-list-actions">
         {task.status === "new" && (
-          <button className="mini-btn" title="Начать" onClick={stop(() => h.onStart(task))}>
+          <Button variant="mini" title="Начать" onClick={stop(() => h.onStart(task))}>
             ▶
-          </button>
+          </Button>
         )}
         {task.status !== "done" && (
-          <button className="mini-btn" title="Готово" onClick={stop(() => h.onComplete(task))}>
+          <Button variant="mini" title="Готово" onClick={stop(() => h.onComplete(task))}>
             ✓
-          </button>
+          </Button>
         )}
         {task.status === "done" && (
-          <button className="mini-btn" title="Вернуть в новые" onClick={stop(() => h.onReopen(task))}>
+          <Button variant="mini" title="Вернуть в новые" onClick={stop(() => h.onReopen(task))}>
             ↺
-          </button>
+          </Button>
         )}
         {h.onAgent && (
-          <button className="mini-btn" title="Обсудить с агентом" onClick={stop(() => h.onAgent!(task))}>
+          <Button variant="mini" title="Обсудить с агентом" onClick={stop(() => h.onAgent!(task))}>
             <IconAskAgent />
-          </button>
+          </Button>
         )}
-        <button className="mini-btn" title="Редактировать" onClick={stop(() => h.onEdit(task))}>
+        <Button variant="mini" title="Редактировать" onClick={stop(() => h.onEdit(task))}>
           <IconPencil />
-        </button>
-        <button className="mini-btn" title="Комментарий" onClick={stop(() => h.onComment(task))}>
+        </Button>
+        <Button variant="mini" title="Комментарий" onClick={stop(() => h.onComment(task))}>
           <IconComment />
-        </button>
+        </Button>
         {h.onDelete && (
-          <button className="mini-btn danger" title="Удалить" onClick={stop(() => h.onDelete!(task))}>
+          <Button
+            variant="mini"
+            className="danger"
+            title="Удалить"
+            onClick={stop(() => h.onDelete!(task))}
+          >
             <IconTrash />
-          </button>
+          </Button>
         )}
       </span>
     </div>
@@ -309,9 +315,9 @@ export default function TaskListView({
                 </option>
               ))}
             </select>
-            <button className="mini-btn task-list-add-btn" title="Добавить задачу" onClick={() => setAdding(true)}>
+            <Button variant="mini" className="task-list-add-btn" title="Добавить задачу" onClick={() => setAdding(true)}>
               <IconPlus />
-            </button>
+            </Button>
           </div>
         )}
         {adding && (
@@ -439,9 +445,9 @@ export default function TaskListView({
               </option>
             ))}
           </select>
-          <button className="mini-btn task-list-add-btn" title="Добавить задачу" onClick={() => setAdding(true)}>
+          <Button variant="mini" className="task-list-add-btn" title="Добавить задачу" onClick={() => setAdding(true)}>
             <IconPlus />
-          </button>
+          </Button>
         </div>
       )}
       {adding && (

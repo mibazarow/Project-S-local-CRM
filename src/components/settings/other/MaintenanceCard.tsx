@@ -1,4 +1,5 @@
 import { Card, Field } from "../shared";
+import Switch from "../../shared/Switch";
 import { type AppForm } from "../forms";
 import { type DebouncedConfig } from "../useDebouncedConfig";
 
@@ -67,15 +68,11 @@ export function MaintenanceCard({
         label="Запускаться с системой"
         hint="macOS LaunchAgent, чтобы расписания работали без открытого окна. По умолчанию выключено."
       >
-        <label className="switch">
-          <input
-            type="checkbox"
-            checked={autostart ?? false}
-            disabled={autostart === null || autostartBusy}
-            onChange={(e) => onToggleAutostart(e.target.checked)}
-          />
-          <span className="track"></span>
-        </label>
+        <Switch
+          checked={autostart ?? false}
+          disabled={autostart === null || autostartBusy}
+          onChange={(e) => onToggleAutostart(e.target.checked)}
+        />
       </Field>
       <div className="set-actions">
         <button className="ghost-btn" disabled={tmpBusy} onClick={onClearTmp}>

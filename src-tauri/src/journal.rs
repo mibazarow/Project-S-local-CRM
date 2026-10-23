@@ -232,12 +232,32 @@ fn mask_key_value_pairs(text: &str) -> String {
                 } else {
                     // Unquoted value: skip to the next delimiter so the
                     // masked value is not re-emitted after `***`.
+                    let value_start = j;
                     while j < bytes.len() {
                         let c = bytes[j] as char;
                         if c.is_whitespace() || c == ',' || c == '}' || c == '"' {
                             break;
                         }
                         j += 1;
+                    }
+                    // An auth header value ("Bearer <tok>", "Basic <b64>")
+                    // keeps the secret in a second token: consume the scheme
+                    // word and the token after it so both are masked.
+                    let first = &bytes[value_start..j];
+                    if first.eq_ignore_ascii_case(b"bearer")
+                        || first.eq_ignore_ascii_case(b"basic")
+                        || first.eq_ignore_ascii_case(b"token")
+                    {
+                        while j < bytes.len() && (bytes[j] as char).is_ascii_whitespace() {
+                            j += 1;
+                        }
+                        while j < bytes.len() {
+                            let c = bytes[j] as char;
+                            if c == ',' || c == '}' || c == '"' || c.is_whitespace() {
+                                break;
+                            }
+                            j += 1;
+                        }
                     }
                 }
                 i = j;
@@ -322,6 +342,9 @@ mod tests {
         assert_eq!(mask_secrets("api_key=sk-abc123def456"), "api_key=***");
         assert_eq!(mask_secrets("token: my-secret-token"), "token: ***");
         assert_eq!(mask_secrets("header sk-live-AbC099_xy end"), "header sk-*** end");
+        // Auth header values keep the secret in a second token after the scheme.
+        assert_eq!(mask_secrets("Authorization: Bearer s3cret-tok"), "Authorization: ***");
+        assert_eq!(mask_secrets("Authorization: Basic dXNlcjpwYXNz"), "Authorization: ***");
         // Non-secret keys pass through untouched.
         assert_eq!(mask_secrets(r#"{"rel_path":"a.md","limit":10}"#), r#"{"rel_path":"a.md","limit":10}"#);
     }

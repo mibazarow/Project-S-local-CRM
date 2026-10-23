@@ -23,8 +23,9 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
+use std::sync::mpsc::Receiver;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::persist::persist_final_answer;
@@ -35,6 +36,9 @@ use super::start::RunBridge;
 pub const MAX_STEPS: usize = 1000;
 // A confirmation left unanswered (user away) denies rather than hangs.
 const CONFIRM_TIMEOUT: Duration = Duration::from_secs(600);
+// Slice the confirmation wait is polled in: short enough that a «Стоп»
+// interrupts a pending confirmation promptly, long enough to stay cheap.
+const CONFIRM_POLL: Duration = Duration::from_millis(200);
 
 // Payload for the "agent-event" stream: one AgentEvent wrapped with its chat
 // id plus the run routing key — projectId for project chats, sessionId for
@@ -74,14 +78,40 @@ pub struct ConfirmationRequestPayload {
 }
 
 // Confirmer that blocks the agent thread on a channel until the UI resolves
-// the request via resolve_confirmation; a timeout denies. The `request`
-// callback publishes the payload (in production: app.emit). Shared by both
-// agents: the run key routes the request to the owning project or session.
+// the request via resolve_confirmation, the run is cancelled («Стоп»), or the
+// timeout elapses — the latter two deny. The `request` callback publishes the
+// payload (in production: app.emit). Shared by both agents: the run key routes
+// the request to the owning project or session.
 pub struct ChannelConfirmer {
     pub run: RunKey,
     pub registry: Arc<AgentRegistry>,
     pub timeout: Duration,
     pub request: Box<dyn Fn(ConfirmationRequestPayload) + Send + Sync>,
+}
+
+impl ChannelConfirmer {
+    // Block until the UI answers, the run is cancelled, or the timeout passes.
+    // Polled in short slices so a stop request interrupts a pending
+    // confirmation instead of waiting out the full timeout: the tool then
+    // returns denied_by_user and the loop ends the run as "cancelled".
+    fn await_decision(&self, rx: &Receiver<ConfirmDecision>) -> ConfirmDecision {
+        let deadline = Instant::now() + self.timeout;
+        loop {
+            let slice = CONFIRM_POLL.min(deadline.saturating_duration_since(Instant::now()));
+            match rx.recv_timeout(slice) {
+                Ok(decision) => return decision,
+                // The sender was dropped (the pending entry was forgotten): no
+                // answer is coming, deny rather than spin.
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    return ConfirmDecision::Deny
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            if self.registry.is_cancelled(self.run) || Instant::now() >= deadline {
+                return ConfirmDecision::Deny;
+            }
+        }
+    }
 }
 
 impl Confirmer for ChannelConfirmer {
@@ -99,7 +129,7 @@ impl Confirmer for ChannelConfirmer {
             args: req.args.clone(),
             danger_reason: req.danger_reason.clone(),
         });
-        let decision = rx.recv_timeout(self.timeout).unwrap_or(ConfirmDecision::Deny);
+        let decision = self.await_decision(&rx);
         self.registry.forget(id);
         decision
     }
@@ -137,7 +167,14 @@ fn run_agent_bridge(
     bridge: RunBridge,
 ) {
     let (run, chat_id) = (bridge.run, bridge.chat_id);
-    if let Err(e) = run_agent_inner(app, registry, wd, bridge) {
+    // The cancel flag is registered before the slow startup work below (own DB
+    // connection, config reads, context build, possible compaction request):
+    // a «Стоп» pressed in that window used to find no flag, get dropped and
+    // let the run go through a full model turn. Now the flag exists, the stop
+    // is accepted, and the loop's first check ends the run as "cancelled".
+    let cancel = Arc::new(AtomicBool::new(false));
+    registry.set_cancel(run, &cancel);
+    if let Err(e) = run_agent_inner(app, registry, wd, bridge, Arc::clone(&cancel)) {
         let _ = app.emit(
             "agent-event",
             AgentEventPayload {
@@ -152,6 +189,9 @@ fn run_agent_bridge(
             },
         );
     }
+    // Always released, including when the run failed before its loop started:
+    // a stale entry would make a later stop request look accepted.
+    registry.clear_cancel(run, &cancel);
 }
 
 // app.json for the run path: a malformed file fails the run with a typed
@@ -167,6 +207,7 @@ fn run_agent_inner(
     registry: &Arc<AgentRegistry>,
     wd: &Path,
     bridge: RunBridge,
+    cancel: Arc<AtomicBool>,
 ) -> Result<()> {
     let RunBridge {
         run,
@@ -272,9 +313,6 @@ fn run_agent_inner(
         catalog: &mut catalog,
     };
 
-    let cancel = Arc::new(AtomicBool::new(false));
-    registry.set_cancel(run, &cancel);
-
     let confirmer_app = app.clone();
     let confirmer = ChannelConfirmer {
         run,
@@ -294,7 +332,7 @@ fn run_agent_inner(
         session_id: run.session_id(),
         chat_id: Some(chat_id),
         params,
-        cancel: Some(Arc::clone(&cancel)),
+        cancel: Some(cancel),
         // Tools reach the DB and the working dir through the run's own
         // thread state (fs/task/memory tools borrow this connection).
         state: Some(Arc::clone(&thread_state)),
@@ -369,7 +407,6 @@ fn run_agent_inner(
     let result = agent_loop::run_with(&mut agent_state, &config, &confirmer, &mut emit, &mut on_message);
     // Release the closure's borrow of tool_names before reading them below.
     drop(emit);
-    registry.clear_cancel(run);
     let result = result?;
     let guard = lock_recover(&thread_state.db);
     if let Some(conn) = guard.as_ref() {
@@ -458,6 +495,7 @@ mod tests {
     use crate::chat::test_support::call;
     use crate::onboarding::temp_test_dir;
     use std::fs;
+    use std::sync::atomic::Ordering;
     use std::sync::Mutex;
 
     #[test]
@@ -697,6 +735,39 @@ mod tests {
         assert_eq!(confirmer.confirm(&req), ConfirmDecision::Deny);
         assert_eq!(payloads.lock().unwrap().len(), 1);
         // The pending entry was dropped after the timeout.
+        assert_eq!(registry.pending_count(), 0);
+    }
+
+    #[test]
+    fn confirmation_is_interrupted_by_a_stop_request() {
+        // A pending confirmation must not wait out its timeout when the user
+        // hits «Стоп»: the run's cancel flag interrupts the wait, the decision
+        // is Deny, and the loop then ends the run as "cancelled".
+        let registry = Arc::new(AgentRegistry::new());
+        let payloads = Arc::new(Mutex::new(Vec::new()));
+        // Nobody resolves the confirmation; a stop request sets the flag.
+        let confirmer = confirmer_with(&registry, &payloads, Duration::from_secs(30));
+        let cancel = Arc::new(AtomicBool::new(false));
+        registry.set_cancel(RunKey::Project(1), &cancel);
+        let flag = Arc::clone(&cancel);
+        let setter = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            flag.store(true, Ordering::Relaxed);
+        });
+        let req = ConfirmRequest {
+            tool: "echo".into(),
+            args: json!({ "text": "x" }),
+            project_id: Some(1),
+            danger_reason: None,
+        };
+        let started = Instant::now();
+        let decision = confirmer.confirm(&req);
+        let elapsed = started.elapsed();
+        setter.join().unwrap();
+        assert_eq!(decision, ConfirmDecision::Deny);
+        // Interrupted by the stop, not by the 30 s timeout.
+        assert!(elapsed < Duration::from_secs(5), "stop took {elapsed:?}");
+        // The pending entry was dropped when the wait returned.
         assert_eq!(registry.pending_count(), 0);
     }
 

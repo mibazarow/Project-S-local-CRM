@@ -9,12 +9,42 @@ use crate::projects::types::{
     parse_files_view, parse_task_columns, CreatedProject, DeletePlan, ProjectDbRow, ProjectDto,
     RenamePlan,
 };
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const TASK_COUNT_SQL: &str = "SELECT count(*) FROM tasks WHERE project_id = ?1";
-const OVERDUE_SQL: &str = "SELECT count(*) FROM tasks WHERE project_id = ?1 AND status != 'done' AND due_date IS NOT NULL AND due_date || ' ' || due_time || ':00' < datetime('now','localtime')";
+// The projects columns plus the three task aggregates, correlated on
+// `project_ref` (a `?1` placeholder or a qualified `projects.id`). One
+// statement per row set keeps the project list at a single query (R-15).
+fn select_sql(project_ref: &str) -> String {
+    format!(
+        "SELECT id, name, path, created_at, opened_at, position, task_columns, files_view, archived_at, builtin,
+                EXISTS(SELECT 1 FROM tasks WHERE project_id = {project_ref} AND status = 'progress'),
+                (SELECT count(*) FROM tasks WHERE project_id = {project_ref}),
+                (SELECT count(*) FROM tasks WHERE project_id = {project_ref} AND status != 'done' AND due_date IS NOT NULL AND due_date || ' ' || due_time || ':00' < datetime('now','localtime'))
+         FROM projects"
+    )
+}
+
+fn map_row(r: &Row<'_>) -> rusqlite::Result<(i64, ProjectDbRow)> {
+    Ok((
+        r.get::<_, i64>(0)?,
+        ProjectDbRow {
+            name: r.get(1)?,
+            path: r.get(2)?,
+            created_at: r.get(3)?,
+            opened_at: r.get(4)?,
+            position: r.get(5)?,
+            task_columns: r.get(6)?,
+            files_view: r.get(7)?,
+            archived_at: r.get(8)?,
+            builtin: r.get::<_, i64>(9)? != 0,
+            has_active_tasks: r.get(10)?,
+            task_count: r.get(11)?,
+            overdue_count: r.get(12)?,
+        },
+    ))
+}
 
 fn placeholders(n: usize) -> String {
     vec!["?"; n].join(", ")
@@ -370,15 +400,13 @@ pub fn delete_project_fs(wd: &Path, plan: &DeletePlan) -> Result<()> {
 // The command collects these under the DB mutex, then walks the folders
 // outside the lock (dto_from_row).
 pub(crate) fn list_project_rows(conn: &Connection) -> Result<Vec<(i64, ProjectDbRow)>> {
-    let mut ids = Vec::new();
-    {
-        let mut stmt = conn.prepare("SELECT id FROM projects ORDER BY builtin DESC, position, id")?;
-        let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
-        for row in rows {
-            ids.push(row?);
-        }
-    }
-    ids.iter().map(|id| Ok((*id, db_row(conn, *id)?))).collect()
+    let sql = format!(
+        "{} ORDER BY builtin DESC, position, id",
+        select_sql("projects.id")
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], map_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
 pub fn list_projects(conn: &Connection) -> Result<Vec<ProjectDto>> {
@@ -475,40 +503,8 @@ pub fn get_project(conn: &Connection, id: i64) -> Result<ProjectDto> {    let ex
 }
 
 pub(crate) fn db_row(conn: &Connection, id: i64) -> Result<ProjectDbRow> {
-    let (name, path, created_at, opened_at, position, task_columns, files_view, archived_at, builtin, has_active_tasks) = conn.query_row(
-        "SELECT name, path, created_at, opened_at, position, task_columns, files_view, archived_at, builtin,
-                EXISTS(SELECT 1 FROM tasks WHERE project_id = ?1 AND status = 'progress')
-         FROM projects WHERE id = ?1",
-        params![id],
-        |r| Ok((
-            r.get::<_, String>(0)?,
-            r.get::<_, String>(1)?,
-            r.get::<_, String>(2)?,
-            r.get::<_, Option<String>>(3)?,
-            r.get::<_, f64>(4)?,
-            r.get::<_, String>(5)?,
-            r.get::<_, String>(6)?,
-            r.get::<_, Option<String>>(7)?,
-            r.get::<_, i64>(8)? != 0,
-            r.get::<_, bool>(9)?,
-        )),
-    )?;
-    let task_count = conn.query_row(TASK_COUNT_SQL, params![id], |r| r.get(0))?;
-    let overdue_count = conn.query_row(OVERDUE_SQL, params![id], |r| r.get(0))?;
-    Ok(ProjectDbRow {
-        name,
-        path,
-        created_at,
-        opened_at,
-        position,
-        task_columns,
-        files_view,
-        archived_at,
-        builtin,
-        task_count,
-        overdue_count,
-        has_active_tasks,
-    })
+    let sql = format!("{} WHERE id = ?1", select_sql("?1"));
+    Ok(conn.query_row(&sql, params![id], map_row)?.1)
 }
 
 // Assembles the DTO from DB parts; the file count walks the project folder,

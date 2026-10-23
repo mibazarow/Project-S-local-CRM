@@ -898,7 +898,24 @@ mod tests {
         assert!(!flag.load(Ordering::Relaxed));
         assert!(registry.request_cancel(RunKey::Session(1)));
         assert!(flag.load(Ordering::Relaxed));
-        registry.clear_cancel(RunKey::Session(1));
+        registry.clear_cancel(RunKey::Session(1), &flag);
         assert!(!registry.request_cancel(RunKey::Session(1)));
+    }
+
+    #[test]
+    fn a_late_clear_from_an_old_run_does_not_drop_the_new_run_flag() {
+        // The run thread releases its entry after its tail work (persistence,
+        // notifications), so a newer run for the same key can already be
+        // registered by then: clearing must be identity-checked, otherwise the
+        // new run becomes unstoppable.
+        let registry = AgentRegistry::new();
+        let old = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fresh = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        registry.set_cancel(RunKey::Project(1), &old);
+        registry.set_cancel(RunKey::Project(1), &fresh);
+        registry.clear_cancel(RunKey::Project(1), &old);
+        assert!(registry.request_cancel(RunKey::Project(1)));
+        assert!(fresh.load(Ordering::Relaxed));
+        assert!(!old.load(Ordering::Relaxed));
     }
 }

@@ -107,13 +107,13 @@ pre-commit не включён намеренно: `cargo test` + `vite build` �
 - с Mac из демо-хранилища: `~/Documents/PROJECT-S/Settings/models/embeddinggemma-2/`;
 - или скачать из Hugging Face `onnx-community/embeddinggemma-2-ONNX`: `onnx/model_quantized.onnx`, `onnx/model_quantized.onnx_data`, `tokenizer.json`, `tokenizer_config.json`.
 
-Для `scripts/stage-embed-model.sh` можно задать `PROJECT_S_MODEL_SRC=/путь/к/embeddinggemma-2`; сам скрипт — bash/macOS. На Windows нативно он не запустится: нужен PowerShell-аналог или Git Bash/WSL.
+Для `scripts/stage-embed-model.sh` можно задать `PROJECT_S_MODEL_SRC=/путь/к/embeddinggemma-2`; сам скрипт — bash/macOS. Для Windows есть идемпотентный аналог `scripts/windows/stage-embed-model.ps1` (та же переменная окружения): `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/stage-embed-model.ps1`.
 
 Без модели приложение не падает, но семантический поиск деградирует до FTS; релизная сборка не упакует модель.
 
 > **Для агента:** если после `git clone` нет `src-tauri/resources/models/embeddinggemma-2/model_quantized.onnx_data`, это ожидаемо — модель нужно доставить до сборки. Не удаляйте `.gitkeep`.
 
-> **Windows:** порт ещё не реализован (см. `DOCS/WINDOWS-PORT.md`); одного клонирования недостаточно для сборки под Windows. Нужны платформенный слой, PowerShell-скрипты и WebView2-упаковка.
+> **Windows:** минимальный платформенный шов (`src-tauri/src/platform/`), конфиг упаковки `src-tauri/tauri.windows.conf.json` и PowerShell-скрипт модели уже есть; demo-сборку собирают по явной команде пользователя (см. `CROSPLATFORM.md`). Полного порта нет (см. `DOCS/WINDOWS-PORT.md`), а `npm run app:build`/`app:install` под Windows не работают — они вызывают bash.
 
 ## Конфиг приложения: dev и release
 

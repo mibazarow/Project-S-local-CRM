@@ -27,6 +27,11 @@ pub trait Embedder: Send + Sync {
     fn embed_texts(&self, texts: &[String]) -> Result<Vec<Vec<f32>>>;
     fn dim(&self) -> usize;
     fn backend_id(&self) -> &'static str;
+    // Stable model identity, empty when the backend has no distinct model.
+    // Lets the index tell apart models that share a dim and a backend.
+    fn model_id(&self) -> String {
+        String::new()
+    }
 }
 
 pub struct NoopEmbedder;

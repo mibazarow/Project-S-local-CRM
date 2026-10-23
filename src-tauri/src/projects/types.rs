@@ -103,7 +103,7 @@ pub(crate) struct RenamePlan {
 }
 
 // Everything a project DTO needs from the DB, without the filesystem walk.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub(crate) struct ProjectDbRow {
     pub(crate) name: String,
     pub(crate) path: String,

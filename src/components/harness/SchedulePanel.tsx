@@ -1,6 +1,7 @@
 import type { ScheduleDto } from "../../api/types";
 import { formatInstant } from "../../shared/format";
 import { TrashIcon } from "./shared";
+import Switch from "../shared/Switch";
 
 const KIND_LABEL: Record<string, string> = {
   run_at: "Однократно",
@@ -48,19 +49,16 @@ function ScheduleItem({
         </div>
         {s.error && <div className="c">{s.error}</div>}
       </div>
-      <label
-        className="switch"
-        title={s.status === "active" ? "Поставить на паузу" : "Возобновить"}
-        onClick={(e) => e.stopPropagation()}
-      >
-        <input
-          type="checkbox"
-          checked={s.status === "active"}
-          disabled={s.status === "done"}
-          onChange={() => onToggle(s)}
-        />
-        <span className="track" />
-      </label>
+      <Switch
+        aria-label={s.title ?? s.spec}
+        labelProps={{
+          title: s.status === "active" ? "Поставить на паузу" : "Возобновить",
+          onClick: (e) => e.stopPropagation(),
+        }}
+        checked={s.status === "active"}
+        disabled={s.status === "done"}
+        onChange={() => onToggle(s)}
+      />
       <button
         className="mini-btn danger"
         type="button"

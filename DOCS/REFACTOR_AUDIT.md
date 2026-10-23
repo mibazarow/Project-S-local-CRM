@@ -191,4 +191,97 @@ production-код = только удалённый мёртвый код из R
 - **R-04b.** `agent/settings_tools.rs:602,653`, `mcp/mod.rs:363` (3 места):
   переход на `sync_util::lock_recover`. Маленький срез, поведение не меняется.
 - **R-04c.** `scheduler/mod.rs:387`: `ok_or_else` вместо `unwrap` + тест, что
-  неизвестный kind даёт `Invalid`, а не панику. Делать вместе с R-06.
+   неизвестный kind даёт `Invalid`, а не панику. Делать вместе с R-06.
+
+---
+
+## 6. Секреты и безопасность (срез R-23, 2026-10-23)
+
+Аудит: `config.rs`, `llm/`, `mcp/`, `agent/ssh/`, `path_policy.rs`,
+`commands/`, `tauri.conf.json`, `journal.rs`.
+
+### Уже закрыто (не переделывать)
+
+- **SSH.** Пароль никогда не попадает в argv/результаты/ошибки
+  (`agent/ssh/command.rs`); аутентификация — через askpass-файл `0600` в
+  приватном каталоге `0700` под `Harness/tmp/` (`agent/ssh/askpass.rs`,
+  тест `agent/ssh/mod.rs:887-889`); вывод `ssh`/`scp` маскируется
+  (`agent/ssh/session.rs:85-86`); `ssh_list_profiles` отдаёт только
+  `hasPassword`/`auth` (`agent/ssh/tools.rs:55`). Хост/юзер валидируются:
+  запрещены пробелы, управляющие символы, `@` и ведущий `-` (инъекция опций
+  ssh) — `agent/ssh/command.rs:45`.
+- **MCP.** Значения `env` (stdio) и `headers` (http/sse) собираются в
+  `secrets` и маскируются в status-ошибках и ошибках инструментов
+  (`mcp/lifecycle.rs:225`, `mcp/tools.rs:203,216`, `mcp/guard.rs:69`); плюс
+  SSRF-денист (`mcp/guard.rs`). Тесты: `mcp/lifecycle.rs:342`,
+  `mcp/tools.rs:304`.
+- **LLM.** API-ключ маскируется в каждом ошибочном HTTP-пути
+  (`llm/client.rs:53-88`, `masked()`).
+- **Пути.** `path_policy.rs` — containment + symlink-guard + отказ от `..` и
+  абсолютов; корпус-тесты не дают стакам разъехаться.
+
+### Усилено в этом срезе
+
+- **`config.rs`.** Запись конфигов с секретами (`llm.json`, `mcp.json`,
+  `ssh.json`) теперь принудительно ставит права `0600` через
+  `platform::restrict_permissions` (`write_json` + `ConfigKind::secret_bearing()`):
+  уже существующий world-readable файл пере-затягивается, новый не ляжет
+  `0644`. `app.json`/`indexing.json` (без секретов) не трогаем. На Windows —
+  no-op, как и весь `restrict_permissions`. Тест
+  `config.rs::secret_bearing_config_writes_are_owner_only`.
+- **`journal.rs`.** `mask_secrets` теперь режет и второй токен в заголовках
+  вида `Authorization: Bearer <tok>` / `Basic <b64>` — раньше маскировалось
+  только слово `Bearer`, а сам токен протекал. Тест расширен.
+
+### Принятый fallback (UX/хранение в этом срезе не менялись)
+
+Ключи LLM, `env`/`headers` MCP и SSH-пароли лежат **plaintext** в
+`Settings/config/*.json`, но сами файлы теперь `0600` (только владелец) в
+домашнем каталоге одно-пользовательской локальной demo-сборки, а всё, что
+уходит в логи/ошибки/результаты инструментов, маскируется. Это осознанный
+компромисс для demo без внешнего keychain-депа: риск ограничен доступом к
+файлам под UID пользователя.
+
+### Остаток (будущий срез, не закрыт)
+
+- **OS keychain** (macOS Keychain / DPAPI / Credential Manager) вместо
+  plaintext-файлов + миграция без потери настроек.
+- **CSP** в `tauri.conf.json` остаётся `null`: смена CSP может сломать
+  загрузку ассетов/inline-скрипты Tauri, поэтому менять только с проверкой,
+  что приложение работает. В этом срезе не трогали.
+
+---
+
+## 7. Финальные метрики vs baseline (срез R-25, 2026-10-23)
+
+Замер после всех срезов, зелёный quality gate (`scripts/check.sh` + `npx tsc -b`).
+Baseline — §1 `REFACTOR_PLAN.md` (2026-10-22).
+
+| Метрика | Baseline | Final |
+|---|---|---|
+| Rust, строки (`src-tauri/src`) | ~78 947 | 80 976 |
+| TypeScript/TSX, строки (`src`) | ~26 507 | 27 773 |
+| CSS | `app.css` 2287 + `tokens.css` 100 (2 файла) | 2405 строк в 18 файлах (`app.css` — 20-стр. импорт-баррель) |
+| Rust-атрибуты `#[test]`/`#[tokio::test]` | 1095 | 1109 |
+| `cargo test` | 1075 passed / 19 ignored | 1089 passed / 0 failed / 19 ignored |
+| Frontend-тесты | 53 файла / 535 passed | 56 файлов / 561 passed |
+| TODO/FIXME/HACK/XXX (долг) | Rust 5 / TS 0 | 0 / 0 (остальные «TODO» — домен-фича `todos.rs`) |
+| `any`/`@ts-ignore`/`eslint-disable` | 4 | 4 (3× `exhaustive-deps` + 1 слово в комментарии) |
+| Cargo warnings | 6 | 0 (`clippy --all-targets -D warnings` чист с pinned allows) |
+| Бандл `index.js` | 553.43 kB / gzip 163.47 | 487.84 kB / gzip 147.31 |
+| Ленивые чанки | — | `SettingsModal` 60.08, `CommandPalette` 6.45, `QuickCapture` 2.15 kB |
+| Крупнейший Rust-модуль (prod) | `db/schema.rs` 2835 | `memory/mod.rs` 1597 |
+| Крупнейший фронтенд-файл | `chat/chatShared.tsx` 1327 | `notes/NoteEditor.tsx` 654 |
+| Крупнейший CSS-файл | `app.css` 2287 | `features-chat.css` 431 |
+
+**Толкование.** Суммарные строки Rust/TS выросли modestly (+2 029 / +1 266) за счёт
+каркаса разбиения (`mod.rs`-баррели, `api/types.ts`→`api/types/*`, `app.css`→18
+файлов) и прироста тестов (`agent/loop/tests.rs` +55, новые `*.test.tsx`). При этом
+цель рефакторинга достигнута: монолиты развязаны — крупнейший prod-Rust-модуль
+2835→1597, крупнейший фронтенд-файл 1327→654, `app.css` 2287 разбит. Предупреждения
+и TODO-долг обнулены, бандл ниже порога 500 kB.
+
+**Quality gate (финал):** `cargo fmt` advisory (201 файл — pre-existing), `clippy
+-D warnings` чисто, `cargo test` 1089/0/19, `npm test` 56 файлов/561, `tsc
+--noEmit` и `tsc -b` без ошибок, `vite build` OK (`index.js` 487.84 kB / gzip
+147.31, built 112 ms).

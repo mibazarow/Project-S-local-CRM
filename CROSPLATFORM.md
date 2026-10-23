@@ -33,7 +33,8 @@
 2. **Shell:** платформенно-нейтральный `shell` (`auto`/PowerShell/cmd/sh); `bash` — алиас на Unix. Windows реализует PowerShell/cmd. Скиллы не форкаем; жёсткие bash-примеры правит macOS в `master`.
 3. **UI/UX:** решения за macOS. Windows — нативный titlebar, Segoe UI, Ctrl вместо Cmd, DPI через платформенный слой; без редизайна.
 4. **WebView2:** baseline **109.0.1518.78** (Tauri 2); ниже/нет — fixed runtime. Сверить с release notes Tauri перед релизом.
-5. **Ресурсы:** единый `resource_dir()` + fallback `exe_dir/resources` для dev. macOS добавляет helper; `paths.rs` — `notes_dir` и `harness_inbox_dir`. `package.json` — кросс-платформенный `scripts/stage-embed-model.mjs`, bash-обёртка остаётся.
+5. **Ресурсы:** единый `resource_dir()` + fallback `exe_dir/resources` для dev. macOS добавляет helper; `paths.rs` — `notes_dir` и `harness_inbox_dir`. Модель доставляют `scripts/stage-embed-model.sh` (bash/macOS) и `scripts/windows/stage-embed-model.ps1` (Windows), источник — `PROJECT_S_MODEL_SRC`; общий `.mjs` не заводили.
+6. **Vendor CRT-патч:** `esaxx-rs 0.1.10` вендорен в `vendor/esaxx-rs` и подключён через `[patch.crates-io]` в `src-tauri/Cargo.toml`; в `build.rs` для Windows убран `static_crt(true)` — иначе LNK2038/LNK2005 против dynamic CRT (`/MD`) у prebuilt ONNX Runtime. Не возвращать. Дельта против crates.io только эта: плюс удалённые секции `[[example]]`/`[[bench]]` (их каталоги не вендорены). Патч нужен, пока `tokenizers` → `esaxx-rs` в дереве (`ort-backend` — дефолтный бэкенд эмбеддингов).
 
 ## 0.2. Режим работы: macOS по умолчанию, Windows по команде
 
@@ -67,20 +68,18 @@
 
 ```
 src-tauri/src/platform/
-  mod.rs            # трейты/контракты: Shell, Processes, Clipboard, Notifications,
-                    # UiAutomation, Trash, Secrets, OpenWith, Paths, Screenshot, OCR, PDF
-  macos/
-  windows/
-  linux/            # позже
+  mod.rs            # швы: home/рабочая папка, is_executable, restrict_permissions,
+                    # hide_console, reveal_in_file_manager — различия ОС через cfg
+  process.rs        # управление процессами: background_command, kill_alive,
+                    # signal_group, liveness_target — различия ОС через cfg
 
-src-tauri/tauri.macos.conf.json
-src-tauri/tauri.windows.conf.json
-src-tauri/tauri.linux.conf.json
-
-scripts/macos/
-scripts/windows/
-scripts/linux/
+src-tauri/tauri.windows.conf.json          # есть
+scripts/windows/stage-embed-model.ps1      # есть
 ```
+
+Каталогов `platform/macos|windows|linux`, `scripts/macos|linux` и файлов
+`tauri.macos|linux.conf.json` нет: платформенные различия лежат cfg-ветками в
+двух файлах шва, отдельные каталоги заведём только когда кода станет больше.
 
 - Общая бизнес-логика (задачи, чаты, БД, агент, скиллы, память, поиск) — **одна** для всех ОС.
 - `platform/windows` пишет macOS-агент; Windows-хост только компилирует, тестирует и отдаёт артефакты. Кода на Windows нет.
@@ -126,8 +125,14 @@ scripts/linux/
 Сборка:
 
 ```bash
-ssh win 'powershell -NoProfile -Command "cd C:\path\Project-S; git pull; npm ci; npm run tauri build"'
+ssh win 'powershell -NoProfile -ExecutionPolicy Bypass -File C:\path\Project-S\scripts\windows\stage-embed-model.ps1'
+ssh win 'powershell -NoProfile -Command "cd C:\path\Project-S; git pull; npm ci; npx tauri build --config src-tauri/tauri.windows.conf.json"'
 ```
+
+Конфиг упаковки обязателен: без `--config src-tauri/tauri.windows.conf.json` Tauri
+берёт macOS-конфиг (dmg, нет NSIS/WebView2). `npm run app:build` и `app:install`
+на Windows не использовать — они вызывают bash (`scripts/stage-embed-model.sh`,
+`scripts/install-app.sh`).
 
 Забрать артефакты:
 

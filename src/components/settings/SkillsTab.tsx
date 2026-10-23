@@ -4,6 +4,7 @@ import * as ipc from "../../api/ipc";
 import type { ImportResult, SkillInfo } from "../../api/types";
 import { toMessage as errMsg } from "../../shared/errors";
 import { Card, Field } from "./shared";
+import Switch from "../shared/Switch";
 import { emptySkillForm, type SkillForm, type SkillKindOption } from "./forms";
 
 export default function SkillsTab({ active }: { active: boolean }) {
@@ -132,14 +133,10 @@ export default function SkillsTab({ active }: { active: boolean }) {
           label="Перезаписывать при импорте"
           hint="Заменяет уже установленный пользовательский скилл с тем же именем."
         >
-          <label className="switch">
-            <input
-              type="checkbox"
-              checked={overwrite}
-              onChange={(e) => setOverwrite(e.target.checked)}
-            />
-            <span className="track"></span>
-          </label>
+          <Switch
+            checked={overwrite}
+            onChange={(e) => setOverwrite(e.target.checked)}
+          />
         </Field>
         <Field
           label="Git-адрес репозитория со скиллами"
@@ -241,16 +238,12 @@ export default function SkillsTab({ active }: { active: boolean }) {
             />
           </Field>
           <Field label="перезаписать, если существует">
-            <label className="switch">
-              <input
-                type="checkbox"
-                checked={skillForm.overwrite}
-                onChange={(e) =>
-                  setSkillForm({ ...skillForm, overwrite: e.target.checked })
-                }
-              />
-              <span className="track"></span>
-            </label>
+            <Switch
+              checked={skillForm.overwrite}
+              onChange={(e) =>
+                setSkillForm({ ...skillForm, overwrite: e.target.checked })
+              }
+            />
           </Field>
           <div className="set-actions">
             <button className="primary-btn small" type="submit" disabled={skillCreateBusy}>
@@ -284,14 +277,11 @@ export default function SkillsTab({ active }: { active: boolean }) {
                     <div className="c">{s.description}</div>
                   </div>
                   {s.builtin && <span className="badge">встроенный</span>}
-                  <label className="switch">
-                    <input
-                      type="checkbox"
-                      checked={s.enabled}
-                      onChange={(e) => toggleSkill(s.name, e.target.checked)}
-                    />
-                    <span className="track"></span>
-                  </label>
+                  <Switch
+                    aria-label={`Скилл ${s.name}`}
+                    checked={s.enabled}
+                    onChange={(e) => toggleSkill(s.name, e.target.checked)}
+                  />
                 </div>
               ),
             )}

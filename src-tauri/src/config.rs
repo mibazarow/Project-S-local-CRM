@@ -50,6 +50,13 @@ impl ConfigKind {
     pub fn from_filename(name: &str) -> Option<ConfigKind> {
         ConfigKind::all().into_iter().find(|k| k.filename() == name)
     }
+
+    // Configs that hold secrets (LLM API keys, MCP env/header values, SSH
+    // passwords): their files are written owner-only (0600) on Unix. App and
+    // Indexing carry no secrets and keep their default permissions.
+    pub fn secret_bearing(self) -> bool {
+        matches!(self, ConfigKind::Llm | ConfigKind::Mcp | ConfigKind::Ssh)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -367,7 +374,7 @@ pub fn ensure_defaults(wd: &Path) -> Result<()> {
     for kind in ConfigKind::all() {
         let file = file_path(wd, kind);
         if !file.exists() {
-            write_json(&file, &default_value(kind)?)?;
+            write_json(&file, kind, &default_value(kind)?)?;
         }
     }
     migrate_indexing_defaults(wd)?;
@@ -409,7 +416,7 @@ pub fn migrate_indexing_defaults(wd: &Path) -> Result<()> {
         changed = true;
     }
     if changed {
-        write_json(&file, &value)?;
+        write_json(&file, ConfigKind::Indexing, &value)?;
     }
     Ok(())
 }
@@ -446,7 +453,7 @@ pub fn migrate_llm_providers(wd: &Path) -> Result<()> {
             json!([{ "id": id, "name": "По умолчанию", "baseUrl": base_url, "apiKey": api_key }]),
         );
         obj.insert("activeProvider".into(), json!(id));
-        write_json(&file, &value)?;
+        write_json(&file, ConfigKind::Llm, &value)?;
         return Ok(());
     }
     // Providers exist but none is active: activate the first and mirror it.
@@ -461,7 +468,7 @@ pub fn migrate_llm_providers(wd: &Path) -> Result<()> {
                 if let Some(ak) = first.get("apiKey") {
                     obj.insert("apiKey".into(), ak.clone());
                 }
-                write_json(&file, &value)?;
+                write_json(&file, ConfigKind::Llm, &value)?;
             }
         }
     }
@@ -509,14 +516,20 @@ pub fn write_config(wd: &Path, kind: ConfigKind, value: Value) -> Result<()> {
         Err(e) => return Err(e.into()),
     };
     map.extend(new);
-    write_json(&file, &Value::Object(map))
+    write_json(&file, kind, &Value::Object(map))
 }
 
-fn write_json(file: &Path, value: &Value) -> Result<()> {
+fn write_json(file: &Path, kind: ConfigKind, value: &Value) -> Result<()> {
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent)?;
     }
     fs::write(file, serde_json::to_string_pretty(value)? + "\n")?;
+    // Secret-bearing configs hold plaintext keys/passwords: force owner-only
+    // permissions on every write, so a pre-existing world-readable file is
+    // re-tightened and a fresh one never lands 0644. No-op on Windows.
+    if kind.secret_bearing() {
+        crate::platform::restrict_permissions(file, 0o600)?;
+    }
     Ok(())
 }
 
@@ -966,6 +979,38 @@ mod tests {
         let raw = read_config(&dir, ConfigKind::Mcp).unwrap();
         assert_eq!(raw["servers"][0]["handAdded"], 7);
         assert_eq!(raw["futureTop"], true);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_bearing_config_writes_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_test_dir("config-secret-perms");
+        ensure_defaults(&dir).unwrap();
+
+        // Freshly written secret configs land 0600, not the umask default.
+        for kind in [ConfigKind::Llm, ConfigKind::Mcp, ConfigKind::Ssh] {
+            let mode = fs::metadata(file_path(&dir, kind))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "{kind:?} must be owner-only");
+        }
+
+        // A pre-existing world-readable secret file is re-tightened on write.
+        let llm = file_path(&dir, ConfigKind::Llm);
+        fs::set_permissions(&llm, fs::Permissions::from_mode(0o644)).unwrap();
+        write_config(&dir, ConfigKind::Llm, json!({ "apiKey": "sk-x" })).unwrap();
+        assert_eq!(fs::metadata(&llm).unwrap().permissions().mode() & 0o777, 0o600);
+
+        // Non-secret configs keep their permissions: an explicit 0644 survives.
+        let app = file_path(&dir, ConfigKind::App);
+        fs::set_permissions(&app, fs::Permissions::from_mode(0o644)).unwrap();
+        write_config(&dir, ConfigKind::App, json!({ "autopilot": true })).unwrap();
+        assert_eq!(fs::metadata(&app).unwrap().permissions().mode() & 0o777, 0o644);
+
         fs::remove_dir_all(&dir).unwrap();
     }
 }

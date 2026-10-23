@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { defaultWorkingDir, getAutostart, setAutostart } from "../../api/ipc";
 import { useApp } from "../../state/AppStore";
+import Switch from "../shared/Switch";
 
 export default function Onboarding() {
   const { state, actions } = useApp();
@@ -58,16 +59,13 @@ export default function Onboarding() {
         )}
 
         <div className="set-row switch-row">
-          <label>Запускать Project-S при входе в систему</label>
-          <label className="switch">
-            <input
-              type="checkbox"
-              checked={autostart}
-              disabled={busy}
-              onChange={(e) => setAutostartState(e.target.checked)}
-            />
-            <span className="track" />
-          </label>
+          <label htmlFor="onboarding-autostart">Запускать Project-S при входе в систему</label>
+          <Switch
+            id="onboarding-autostart"
+            checked={autostart}
+            disabled={busy}
+            onChange={(e) => setAutostartState(e.target.checked)}
+          />
         </div>
         <div className="set-hint">
           Если приложение не запущено, фоновые задачи и запуски по расписанию не выполняются.

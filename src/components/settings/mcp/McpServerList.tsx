@@ -1,5 +1,6 @@
 import type { McpServerStatus } from "../../../api/types";
 import { Card } from "../shared";
+import Switch from "../../shared/Switch";
 
 export function McpServerList({
   servers,
@@ -58,15 +59,12 @@ export function McpServerList({
                   Удалить
                 </button>
               </span>
-              <label className="switch">
-                <input
-                  type="checkbox"
-                  checked={s.enabled}
-                  disabled={busy}
-                  onChange={(e) => onToggle(s.name, e.target.checked)}
-                />
-                <span className="track"></span>
-              </label>
+              <Switch
+                aria-label={`Сервер ${s.name}`}
+                checked={s.enabled}
+                disabled={busy}
+                onChange={(e) => onToggle(s.name, e.target.checked)}
+              />
             </div>
           ))}
         </div>

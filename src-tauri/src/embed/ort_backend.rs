@@ -225,6 +225,13 @@ impl Embedder for OrtEmbedder {
     fn backend_id(&self) -> &'static str {
         "ort"
     }
+
+    fn model_id(&self) -> String {
+        self.model_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]

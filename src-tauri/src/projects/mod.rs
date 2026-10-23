@@ -859,4 +859,110 @@ mod tests {
         assert_eq!(count(&conn, "SELECT count(*) FROM tasks"), 0);
         fs::remove_dir_all(&wd).unwrap();
     }
+
+    // Pre-R-15 reference shape of the list: one id query plus three queries per
+    // project, with the original standalone aggregate SQL.
+    const TASK_COUNT_SQL: &str = "SELECT count(*) FROM tasks WHERE project_id = ?1";
+    const OVERDUE_SQL: &str = "SELECT count(*) FROM tasks WHERE project_id = ?1 AND status != 'done' AND due_date IS NOT NULL AND due_date || ' ' || due_time || ':00' < datetime('now','localtime')";
+
+    fn list_project_rows_rowwise(conn: &Connection) -> Vec<(i64, types::ProjectDbRow)> {
+        let ids = conn
+            .prepare("SELECT id FROM projects ORDER BY builtin DESC, position, id")
+            .unwrap()
+            .query_map([], |r| r.get::<_, i64>(0))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        ids.into_iter()
+            .map(|id| {
+                let mut row = repo::db_row(conn, id).unwrap();
+                row.task_count = conn.query_row(TASK_COUNT_SQL, params![id], |r| r.get(0)).unwrap();
+                row.overdue_count = conn.query_row(OVERDUE_SQL, params![id], |r| r.get(0)).unwrap();
+                (id, row)
+            })
+            .collect()
+    }
+
+    // Fixture for the R-15 list rewrite: builtin first, a position tie broken
+    // by id, a negative position, a project without tasks, and the overdue
+    // edge cases (done task with a past due date, task without a due date).
+    fn seed_list_fixture(conn: &Connection) {
+        conn.execute(
+            "INSERT INTO projects (id, name, path, created_at, opened_at, position, archived_at, builtin)
+             VALUES (1, 'builtin', '/tmp/builtin', '2026-01-01', NULL, 0, NULL, 1),
+                    (2, 'arch', '/tmp/arch', '2026-01-01', '2026-02-01', 5.5, '2026-03-01', 0),
+                    (3, 'late', '/tmp/late', '2026-01-01', NULL, 5.5, NULL, 0),
+                    (4, 'empty', '/tmp/empty', '2026-01-01', NULL, -1, NULL, 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute_batch(
+            "INSERT INTO tasks (project_id, title, status, due_date, due_time, created_at) VALUES
+                (1, 'a', 'progress', '2000-01-01', '09:00', '2026-01-01'),
+                (1, 'b', 'done', '2000-01-01', '09:00', '2026-01-01'),
+                (1, 'c', 'new', NULL, '07:00', '2026-01-01'),
+                (2, 'd', 'done', '2000-01-01', '07:00', '2026-01-01'),
+                (2, 'e', 'done', '2000-01-01', '07:00', '2026-01-01'),
+                (3, 'f', 'new', '2000-01-01', '07:00', '2026-01-01'),
+                (3, 'g', 'new', '2000-01-02', '23:59', '2026-01-01'),
+                (3, 'h', 'progress', NULL, '07:00', '2026-01-01');",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn project_list_single_query_matches_the_rowwise_reference() {
+        let (wd, conn) = setup("proj-list-equiv");
+        seed_list_fixture(&conn);
+        let rowwise = list_project_rows_rowwise(&conn);
+        let single = list_project_rows(&conn).unwrap();
+        assert_eq!(rowwise, single);
+        // Order and aggregates pinned independently of the reference: builtin
+        // first, then position, then id; overdue skips done and due-less tasks.
+        assert_eq!(
+            single.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![1, 4, 2, 3]
+        );
+        let aggregates = single
+            .iter()
+            .map(|(_, r)| (r.task_count, r.overdue_count, r.has_active_tasks))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            aggregates,
+            vec![(3, 1, true), (0, 0, false), (2, 0, false), (3, 2, true)]
+        );
+
+        let (wd2, conn2) = setup("proj-list-empty");
+        assert!(list_project_rows_rowwise(&conn2).is_empty());
+        assert!(list_project_rows(&conn2).unwrap().is_empty());
+        assert!(matches!(
+            repo::db_row(&conn2, 1),
+            Err(AppError::Db(_))
+        ));
+        fs::remove_dir_all(&wd).unwrap();
+        fs::remove_dir_all(&wd2).unwrap();
+    }
+
+    #[test]
+    fn project_list_is_a_single_query_regardless_of_project_count() {
+        use rusqlite::trace::{TraceEvent, TraceEventCodes};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static QUERIES: AtomicUsize = AtomicUsize::new(0);
+        fn count(ev: TraceEvent<'_>) {
+            if matches!(ev, TraceEvent::Stmt(..)) {
+                QUERIES.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let (wd, conn) = setup("proj-list-queries");
+        seed_list_fixture(&conn);
+        conn.trace_v2(TraceEventCodes::SQLITE_TRACE_STMT, Some(count));
+        QUERIES.store(0, Ordering::Relaxed);
+        assert_eq!(list_project_rows(&conn).unwrap().len(), 4);
+        assert_eq!(QUERIES.swap(0, Ordering::Relaxed), 1);
+        assert_eq!(repo::db_row(&conn, 1).unwrap().task_count, 3);
+        assert_eq!(QUERIES.swap(0, Ordering::Relaxed), 1);
+        conn.trace_v2(TraceEventCodes::empty(), None);
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
 }

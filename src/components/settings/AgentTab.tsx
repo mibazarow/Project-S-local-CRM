@@ -4,6 +4,7 @@ import type { EmbedStatus, IndexingConfig, ProjectIndexStats } from "../../api/t
 import { toMessage as errMsg } from "../../shared/errors";
 import { confirmAction } from "../../shared/confirm";
 import { Card, Field } from "./shared";
+import Switch from "../shared/Switch";
 import { useDebouncedConfig, type DebouncedConfig } from "./useDebouncedConfig";
 import { indexingToPatch, toForm, type AppForm, type Form } from "./forms";
 
@@ -124,14 +125,10 @@ export default function AgentTab({
           label="Полный автопилот (все разрешения без подтверждений)"
           hint="Опасно: агент выполняет любые действия без подтверждений. По умолчанию выключено."
         >
-          <label className="switch">
-            <input
-              type="checkbox"
-              checked={app.form?.autopilot ?? false}
-              onChange={(e) => app.updateForm({ autopilot: e.target.checked })}
-            />
-            <span className="track"></span>
-          </label>
+          <Switch
+            checked={app.form?.autopilot ?? false}
+            onChange={(e) => app.updateForm({ autopilot: e.target.checked })}
+          />
         </Field>
       </Card>
       <Card title="Индексация" desc="Ограничения на файлы, попадающие в поиск по проектам.">

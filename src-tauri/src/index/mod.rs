@@ -182,6 +182,7 @@ pub(crate) fn index_root(
     let mut vec_rows = vec_rows(&tx, project_id)?;
     let mut indexed_rels: HashSet<String> = HashSet::new();
     let embedding_on = embedder.backend_id() != "noop";
+    let identity = vector_identity(embedder);
 
     for file in walk::walk(root, cfg) {
         stats.files_seen += 1;
@@ -202,9 +203,9 @@ pub(crate) fn index_root(
             if *size == file.size as i64 && *mtime == file.mtime {
                 indexed_rels.insert(file.rel.clone());
                 stats.files_skipped += 1;
-                // Backfill vectors when only the backend or dim changed.
+                // Backfill vectors when only the backend, model, or dim changed.
                 if embedding_on
-                    && needs_reembed(&vec_rows, &file.rel, embedder.backend_id(), embedder.dim())
+                    && needs_reembed(&vec_rows, &file.rel, &identity, embedder.dim())
                 {
                     if let Some(text) = fts_content(&tx, project_id, &file.rel) {
                         if let Err(e) = update_vectors(
@@ -329,16 +330,29 @@ fn vec_rows(conn: &Connection, project_id: i64) -> Result<HashMap<(String, Strin
     Ok(rows.collect::<rusqlite::Result<HashMap<_, _>>>()?)
 }
 
+// Stored identity for a vector row: backend plus model id, so two models that
+// share a dim and a backend are told apart. A backend with no model id keeps
+// the bare backend string, which is what legacy rows hold; those never match a
+// model-bearing identity and re-embed once.
+fn vector_identity(embedder: &dyn embed::Embedder) -> String {
+    let model = embedder.model_id();
+    if model.is_empty() {
+        embedder.backend_id().to_owned()
+    } else {
+        format!("{}:{}", embedder.backend_id(), model)
+    }
+}
+
 fn needs_reembed(
     vec_rows: &HashMap<(String, String), VecRow>,
     rel: &str,
-    backend: &str,
+    identity: &str,
     dim: usize,
 ) -> bool {
     ["text", "name"].iter().any(|kind| {
         match vec_rows.get(&(rel.to_owned(), kind.to_string())) {
             Some((_, stored_backend, stored_dim, Some(_))) => {
-                *stored_backend != backend || *stored_dim != dim as i64
+                *stored_backend != identity || *stored_dim != dim as i64
             }
             _ => true,
         }
@@ -367,7 +381,7 @@ fn update_vectors(
     text: &str,
 ) -> Result<()> {
     let dim = embedder.dim();
-    let backend = embedder.backend_id();
+    let identity = vector_identity(embedder);
     let docs: [(&'static str, String, String); 2] = [
         ("text", content_hash(text), embed::doc_prefix(name, text)),
         (
@@ -381,7 +395,7 @@ fn update_vectors(
         if let Some((Some(stored_hash), stored_backend, stored_dim, _)) =
             vec_rows.get(&(rel.to_owned(), kind.to_owned()))
         {
-            if *stored_hash == hash && *stored_backend == backend && *stored_dim == dim as i64 {
+            if *stored_hash == hash && *stored_backend == identity && *stored_dim == dim as i64 {
                 continue;
             }
         }
@@ -395,7 +409,8 @@ fn update_vectors(
     for ((kind, hash, _), mut vector) in pending.drain(..).zip(vectors.drain(..)) {
         if vector.len() < dim {
             return Err(AppError::Invalid(format!(
-                "embedder {backend} returned {} dims, need {dim}",
+                "embedder {} returned {} dims, need {dim}",
+                embedder.backend_id(),
                 vector.len()
             )));
         }
@@ -416,9 +431,9 @@ fn update_vectors(
              ON CONFLICT(project_id, rel_path, kind) DO UPDATE SET
                  dim = excluded.dim, backend = excluded.backend, text_hash = excluded.text_hash,
                  vec_rowid = excluded.vec_rowid, updated_at = excluded.updated_at",
-            params![project_id, rel, kind, dim as i64, backend, hash, rowid],
+            params![project_id, rel, kind, dim as i64, identity, hash, rowid],
         )?;
-        vec_rows.insert(key, (Some(hash), backend.to_owned(), dim as i64, Some(rowid)));
+        vec_rows.insert(key, (Some(hash), identity.clone(), dim as i64, Some(rowid)));
     }
     Ok(())
 }
@@ -803,6 +818,52 @@ mod tests {
         }
     }
 
+    // Same backend and dim as FakeEmbedder but carries a model id: the residual
+    // case where swapping models that share backend+dim must still re-embed.
+    struct FakeModelEmbedder {
+        offset: usize,
+        model: &'static str,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FakeModelEmbedder {
+        fn new(model: &'static str, offset: usize) -> Self {
+            FakeModelEmbedder {
+                offset,
+                model,
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl embed::Embedder for FakeModelEmbedder {
+        fn embed_texts(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(texts
+                .iter()
+                .map(|t| {
+                    let mut v = vec![0.0f32; 768];
+                    for b in t.bytes() {
+                        v[(b as usize + self.offset) % 768] += 1.0;
+                    }
+                    v
+                })
+                .collect())
+        }
+        fn dim(&self) -> usize {
+            embed::EMBED_DIM
+        }
+        fn backend_id(&self) -> &'static str {
+            "fake"
+        }
+        fn model_id(&self) -> String {
+            self.model.to_owned()
+        }
+    }
+
     fn vector_count(conn: &Connection, project_id: i64) -> i64 {
         conn.query_row(
             "SELECT count(*) FROM file_vectors WHERE project_id = ?1",
@@ -981,6 +1042,70 @@ mod tests {
 
         let hits = semantic_search_with(&conn, &v2, 0.3, id, "раз", 5).unwrap();
         assert!(hits.iter().any(|h| h.rel_path == "a.txt"));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // Same dim, same backend, different model id: the model identity stored in
+    // file_vectors.backend ("fake:<model>") must still force a full re-embed,
+    // replacing every vector with no duplicates and no leaked vec_items.
+    #[test]
+    fn same_backend_different_model_id_replaces_all_vectors() {
+        let (wd, conn, id, _state) = setup("idx-same-backend-model");
+        fs::write(root(&wd).join("a.txt"), "раз").unwrap();
+        let cfg = IndexingConfig::default();
+
+        let m1 = FakeModelEmbedder::new("m1", 0);
+        index_root(&conn, id, &root(&wd), &cfg, &m1).unwrap();
+        assert_eq!(vector_count(&conn, id), 4);
+        assert_eq!(vec_item_count(&conn), 4);
+        assert_eq!(stored_backends(&conn, id), ["fake:m1"]);
+
+        let m2 = FakeModelEmbedder::new("m2", 7);
+        let stats = index_root(&conn, id, &root(&wd), &cfg, &m2).unwrap();
+        assert!(stats.errors.is_empty(), "{:?}", stats.errors);
+        assert_eq!(stats.files_indexed, 0); // files unchanged: no re-extraction
+        assert!(m2.calls() > 0, "different model id must re-embed");
+        assert_eq!(vector_count(&conn, id), 4, "no duplicate vector rows");
+        assert_eq!(vec_item_count(&conn), 4, "old vec_items rows must be replaced");
+        assert_eq!(stored_backends(&conn, id), ["fake:m2"]);
+
+        // A third pass with the same identity costs zero embeds.
+        let calls = m2.calls();
+        index_root(&conn, id, &root(&wd), &cfg, &m2).unwrap();
+        assert_eq!(m2.calls(), calls, "same identity must not re-embed");
+
+        let hits = semantic_search_with(&conn, &m2, 0.3, id, "раз", 5).unwrap();
+        assert!(hits.iter().any(|h| h.rel_path == "a.txt"));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // A legacy row stored with the bare backend (no model id) is stale against a
+    // model-bearing identity: it re-embeds once, then the identity is complete
+    // and stays stable.
+    #[test]
+    fn legacy_row_without_model_identity_reembeds_once_then_stays_stable() {
+        let (wd, conn, id, _state) = setup("idx-legacy-model");
+        fs::write(root(&wd).join("a.txt"), "раз").unwrap();
+        let cfg = IndexingConfig::default();
+
+        // Legacy: FakeEmbedder has no model id, so it stores the bare "fake".
+        let legacy = FakeEmbedder::new();
+        index_root(&conn, id, &root(&wd), &cfg, &legacy).unwrap();
+        assert_eq!(stored_backends(&conn, id), ["fake"]);
+
+        // A model-bearing embedder sees the legacy rows as stale and re-embeds once.
+        let m1 = FakeModelEmbedder::new("m1", 0);
+        let stats = index_root(&conn, id, &root(&wd), &cfg, &m1).unwrap();
+        assert!(stats.errors.is_empty(), "{:?}", stats.errors);
+        assert!(m1.calls() > 0, "legacy row must re-embed once");
+        assert_eq!(vector_count(&conn, id), 4);
+        assert_eq!(vec_item_count(&conn), 4, "no leaked vec_items");
+        assert_eq!(stored_backends(&conn, id), ["fake:m1"]);
+
+        // Now the identity is complete: a second pass costs nothing.
+        let calls = m1.calls();
+        index_root(&conn, id, &root(&wd), &cfg, &m1).unwrap();
+        assert_eq!(m1.calls(), calls, "complete identity must not re-embed");
         fs::remove_dir_all(&wd).unwrap();
     }
 
