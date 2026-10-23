@@ -3,16 +3,10 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: vi.fn(async () => () => {}) }));
 
-import {
-  chatReducer,
-  combineQueued,
-  historyToItems,
-  LLM_TIMEOUT_CODE,
-  summarizeArgs,
-  toMessage,
-  type ChatAction,
-  type ChatState,
-} from "./chatShared";
+import { chatReducer, combineQueued } from "./chatReducer";
+import { historyToItems, summarizeArgs } from "./chatHistory";
+import { LLM_TIMEOUT_CODE, type ChatAction, type ChatState } from "./chatTypes";
+import { toMessage } from "../../shared/errors";
 import type { MessageDto } from "../../api/types";
 
 const KEY = "1";

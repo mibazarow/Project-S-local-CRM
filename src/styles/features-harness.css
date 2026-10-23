@@ -1,0 +1,299 @@
+/* ---------- Харнес / плейсхолдеры ---------- */
+
+.session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 var(--sp-2) var(--sp-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.session-item {
+  text-align: left;
+  border: none;
+  background: transparent;
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text);
+  transition: background var(--dur) var(--ease);
+  position: relative;
+  cursor: pointer;
+}
+.session-item:hover { background: rgba(0, 0, 0, .045); }
+.session-item.active { background: var(--accent); color: #fff; }
+.session-item .name { font-weight: var(--fw-medium); font-size: var(--fs-base); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-right: 60px; }
+.session-item .meta { font-size: var(--fs-meta); color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-item.active .meta { color: rgba(255, 255, 255, .75); }
+.session-item .rename-input { width: 100%; font-size: var(--fs-control); }
+.session-actions { position: absolute; top: 6px; right: 28px; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
+.session-item:hover .session-actions { opacity: 1; }
+.session-item.active .mini-btn { color: rgba(255, 255, 255, .85); }
+.session-item.active .mini-btn:hover { background: rgba(255, 255, 255, .2); color: #fff; }
+.session-pin {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-muted);
+  padding: 2px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity .15s, color .15s, transform .15s, background .12s;
+}
+.session-item:hover .session-pin,
+.session-item:focus-within .session-pin { opacity: 1; }
+.session-pin:hover { background: rgba(0, 0, 0, .06); }
+.session-pin.pinned { opacity: 1; color: #E0A800; transform: rotate(40deg); }
+.session-item.active .session-pin { color: rgba(255, 255, 255, .85); }
+.session-item.active .session-pin.pinned { color: #FFD24A; }
+.session-item.active .session-pin:hover { background: rgba(255, 255, 255, .2); }
+
+.sidebar-head-actions { display: flex; gap: 2px; }
+.harness-index-note { margin: 0 var(--sp-3) var(--sp-2); }
+
+/* ---------- Chat-run status dots (project / session / notes lists) ---------- */
+.chat-status {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+  flex-shrink: 0;
+}
+.chat-status.running { background: var(--accent); animation: chat-status-pulse 1.1s ease-in-out infinite; }
+.chat-status.ready { background: #E0A800; }
+.project-item.active .chat-status.running,
+.session-item.active .chat-status.running { background: var(--surface); }
+@keyframes chat-status-pulse { 0%, 100% { opacity: .3; } 50% { opacity: 1; } }
+
+.sidebar-foot { padding: var(--sp-2) var(--sp-3); border-top: 1px solid var(--hairline); }
+.muted-note { font-size: var(--fs-meta); color: var(--text-muted); line-height: var(--lh-base); }
+
+.badge {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  padding: 2px var(--sp-2);
+  white-space: nowrap;
+}
+
+.harness-messages { background: var(--canvas); }
+
+.sidebar .sidebar-title,
+.sidebar .project-item .meta,
+.sidebar .session-item .meta,
+.sidebar .empty-note,
+.sidebar .muted-note,
+.sidebar .set-hint,
+.sidebar .tree-row .icon,
+.sidebar .tree-row .tag,
+.sidebar .chev { color: var(--sidebar-muted); }
+
+.sidebar .project-item,
+.sidebar .session-item { color: var(--sidebar-text); }
+.sidebar .project-item:hover,
+.sidebar .session-item:hover { background: var(--sidebar-hover); }
+
+.sidebar .project-item.active,
+.sidebar .session-item.active { background: var(--accent); color: #fff; }
+.sidebar .project-item.active .meta,
+.sidebar .session-item.active .meta { color: rgba(255, 255, 255, .75); }
+.sidebar .project-item.active .meta-overdue { color: var(--danger-tint); }
+.sidebar .project-item.active .mini-btn,
+.sidebar .session-item.active .mini-btn { color: rgba(255, 255, 255, .85); }
+
+.sidebar .project-item .active-tasks { color: #9cc4ec; }
+
+.sidebar .add-project-btn { color: var(--sidebar-text); }
+.sidebar .add-project-btn:hover { background: var(--sidebar-hover); }
+
+.sidebar .ghost-btn {
+  background: var(--sidebar-hover);
+  border-color: var(--sidebar-border);
+  color: var(--sidebar-text);
+  box-shadow: none;
+}
+.sidebar .ghost-btn:hover { background: var(--sidebar-selected); }
+.sidebar .ghost-btn.danger { color: #ff8a80; }
+
+.sidebar .mini-btn,
+.sidebar .icon-btn { color: var(--sidebar-muted); }
+.sidebar .mini-btn:hover,
+.sidebar .icon-btn:hover { background: var(--sidebar-selected); color: #fff; }
+.sidebar .mini-btn.danger:hover { color: #ff8a80; }
+
+.sidebar .badge {
+  background: var(--sidebar-hover);
+  border-color: var(--sidebar-border);
+  color: var(--sidebar-muted);
+}
+.sidebar .badge.st-progress { color: #9cc4ec; }
+.sidebar .badge.st-done { color: #7dda94; }
+.sidebar .badge.st-overdue { color: #ff8a80; }
+
+.sidebar .tree-row:hover { background: var(--sidebar-hover); }
+.sidebar .tree-row.selected { background: var(--sidebar-selected); }
+.sidebar .tree-row.drop-over,
+.sidebar .empty-note.drop-over { background: var(--sidebar-selected); }
+.sidebar .tree-children.nested { border-left-color: var(--sidebar-border); }
+
+.sidebar .sidebar-foot { border-top-color: var(--sidebar-border); }
+
+.sidebar ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .22); }
+.sidebar ::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, .35); }
+
+.schedule-list { padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-2); overflow-y: auto; }
+.schedule-item {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: var(--sp-3);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  cursor: pointer;
+}
+.schedule-item:hover { border-color: var(--border-strong); }
+/* Q.md item 7: an unread schedule result softly pulses until opened. */
+.schedule-item.unread { animation: schedule-unread-pulse 2.6s ease-in-out infinite; }
+@keyframes schedule-unread-pulse {
+  0%, 100% { box-shadow: var(--shadow-sm); }
+  50% { box-shadow: 0 0 0 3px rgba(55, 106, 159, .16), var(--shadow-sm); }
+}
+.schedule-item .info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.schedule-item .info .t { font-size: var(--fs-base); font-weight: var(--fw-medium); }
+.schedule-item .info .c { font-size: var(--fs-meta); color: var(--text-muted); }
+.schedule-item .info .c + .c { color: var(--danger); }
+.badge.st-active { color: var(--ok); }
+.badge.st-error { color: var(--danger); }
+.schedule-group { display: flex; flex-direction: column; gap: var(--sp-2); }
+.schedule-group-title { font-size: var(--fs-meta); font-weight: var(--fw-semibold); text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
+.primary-btn.small { padding: var(--sp-1) var(--sp-3); font-size: var(--fs-control); }
+
+/* переключатель — как в macOS System Settings */
+.switch { position: relative; width: 38px; height: 22px; flex-shrink: 0; }
+.switch input { opacity: 0; width: 0; height: 0; }
+.switch .track {
+  position: absolute; inset: 0;
+  background: var(--seg-bg);
+  border-radius: 11px;
+  transition: background .2s;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, .08);
+}
+.switch .track::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 18px; height: 18px;
+  background: var(--surface);
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .25);
+  transition: transform .2s;
+}
+.switch input:checked + .track { background: var(--ok); }
+.switch input:checked + .track::after { transform: translateX(16px); }
+
+/* Скиллы и MCP в настройках (SPEC 6.5) */
+.skill-list { display: flex; flex-direction: column; gap: var(--sp-2); }
+.skill-item, .mcp-item {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-2) var(--sp-3);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  background: var(--surface-2);
+}
+.skill-item .info, .mcp-item .info { flex: 1; min-width: 0; }
+.skill-item .info .t, .mcp-item .info .t { font-size: var(--fs-base); font-weight: var(--fw-medium); }
+.skill-item .info .c, .mcp-item .info .c { font-size: var(--fs-meta); color: var(--text-muted); overflow-wrap: anywhere; }
+.skill-item .badge, .mcp-item .badge { flex-shrink: 0; }
+.skill-item-error { border-color: var(--danger-tint); background: var(--danger-soft); }
+.skill-item-error .info .t, .skill-item-error .info .c { color: var(--danger); }
+.badge.st-disabled { color: var(--text-muted); }
+.skill-results { display: flex; flex-direction: column; gap: 2px; }
+.mcp-item .mcp-actions { display: flex; gap: var(--sp-2); flex-shrink: 0; }
+
+/* Провайдеры LLM (SPEC 3.4 Q-24): список с радио-выбором активного. */
+.set-list .provider-item {
+  border: 0;
+  border-top: 1px solid var(--hairline);
+  border-radius: 0;
+  background: transparent;
+  padding: var(--sp-3) 0;
+  gap: var(--sp-3);
+}
+.provider-item { display: flex; align-items: center; gap: var(--sp-2); }
+.provider-item .info { flex: 1; min-width: 0; }
+.provider-item .info .t { font-size: var(--fs-base); font-weight: var(--fw-medium); }
+.provider-item .info .c { font-size: var(--fs-meta); color: var(--text-muted); overflow-wrap: anywhere; }
+.provider-item .mcp-actions { display: flex; gap: var(--sp-2); flex-shrink: 0; }
+.provider-radio {
+  border: 0;
+  background: transparent;
+  padding: 2px;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+}
+.provider-radio .dot {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--border-strong);
+  background: var(--surface);
+  display: inline-block;
+  position: relative;
+}
+.provider-radio .dot.on { border-color: var(--accent); }
+.provider-radio .dot.on::after {
+  content: '';
+  position: absolute;
+  inset: 3px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.provider-radio:disabled { cursor: default; opacity: .6; }
+.mcp-chips { display: flex; flex-wrap: wrap; gap: var(--sp-1); }
+.mcp-chip {
+  font-family: var(--font-mono);
+  font-size: var(--fs-meta);
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--sp-2);
+  overflow-wrap: anywhere;
+}
+/* Корзина и история версий (SPEC trash/versions slice) */
+.skill-item .item-actions, .skill-item .version-actions { display: flex; gap: var(--sp-2); flex-shrink: 0; }
+.ghost-btn.danger { color: var(--danger); }
+.ghost-btn.danger:hover { background: var(--danger-soft); border-color: var(--danger-tint); }
+.version-modal { width: 460px; }
+.version-list { max-height: 320px; overflow-y: auto; }
+.version-path { font-family: var(--font-mono); overflow-wrap: anywhere; }
+
+.harness-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--canvas);
+}
+.placeholder { text-align: center; color: var(--text-muted); }
+.center-body > .placeholder { margin: 12vh auto 0; }
+.placeholder h1 { font-size: var(--fs-heading-lg); font-weight: var(--fw-semibold); color: var(--text); margin-bottom: var(--sp-1); }
+

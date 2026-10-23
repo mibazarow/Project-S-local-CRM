@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readAppCss } from "../../styles/css-source";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -105,7 +105,7 @@ describe("SchedulePanel card (Q.md items 5-6)", () => {
   });
 
   it("the stylesheet paints the card white with a border and shadow on the panel", () => {
-    const css = readFileSync("src/styles/app.css", "utf8");
+    const css = readAppCss();
     const rule = css.match(/\.schedule-item \{[^}]*\}/);
     expect(rule, "the schedule card rule must exist").not.toBeNull();
     expect(rule![0]).toContain("background: var(--surface)");
@@ -135,7 +135,7 @@ describe("SchedulePanel card (Q.md items 5-6)", () => {
   });
 
   it("the stylesheet defines a soft box-shadow pulse for the unread card", () => {
-    const css = readFileSync("src/styles/app.css", "utf8");
+    const css = readAppCss();
     const rule = css.match(/\.schedule-item\.unread \{[^}]*\}/);
     expect(rule, "the unread rule must exist").not.toBeNull();
     expect(rule![0]).toContain("animation:");

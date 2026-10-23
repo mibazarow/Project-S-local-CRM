@@ -1,0 +1,89 @@
+/* ---------- Тосты (кросс-сущностные быстрые действия) ---------- */
+
+.toasts {
+  position: fixed;
+  right: var(--sp-4);
+  bottom: var(--sp-4);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  pointer-events: none;
+}
+.toast {
+  max-width: 360px;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-size: var(--fs-control);
+  line-height: var(--lh-base);
+  color: var(--text);
+}
+.toast.ok { border-left: 3px solid var(--ok); }
+.toast.err {
+  border-color: var(--danger-tint);
+  border-left: 3px solid var(--danger);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+/* ---------- Контекстное меню файлов ---------- */
+
+.context-menu {
+  position: fixed;
+  z-index: 1100;
+  min-width: 210px;
+  padding: var(--sp-1);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-menu);
+}
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-2);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--text);
+  font-size: var(--fs-control);
+  text-align: left;
+  white-space: nowrap;
+}
+.context-menu-item:hover:not(:disabled) { background: var(--accent); color: #fff; }
+.context-menu-item:disabled { color: var(--text-muted); cursor: default; }
+.context-menu-item .cm-icon { display: inline-flex; width: var(--icon-sm); justify-content: center; flex-shrink: 0; }
+
+/* ---------- Асинхронное подтверждение опасных действий ---------- */
+
+.confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1200;
+}
+.confirm-dialog {
+  width: 380px;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  padding: var(--sp-5) var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.confirm-dialog h3 { font-size: var(--fs-heading); font-weight: var(--fw-semibold); }
+.confirm-message { font-size: var(--fs-base); line-height: var(--lh-loose); color: var(--text-muted); }
+.confirm-actions { display: flex; justify-content: flex-end; gap: var(--sp-2); margin-top: var(--sp-1); }
+.primary-btn.danger { background: var(--danger); }
+.primary-btn.danger:hover { background: var(--danger-hover); }
+

@@ -346,11 +346,7 @@ fn load_summaries(conn: &Connection, chat_id: i64) -> Result<Vec<String>> {
 }
 
 // Flattens messages into plain text for the summarizer prompt (also used by
-// the memory FactExtractor: same transcript, same char cap).
-pub(crate) fn render_transcript(messages: &[ChatMessage]) -> String {
-    render_transcript_capped(messages, SUMMARIZER_MAX_CHARS)
-}
-
+// the memory FactExtractor: same transcript, caller-supplied char cap).
 pub(crate) fn render_transcript_capped(messages: &[ChatMessage], max_chars: usize) -> String {
     let mut out = String::new();
     for m in messages {

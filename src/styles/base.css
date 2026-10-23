@@ -1,0 +1,36 @@
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body { height: 100%; }
+
+body {
+  font-family: var(--font);
+  font-size: var(--fs-base);
+  line-height: var(--lh-base);
+  color: var(--text);
+  background: var(--canvas);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+button { font-family: inherit; cursor: pointer; }
+input, textarea, select { font-family: inherit; }
+
+::selection { background: var(--selection); }
+
+/* Единое кольцо фокуса для клавиатурной навигации. */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+}
+
+/* Единые приглушённые переходы (120–160ms). */
+button, a, input, select, textarea,
+.seg, .seg-filter, .vt, .settings-tab, .palette-item,
+.project-item, .session-item, .tree-row, .tile, .task-card, .task-list-row {
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease),
+              border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+
+:disabled, .disabled { cursor: default; }
+

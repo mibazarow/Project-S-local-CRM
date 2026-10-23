@@ -33,7 +33,7 @@ pub(crate) fn mcp_set_enabled(
     enabled: bool,
 ) -> Result<Vec<mcp::McpServerStatus>> {
     let wd = state.working_dir()?;
-    let mut raw = config::read_config(&wd, config::ConfigKind::Mcp)?;
+    let raw = config::read_config(&wd, config::ConfigKind::Mcp)?;
     let updated = set_enabled_in(&raw, &name, enabled)?;
     config::write_config(&wd, config::ConfigKind::Mcp, json!({ "servers": updated }))?;
     let status = restart_registry(state, &wd);

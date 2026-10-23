@@ -3,7 +3,7 @@ import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { confirmRemove } from "../../shared/confirm";
 import { usePointerDrag } from "../../hooks/usePointerDrag";
-import { toMessage } from "../chat/chatShared";
+import { toMessage } from "../../shared/errors";
 import RenameInput from "../files/RenameInput";
 import { useOsFileDrag } from "../files/useOsFileDrag";
 import {

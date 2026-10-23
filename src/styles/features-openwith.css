@@ -1,0 +1,40 @@
+/* ---------- «Открыть в редакторе» (open-with chooser) ---------- */
+
+.open-with-modal { width: 420px; }
+.open-with-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+.open-with-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  max-height: 300px;
+  overflow-y: auto;
+}
+.open-with-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  text-align: left;
+  font-size: var(--fs-base);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+.open-with-item:hover:not(:disabled) { background: var(--surface-2); }
+.open-with-item:disabled { opacity: .6; }
+.open-with-item.remembered { border-color: var(--accent); }
+.ow-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ow-badge {
+  flex-shrink: 0;
+  font-size: var(--fs-meta);
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  padding: 2px var(--sp-1);
+}
+.ow-badge.remembered { color: var(--text-muted); background: var(--surface-2); }
+.ow-remember { display: flex; align-items: center; gap: var(--sp-2); font-size: var(--fs-control); color: var(--text-muted); }
+.open-with-actions { display: flex; justify-content: flex-end; }
+.open-with-empty { font-size: var(--fs-base); color: var(--text-muted); }
+

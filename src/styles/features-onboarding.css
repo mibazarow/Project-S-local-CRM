@@ -1,0 +1,110 @@
+/* ---------- Онбординг ---------- */
+
+.onboarding {
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--canvas);
+  padding: calc(var(--sp-6) + var(--titlebar-inset)) var(--sp-6) var(--sp-6);
+  -webkit-app-region: drag;
+}
+.onboarding-card {
+  -webkit-app-region: no-drag;
+  width: 460px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: var(--sp-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-4);
+}
+.onboarding-card h1 { font-size: var(--fs-heading-lg); font-weight: var(--fw-semibold); }
+.onboarding-card p { font-size: var(--fs-base); line-height: var(--lh-loose); color: var(--text); }
+.onboarding-tree {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: var(--fs-control);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 1px var(--sp-2);
+  margin: 2px var(--sp-1) 0 0;
+}
+.onboarding-note { font-size: var(--fs-control); color: var(--text-muted); }
+.onboarding-path {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--sp-3);
+}
+.onboarding-path-label {
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-muted);
+}
+.onboarding-path code {
+  font-family: var(--font-mono);
+  font-size: var(--fs-control);
+  word-break: break-all;
+  color: var(--text);
+}
+.onboarding-error {
+  font-size: var(--fs-control);
+  color: var(--danger);
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-tint);
+  border-radius: var(--radius);
+  padding: var(--sp-2) var(--sp-3);
+}
+.onboarding-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-1); }
+
+/* ---------- Лицензия перед онбордингом ---------- */
+
+.license-card { width: 640px; max-height: calc(100vh - 48px - var(--titlebar-inset)); }
+.license-warning {
+  background: var(--danger-soft);
+  border: 1px solid var(--danger-tint);
+  border-left: 4px solid var(--danger);
+  border-radius: var(--radius);
+  padding: var(--sp-3) var(--sp-4);
+}
+.license-warning-title {
+  font-size: var(--fs-control);
+  font-weight: var(--fw-semibold);
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  color: var(--danger);
+  margin-bottom: var(--sp-1);
+}
+.license-warning p { font-size: var(--fs-base); line-height: var(--lh-loose); color: var(--text); }
+.license-text {
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1;
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.license-text p { font-size: var(--fs-control); line-height: var(--lh-loose); color: var(--text); }
+.license-check {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-base);
+  color: var(--text);
+  cursor: pointer;
+}
+.license-check input { accent-color: var(--accent); }
+

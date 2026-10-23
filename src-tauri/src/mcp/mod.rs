@@ -48,10 +48,6 @@ pub struct McpClient {
 
 impl McpClient {
     // initialize handshake + initialized notification over any transport.
-    pub fn connect(transport: Box<dyn McpTransport>) -> Result<McpClient> {
-        Self::connect_with(transport, CALL_TIMEOUT)
-    }
-
     pub fn connect_with(transport: Box<dyn McpTransport>, call_timeout: Duration) -> Result<McpClient> {
         let mut channel = RpcChannel::new(transport);
         channel.request(
@@ -413,7 +409,6 @@ struct ServerHandle {
     client: Option<Arc<Mutex<McpClient>>>,
     tools: Vec<McpTool>,
     secrets: Vec<String>,
-    call_timeout: Duration,
 }
 
 #[derive(Default)]
@@ -509,7 +504,6 @@ fn config_error_row(name: &str, error: String) -> ServerHandle {
         client: None,
         tools: Vec::new(),
         secrets: Vec::new(),
-        call_timeout: CALL_TIMEOUT,
     }
 }
 
@@ -555,7 +549,6 @@ fn start_server(entry: &Value, wd: &Path) -> ServerHandle {
                 client: None,
                 tools: Vec::new(),
                 secrets: Vec::new(),
-                call_timeout: CALL_TIMEOUT,
             }
         }
     };
@@ -567,14 +560,13 @@ fn start_server(entry: &Value, wd: &Path) -> ServerHandle {
     if !config.enabled {
         return ServerHandle {
             name: config.name,
-            enabled: false,
-            transport: transport_kind,
-            error: None,
-            client: None,
-            tools: Vec::new(),
-            secrets: Vec::new(),
-            call_timeout,
-        };
+        enabled: false,
+        transport: transport_kind,
+        error: None,
+        client: None,
+        tools: Vec::new(),
+        secrets: Vec::new(),
+    };
     }
     let (transport, secrets) = match &config.transport {
         McpTransportConfig::Stdio { command, args, env } => (
@@ -612,7 +604,6 @@ fn start_server(entry: &Value, wd: &Path) -> ServerHandle {
             client: Some(Arc::new(Mutex::new(client))),
             tools,
             secrets,
-            call_timeout,
         },
         Err(e) => ServerHandle {
             name: config.name,
@@ -622,7 +613,6 @@ fn start_server(entry: &Value, wd: &Path) -> ServerHandle {
             client: None,
             tools: Vec::new(),
             secrets,
-            call_timeout,
         },
     }
 }
@@ -646,14 +636,14 @@ mod tests {
 
     #[test]
     fn list_tools_parses_names_descriptions_and_schemas() {
-        let mut client = McpClient::connect(Box::new(MockTransport::new(vec![
+        let mut client = McpClient::connect_with(Box::new(MockTransport::new(vec![
             init_ok(),
             json!({ "jsonrpc": "2.0", "id": 2, "result": { "tools": [
                 { "name": "get_thing", "description": "Gets a thing",
                   "inputSchema": { "type": "object", "properties": { "id": { "type": "string" } }, "required": ["id"] } },
                 { "name": "no_schema" },
             ] } }),
-        ])))
+        ])), CALL_TIMEOUT)
         .unwrap();
         let tools = client.list_tools().unwrap();
         assert_eq!(tools.len(), 2);
@@ -671,10 +661,10 @@ mod tests {
 
     #[test]
     fn bridge_execute_wraps_text_result_as_untrusted_and_passes_schema_through() {
-        let client = McpClient::connect(Box::new(MockTransport::new(vec![
+        let client = McpClient::connect_with(Box::new(MockTransport::new(vec![
             init_ok(),
             json!({ "jsonrpc": "2.0", "id": 2, "result": { "content": [{ "type": "text", "text": "hello" }] } }),
-        ])))
+        ])), CALL_TIMEOUT)
         .unwrap();
         let tool = McpToolBridge::new(
             "srv",
@@ -700,10 +690,10 @@ mod tests {
 
     #[test]
     fn bridge_maps_is_error_and_json_rpc_errors_to_the_envelope_masking_secrets() {
-        let client = McpClient::connect(Box::new(MockTransport::new(vec![
+        let client = McpClient::connect_with(Box::new(MockTransport::new(vec![
             init_ok(),
             json!({ "jsonrpc": "2.0", "id": 2, "result": { "content": [{ "type": "text", "text": "tool boom" }], "isError": true } }),
-        ])))
+        ])), CALL_TIMEOUT)
         .unwrap();
         let tool = McpToolBridge::new(
             "srv",
@@ -716,10 +706,10 @@ mod tests {
         assert_eq!(result.error.as_ref().unwrap().code, "execution_error");
         assert!(result.error.as_ref().unwrap().message.contains("tool boom"));
 
-        let client = McpClient::connect(Box::new(MockTransport::new(vec![
+        let client = McpClient::connect_with(Box::new(MockTransport::new(vec![
             init_ok(),
             json!({ "jsonrpc": "2.0", "id": 2, "error": { "code": -32000, "message": "auth failed for s3cret-value" } }),
-        ])))
+        ])), CALL_TIMEOUT)
         .unwrap();
         let tool = McpToolBridge::new(
             "srv",
@@ -801,7 +791,7 @@ mod tests {
             json!({ "jsonrpc": "2.0", "id": 2, "result": { "content": [{ "type": "text", "text": "ok" }] } }),
         ]);
         let sent = mock.sent_log();
-        let client = McpClient::connect(Box::new(mock)).unwrap();
+        let client = McpClient::connect_with(Box::new(mock), CALL_TIMEOUT).unwrap();
         let tool = McpToolBridge::new(
             "srv",
             &McpTool { name: "search".into(), description: "Searches".into(), input_schema: nested_schema() },

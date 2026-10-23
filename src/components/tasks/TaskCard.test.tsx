@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readAppCss } from "../../styles/css-source";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -169,7 +169,7 @@ describe("TaskCard priority toggle", () => {
   });
 
   it("the stylesheet keeps overdue pink, gives priority a red border on white, and uses the beige column", () => {
-    const css = readFileSync("src/styles/app.css", "utf8");
+    const css = readAppCss();
     const priority = css.match(/\.task-card\.priority \{[^}]*\}/);
     expect(priority, "the priority rule must exist").not.toBeNull();
     expect(priority![0]).toContain("border-color: var(--danger)");
@@ -314,7 +314,7 @@ describe("TaskCard save button (Q.md item 11)", () => {
   });
 
   it("the stylesheet gives the save button green text and a not-allowed disabled cursor", () => {
-    const css = readFileSync("src/styles/app.css", "utf8");
+    const css = readAppCss();
     const rule = css.match(/\.task-edit-actions \.task-save-btn \{[^}]*\}/);
     expect(rule, "the save button rule must exist").not.toBeNull();
     expect(rule![0]).toContain("color: #248a3d");
@@ -429,7 +429,7 @@ describe("TaskCard spent timer footer", () => {
   });
 
   it("completed task titles carry no strikethrough in the stylesheet", () => {
-    const css = readFileSync("src/styles/app.css", "utf8");
+    const css = readAppCss();
     const rule = css.match(/\.task-card\.done \.t \{[^}]*\}/);
     expect(rule, "the done title rule must exist").not.toBeNull();
     expect(rule![0]).not.toContain("line-through");

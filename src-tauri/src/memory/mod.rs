@@ -586,19 +586,6 @@ pub fn relevant_records(conn: &Connection, project_id: Option<i64>, query: &str)
 // are stripped, non-strings dropped), duplicates collapse by normalized
 // content, and the batch is capped. A backend error returns Err — the
 // caller must treat it as best-effort and never break compaction.
-pub fn extract_facts(
-    backend: &dyn ChatBackend,
-    params: &ChatParams,
-    messages: &[ChatMessage],
-) -> Result<Vec<String>> {
-    extract_facts_capped(
-        backend,
-        params,
-        messages,
-        crate::chat::context::SUMMARIZER_MAX_CHARS,
-    )
-}
-
 pub fn extract_facts_capped(
     backend: &dyn ChatBackend,
     params: &ChatParams,
@@ -1219,7 +1206,10 @@ mod tests {
             serde_json::to_string(&items).unwrap()
         );
         let backend = CannedBackend { reply };
-        let facts = extract_facts(&backend, &test_params(), &[ChatMessage::user("привет")]).unwrap();
+        let cap = crate::chat::context::SUMMARIZER_MAX_CHARS;
+        let facts =
+            extract_facts_capped(&backend, &test_params(), &[ChatMessage::user("привет")], cap)
+                .unwrap();
         assert_eq!(facts.len(), MAX_FACTS, "batch must be capped");
         assert_eq!(facts[0], "Факт 0");
         assert_eq!(facts[1], "Факт 1");
@@ -1235,11 +1225,14 @@ mod tests {
         let fenced = CannedBackend {
             reply: "```json\n[\"Пользователь любит кофе\"]\n```".into(),
         };
-        let facts = extract_facts(&fenced, &test_params(), &[ChatMessage::user("кофе")]).unwrap();
+        let cap = crate::chat::context::SUMMARIZER_MAX_CHARS;
+        let facts =
+            extract_facts_capped(&fenced, &test_params(), &[ChatMessage::user("кофе")], cap)
+                .unwrap();
         assert_eq!(facts, vec!["Пользователь любит кофе"]);
 
         let prose = CannedBackend { reply: "суммаризатор выдал обычный текст".into() };
-        assert!(extract_facts(&prose, &test_params(), &[ChatMessage::user("x")])
+        assert!(extract_facts_capped(&prose, &test_params(), &[ChatMessage::user("x")], cap)
             .unwrap()
             .is_empty());
     }

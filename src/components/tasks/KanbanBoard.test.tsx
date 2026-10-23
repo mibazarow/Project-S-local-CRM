@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readAppCss } from "../../styles/css-source";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -435,7 +435,7 @@ describe("KanbanBoard focus from Today", () => {
   });
 
   it("the pulse animation runs exactly 3 times and is disabled under reduced motion", () => {
-    const css = readFileSync("src/styles/app.css", "utf8");
+    const css = readAppCss();
     const rule = css.match(/\.task-card\.highlight \{[^}]*\}/);
     expect(rule, "the highlight rule must exist").not.toBeNull();
     expect(rule![0]).toContain("animation-iteration-count: 3");

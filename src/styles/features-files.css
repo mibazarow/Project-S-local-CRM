@@ -1,0 +1,89 @@
+/* ---------- Файловое дерево (портировано из design/styles.css) ---------- */
+
+.file-tree {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: var(--sp-1);
+  max-width: 640px;
+}
+
+.tree-node { list-style: none; }
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--control-h);
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background .12s;
+}
+.tree-row:hover { background: rgba(0, 0, 0, .045); }
+.tree-row.selected { background: var(--accent-soft); }
+.tree-row .icon { color: var(--text-muted); flex-shrink: 0; display: flex; }
+.tree-row .label { font-size: var(--fs-base); }
+.tree-row .tag {
+  margin-left: auto;
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+}
+.tree-children.nested { padding-left: var(--sp-4); margin-left: var(--sp-2); border-left: 1px solid var(--border); }
+.tree-children.root { padding-left: 0; }
+.chev { color: var(--text-muted); display: flex; align-items: center; transition: transform .12s; }
+.tree-row.open .chev { transform: rotate(90deg); }
+.tree-row .folder-label { font-weight: var(--fw-medium); }
+.tree-row .icon.folder-icon svg { width: 18px; height: 18px; }
+
+/* переключатель вида файлов */
+.view-toggle { display: flex; border: 1px solid var(--border); border-radius: var(--radius-sm); overflow: hidden; background: var(--surface); }
+.vt { border: none; background: var(--surface); padding: var(--sp-1) var(--sp-2); color: var(--text-muted); cursor: pointer; display: flex; align-items: center; }
+.vt + .vt { border-left: 1px solid var(--border); }
+.vt:hover { background: var(--surface-2); }
+.vt.active { background: var(--accent); color: #fff; }
+
+/* хлебные крошки: отображение + переход вверх по клику (вид сетки) */
+.crumbs { display: flex; align-items: center; gap: var(--sp-1); padding: var(--sp-2) var(--sp-4); border-bottom: 1px solid var(--hairline); font-size: var(--fs-control); background: transparent; }
+.crumb { color: var(--accent); font-size: var(--fs-control); padding: 2px var(--sp-1); border-radius: var(--radius-xs); }
+.crumb-link { border: none; background: none; cursor: pointer; font: inherit; }
+.crumb-link:hover { background: var(--accent-soft); }
+.crumb-sep { color: var(--text-muted); }
+.crumb-home { display: inline-flex; align-items: center; }
+
+/* плитка */
+.file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: var(--sp-3); }
+.tile { position: relative; border: 1px solid var(--border); background: var(--surface); border-radius: var(--radius-md); padding: var(--sp-4) var(--sp-3) var(--sp-3); display: flex; flex-direction: column; align-items: center; gap: var(--sp-2); cursor: pointer; box-shadow: var(--shadow-sm); }
+.tile:hover { border-color: var(--accent); background: var(--surface); box-shadow: 0 2px 8px rgba(0, 0, 0, .10); transform: translateY(-1px); }
+.tile.selected { border-color: var(--accent); background: var(--accent-soft); }
+.tile-icon { color: var(--text-muted); }
+.tile-icon svg { width: 26px; height: 26px; }
+.tile-icon.folder-icon svg { width: 36px; height: 36px; }
+.tile .label { font-size: var(--fs-control); text-align: center; word-break: break-word; }
+.tile .tag { font-size: var(--fs-meta); color: var(--text-muted); }
+
+/* файловые операции: hover-действия, переименование, тулбар, ошибки */
+.tree-row .row-actions { margin-left: auto; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
+.tree-row:hover .tag { display: none; }
+.tree-row:hover .row-actions, .tree-row.selected .row-actions { opacity: 1; }
+.mini-btn.danger:hover { color: var(--danger); }
+.tile-actions { position: absolute; top: 6px; right: 6px; display: flex; gap: 2px; opacity: 0; transition: opacity .12s; }
+.tile:hover .tile-actions, .tile.selected .tile-actions { opacity: 1; }
+.tile .rename-input { font-size: var(--fs-control); width: 90%; }
+.tree-toolbar { display: flex; align-items: center; gap: var(--sp-2); margin-bottom: var(--sp-3); }
+/* переключатель вида в тулбаре: та же высота, что у кнопок создания */
+.tree-toolbar .view-toggle { align-self: stretch; }
+.tree-error { color: var(--danger); font-size: var(--fs-control); margin-bottom: var(--sp-2); }
+
+/* перетаскивание файлов: подсветка цели дропа и запрет на себя/потомка */
+.tree-row.drop-over, .tile.drop-over, .file-tree.drop-over, .file-grid.drop-over, .empty-note.drop-over {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+  background: var(--accent-soft);
+}
+.tree-row.no-drop, .tile.no-drop {
+  outline: 2px dashed var(--danger);
+  outline-offset: -2px;
+}
+.file-tree .tree-row.dragging { opacity: .45; }
+

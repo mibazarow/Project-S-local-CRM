@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { UnlistenFn } from "@tauri-apps/api/event";
-import * as ipc from "../../api/ipc";
+import * as ipc from "../../../api/ipc";
 
 // Pending attachment for the chat input (SPEC 6.1): the absolute source path
 // picked via the скрепка dialog or dropped from Finder. The file is copied

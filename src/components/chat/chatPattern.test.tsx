@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { readAppCss } from "../../styles/css-source";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -50,7 +51,7 @@ describe("chat background pattern", () => {
   });
 
   it("the stylesheet paints the pattern full width repeating downward on chat-pattern", () => {
-    const css = readFileSync("src/styles/app.css", "utf8");
+    const css = readAppCss();
     const rule = css.match(/\.chat\.chat-pattern \{[^}]*\}/);
     expect(rule, "the chat-pattern rule must exist").not.toBeNull();
     expect(rule![0]).toContain('background-image: url("../assets/pattern.png")');
@@ -60,7 +61,7 @@ describe("chat background pattern", () => {
 });
 
 describe("panel headers share one height", () => {
-  const css = readFileSync("src/styles/app.css", "utf8");
+  const css = readAppCss();
 
   function ruleFor(selector: string): string {
     const rule = css.match(new RegExp(`(?:^|\\n)\\${selector} \\{[^}]*\\}`));

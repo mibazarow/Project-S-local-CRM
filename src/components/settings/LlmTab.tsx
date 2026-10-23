@@ -3,127 +3,26 @@ import * as ipc from "../../api/ipc";
 import type { ConnectionTest, LlmConfig, LlmProviderDto, ModelInfo, VisionStatus } from "../../api/types";
 import { toMessage as errMsg } from "../../shared/errors";
 import { confirmRemove } from "../../shared/confirm";
-import { Card, Field } from "./shared";
 import { useDebouncedConfig } from "./useDebouncedConfig";
 import {
   DEFAULT_CONTEXT_WINDOW,
   clampContextWindow,
   emptyProviderForm,
   llmToPatch,
-  parseNum,
   toLlmForm,
-  visionLabel,
   type LlmForm,
   type ProviderForm,
 } from "./forms";
-
-const NO_MODELS_MESSAGE =
-  "К сожалению, ваш endpoint не вернул список доступных моделей. Внесите название вручную. Уточните у провайдера.";
-
-interface ModelPickerProps {
-  value: string;
-  models: string[] | null;
-  error: string | null;
-  busy: boolean;
-  onChange: (value: string) => void;
-  onFocus: () => void;
-  onBlur: () => void;
-}
-
-// Loaded models are a closed list: the user picks one with a native select.
-// Only an empty or failed model-list response falls back to a manual id.
-function ModelPicker({ value, models, error, busy, onChange, onFocus, onBlur }: ModelPickerProps) {
-  if (models === null && !error) {
-    return (
-      <select className="model-picker" disabled value="">
-        <option value="">{busy ? "Загрузка моделей…" : "Модели не загружены"}</option>
-      </select>
-    );
-  }
-
-  if (models === null || models.length === 0) {
-    return (
-      <div className="model-picker">
-        <input
-          type="text"
-          autoComplete="off"
-          spellCheck={false}
-          placeholder="Название модели"
-          value={value}
-          onChange={(e) => onChange(e.target.value)}
-          onFocus={onFocus}
-          onBlur={onBlur}
-        />
-        <div className="set-field-hint">{NO_MODELS_MESSAGE}</div>
-      </div>
-    );
-  }
-
-  const current = value.trim();
-  const missing = current !== "" && !models.includes(current);
-
-  return (
-    <select
-      className="model-picker"
-      value={current}
-      onChange={(e) => onChange(e.target.value)}
-      onFocus={onFocus}
-      onBlur={onBlur}
-    >
-      {current === "" && (
-        <option value="" disabled>
-          Выбери модель
-        </option>
-      )}
-      {missing && <option value={current}>{current} (текущая)</option>}
-      {models.map((id) => (
-        <option key={id} value={id}>
-          {id}
-        </option>
-      ))}
-    </select>
-  );
-}
-
-// Endpoint host shown under a provider name (scheme stripped, path dropped).
-function endpointHost(url: string): string {
-  const after = url.trim().split("://")[1] ?? url.trim();
-  return after.split("/")[0];
-}
-
-type ProviderPreset = "deepseek" | "openai" | "ollama";
-
-const PROVIDER_PRESETS: Record<ProviderPreset, { name: string; baseUrl: string; model?: string }> = {
-  deepseek: {
-    name: "DeepSeek",
-    baseUrl: "https://api.deepseek.com/v1",
-    model: "deepseek-chat",
-  },
-  openai: {
-    name: "OpenAI",
-    baseUrl: "https://api.openai.com/v1",
-    model: "gpt-4o-mini",
-  },
-  ollama: {
-    name: "Ollama",
-    baseUrl: "http://localhost:11434/v1",
-  },
-};
-
-function isLocalEndpoint(url: string): boolean {
-  return /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])([:/]|$)/i.test(url.trim());
-}
-
-function validateProviderInput(name: string, baseUrl: string, apiKey: string): string | null {
-  if (!name) return "Укажи имя провайдера";
-  if (!/^https?:\/\//i.test(baseUrl)) {
-    return "Endpoint должен начинаться с http:// или https://";
-  }
-  if (!apiKey && !isLocalEndpoint(baseUrl)) {
-    return "Укажи API-ключ (пусто разрешено только для localhost)";
-  }
-  return null;
-}
+import {
+  PROVIDER_PRESETS,
+  isLocalEndpoint,
+  validateProviderInput,
+  type ProviderPreset,
+} from "./llm/presets";
+import { ProviderListCard } from "./llm/ProviderListCard";
+import { ProviderFormCard } from "./llm/ProviderFormCard";
+import { GenerationCard } from "./llm/GenerationCard";
+import { VisionCard } from "./llm/VisionCard";
 
 export default function LlmTab({
   active,
@@ -187,6 +86,9 @@ export default function LlmTab({
     !provForm.name.trim() &&
     !provForm.baseUrl.trim() &&
     !provForm.apiKey.trim();
+  // Both endpoint commands need a saved provider and an idle busy state.
+  const actionsDisabled =
+    llmBusy !== null || provBusy || (activeProvider === null && emptyProviderDraft);
 
   const loadProviders = useCallback(() => {
     void ipc
@@ -477,284 +379,89 @@ export default function LlmTab({
     }
   };
 
+  const applyPreset = (value: ProviderPreset) => {
+    const preset = PROVIDER_PRESETS[value];
+    if (!preset) return;
+    setProvForm({ ...provForm, name: preset.name, baseUrl: preset.baseUrl });
+    if (preset.model) updateLlmForm({ model: preset.model });
+  };
+
+  // A pick from a loaded list is remembered per provider; manual entry into an
+  // empty list only sets the model.
+  const selectModel = (model: string) => {
+    if (activeProvider && modelIds !== null && modelIds.length > 0) {
+      updateLlmForm({
+        model,
+        lastModelByProvider: {
+          ...(llmForm?.lastModelByProvider ?? {}),
+          [activeProvider.id]: model,
+        },
+      });
+    } else {
+      updateLlmForm({ model });
+    }
+  };
+
+  // Both selects below own their file: the debounced write is flushed at once.
+  const setThinkingLevel = (level: "off" | "low" | "medium" | "high") => {
+    updateLlmForm({ thinkingLevel: level });
+    void flushLlmSave();
+  };
+
+  const setVisionChoice = (value: "auto" | "yes" | "no") => {
+    updateLlmForm({ vision: value });
+    void flushLlmSave();
+  };
+
   if (!active) return null;
   return (
     <div className="settings-content">
-      <Card
-        title="Провайдеры"
-        desc="Сохраняй любое число OpenAI-совместимых провайдеров; активен ровно один — переключение только здесь."
-      >
-        {providers === null ? (
-          <div className="set-empty">Загрузка…</div>
-        ) : providers.length === 0 ? (
-          <div className="set-empty">Провайдеров нет. Добавь первый ниже.</div>
-        ) : (
-          <div className="set-list">
-            {providers.map((p) => (
-              <div key={p.id} className="provider-item">
-                <button
-                  className="provider-radio"
-                  role="radio"
-                  aria-checked={p.active}
-                  title={p.active ? "Активный провайдер" : "Сделать активным"}
-                  disabled={provBusy}
-                  onClick={() => void activateProvider(p.id)}
-                >
-                  <span className={p.active ? "dot on" : "dot"}></span>
-                </button>
-                <div className="info">
-                  <div className="t">{p.name}</div>
-                  <div className="c">{endpointHost(p.baseUrl)}</div>
-                </div>
-                {p.active && <span className="badge st-active">активен</span>}
-                <span className="mcp-actions">
-                  <button className="ghost-btn small" onClick={() => startEdit(p)}>
-                    Изменить
-                  </button>
-                  <button className="ghost-btn small" onClick={() => void deleteProvider(p)}>
-                    Удалить
-                  </button>
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-        {activeMissingKey && (
-          <div className="provider-warn">
-            У активного провайдера нет API-ключа — впиши ключ и сохрани провайдера.
-          </div>
-        )}
-        <div className="set-actions">
-          <button className="primary-btn small" onClick={startNew} disabled={provBusy}>
-            + Добавить провайдера
-          </button>
-        </div>
-      </Card>
-      <Card
-        title={editingId === null ? "Новый провайдер" : "Подключение (LLM)"}
-        desc="Имя, endpoint и API-ключ активного провайдера. Ключ хранится в llm.json в открытом виде (см. ТЗ 3.4)."
-      >
-        <form className="set-form" onSubmit={(e) => void saveProvider(e)}>
-          <div className="set-hint">
-            OpenAI-совместимые провайдеры используют Bearer-аутентификацию. Форма сохраняется
-            автоматически при проверке подключения и загрузке моделей.
-          </div>
-          <Field
-            label="Шаблон"
-            wide
-            hint="Заполнит имя, endpoint и модель. API-ключ останется как есть."
-          >
-            <select
-              value=""
-              onChange={(e) => {
-                const preset = PROVIDER_PRESETS[e.target.value as ProviderPreset];
-                if (!preset) return;
-                setProvForm({ ...provForm, name: preset.name, baseUrl: preset.baseUrl });
-                if (preset.model) updateLlmForm({ model: preset.model });
-              }}
-            >
-              <option value="">Выбери шаблон…</option>
-              <option value="deepseek">DeepSeek</option>
-              <option value="openai">OpenAI</option>
-              <option value="ollama">Ollama (локально)</option>
-            </select>
-          </Field>
-          <Field label="Название" wide hint="Произвольная метка провайдера, видна в списке.">
-            <input
-              type="text"
-              value={provForm.name}
-              onChange={(e) => setProvForm({ ...provForm, name: e.target.value })}
-              placeholder="DeepSeek"
-              spellCheck={false}
-            />
-          </Field>
-          <Field label="Адрес эндпоинта" wide hint="Базовый адрес провайдера модели, как у OpenAI.">
-            <input
-              type="text"
-              value={provForm.baseUrl}
-              onChange={(e) => setProvForm({ ...provForm, baseUrl: e.target.value })}
-              placeholder="https://api.example.com/v1"
-              spellCheck={false}
-            />
-          </Field>
-          <Field label="API-ключ" wide hint="Пусто разрешено только для локального сервера (Ollama).">
-            <div className="llm-key-row">
-              <input
-                type={revealKey ? "text" : "password"}
-                value={provForm.apiKey}
-                onChange={(e) => setProvForm({ ...provForm, apiKey: e.target.value })}
-                autoComplete="off"
-                spellCheck={false}
-              />
-              <button className="ghost-btn small" type="button" onClick={() => setRevealKey((v) => !v)}>
-                {revealKey ? "Скрыть" : "Показать"}
-              </button>
-            </div>
-          </Field>
-          <div className="set-actions">
-            <button className="primary-btn small" type="submit" disabled={provBusy}>
-              {editingId === null ? "Добавить" : "Сохранить"}
-            </button>
-            {editingId !== null && (
-              <button className="ghost-btn small" type="button" onClick={startNew}>
-                Отмена
-              </button>
-            )}
-            <button
-              className="ghost-btn"
-              type="button"
-              disabled={
-                llmBusy !== null || provBusy || (activeProvider === null && emptyProviderDraft)
-              }
-              onClick={() => void runLlmAction("test", true)}
-            >
-              {llmBusy === "test" && <span className="spinner"></span>}
-              {llmBusy === "test" ? "Проверка…" : "Проверить подключение"}
-            </button>
-            {llmTest && (
-              <div className={llmTest.ok ? "llm-test ok" : "llm-test err"}>
-                <span className="mark">{llmTest.ok ? "✓" : "✕"}</span>
-                {llmTest.message}
-              </div>
-            )}
-          </div>
-          {provError && <div className="set-error">{provError}</div>}
-        </form>
-      </Card>
-      <Card title="Генерация" desc="Параметры запросов к модели. Общие для всех провайдеров.">
-        <Field
-          label="Модель"
-          wide
-          hint="Список подтягивается с endpoint’а активного провайдера."
-        >
-          <div className="model-row">
-            <ModelPicker
-              value={llmForm?.model ?? ""}
-              models={modelIds}
-              error={llmModelsError}
-              busy={llmBusy === "models"}
-              onChange={(model) => {
-                if (activeProvider && modelIds !== null && modelIds.length > 0) {
-                  updateLlmForm({
-                    model,
-                    lastModelByProvider: {
-                      ...(llmForm?.lastModelByProvider ?? {}),
-                      [activeProvider.id]: model,
-                    },
-                  });
-                } else {
-                  updateLlmForm({ model });
-                }
-              }}
-              onFocus={focusLlmField("model")}
-              onBlur={blurLlmField}
-            />
-            <button
-              className="ghost-btn small"
-              disabled={
-                llmBusy !== null || provBusy || (activeProvider === null && emptyProviderDraft)
-              }
-              onClick={() => void runLlmAction("models", true)}
-            >
-              {llmBusy === "models" && <span className="spinner"></span>}
-              {llmBusy === "models" ? "Загрузка…" : "Загрузить модели"}
-            </button>
-          </div>
-        </Field>
-        <Field
-          label="Окно контекста, токенов"
-          hint={
-            selectedMax != null
-              ? `Максимум провайдера для этой модели — ${selectedMax.toLocaleString("ru-RU")} токенов. Можно уменьшить, но не больше максимума.`
-              : "Провайдер не сообщил максимум для этой модели: новое значение по умолчанию — 100 000 токенов, допустимо до 250 000."
-          }
-        >
-          <input
-            className="narrow"
-            type="text"
-            inputMode="numeric"
-            value={llmForm?.contextWindow ?? ""}
-            onChange={(e) => updateLlmForm({ contextWindow: e.target.value })}
-            onFocus={focusLlmField("contextWindow")}
-            onBlur={(e) => {
-              const n = parseNum(e.currentTarget.value);
-              if (n !== null) {
-                updateLlmForm({ contextWindow: String(clampContextWindow(n, selectedMax)) });
-              }
-              blurLlmField();
-            }}
-          />
-        </Field>
-        <Field
-          label="Temperature"
-          hint="Фиксирована для каждого агента и не настраивается: проекты и сессии харнеса — 0.2, заметки — 0.4. Поле в llm.json игнорируется."
-        />
-        <Field
-          label="Максимум токенов в ответе"
-          hint="Пусто — без ограничения со стороны приложения."
-        >
-          <input
-            className="narrow"
-            type="text"
-            inputMode="numeric"
-            value={llmForm?.maxTokens ?? ""}
-            onChange={(e) => updateLlmForm({ maxTokens: e.target.value })}
-            onFocus={focusLlmField("maxTokens")}
-            onBlur={blurLlmField}
-          />
-        </Field>
-        <Field
-          label="Уровень размышлений"
-          hint="Сколько модель думает перед ответом (reasoning_effort). Ход мыслей показывается свёрнутым блоком «Размышления» в чате и отправляется обратно модели в следующем запросе. Если провайдер не принимает reasoning_effort, ошибка придёт в чат."
-        >
-          <select
-            value={llmForm?.thinkingLevel ?? "medium"}
-            onChange={(e) => {
-              updateLlmForm({
-                thinkingLevel: e.target.value as "off" | "low" | "medium" | "high",
-              });
-              void flushLlmSave();
-            }}
-          >
-            <option value="off">Выключено</option>
-            <option value="low">Низкий</option>
-            <option value="medium">Средний</option>
-            <option value="high">Высокий</option>
-          </select>
-        </Field>
-      </Card>
-      <Card
-        title="Распознавание изображений (vision)"
-        desc={
-          <>
-            Статус: {visionLabel(vision)}
-            {vision?.overridden ? " (задано вручную)" : ""}
-            {vision?.reason ? ` — ${vision.reason}` : ""}
-          </>
-        }
-      >
-        <Field
-          label="Отправлять изображения модели"
-          hint="Если провайдер не поддерживает vision, изображения из чата не будут отправлены модели."
-        >
-          <select
-            value={llmForm?.vision ?? "auto"}
-            onChange={(e) => {
-              updateLlmForm({ vision: e.target.value as "auto" | "yes" | "no" });
-              void flushLlmSave();
-            }}
-          >
-            <option value="auto">Авто (определять)</option>
-            <option value="yes">Да</option>
-            <option value="no">Нет</option>
-          </select>
-        </Field>
-        <div className="set-actions">
-          <button className="ghost-btn" disabled={visionBusy} onClick={probeVision}>
-            {visionBusy ? "Проверка…" : "Проверить"}
-          </button>
-        </div>
-      </Card>
+      <ProviderListCard
+        providers={providers}
+        busy={provBusy}
+        activeMissingKey={activeMissingKey}
+        onActivate={(id) => void activateProvider(id)}
+        onEdit={startEdit}
+        onDelete={(p) => void deleteProvider(p)}
+        onAdd={startNew}
+      />
+      <ProviderFormCard
+        form={provForm}
+        onFormChange={setProvForm}
+        editingId={editingId}
+        busy={provBusy}
+        error={provError}
+        revealKey={revealKey}
+        onToggleRevealKey={() => setRevealKey((v) => !v)}
+        test={llmTest}
+        testBusy={llmBusy === "test"}
+        actionsDisabled={actionsDisabled}
+        onApplyPreset={applyPreset}
+        onTest={() => void runLlmAction("test", true)}
+        onSubmit={(e) => void saveProvider(e)}
+        onCancel={startNew}
+      />
+      <GenerationCard
+        form={llmForm}
+        modelIds={modelIds}
+        modelsError={llmModelsError}
+        modelsBusy={llmBusy === "models"}
+        actionsDisabled={actionsDisabled}
+        selectedMax={selectedMax}
+        onModelChange={selectModel}
+        onModelsLoad={() => void runLlmAction("models", true)}
+        onUpdate={updateLlmForm}
+        onFocusField={focusLlmField}
+        onBlurField={blurLlmField}
+        onThinkingChange={setThinkingLevel}
+      />
+      <VisionCard
+        form={llmForm}
+        vision={vision}
+        visionBusy={visionBusy}
+        onVisionChange={setVisionChoice}
+        onProbe={probeVision}
+      />
       {error && <div className="set-error">{error}</div>}
     </div>
   );

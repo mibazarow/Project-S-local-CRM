@@ -16,20 +16,16 @@ import {
   useChatSlice,
 } from "../../state/chatRunStore";
 import type { MessageAttachmentDto } from "../../api/types";
-import {
-  historyToItems,
-  toMessage,
-  ChatTranscript,
-  ConfirmCard,
-  AttachFileIcon,
-  AttachXIcon,
-  resolvePinMessageId,
-  resolveRegenerateTurn,
-  useVisionSupport,
-  type ChatItem,
-} from "./chatShared";
-import { ChatComposer } from "./ChatComposer";
-import { useChatAttachments } from "./useChatAttachments";
+import { toMessage } from "../../shared/errors";
+import { historyToItems } from "./chatHistory";
+import { resolvePinMessageId, resolveRegenerateTurn } from "./messageActions";
+import type { ChatItem } from "./chatTypes";
+import { ChatTranscript } from "./message/ChatTranscript";
+import { ConfirmCard } from "./actions/ConfirmCard";
+import { AttachFileIcon, AttachXIcon } from "./attachments/MessageAttachments";
+import { useChatAttachments } from "./attachments/useChatAttachments";
+import { ChatComposer } from "./composer/ChatComposer";
+import { useVisionSupport } from "./composer/useVisionSupport";
 import TodoPanel from "./TodoPanel";
 import { createNote, noteNameFromText } from "../shared/crossActions";
 import { toast } from "../shared/toast";

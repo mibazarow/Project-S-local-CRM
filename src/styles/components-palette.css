@@ -1,0 +1,102 @@
+/* ---------- Командная палитра (⌘K) ---------- */
+
+.palette-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay-soft);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  z-index: 70;
+  padding: 12vh 16px 16px;
+}
+.palette {
+  width: 560px;
+  max-height: 62vh;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.palette-search {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-3) var(--sp-4);
+  border-bottom: 1px solid var(--hairline);
+  color: var(--text-muted);
+}
+.palette-search input { border: none; background: transparent; outline: none; font-size: var(--fs-base); width: 100%; color: var(--text); }
+.palette-list { flex: 1; overflow-y: auto; min-height: 0; padding: var(--sp-1); }
+.palette-list .empty-note { text-align: center; padding: var(--sp-4) var(--sp-3); }
+.palette-group + .palette-group { margin-top: 2px; }
+.palette-group-title {
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-muted);
+  padding: var(--sp-2) var(--sp-3) var(--sp-1);
+}
+.palette-item {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius);
+  cursor: pointer;
+  color: var(--text);
+  transition: background .12s;
+}
+.palette-item:hover { background: rgba(0, 0, 0, .045); }
+.palette-item.active { background: var(--accent); color: #fff; }
+.palette-item-kind {
+  flex-shrink: 0;
+  font-size: var(--fs-meta);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  padding: 1px var(--sp-1);
+}
+.palette-item.active .palette-item-kind { color: rgba(255, 255, 255, .85); border-color: rgba(255, 255, 255, .45); }
+.palette-item-snippet {
+  flex-basis: 100%;
+  font-size: var(--fs-meta);
+  line-height: var(--lh-tight);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette-item-snippet mark { background: var(--accent-soft); color: inherit; border-radius: 2px; padding: 0 2px; }
+.palette-item.active .palette-item-snippet { color: rgba(255, 255, 255, .75); }
+.palette-item.active .palette-item-snippet mark { background: rgba(255, 255, 255, .25); color: #fff; }
+.palette-item-name { font-size: var(--fs-base); font-weight: var(--fw-medium); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-item-hint {
+  margin-left: auto;
+  flex-shrink: 0;
+  max-width: 40%;
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette-item.active .palette-item-hint { color: rgba(255, 255, 255, .75); }
+.palette-foot {
+  display: flex;
+  gap: var(--sp-4);
+  border-top: 1px solid var(--hairline);
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+}
+

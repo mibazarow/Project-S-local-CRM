@@ -1,0 +1,19 @@
+/* ---------- Скроллбары (overlay, как в macOS) ---------- */
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, .18); border-radius: var(--radius-pill); }
+::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, .3); }
+::-webkit-scrollbar-track { background: transparent; }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: .001ms !important;
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+  .task-card.highlight { animation: none !important; }
+  .task-list-row.active .task-list-dot { animation: none !important; }
+  .chat-status.running { animation: none !important; }
+  .schedule-item.unread { animation: none !important; }
+}

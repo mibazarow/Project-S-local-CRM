@@ -152,7 +152,8 @@ mod tests {
         let server = MockServer::start(json_handler("sess-42"));
         let transport =
             HttpTransport::new(&format!("{}/mcp", server.url_base), &auth_headers(), Duration::from_secs(120)).unwrap();
-        let mut client = McpClient::connect(Box::new(transport)).unwrap();
+        let mut client =
+            McpClient::connect_with(Box::new(transport), Duration::from_secs(120)).unwrap();
         let tools = client.list_tools().unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].name, "echo");
@@ -188,7 +189,8 @@ mod tests {
         let server = MockServer::start(handler);
         let transport =
             HttpTransport::new(&format!("{}/mcp", server.url_base), &BTreeMap::new(), Duration::from_secs(120)).unwrap();
-        let mut client = McpClient::connect(Box::new(transport)).unwrap();
+        let mut client =
+            McpClient::connect_with(Box::new(transport), Duration::from_secs(120)).unwrap();
         let tools = client.list_tools().unwrap();
         assert_eq!(tools.len(), 1);
         let call = client.call_tool("echo", &json!({ "text": "hi" })).unwrap();
@@ -202,7 +204,7 @@ mod tests {
         let server = MockServer::start(handler);
         let transport =
             HttpTransport::new(&format!("{}/mcp", server.url_base), &auth_headers(), Duration::from_secs(120)).unwrap();
-        let err = match McpClient::connect(Box::new(transport)) {
+        let err = match McpClient::connect_with(Box::new(transport), Duration::from_secs(120)) {
             Ok(_) => panic!("connect must fail on 401"),
             Err(e) => e,
         };

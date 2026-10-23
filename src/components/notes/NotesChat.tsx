@@ -15,20 +15,16 @@ import {
   send as storeSend,
   useChatSlice,
 } from "../../state/chatRunStore";
-import {
-  historyToItems,
-  toMessage,
-  ChatTranscript,
-  ConfirmCard,
-  AttachFileIcon,
-  AttachXIcon,
-  resolvePinMessageId,
-  resolveRegenerateTurn,
-  useVisionSupport,
-  type ChatItem,
-} from "../chat/chatShared";
-import { ChatComposer } from "../chat/ChatComposer";
-import { useChatAttachments } from "../chat/useChatAttachments";
+import { toMessage } from "../../shared/errors";
+import { historyToItems } from "../chat/chatHistory";
+import { resolvePinMessageId, resolveRegenerateTurn } from "../chat/messageActions";
+import type { ChatItem } from "../chat/chatTypes";
+import { ChatTranscript } from "../chat/message/ChatTranscript";
+import { ConfirmCard } from "../chat/actions/ConfirmCard";
+import { AttachFileIcon, AttachXIcon } from "../chat/attachments/MessageAttachments";
+import { useChatAttachments } from "../chat/attachments/useChatAttachments";
+import { ChatComposer } from "../chat/composer/ChatComposer";
+import { useVisionSupport } from "../chat/composer/useVisionSupport";
 import type { MessageAttachmentDto } from "../../api/types";
 
 // One continuous notes chat per working dir (SPEC notes chat slice): the

@@ -11,7 +11,8 @@ vi.mock("./MarkdownMessage", () => ({
   MarkdownMessage: ({ text }: { text: string }) => <div className="bubble md">{text}</div>,
 }));
 
-import { ChatTranscript, type ChatItem, type Slice } from "./chatShared";
+import { ChatTranscript } from "./message/ChatTranscript";
+import type { ChatItem, Slice } from "./chatTypes";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
 

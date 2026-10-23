@@ -15,7 +15,7 @@ import {
   splitMarkdownBlocks,
 } from "../shared/markdown";
 import VersionHistory from "../shared/VersionHistory";
-import { toMessage } from "../chat/chatShared";
+import { toMessage } from "../../shared/errors";
 import { EntryIcon } from "../files/icons";
 
 interface Props {

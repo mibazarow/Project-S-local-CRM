@@ -1,14 +1,9 @@
 import { useSyncExternalStore } from "react";
 import * as ipc from "../api/ipc";
 import { toMessage } from "../shared/errors";
-import {
-  chatReducer,
-  combineQueued,
-  summarizeArgs,
-  type ChatAction,
-  type ChatState,
-  type Slice,
-} from "../components/chat/chatShared";
+import { chatReducer, combineQueued } from "../components/chat/chatReducer";
+import { summarizeArgs } from "../components/chat/chatHistory";
+import type { ChatAction, ChatState, Slice } from "../components/chat/chatTypes";
 import type {
   AgentCompactionEvent,
   AgentCompactionFailedEvent,

@@ -1,0 +1,61 @@
+/* ---------- Быстрая заметка (quick capture) ---------- */
+
+.capture-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--overlay);
+  backdrop-filter: blur(3px);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  z-index: 80;
+  padding: 14vh 16px 16px;
+}
+.capture {
+  width: 560px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-pop);
+  padding: var(--sp-3) var(--sp-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.capture-head { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2); }
+.capture-project {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: var(--sp-1) var(--sp-2);
+  font-size: var(--fs-control);
+  background: var(--surface);
+  color: var(--text);
+  max-width: 220px;
+}
+.capture-project:focus { outline: none; border-color: var(--accent); box-shadow: var(--focus-ring); }
+.capture-text {
+  min-height: 120px;
+  resize: vertical;
+  box-sizing: border-box;
+  font-size: var(--fs-base);
+  line-height: var(--lh-base);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--surface);
+  color: var(--text);
+}
+.capture-text:focus { outline: none; border-color: var(--accent); box-shadow: var(--focus-ring); }
+.capture-foot {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  border-top: 1px solid var(--hairline);
+  padding-top: var(--sp-2);
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+}
+.capture-foot .primary-btn { margin-left: auto; }
+.capture-ok { font-size: var(--fs-control); color: var(--ok); }
+.capture-error { font-size: var(--fs-control); color: var(--danger); }
+

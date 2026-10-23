@@ -41,7 +41,7 @@ vi.mock("../../state/AppStore", () => ({
   }),
 }));
 
-vi.mock("../chat/ChatComposer", () => ({ ChatComposer: () => null }));
+vi.mock("../chat/composer/ChatComposer", () => ({ ChatComposer: () => null }));
 vi.mock("../chat/TodoPanel", () => ({ default: () => null }));
 
 import { act } from "react";
