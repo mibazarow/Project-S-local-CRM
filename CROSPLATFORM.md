@@ -166,9 +166,10 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Встроенных скиллов: **38**.
 - Модель эмбеддингов: **не в git**, ~330 МБ; доставляется до сборки (см. `README.md` → «После клонирования»).
 - macOS: рабочая сборка, aarch64.
-- Windows: **demo-сборка собрана 2026-10-23 на `ce8ed5b`** (без боевых данных); минимальный платформенный шов для компиляции есть (`platform/mod.rs`, cfg-ветки, Windows-конфиг), полного порта нет; сборка — с macOS по SSH (§3.1). **Windows-агента нет**; код пишет macOS.
-- Windows demo: установщик `Project-S_1.0.2_x64-setup.exe`, 297 425 172 байт (283.65 MiB), SHA256 `A74088AA65C94349E90EA06DB7E58584B9C9BF9ABE1220A3871C2D7EBB39B2F2`; скопирован на рабочий стол Windows и на Mac в `~/Downloads/Project-S-windows/`, установлен per-user в `C:\Users\mb\AppData\Local\Project-S`, не запускался. Единственное предупреждение сборки — прежнее нефатальное `esaxx-rs` `-std=c++11` D9002.
-- Доступ к Windows VM проверен 2026-10-23: `DOCS/WINDOWS-ACCESS.md`; Windows HEAD `ce8ed5b`, рабочее дерево чистое.
+- Windows: **demo-сборка собрана 2026-10-23 на `0003135`** (без боевых данных); минимальный платформенный шов для компиляции есть (`platform/mod.rs`, cfg-ветки, Windows-конфиг), полного порта нет; сборка — с macOS по SSH (§3.1). **Windows-агента нет**; код пишет macOS.
+- Windows demo, последний собранный установщик: `Project-S_1.0.2_x64-setup.exe`, 297 438 162 байт (283.66 MiB), SHA256 `2b5f208c20029628a21f5046afa72927d0fd9f45ee0a7389369636bdcf55d041` — собран 2026-10-23 на `0003135`, разложен (сверено по SHA256) на рабочий стол Windows (`C:\Users\mb\Desktop`), рабочий стол Mac (`~/Desktop`) и в `~/Downloads/Project-S-windows/`. **Не установлен**, GUI не запускался. Единственное предупреждение сборки — прежнее нефатальное `esaxx-rs` `-std=c++11` D9002.
+- Windows demo, установленная копия: всё ещё предыдущая сборка `ce8ed5b` per-user в `C:\Users\mb\AppData\Local\Project-S`; заменится только после установки нового установщика пользователем.
+- Доступ к Windows VM проверен 2026-10-23: `DOCS/WINDOWS-ACCESS.md`; Windows HEAD `0003135`, рабочее дерево чистое.
 - Linux: план, реализации нет.
 - Модель/ONNX: `ort-backend`, модель в бандле; на Windows нужны `onnxruntime.dll` и MSVC runtime.
 
@@ -199,13 +200,21 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Статус: waiting | done
 ```
 
+### 2026-10-23 15:34 UTC — macOS
+- Ветка: `master`
+- Коммит: `0003135`
+- Сделано: на Windows-хосте `git pull` `ce8ed5b` → `0003135` (master, чистое дерево) и demo-сборка `npx tauri build --config src-tauri/tauri.windows.conf.json` — успешно, ~4 мин 28 с. Впервые скомпилирована Windows-ветка `#[cfg(windows)] kill_tool_child`. NSIS-установщик `Project-S_1.0.2_x64-setup.exe`, 297 438 162 байт (283.66 MiB), SHA256 `2b5f208c20029628a21f5046afa72927d0fd9f45ee0a7389369636bdcf55d041`; разложен и сверен по хешу на рабочий стол Windows, рабочий стол Mac и в `~/Downloads/Project-S-windows/`. Не устанавливался, GUI не запускался, процессы не убивались.
+- Влияние: только упаковка/сборка Windows; macOS-код, контракты и БД не менялись (docs-only коммит). Изменение в §5.
+- Действие: `[ACTION: user]` установить с рабочего стола и проверить GUI.
+- Статус: waiting
+
 ### 2026-10-23 15:28 UTC — macOS
 - Ветка: `master`
 - Коммит: см. `git log`
 - Сделано: R-24 для Windows закрыт. `platform/process.rs::kill_tool_child` под `cfg(windows)` вызывает `taskkill /PID <pid> /T /F` со скрытой консолью и заглушёнными stdout/stderr, затем `child.kill()` как fallback; `/T` обходит дерево по parent pid, поэтому `sh`, запущенная им команда и её дети (dev-сервер) умирают вместе на cancel/timeout `bash`. `tool_command` на Windows по-прежнему `sh -c` (раннер не менялся); для не-Unix/не-Windows оставлен прежний `child.kill()`.
 - Влияние: только платформенная ветка, общий контракт/БД/UX не менялись; Unix-ветка не тронута. Гейты macOS: `cargo test` 1092 passed / 19 ignored, `cargo clippy --all-targets -- -D warnings` с allows из `scripts/check.sh` — чисто. Windows-ветка на macOS не компилируется.
-- Действие: `[ACTION: macos]` следующая плановая Windows-сборка проверяет компиляцию и stop/timeout `bash` на дереве процессов; отдельная сборка в этом срезе не запускалась.
-- Статус: waiting
+- Действие: `[DONE]` подтверждено сборкой `0003135` (см. запись от 15:34 UTC): Windows-ветка `kill_tool_child` скомпилировалась.
+- Статус: done
 
 ### 2026-10-23 15:25 UTC — macOS
 - Ветка: `master`
