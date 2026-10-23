@@ -10,7 +10,7 @@
 // their platform specifics stay with the feature.
 use std::process::{Child, Command, Stdio};
 #[cfg(windows)]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::sync::OnceLock;
 
@@ -166,10 +166,29 @@ pub fn which(name: &str) -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
+pub fn configure_bash_env(cmd: &mut Command, bash: &Path) {
+    let Some(root) = bash.parent().and_then(Path::parent) else {
+        return;
+    };
+    let mut paths = vec![
+        root.join("usr/bin"),
+        root.join("mingw64/bin"),
+        root.join("bin"),
+    ];
+    if let Some(old) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&old));
+    }
+    if let Ok(joined) = std::env::join_paths(paths) {
+        cmd.env("PATH", joined);
+    }
+}
+
+#[cfg(windows)]
 pub fn tool_command(command: &str) -> Command {
     if let Some(bash) = bash_program() {
-        let mut cmd = Command::new(bash);
-        cmd.arg("-lc").arg(command);
+        let mut cmd = Command::new(&bash);
+        configure_bash_env(&mut cmd, &bash);
+        cmd.arg("-c").arg(command);
         return cmd;
     }
 

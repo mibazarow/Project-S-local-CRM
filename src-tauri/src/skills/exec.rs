@@ -77,7 +77,7 @@ fn command_for(candidate: &Path) -> std::result::Result<(Command, String), Strin
             }
         }
         "sh" | "bash" => match crate::platform::process::bash_program() {
-            Some(path) => (path.to_string_lossy().into_owned(), &["-l"]),
+            Some(path) => (path.to_string_lossy().into_owned(), &[]),
             None => {
                 return Err(
                     "bash not found: install Git for Windows (Git Bash) to run .sh/.bash skills, or use a .py/.js skill"
@@ -106,6 +106,12 @@ fn command_for(candidate: &Path) -> std::result::Result<(Command, String), Strin
         }
     };
     let mut cmd = Command::new(&interpreter);
+    #[cfg(windows)]
+    if matches!(ext.as_str(), "sh" | "bash") {
+        if let Some(bash) = crate::platform::process::bash_program() {
+            crate::platform::process::configure_bash_env(&mut cmd, &bash);
+        }
+    }
     // Windows canonicalize() returns a \\?\ verbatim path. Git Bash (and
     // MSYS path conversion) mangles that prefix into a non-existent path, so
     // hand the interpreter the ordinary drive path instead.
