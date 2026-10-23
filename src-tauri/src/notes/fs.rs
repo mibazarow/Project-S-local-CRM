@@ -500,6 +500,7 @@ mod tests {
         fs::remove_dir_all(&wd).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn binary_data_url_rejects_escapes_and_symlink_exits() {
         let wd = setup("notes-binary-escape");

@@ -352,6 +352,7 @@ mod tests {
         fs::remove_dir_all(&wd).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn skill_exec_prefers_the_executable_bit_over_the_extension() {
         use std::os::unix::fs::PermissionsExt;

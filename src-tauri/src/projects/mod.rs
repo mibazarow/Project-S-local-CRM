@@ -791,6 +791,7 @@ mod tests {
         fs::remove_dir_all(&wd).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn delete_project_refuses_paths_outside_the_projects_root() {
         let (wd, conn) = setup("proj-delete-safety");

@@ -685,6 +685,7 @@ mod tests {
         assert!(nullish["value"].is_null());
     }
 
+    #[cfg(unix)]
     #[test]
     fn download_dir_must_stay_inside_harness_in_harness_mode() {
         let wd = temp_test_dir("browser-dirs");

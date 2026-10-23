@@ -526,7 +526,7 @@ impl Tool for MacosUiTool {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::agent::tool::validate_args;

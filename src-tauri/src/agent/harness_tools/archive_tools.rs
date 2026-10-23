@@ -514,6 +514,7 @@ mod tests {
     use super::*;
     use crate::agent::tool::validate_args;
     use crate::onboarding::temp_test_dir;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
 
     fn ctx_with_wd(wd: &Path) -> ToolCtx {
@@ -848,6 +849,7 @@ mod tests {
         fs::remove_dir_all(&wd).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn fake_zip_with_traversal_member_is_refused_before_extraction() {
         // A fake unzip that lists a slipping member: extract_body must stop

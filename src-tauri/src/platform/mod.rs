@@ -149,7 +149,7 @@ pub fn reveal_in_file_manager(path: &Path) -> std::result::Result<(), String> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 

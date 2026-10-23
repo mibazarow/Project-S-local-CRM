@@ -57,7 +57,7 @@ pub fn walk(root: &Path, cfg: &IndexingConfig) -> Vec<WalkedFile> {
     out
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use crate::onboarding::temp_test_dir;

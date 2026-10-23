@@ -877,6 +877,7 @@ mod tests {
         assert!(!joined.contains("hunter2"), "{joined}");
     }
 
+    #[cfg(unix)]
     #[test]
     fn askpass_files_are_private_and_removed_on_drop() {
         use std::os::unix::fs::PermissionsExt;
