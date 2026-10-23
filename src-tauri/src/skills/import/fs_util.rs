@@ -3,7 +3,7 @@
 
 use crate::error::Result;
 use crate::paths;
-use super::manifest::{manifest_from_frontmatter, split_frontmatter, SkillManifest};
+use super::super::manifest::{manifest_from_frontmatter, split_frontmatter, SkillManifest};
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};

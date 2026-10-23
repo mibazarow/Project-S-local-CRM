@@ -176,6 +176,36 @@ mod tests {
     }
 
     #[test]
+    fn delete_rolls_back_the_trash_row_when_the_task_delete_fails() {
+        let (wd, conn, pid) = setup("tasks-delete-atomic");
+        let t = task_create(&conn, pid, "keep", None).unwrap();
+        // Force the task DELETE to fail after the trash snapshot is written:
+        // the whole delete runs in one transaction, so the trash row must roll
+        // back too instead of leaving an orphan that would double-restore.
+        conn.execute(
+            "CREATE TRIGGER abort_task_delete BEFORE DELETE ON tasks
+             BEGIN SELECT RAISE(ABORT, 'forced delete failure'); END",
+            [],
+        )
+        .unwrap();
+        assert!(task_delete_with_trash(&conn, t.id).is_err());
+        conn.execute("DROP TRIGGER abort_task_delete", []).unwrap();
+        assert_eq!(
+            tasks_list(&conn, pid).unwrap().len(),
+            1,
+            "the task must survive a rolled-back delete"
+        );
+        assert_eq!(
+            conn.query_row("SELECT count(*) FROM trash", [], |r| r.get::<_, i64>(0))
+                .unwrap(),
+            0,
+            "a rolled-back delete must leave no trash row"
+        );
+        assert_eq!(task_snapshot(&conn, t.id).unwrap().title, "keep");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
     fn trash_restore_reinserts_the_same_id_and_reindexes_fts() {
         let (wd, conn, pid) = setup("tasks-trash-restore");
         let t = task_create(&conn, pid, "восстановить", None).unwrap();

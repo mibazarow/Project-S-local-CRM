@@ -74,7 +74,10 @@ pub fn task_create_with(
     // A task created straight into 'progress' starts its timer right away
     // (same rule as a move into the column, SPEC 4.3).
     let started_at = if status == "progress" { now_ms(conn)? } else { 0 };
-    conn.execute(
+    // The task row and its tasks_fts mirror land together: one transaction so a
+    // failure in the mirror write rolls the task back instead of desyncing search.
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
         "INSERT INTO tasks (project_id, title, status, due_date, due_time, position, created_at, closed_at,
                             is_priority, checklist, started_at)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now','localtime'),
@@ -82,8 +85,9 @@ pub fn task_create_with(
                  ?7, ?8, CASE WHEN ?3 = 'progress' THEN ?9 ELSE NULL END)",
         params![project_id, title, status, due_date, due_time, position, is_priority, checklist_json, started_at],
     )?;
-    let id = conn.last_insert_rowid();
-    fts_sync(conn, id)?;
+    let id = tx.last_insert_rowid();
+    fts_sync(&tx, id)?;
+    tx.commit()?;
     dto(conn, id)
 }
 
@@ -144,13 +148,16 @@ pub fn task_update(conn: &Connection, id: i64, patch: TaskPatch) -> Result<TaskD
         checklist_json = serde_json::to_string(&normalize_checklist(checklist)?)?;
     }
 
-    conn.execute(
+    // Row and search mirror update atomically (see task_create_with).
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
         "UPDATE tasks SET title = ?1, comment = ?2, due_date = ?3, due_time = ?4, remind_at = ?5,
                         is_priority = ?6, checklist = ?7
          WHERE id = ?8",
         params![title, comment, due_date, due_time, remind_at, is_priority, checklist_json, id],
     )?;
-    fts_sync(conn, id)?;
+    fts_sync(&tx, id)?;
+    tx.commit()?;
     dto(conn, id)
 }
 
@@ -172,7 +179,11 @@ pub(crate) fn task_move_capture(
     if exists.is_none() {
         return Err(AppError::Invalid(format!("task {id} not found")));
     }
-    conn.execute(
+    // The column move and the timer transition are one logical change: keep
+    // them in one transaction so a failed timer write cannot leave a status
+    // change with an unbanked/unstarted timer.
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
         "UPDATE tasks SET status = ?1, position = ?2,
          closed_at = CASE WHEN ?1 = 'done'
                           THEN COALESCE(closed_at, datetime('now','localtime'))
@@ -180,7 +191,8 @@ pub(crate) fn task_move_capture(
          WHERE id = ?3",
         params![status, position, id],
     )?;
-    apply_timer_transition(conn, id, status)?;
+    apply_timer_transition(&tx, id, status)?;
+    tx.commit()?;
     Ok((dto(conn, id)?, None))
 }
 
@@ -194,16 +206,20 @@ pub fn task_delete(conn: &Connection, id: i64) -> Result<i64> {
 pub(crate) fn task_delete_with_trash(conn: &Connection, id: i64) -> Result<(i64, i64)> {
     let snapshot = task_snapshot(conn, id)?;
     let project_id = snapshot.project_id;
+    // Trash snapshot, task row and mirror clear are one atomic unit: a failed
+    // delete must not leave an orphan trash row that would double-restore.
+    let tx = conn.unchecked_transaction()?;
     let trash_id = crate::reliability::trash_put_meta(
-        conn,
+        &tx,
         "task",
         "task",
         &format!("task:{id}"),
         &snapshot.title,
         &serde_json::to_string(&snapshot)?,
     )?;
-    conn.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
-    fts_sync(conn, id)?;
+    tx.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
+    fts_sync(&tx, id)?;
+    tx.commit()?;
     Ok((project_id, trash_id))
 }
 
@@ -221,10 +237,14 @@ pub(crate) fn task_restore_from_trash(conn: &Connection, row: &crate::reliabilit
         |r| r.get(0),
     )?;
     if taken == 0 {
-        task_restore_snapshot(conn, &snapshot)?;
+        let tx = conn.unchecked_transaction()?;
+        task_restore_snapshot(&tx, &snapshot)?;
+        tx.commit()?;
     } else {
-        insert_task_row(conn, &snapshot, false)?;
-        fts_sync(conn, conn.last_insert_rowid())?;
+        let tx = conn.unchecked_transaction()?;
+        insert_task_row(&tx, &snapshot, false)?;
+        fts_sync(&tx, tx.last_insert_rowid())?;
+        tx.commit()?;
     }
     Ok(snapshot.project_id)
 }

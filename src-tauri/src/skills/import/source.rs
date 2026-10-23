@@ -134,7 +134,7 @@ mod tests {
     use super::*;
     use super::super::archive::run_git;
     use crate::skills::testutil::{scaffold, write_skill};
-    use crate::skills::{load_full, short_list};
+    use crate::skills::load_full;
 
     fn make_zip(path: &Path, entries: &[(&str, &str)]) {
         use zip::write::FileOptions;

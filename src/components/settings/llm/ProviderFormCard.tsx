@@ -1,5 +1,6 @@
 import { type FormEvent } from "react";
 import type { ConnectionTest } from "../../../api/types";
+import Button from "../../shared/Button";
 import { Card, Field } from "../shared";
 import { type ProviderForm } from "../forms";
 import { type ProviderPreset } from "./presets";
@@ -84,29 +85,24 @@ export function ProviderFormCard({
               autoComplete="off"
               spellCheck={false}
             />
-            <button className="ghost-btn small" type="button" onClick={onToggleRevealKey}>
+            <Button variant="ghost" size="small" type="button" onClick={onToggleRevealKey}>
               {revealKey ? "Скрыть" : "Показать"}
-            </button>
+            </Button>
           </div>
         </Field>
         <div className="set-actions">
-          <button className="primary-btn small" type="submit" disabled={busy}>
+          <Button variant="primary" size="small" type="submit" disabled={busy}>
             {editingId === null ? "Добавить" : "Сохранить"}
-          </button>
+          </Button>
           {editingId !== null && (
-            <button className="ghost-btn small" type="button" onClick={onCancel}>
+            <Button variant="ghost" size="small" type="button" onClick={onCancel}>
               Отмена
-            </button>
+            </Button>
           )}
-          <button
-            className="ghost-btn"
-            type="button"
-            disabled={actionsDisabled}
-            onClick={onTest}
-          >
+          <Button variant="ghost" type="button" disabled={actionsDisabled} onClick={onTest}>
             {testBusy && <span className="spinner"></span>}
             {testBusy ? "Проверка…" : "Проверить подключение"}
-          </button>
+          </Button>
           {test && (
             <div className={test.ok ? "llm-test ok" : "llm-test err"}>
               <span className="mark">{test.ok ? "✓" : "✕"}</span>

@@ -3,6 +3,7 @@ import type { FsEntry, OpenWithApp } from "../../api/types";
 import { toMessage } from "./fileOps";
 import { IconClose } from "./icons";
 import Modal from "../shared/Modal";
+import IconButton from "../shared/IconButton";
 
 interface Props {
   entry: FsEntry;
@@ -32,9 +33,9 @@ export default function OpenWithDialog({ entry, apps, rememberedPath, onPick, on
     <Modal onClose={onClose} closeOnEsc className="modal open-with-modal">
       <div className="open-with-head">
         <h3>Открыть «{entry.name}» в редакторе</h3>
-        <button className="icon-btn small" title="Закрыть" onClick={onClose}>
+        <IconButton size="small" title="Закрыть" onClick={onClose}>
           <IconClose />
-        </button>
+        </IconButton>
       </div>
       {error && <div className="set-error">{error}</div>}
       {apps.length === 0 ? (

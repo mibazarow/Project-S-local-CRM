@@ -1,4 +1,6 @@
 import type { LlmProviderDto } from "../../../api/types";
+import Badge from "../../shared/Badge";
+import Button from "../../shared/Button";
 import { Card } from "../shared";
 import { endpointHost } from "./presets";
 
@@ -46,14 +48,14 @@ export function ProviderListCard({
                 <div className="t">{p.name}</div>
                 <div className="c">{endpointHost(p.baseUrl)}</div>
               </div>
-              {p.active && <span className="badge st-active">активен</span>}
+              {p.active && <Badge tone="active">активен</Badge>}
               <span className="mcp-actions">
-                <button className="ghost-btn small" onClick={() => onEdit(p)}>
+                <Button variant="ghost" size="small" onClick={() => onEdit(p)}>
                   Изменить
-                </button>
-                <button className="ghost-btn small" onClick={() => onDelete(p)}>
+                </Button>
+                <Button variant="ghost" size="small" onClick={() => onDelete(p)}>
                   Удалить
-                </button>
+                </Button>
               </span>
             </div>
           ))}
@@ -65,9 +67,9 @@ export function ProviderListCard({
         </div>
       )}
       <div className="set-actions">
-        <button className="primary-btn small" onClick={onAdd} disabled={busy}>
+        <Button variant="primary" size="small" onClick={onAdd} disabled={busy}>
           + Добавить провайдера
-        </button>
+        </Button>
       </div>
     </Card>
   );

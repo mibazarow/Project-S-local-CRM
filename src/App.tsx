@@ -1,12 +1,9 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import * as ipc from "./api/ipc";
 import { useApp } from "./state/AppStore";
 import { ensureSubscribed } from "./state/chatRunStore";
 import LicenseGate from "./components/onboarding/License";
 import TopBar, { type Tab } from "./components/TopBar";
-import CommandPalette from "./components/CommandPalette";
-import QuickCapture from "./components/QuickCapture";
-import SettingsModal from "./components/SettingsModal";
 import ProjectList from "./components/projects/ProjectList";
 import FilesPanel from "./components/files/FilesPanel";
 import ProjectChat from "./components/chat/ProjectChat";
@@ -15,6 +12,13 @@ import NotesView from "./components/notes/NotesView";
 import Toasts from "./components/shared/toast";
 import ConfirmDialogHost from "./components/shared/ConfirmDialogHost";
 import { setNoteLinkHandler } from "./shared/noteLink";
+
+// User-triggered overlays: not part of the startup view, so they are code-split
+// out of the initial chunk. Each is only mounted once opened, so a null Suspense
+// fallback is invisible (the overlay is absent until it loads) — no UX change.
+const CommandPalette = lazy(() => import("./components/CommandPalette"));
+const QuickCapture = lazy(() => import("./components/QuickCapture"));
+const SettingsModal = lazy(() => import("./components/SettingsModal"));
 
 export default function App() {
   const { state, actions } = useApp();
@@ -136,10 +140,20 @@ export default function App() {
         <NotesView />
       )}
 
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
-      {paletteOpen && <CommandPalette onTab={setTab} onClose={() => setPaletteOpen(false)} />}
+      {settingsOpen && (
+        <Suspense fallback={null}>
+          <SettingsModal onClose={() => setSettingsOpen(false)} />
+        </Suspense>
+      )}
+      {paletteOpen && (
+        <Suspense fallback={null}>
+          <CommandPalette onTab={setTab} onClose={() => setPaletteOpen(false)} />
+        </Suspense>
+      )}
       {captureTarget && (
-        <QuickCapture initialTarget={captureTarget} onClose={() => setCaptureTarget(null)} />
+        <Suspense fallback={null}>
+          <QuickCapture initialTarget={captureTarget} onClose={() => setCaptureTarget(null)} />
+        </Suspense>
       )}
       <Toasts />
       <ConfirmDialogHost />

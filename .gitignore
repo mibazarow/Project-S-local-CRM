@@ -4,9 +4,6 @@
 .Spotlight-V100
 .Trashes
 
-# Референсный клон Ouroboros (read-only справочник, клонируется заново)
-ouroboros/
-
 # Node / фронтенд
 node_modules/
 dist/

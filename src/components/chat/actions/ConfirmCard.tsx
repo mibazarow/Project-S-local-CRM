@@ -1,4 +1,5 @@
 import type { ConfirmationRequestPayload } from "../../../api/types";
+import Button from "../../shared/Button";
 import { summarizeArgs } from "../chatHistory";
 
 // Pending-confirmation card shared by all three chats (SPEC 6: one loop,
@@ -19,19 +20,21 @@ export function ConfirmCard({
       <div className="args">{summarizeArgs(confirmation.args)}</div>
       {confirmation.dangerReason && <div className="danger">{confirmation.dangerReason}</div>}
       <div className="actions">
-        <button className="primary-btn small" type="button" onClick={() => onResolve("allow")}>
+        <Button variant="primary" size="small" type="button" onClick={() => onResolve("allow")}>
           Разрешить
-        </button>
-        <button className="ghost-btn small" type="button" onClick={() => onResolve("allowAlways")}>
+        </Button>
+        <Button variant="ghost" size="small" type="button" onClick={() => onResolve("allowAlways")}>
           Всегда разрешать
-        </button>
-        <button
-          className="ghost-btn small danger"
+        </Button>
+        <Button
+          variant="ghost"
+          size="small"
+          className="danger"
           type="button"
           onClick={() => onResolve("deny")}
         >
           Запретить
-        </button>
+        </Button>
       </div>
     </div>
   );

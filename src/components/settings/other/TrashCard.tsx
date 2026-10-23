@@ -1,4 +1,6 @@
 import type { TrashDto } from "../../../api/types";
+import Badge from "../../shared/Badge";
+import Button from "../../shared/Button";
 import { Card } from "../shared";
 import { fmtLocal } from "../forms";
 
@@ -33,23 +35,26 @@ export function TrashCard({
                 <div className="c">{t.originalPath}</div>
                 <div className="c">удалено {fmtLocal(t.deletedAt)}</div>
               </div>
-              <span className="badge">{t.kind}</span>
-              <span className="badge st-disabled">{t.scope}</span>
+              <Badge>{t.kind}</Badge>
+              <Badge tone="disabled">{t.scope}</Badge>
               <span className="item-actions">
-                <button
-                  className="ghost-btn small"
+                <Button
+                  variant="ghost"
+                  size="small"
                   disabled={trashBusyId !== null}
                   onClick={() => onRestore(t.id)}
                 >
                   {trashBusyId === t.id ? "…" : "Восстановить"}
-                </button>
-                <button
-                  className="ghost-btn small danger"
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="small"
+                  className="danger"
                   disabled={trashBusyId !== null}
                   onClick={() => onPurge(t.id, t.name)}
                 >
                   Удалить навсегда
-                </button>
+                </Button>
               </span>
             </div>
           ))}

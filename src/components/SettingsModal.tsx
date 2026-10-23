@@ -4,6 +4,7 @@ import type { AppConfig } from "../api/types";
 import { useDebouncedConfig } from "./settings/useDebouncedConfig";
 import { appToPatch, toAppForm, type AppForm } from "./settings/forms";
 import Modal from "./shared/Modal";
+import IconButton from "./shared/IconButton";
 import LlmTab from "./settings/LlmTab";
 import AgentTab from "./settings/AgentTab";
 import SkillsTab from "./settings/SkillsTab";
@@ -92,7 +93,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
         </button>
       </nav>
       <div className="settings-body">
-        <button className="icon-btn small settings-close" title="Закрыть" onClick={onClose}>
+        <IconButton size="small" className="settings-close" title="Закрыть" onClick={onClose}>
           <svg
             viewBox="0 0 24 24"
             width="15"
@@ -104,7 +105,7 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
           >
             <path d="M18 6 6 18M6 6l12 12" />
           </svg>
-        </button>
+        </IconButton>
         <LlmTab active={tab === "llm"} error={error} setError={setError} />
         {opened.agent && (
           <AgentTab active={tab === "agent"} error={error} setError={setError} app={app} />

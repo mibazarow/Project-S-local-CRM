@@ -505,13 +505,13 @@ pub(crate) fn semantic_search_with(
     }
     let mut hits = Vec::new();
     for (rel, (text_sim, name_sim)) in per_file {
-        let name: String = conn
-            .query_row(
-                "SELECT name FROM indexed_files WHERE project_id = ?1 AND rel_path = ?2",
-                params![project_id, rel],
-                |r| r.get(0),
-            )
-            .unwrap_or_default();
+        let Ok(name) = conn.query_row(
+            "SELECT name FROM indexed_files WHERE project_id = ?1 AND rel_path = ?2",
+            params![project_id, rel],
+            |r| r.get::<_, String>(0),
+        ) else {
+            continue; // stale vector row: the file is gone from the index
+        };
         hits.push(SemanticHit {
             rel_path: rel,
             name,
@@ -764,6 +764,45 @@ mod tests {
         }
     }
 
+    // Stand-in for a different embedding model: same dim, different vectors
+    // and a different backend id, i.e. what a model swap looks like.
+    struct FakeEmbedderV2 {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl FakeEmbedderV2 {
+        fn new() -> Self {
+            FakeEmbedderV2 {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl embed::Embedder for FakeEmbedderV2 {
+        fn embed_texts(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Ok(texts
+                .iter()
+                .map(|t| {
+                    let mut v = vec![0.0f32; 768];
+                    for b in t.bytes() {
+                        v[(b as usize + 7) % 768] += 1.0;
+                    }
+                    v
+                })
+                .collect())
+        }
+        fn dim(&self) -> usize {
+            embed::EMBED_DIM
+        }
+        fn backend_id(&self) -> &'static str {
+            "fake-v2"
+        }
+    }
+
     fn vector_count(conn: &Connection, project_id: i64) -> i64 {
         conn.query_row(
             "SELECT count(*) FROM file_vectors WHERE project_id = ?1",
@@ -896,6 +935,114 @@ mod tests {
         index_root(&conn, id, &root(&wd), &cfg, &fake).unwrap();
         let hits = semantic_search_with(&conn, &fake, 0.3, id, "cats", 5).unwrap();
         assert_eq!(hits[0].rel_path, "cats.md");
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    fn stored_backends(conn: &Connection, project_id: i64) -> Vec<String> {
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT backend FROM file_vectors WHERE project_id = ?1")
+            .unwrap();
+        stmt.query_map(params![project_id], |r| r.get(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    }
+
+    // A model swap keeps files on disk unchanged, so only the vector leg must
+    // move: every stored vector is recomputed for the new backend, the old
+    // vec_items rows are replaced (not left behind), and no duplicate
+    // file_vectors rows appear.
+    #[test]
+    fn embedder_model_change_reembeds_every_file_and_replaces_the_old_vectors() {
+        let (wd, conn, id, _state) = setup("idx-model-change");
+        fs::write(root(&wd).join("a.txt"), "раз").unwrap();
+        let cfg = IndexingConfig::default();
+        let v1 = FakeEmbedder::new();
+        index_root(&conn, id, &root(&wd), &cfg, &v1).unwrap();
+        assert_eq!(vector_count(&conn, id), 4);
+        assert_eq!(vec_item_count(&conn), 4);
+        assert_eq!(stored_backends(&conn, id), ["fake"]);
+
+        let v2 = FakeEmbedderV2::new();
+        let stats = index_root(&conn, id, &root(&wd), &cfg, &v2).unwrap();
+        assert!(stats.errors.is_empty(), "{:?}", stats.errors);
+        assert_eq!(stats.files_indexed, 0); // files unchanged: no re-extraction
+        assert_eq!(stats.files_skipped, 2);
+        assert!(v2.calls() > 0, "new model must re-embed");
+        assert_eq!(vector_count(&conn, id), 4, "no duplicate vector rows");
+        assert_eq!(vec_item_count(&conn), 4, "old vec_items rows must be replaced");
+        assert_eq!(stored_backends(&conn, id), ["fake-v2"]);
+
+        // A third pass with the same model costs nothing: the backfill is
+        // bounded, not a full re-embed on every run.
+        let calls = v2.calls();
+        index_root(&conn, id, &root(&wd), &cfg, &v2).unwrap();
+        assert_eq!(v2.calls(), calls);
+
+        let hits = semantic_search_with(&conn, &v2, 0.3, id, "раз", 5).unwrap();
+        assert!(hits.iter().any(|h| h.rel_path == "a.txt"));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // Vector rows left without their indexed_files row (half-deleted index)
+    // must not surface as hits with an empty name.
+    #[test]
+    fn semantic_search_skips_vector_rows_left_by_deleted_files() {
+        let (wd, conn, id, _state) = setup("idx-sem-stale");
+        fs::write(root(&wd).join("cats.md"), "cats cats cats").unwrap();
+        fs::write(root(&wd).join("ghost.md"), "ghost ghost ghost").unwrap();
+        let fake = FakeEmbedder::new();
+        index_root(&conn, id, &root(&wd), &IndexingConfig::default(), &fake).unwrap();
+
+        let before = semantic_search_with(&conn, &fake, 0.3, id, "ghost", 5).unwrap();
+        assert!(
+            before.iter().any(|h| h.rel_path == "ghost.md"),
+            "the fixture must produce a ghost hit while its row exists: {before:?}"
+        );
+
+        conn.execute(
+            "DELETE FROM indexed_files WHERE project_id = ?1 AND rel_path = 'ghost.md'",
+            params![id],
+        )
+        .unwrap();
+        let after = semantic_search_with(&conn, &fake, 0.3, id, "ghost", 5).unwrap();
+        assert!(
+            !after.iter().any(|h| h.rel_path == "ghost.md"),
+            "stale vector row leaked as a hit: {after:?}"
+        );
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // The hard rebuild must also wipe vector rows that have no indexed_files
+    // row at all: the incremental pass prunes through indexed_files and never
+    // sees them.
+    #[test]
+    fn reindex_hard_clears_orphan_vector_rows() {
+        let (wd, conn, id, state) = setup("idx-hard-orphan-vec");
+        fs::write(root(&wd).join("a.md"), "первое слово").unwrap();
+        index_all(&state).unwrap(); // no model files here: nothing is embedded
+
+        let blob: Vec<u8> = vec![0u8; embed::EMBED_DIM * 4];
+        conn.execute(
+            "INSERT INTO vec_items (project_id, embedding) VALUES (?1, ?2)",
+            params![id, blob],
+        )
+        .unwrap();
+        let rowid = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO file_vectors (project_id, rel_path, kind, dim, backend, text_hash, vec_rowid, updated_at)
+             VALUES (?1, 'ghost.md', 'text', ?2, 'fake', NULL, ?3, '2026-01-01')",
+            params![id, embed::EMBED_DIM as i64, rowid],
+        )
+        .unwrap();
+        assert_eq!(vec_item_count(&conn), 1);
+        assert_eq!(vector_count(&conn, id), 1);
+
+        reindex_hard(&state).unwrap();
+
+        assert_eq!(vec_item_count(&conn), 0, "orphan vec_items row survived");
+        assert_eq!(vector_count(&conn, id), 0, "orphan file_vectors row survived");
+        assert_eq!(fts_rel_paths(&conn, id, "первое"), ["a.md"]);
         fs::remove_dir_all(&wd).unwrap();
     }
 }

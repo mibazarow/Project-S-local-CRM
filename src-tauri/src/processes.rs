@@ -1,31 +1,29 @@
 // Background process control (the domain behind agent/process_tools.rs):
-// long-running commands (dev servers, installs) start detached via sh -c,
-// their combined stdout+stderr is appended to a log under
-// Harness/tmp/processes/, and they run in their own process group
-// (process_group(0), so the stored pgid equals the pid) on Unix. Windows
-// runs through cmd /C with a hidden console and stops the tree with
-// taskkill /T /F (no process groups). Stopping signals
-// the whole group with the system kill: `kill -TERM -<pgid>`, then
-// `kill -KILL -<pgid>` after a ~2 s grace; liveness is probed with
-// `kill -0` (a negative target signals/queries a process group).
+// long-running commands (dev servers, installs) start detached, their
+// combined stdout+stderr is appended to a log under
+// Harness/tmp/processes/, and they are tracked so the row always reflects a
+// real process. How a command is built, probed and signalled is platform
+// detail and lives in platform::process (Unix: sh -c in its own process
+// group, kill -0 / kill -TERM -<pgid> / kill -KILL -<pgid>; Windows: cmd /C
+// with a hidden console, tasklist to probe, taskkill /T /F to stop the
+// tree). Stopping keeps the same ~2 s grace between the soft and hard kill.
 //
 // Spawned children are kept in an in-process registry so reconcile can
-// reap them (try_wait) before any kill -0 probe: an unreaped exited child
-// stays a zombie, and kill -0 on a zombie still succeeds. Rows left by a
+// reap them (try_wait) before any liveness probe: an unreaped exited child
+// stays a zombie, and a probe on a zombie still succeeds. Rows left by a
 // previous app run are not our children — their processes were reparented
 // to launchd and keep running; startup reconcile only updates their
 // status, it never kills them.
 use crate::error::{AppError, Result};
 use crate::sync_util::lock_recover;
 use crate::paths;
+use crate::platform;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
-#[cfg(unix)]
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Child, ExitStatus, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -180,62 +178,6 @@ fn slug(raw: &str) -> String {
     }
 }
 
-// kill -0: succeeds while the target exists; a negative target addresses
-// the whole process group. Windows has no process groups: the pid is probed
-// through tasklist and the tree is stopped by taskkill /T.
-#[cfg(unix)]
-pub(crate) fn kill_alive(target: &str) -> bool {
-    Command::new("kill")
-        .args(["-0", target])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
-}
-
-#[cfg(windows)]
-pub(crate) fn kill_alive(target: &str) -> bool {
-    let pid = target.trim_start_matches('-');
-    if pid.is_empty() || !pid.chars().all(|c| c.is_ascii_digit()) {
-        return false;
-    }
-    let mut cmd = Command::new("tasklist");
-    cmd.arg("/FI")
-        .arg(format!("PID eq {pid}"))
-        .args(["/NH", "/FO", "CSV"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null());
-    crate::platform::hide_console(&mut cmd);
-    match cmd.output() {
-        Ok(out) => String::from_utf8_lossy(&out.stdout).contains(&format!("\"{pid}\"")),
-        Err(_) => false,
-    }
-}
-
-#[cfg(unix)]
-fn signal_group(pgid: i64, signal: &str) {
-    let _ = Command::new("kill")
-        .args([signal, &format!("-{pgid}")])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-}
-
-// No POSIX signals on Windows: /T stops the tree, /F is the hard kill that
-// replaces SIGKILL after the grace period.
-#[cfg(windows)]
-fn signal_group(pid: i64, signal: &str) {
-    let mut cmd = Command::new("taskkill");
-    cmd.arg("/PID").arg(pid.to_string()).arg("/T");
-    if signal == "-KILL" {
-        cmd.arg("/F");
-    }
-    cmd.stdout(Stdio::null()).stderr(Stdio::null());
-    crate::platform::hide_console(&mut cmd);
-    let _ = cmd.status();
-}
-
 // Reaps a spawned child that has already exited and returns its status;
 // children from a previous app run are not in the registry.
 fn reap(pid: u32) -> Option<ExitStatus> {
@@ -248,16 +190,10 @@ fn is_our_child(pid: i64) -> bool {
 
 // Group liveness for the stop poll: reap first, so an exited-but-unreaped
 // group leader (zombie) does not keep the group looking alive.
-#[cfg(unix)]
 fn group_alive(pid: i64, pgid: i64) -> bool {
     reap(pid as u32);
-    kill_alive(&format!("-{pgid}"))
-}
-
-#[cfg(windows)]
-fn group_alive(pid: i64, _pgid: i64) -> bool {
-    reap(pid as u32);
-    kill_alive(&pid.to_string())
+    let target = platform::process::liveness_target(pid, pgid);
+    platform::process::kill_alive(&target)
 }
 
 // Brings one 'running' row in line with reality: reap our own exited
@@ -278,7 +214,7 @@ fn reconcile_row(conn: &Connection, row: &ProcessDto) -> Result<()> {
     if is_our_child(row.pid) {
         return Ok(());
     }
-    if !kill_alive(&row.pid.to_string()) {
+    if !platform::process::kill_alive(&row.pid.to_string()) {
         conn.execute(
             "UPDATE processes SET status = 'exited',
                  updated_at = datetime('now','localtime')
@@ -305,26 +241,10 @@ pub fn reconcile(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-// Starts a detached background command: sh -c in its own process group,
-// stdout+stderr appended to <id>-<slug>.log under Harness/tmp/processes/,
-// TMPDIR/TEMP/TMP pointed at Harness/tmp (never the system /tmp). The
+// Starts a detached background command (platform::process::background_command),
+// with stdout+stderr appended to <id>-<slug>.log under Harness/tmp/processes/
+// and TMPDIR/TEMP/TMP pointed at Harness/tmp (never the system /tmp). The
 // child is not waited on; it is registered for later reaping.
-#[cfg(unix)]
-fn background_command(command: &str) -> Command {
-    let mut cmd = Command::new("sh");
-    cmd.arg("-c").arg(command).process_group(0);
-    cmd
-}
-
-// Windows: cmd /C, hidden console, no process group (stop uses taskkill /T).
-#[cfg(windows)]
-fn background_command(command: &str) -> Command {
-    let mut cmd = Command::new("cmd");
-    cmd.arg("/C").arg(command);
-    crate::platform::hide_console(&mut cmd);
-    cmd
-}
-
 pub fn start(
     conn: &Connection,
     wd: &Path,
@@ -353,7 +273,7 @@ pub fn start(
     let log_path = log_dir.join(format!("{}-{}.log", id, slug(name.unwrap_or(command))));
 
     let log = OpenOptions::new().append(true).create(true).open(&log_path)?;
-    let mut cmd = background_command(command);
+    let mut cmd = platform::process::background_command(command);
     cmd.current_dir(&cwd)
         .env("TMPDIR", &tmp)
         .env("TEMP", &tmp)
@@ -369,7 +289,9 @@ pub fn start(
             return Err(AppError::Io(format!("spawn: {e}")));
         }
     };
-    // process_group(0) makes the child the leader of a new group: pgid == pid.
+    // On Unix the child leads a new process group (platform::process), so
+    // the stored pgid equals the pid; Windows has no groups and stores the
+    // pid twice, which is what taskkill /T then works from.
     let pid = child.id() as i64;
     conn.execute(
         "UPDATE processes SET pid = ?1, pgid = ?2, log_path = ?3,
@@ -425,13 +347,13 @@ pub fn stop(conn: &Connection, id: i64) -> Result<ProcessDto> {
     if row.status != "running" {
         return Ok(row);
     }
-    signal_group(row.pgid, "-TERM");
+    platform::process::signal_group(row.pid, row.pgid, "-TERM");
     let deadline = Instant::now() + STOP_GRACE;
     while group_alive(row.pid, row.pgid) && Instant::now() < deadline {
         std::thread::sleep(STOP_POLL);
     }
     if group_alive(row.pid, row.pgid) {
-        signal_group(row.pgid, "-KILL");
+        platform::process::signal_group(row.pid, row.pgid, "-KILL");
         let deadline = Instant::now() + STOP_GRACE;
         while group_alive(row.pid, row.pgid) && Instant::now() < deadline {
             std::thread::sleep(STOP_POLL);

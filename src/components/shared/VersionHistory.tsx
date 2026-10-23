@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import * as ipc from "../../api/ipc";
 import type { VersionDto } from "../../api/types";
 import { IconClose } from "../files/icons";
+import IconButton from "./IconButton";
 import Modal from "./Modal";
 
 interface Props {
@@ -75,9 +76,9 @@ export default function VersionHistory({ scope, absPath, onRestore, onClose }: P
 
   return (
     <Modal onClose={onClose} className="modal version-modal">
-      <button className="icon-btn small settings-close" title="Закрыть" onClick={onClose}>
+      <IconButton size="small" className="settings-close" title="Закрыть" onClick={onClose}>
         <IconClose />
-      </button>
+      </IconButton>
       <h3>История версий</h3>
       <div className="set-hint version-path">{absPath}</div>
       {error && <div className="set-error">{error}</div>}

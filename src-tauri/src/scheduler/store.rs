@@ -112,20 +112,24 @@ pub fn create(conn: &Connection, input: &CreateIn<'_>, now: DateTime<Utc>) -> Re
         .filter(|t| !t.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| derive_title(input.prompt, input.spec, 60));
+    // Session/chat creation and the schedule row are one atomic unit: a failed
+    // schedules insert must not leave an orphan chat behind. The fresh-chat
+    // reuse path retitles the existing chat inside the same transaction.
+    let tx = conn.unchecked_transaction()?;
     let session_id = match input.session_id {
-        Some(sid) if creating_session_is_fresh(conn, sid)? => {
+        Some(sid) if creating_session_is_fresh(&tx, sid)? => {
             // Reuse the creating chat; give it the schedule title only while it
             // is still untitled, never overwriting a title the user set.
-            conn.execute(
+            tx.execute(
                 "UPDATE sessions SET title = ?1
                  WHERE id = ?2 AND (title IS NULL OR trim(title) = '')",
                 params![title, sid],
             )?;
             sid
         }
-        _ => harness::create_session(conn, Some(&title))?.id,
+        _ => harness::create_session(&tx, Some(&title))?.id,
     };
-    conn.execute(
+    tx.execute(
         "INSERT INTO schedules (session_id, kind, spec, prompt, status, related_task_id, created_at, next_run_at, timezone, title)
          VALUES (?1, ?2, ?3, ?4, 'active', ?5, ?6, ?7, ?8, ?9)",
         params![
@@ -140,7 +144,9 @@ pub fn create(conn: &Connection, input: &CreateIn<'_>, now: DateTime<Utc>) -> Re
             title,
         ],
     )?;
-    schedule_dto(conn, conn.last_insert_rowid())
+    let id = tx.last_insert_rowid();
+    tx.commit()?;
+    schedule_dto(conn, id)
 }
 
 pub fn list(conn: &Connection) -> Result<Vec<ScheduleDto>> {
@@ -219,11 +225,15 @@ pub fn open_session(conn: &Connection, id: i64) -> Result<i64> {
         }
     }
     let label = s.title.clone().unwrap_or_else(|| s.spec.clone());
-    let session = harness::create_session(conn, Some(&label))?;
-    conn.execute(
+    // New chat and the schedule link are atomic: a failed link must not orphan
+    // a freshly created chat.
+    let tx = conn.unchecked_transaction()?;
+    let session = harness::create_session(&tx, Some(&label))?;
+    tx.execute(
         "UPDATE schedules SET session_id = ?1, unread_at = NULL WHERE id = ?2",
         params![session.id, id],
     )?;
+    tx.commit()?;
     Ok(session.id)
 }
 
@@ -895,6 +905,32 @@ mod tests {
                 Some("ping".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn create_rolls_back_the_created_chat_when_the_schedule_insert_fails() {
+        let conn = setup();
+        // Force the schedules INSERT to fail after the dedicated chat is
+        // created: create runs in one transaction, so the session/chat must
+        // roll back too instead of leaving an orphan chat with no schedule.
+        conn.execute(
+            "CREATE TRIGGER abort_schedule_insert BEFORE INSERT ON schedules
+             BEGIN SELECT RAISE(ABORT, 'forced schedule failure'); END",
+            [],
+        )
+        .unwrap();
+        let err = create(
+            &conn,
+            &CreateIn { kind: "cron", spec: "0 10 * * *", prompt: Some("daily"), timezone: None, related_task_id: None, title: Some("x"), session_id: None },
+            utc("2026-10-16T08:00:00Z"),
+        );
+        assert!(err.is_err(), "the forced schedules-insert failure must surface");
+        conn.execute("DROP TRIGGER abort_schedule_insert", []).unwrap();
+        assert_eq!(session_count(&conn), 0, "a rolled-back create must leave no orphan chat");
+        let schedules: i64 = conn
+            .query_row("SELECT COUNT(*) FROM schedules", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(schedules, 0, "a rolled-back create must leave no schedule row");
     }
 
     #[test]

@@ -195,19 +195,11 @@ pub fn absolute_path(conn: &Connection, wd: &Path, project_id: i64, rel_path: &s
     Ok(path.display().to_string())
 }
 
-// Reveals the entry in Finder (`open -R`, macOS).
+// Reveals the entry in the OS file manager (Finder on macOS); the command
+// and its error text come from platform::reveal_in_file_manager.
 pub fn reveal_in_finder(conn: &Connection, wd: &Path, project_id: i64, rel_path: &str) -> Result<()> {
     let (_, path) = existing(conn, wd, project_id, rel_path)?;
-    let status = std::process::Command::new("/usr/bin/open")
-        .arg("-R")
-        .arg(&path)
-        .status()
-        .map_err(|e| AppError::Io(format!("open -R: {e}")))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(AppError::Io(format!("open -R exited with {status}")))
-    }
+    crate::platform::reveal_in_file_manager(&path).map_err(AppError::Io)
 }
 
 // Archive suffixes understood by extract_archive, longest first so ".tar.gz"

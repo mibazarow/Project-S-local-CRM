@@ -1,8 +1,16 @@
 // Minimal cross-platform seams for the Windows demo build. Business logic
 // keeps calling these helpers instead of Unix-only APIs: the home directory
-// resolver, the executable check and private-file permissions. The macOS
+// resolver, the executable check, private-file permissions, revealing a file
+// in the file manager, and process control (see `process`). The macOS
 // behavior is unchanged; Windows gets the native equivalents (or a no-op
 // where the concept does not map, e.g. POSIX permission bits).
+//
+// Not everything OS-specific belongs here: the agent tools that are a macOS
+// product feature by nature (clipboard, OCR, PDF, Spotlight, screenshot,
+// open_with, browser/CDP) keep their own platform code, because moving them
+// would only add a contract list without isolating shared infrastructure.
+pub mod process;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -79,5 +87,59 @@ pub fn hide_console(_cmd: &mut Command) {
     {
         use std::os::windows::process::CommandExt;
         let _ = _cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+}
+
+// Show a file in the OS file manager (Finder/Explorer/Files). The Err string
+// is the whole message the caller shows, because the command label is part of
+// the platform: "open -R" on macOS, "explorer /select," on Windows.
+#[cfg(target_os = "macos")]
+pub fn reveal_in_file_manager(path: &Path) -> std::result::Result<(), String> {
+    match Command::new("/usr/bin/open").arg("-R").arg(path).status() {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("open -R exited with {status}")),
+        Err(e) => Err(format!("open -R: {e}")),
+    }
+}
+
+// Explorer has no "reveal" flag: it opens the parent folder with the entry
+// selected, so the path must be a real file path with backslashes.
+#[cfg(windows)]
+pub fn reveal_in_file_manager(path: &Path) -> std::result::Result<(), String> {
+    let mut cmd = Command::new("explorer.exe");
+    cmd.arg(format!("/select,{}", path.display()));
+    hide_console(&mut cmd);
+    match cmd.status() {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("explorer /select, exited with {status}")),
+        Err(e) => Err(format!("explorer /select,: {e}")),
+    }
+}
+
+// No reveal-with-selection on Linux file managers; opening the parent folder
+// is the closest equivalent.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn reveal_in_file_manager(path: &Path) -> std::result::Result<(), String> {
+    let parent = path.parent().unwrap_or(path);
+    match Command::new("xdg-open").arg(parent).status() {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(format!("xdg-open exited with {status}")),
+        Err(e) => Err(format!("xdg-open: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The macOS message the files UI has always shown, kept verbatim by the
+    // seam: the failing command is named, then the OS error or exit status.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn reveal_in_file_manager_keeps_the_macos_open_message() {
+        let missing = std::env::temp_dir().join("project-s-reveal-missing-entry");
+        let err = reveal_in_file_manager(&missing)
+            .expect_err("a missing path cannot be revealed");
+        assert!(err.starts_with("open -R"), "{err}");
     }
 }

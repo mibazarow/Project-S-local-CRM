@@ -4,6 +4,7 @@ import logo from "../assets/logo.svg";
 import * as ipc from "../api/ipc";
 import type { ReindexStatus } from "../api/types";
 import { IconSearch } from "./files/icons";
+import IconButton from "./shared/IconButton";
 import { toast } from "./shared/toast";
 
 export type Tab = "projects" | "harness" | "notes";
@@ -189,14 +190,14 @@ export default function TopBar({ tab, onTab, onSettings, onSearch }: Props) {
         </button>
       </nav>
       <div className="topbar-right" data-tauri-drag-region onMouseDown={onDragMouseDown}>
-        <button className="icon-btn" title="Поиск (⌘K)" onClick={onSearch}>
+        <IconButton title="Поиск (⌘K)" onClick={onSearch}>
           <IconSearch />
-        </button>
-        <button className="icon-btn reindex-btn" title={title} onClick={startReindex}>
+        </IconButton>
+        <IconButton className="reindex-btn" title={title} onClick={startReindex}>
           <IconRefresh />
           <span className="reindex-count">{label}</span>
-        </button>
-        <button className="icon-btn" title="Настройки" onClick={onSettings}>
+        </IconButton>
+        <IconButton title="Настройки" onClick={onSettings}>
           <svg
             viewBox="0 0 24 24"
             width="17"
@@ -210,7 +211,7 @@ export default function TopBar({ tab, onTab, onSettings, onSearch }: Props) {
             <circle cx="12" cy="12" r="3" />
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h.01a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v.01a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
           </svg>
-        </button>
+        </IconButton>
       </div>
     </header>
   );

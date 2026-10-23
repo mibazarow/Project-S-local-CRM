@@ -4,6 +4,8 @@ import DOMPurify from "dompurify";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { toMessage } from "./fileOps";
+import Button from "../shared/Button";
+import IconButton from "../shared/IconButton";
 import { useFileCrossActions } from "../shared/crossActions";
 import { useOpenWith } from "./useOpenWith";
 import { IconClose } from "./icons";
@@ -238,30 +240,31 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
       <div className="preview-head">
         <span>{entry.relPath}</span>
         <div className="preview-actions">
-          <button className="ghost-btn small" title="Спросить агента о файле" onClick={() => cross.askAgent(entry)}>
+          <Button variant="ghost" size="small" title="Спросить агента о файле" onClick={() => cross.askAgent(entry)}>
             Спросить агента
-          </button>
+          </Button>
           {isTextual && (
-            <button
-              className="ghost-btn small"
+            <Button
+              variant="ghost"
+              size="small"
               onClick={() => (mode === "view" ? setMode("edit") : void save())}
             >
               {mode === "view" ? "Редактировать" : "Готово"}
-            </button>
+            </Button>
           )}
           {isTextual && (
-            <button className="ghost-btn small" onClick={() => void openHistory()}>
+            <Button variant="ghost" size="small" onClick={() => void openHistory()}>
               История версий
-            </button>
+            </Button>
           )}
           {!isTextual && !entry.isImage && (
-            <button className="ghost-btn small" onClick={() => void ow.showChooser(entry)}>
+            <Button variant="ghost" size="small" onClick={() => void ow.showChooser(entry)}>
               Открыть в редакторе
-            </button>
+            </Button>
           )}
-          <button className="icon-btn small" title="Закрыть" onClick={onClose}>
+          <IconButton size="small" title="Закрыть" onClick={onClose}>
             <IconClose />
-          </button>
+          </IconButton>
         </div>
       </div>
       {conflict && (

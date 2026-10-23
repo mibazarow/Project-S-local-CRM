@@ -112,7 +112,7 @@ pub(crate) fn purge_stale_askpass_dirs(wd: &Path) -> usize {
         let Ok(pid) = pid.parse::<u32>() else {
             continue;
         };
-        if nonce.is_empty() || pid == 0 || crate::processes::kill_alive(&pid.to_string()) {
+        if nonce.is_empty() || pid == 0 || crate::platform::process::kill_alive(&pid.to_string()) {
             continue;
         }
         let stale = meta

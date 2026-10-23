@@ -196,6 +196,7 @@ mod tests {
     use super::*;
     use super::super::fs_util::{find_skill_dirs, validate_skill_dir};
     use crate::onboarding::temp_test_dir;
+    use crate::skills::manifest::discover;
     use crate::skills::testutil::{scaffold, write_skill};
     use crate::skills::{find, load_full, short_list};
 
