@@ -10,9 +10,19 @@
 // their platform specifics stay with the feature.
 use std::process::{Child, Command, Stdio};
 #[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+#[cfg(windows)]
 use std::path::{Path, PathBuf};
 #[cfg(windows)]
 use std::sync::OnceLock;
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
 
 // Detached background command: `sh -c` in its own process group on Unix
 // (process_group(0) makes the stored pgid equal to the pid). Windows runs
@@ -219,12 +229,77 @@ pub fn tool_command(command: &str) -> Command {
     cmd
 }
 
+// A Windows Job Object gives the foreground tool a hard ownership boundary:
+// every descendant is in the job, and KILL_ON_JOB_CLOSE means even a child
+// that detaches or ignores taskkill cannot outlive the guard. On other
+// platforms this is a no-op marker; Unix already uses a process group.
+#[cfg(windows)]
+pub struct ToolJob(HANDLE);
+
+#[cfg(not(windows))]
+pub struct ToolJob;
+
+#[cfg(windows)]
+impl ToolJob {
+    pub fn attach(child: &Child) -> Option<ToolJob> {
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return None;
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let ok = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const std::ffi::c_void,
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if ok == 0 {
+                CloseHandle(job);
+                return None;
+            }
+            let process = child.as_raw_handle() as HANDLE;
+            if AssignProcessToJobObject(job, process) == 0 {
+                CloseHandle(job);
+                return None;
+            }
+            Some(ToolJob(job))
+        }
+    }
+
+    fn kill(&self) {
+        unsafe {
+            TerminateJobObject(self.0, 1);
+        }
+    }
+}
+
+#[cfg(windows)]
+impl Drop for ToolJob {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn attach_tool_job(_child: &Child) -> Option<ToolJob> {
+    None
+}
+
+#[cfg(windows)]
+pub fn attach_tool_job(child: &Child) -> Option<ToolJob> {
+    ToolJob::attach(child)
+}
+
 // Hard kill of a foreground tool child: the whole group on Unix, where
 // `tool_command` made the pgid equal to the pid, so a dev server and its
 // children die together and the stdout/stderr pipes the tool's reader threads
 // are blocked on finally close.
 #[cfg(unix)]
-pub fn kill_tool_child(child: &mut Child) {
+pub fn kill_tool_child(child: &mut Child, _job: Option<&ToolJob>) {
     let pid = child.id() as i64;
     signal_group(pid, pid, "-KILL");
 }
@@ -235,7 +310,12 @@ pub fn kill_tool_child(child: &mut Child) {
 // matches SIGKILL. Killing only the direct child would orphan the grandchildren
 // and leave the stdout/stderr pipes the tool's reader threads block on open.
 #[cfg(windows)]
-pub fn kill_tool_child(child: &mut Child) {
+pub fn kill_tool_child(child: &mut Child, job: Option<&ToolJob>) {
+    if let Some(job) = job {
+        job.kill();
+        let _ = child.kill();
+        return;
+    }
     let mut cmd = Command::new("taskkill");
     cmd.arg("/PID")
         .arg(child.id().to_string())
@@ -252,7 +332,7 @@ pub fn kill_tool_child(child: &mut Child) {
 
 // No process-group or tree kill on other targets: direct child only.
 #[cfg(not(any(unix, windows)))]
-pub fn kill_tool_child(child: &mut Child) {
+pub fn kill_tool_child(child: &mut Child, _job: Option<&ToolJob>) {
     let _ = child.kill();
 }
 

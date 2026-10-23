@@ -89,6 +89,7 @@ impl Tool for BashTool {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
+        let job = platform::process::attach_tool_job(&child);
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let out_thread = std::thread::spawn(move || stdout.map(|r| read_capped(r, BASH_OUTPUT_CAP)));
@@ -100,7 +101,7 @@ impl Tool for BashTool {
                 break status;
             }
             if cancel.as_ref().is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed)) {
-                platform::process::kill_tool_child(&mut child);
+                platform::process::kill_tool_child(&mut child, job.as_ref());
                 let _ = child.wait();
                 return Ok(ToolResult::err(
                     ToolErrorCode::ExecutionError,
@@ -108,7 +109,7 @@ impl Tool for BashTool {
                 ));
             }
             if Instant::now() >= deadline {
-                platform::process::kill_tool_child(&mut child);
+                platform::process::kill_tool_child(&mut child, job.as_ref());
                 let _ = child.wait();
                 return Ok(ToolResult::err(
                     ToolErrorCode::ExecutionError,

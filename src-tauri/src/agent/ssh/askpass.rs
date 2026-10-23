@@ -4,7 +4,9 @@
 // SSH_ASKPASS_REQUIRE=force, DISPLAY set so non-tty ssh uses askpass). The
 // whole dir is removed when the guard drops — on success, failure or error
 // alike. Startup hygiene also purges leftovers from crashed runs.
-use super::command::{shell_quote, Target};
+use super::command::Target;
+#[cfg(not(windows))]
+use super::command::shell_quote;
 use crate::error::{AppError, Result};
 use crate::paths;
 use std::fs;
@@ -16,6 +18,7 @@ const ASKPASS_DIR_PREFIX: &str = "ssh-askpass-";
 pub(super) struct Askpass {
     pub(super) dir: PathBuf,
     pub(super) script: PathBuf,
+    pass: PathBuf,
 }
 
 impl Askpass {
@@ -32,20 +35,44 @@ impl Askpass {
         let pass = dir.join("pass");
         fs::write(&pass, password)?;
         crate::platform::restrict_permissions(&pass, 0o600)?;
-        let script = dir.join("askpass.sh");
-        fs::write(
-            &script,
-            format!("#!/bin/sh\ncat {}\n", shell_quote(&pass.display().to_string())),
-        )?;
-        crate::platform::restrict_permissions(&script, 0o700)?;
-        Ok(Askpass { dir, script })
+
+        #[cfg(windows)]
+        let script = {
+            // Windows OpenSSH cannot execute a .sh askpass helper. Reuse the
+            // application binary in a tiny askpass mode: main() sees
+            // PROJECT_S_ASKPASS_FILE, prints the password and exits before
+            // Tauri starts. No second helper binary is needed in the bundle.
+            let exe = std::env::current_exe()
+                .map_err(|e| AppError::Io(format!("current executable unavailable: {e}")))?;
+            PathBuf::from(crate::platform::path_string(&exe))
+        };
+
+        #[cfg(not(windows))]
+        let script = {
+            let script = dir.join("askpass.sh");
+            fs::write(
+                &script,
+                format!("#!/bin/sh\ncat {}\n", shell_quote(&pass.display().to_string())),
+            )?;
+            crate::platform::restrict_permissions(&script, 0o700)?;
+            script
+        };
+
+        Ok(Askpass { dir, script, pass })
     }
 
     pub(super) fn envs(&self) -> Vec<(String, String)> {
         vec![
-            ("SSH_ASKPASS".to_string(), self.script.display().to_string()),
+            (
+                "SSH_ASKPASS".to_string(),
+                crate::platform::path_string(&self.script),
+            ),
             ("SSH_ASKPASS_REQUIRE".to_string(), "force".to_string()),
             ("DISPLAY".to_string(), ":0".to_string()),
+            (
+                "PROJECT_S_ASKPASS_FILE".to_string(),
+                crate::platform::path_string(&self.pass),
+            ),
         ]
     }
 }
