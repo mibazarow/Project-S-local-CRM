@@ -2,7 +2,7 @@
 
 Этот файл — техническое продолжение [`README.md`](../README.md): архитектура, данные, агентский луп, поиск, провайдеры, сборка, тесты. Для нетехнического чтения предназначен README.
 
-Текущий статус: **v1.0.3**, схема БД **v40**, **38** встроенных скиллов, **1092 passed / 19 ignored** бэкенд-тестов (Rust) и **567** фронтенд-тестов (vitest). macOS — рабочая релизная сборка (Apple Silicon), Windows — рабочая x64-сборка (NSIS), Linux — в плане (Flatpak).
+Текущий статус: **v1.0.3**, схема БД **v40**, **38** встроенных скиллов, **1092 passed / 19 ignored** бэкенд-тестов (Rust) и **567** фронтенд-тестов (vitest). macOS — релиз **опубликован** ([v1.0.3 на GitVerse](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.3), Apple Silicon), Windows — рабочая x64-сборка (NSIS, публикация 1.0.3 следует), Linux — в плане (Flatpak).
 
 ## Что это
 
@@ -90,11 +90,11 @@ AI-чат проекта и Харнес работают через один а
 
 | Платформа | Статус v1.0.3 | Упаковка |
 |---|---|---|
-| macOS (Apple Silicon) | релизная рабочая сборка | DMG, `/Applications/Project-S.app` |
-| Windows 11 x64 | рабочая сборка (1.0.2); сборка 1.0.3 следует | NSIS `Project-S_1.0.2_x64-setup.exe`, WebView2 (baseline 109.0.1518.78, downloadBootstrapper) |
+| macOS (Apple Silicon) | **опубликовано на GitVerse:** [v1.0.3](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.3) | DMG `Project-S_1.0.3_aarch64.dmg` (21 796 376 Б, SHA256 `e11b67ac…bedcd`), `/Applications/Project-S.app`; нотаризация ещё не сделана |
+| Windows 11 x64 | рабочая сборка (1.0.2); публикация 1.0.3 следует | NSIS `Project-S_1.0.2_x64-setup.exe`, WebView2 (baseline 109.0.1518.78, downloadBootstrapper) |
 | Linux | в плане | Flatpak (один пакет для большинства дистрибутивов) |
 
-- Релизные теги (`v1.0.3`) — на `master`; артефакты собираются под каждую ОС из одного коммита. Публичные релизы появятся в GitVerse после завершения тестирования (remote `origin` — приватный GitVerse).
+- Релизные теги (`v1.0.3`) — на `master`; артефакты собираются под каждую ОС из одного коммита. Публичный релиз **macOS 1.0.3 уже опубликован** в GitVerse: https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.3 (remote `origin` — приватный GitVerse). Windows и Linux будут добавлены в тот же тег.
 - Windows-сборка идёт с macOS по SSH на build-хост; production-hardening (подпись, updater, Credential Manager) для текущей Windows-сборки не блокирует. Подробности — [`CROSPLATFORM.md`](../CROSPLATFORM.md), [`DOCS/WINDOWS-PORT.md`](WINDOWS-PORT.md).
 - Linux: WebKitGTK, Flatpak, XDG, sandbox, Wayland — [`DOCS/LINUX-PORT.md`](LINUX-PORT.md).
 - На Windows нужны `onnxruntime.dll` и MSVC runtime; CRT-конфликт решён вендорингом `esaxx-rs` (`vendor/`, `[patch.crates-io]`).
@@ -150,7 +150,7 @@ DOCS/                 # документация: about.md, Q.md, REFACTOR_PLAN.
 
 ## Дорожная карта
 
-- Релизы на GitVerse: macOS DMG, Windows NSIS, Linux Flatpak.
+- Релизы на GitVerse: macOS DMG — [1.0.3 опубликован](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.3), Windows NSIS и Linux Flatpak — следом.
 - Linux-порт (Flatpak) — [`DOCS/LINUX-PORT.md`](LINUX-PORT.md).
 - Windows: подпись, updater, паритет инструментов — [`DOCS/WINDOWS-PORT.md`](WINDOWS-PORT.md).
 - Живые очереди: [`DOCS/Q.md`](Q.md) (задачи/баги), [`DOCS/REFACTOR_PLAN.md`](REFACTOR_PLAN.md) (срезы рефакторинга).

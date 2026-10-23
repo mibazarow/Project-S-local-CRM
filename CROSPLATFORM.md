@@ -165,7 +165,7 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Схема БД: **v40**.
 - Встроенных скиллов: **38**.
 - Модель эмбеддингов: **не в git и не в бандле** (с 1.0.3); ~300 МБ, приложение скачивает разово после онбординга (UI-прогресс, повтор при ошибке); без неё — только FTS-поиск.
-- macOS: рабочая сборка, aarch64.
+- macOS: рабочая сборка, aarch64. **Публичный релиз 1.0.3 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.3 (tag `v1.0.3`, commit `3e9968f`), ассет `Project-S_1.0.3_aarch64.dmg` — 21 796 376 байт, SHA256 `e11b67ac597981ecadc583091fce2dfc53048bde21b4d15298e6b9beb24bedcd`; контрольная сумма отдельным ассетом `Project-S_1.0.3_aarch64.dmg.sha256.txt` (GitVerse не принимает расширение `.sha256` — 400). Только macOS; Windows/Linux — следом.
 - Windows: **demo-сборка собрана 2026-10-23 на `0003135`** (без боевых данных); минимальный платформенный шов для компиляции есть (`platform/mod.rs`, cfg-ветки, Windows-конфиг), полного порта нет; сборка — с macOS по SSH (§3.1). **Windows-агента нет**; код пишет macOS.
 - Windows demo, последний собранный установщик: `Project-S_1.0.2_x64-setup.exe`, 297 438 162 байт (283.66 MiB), SHA256 `2b5f208c20029628a21f5046afa72927d0fd9f45ee0a7389369636bdcf55d041` — собран 2026-10-23 на `0003135`, разложен (сверено по SHA256) на рабочий стол Windows (`C:\Users\mb\Desktop`) и рабочий стол Mac (`~/Desktop`). **Не установлен**, GUI не запускался. Единственное предупреждение сборки — прежнее нефатальное `esaxx-rs` `-std=c++11` D9002.
 - Windows demo, установленная копия: всё ещё предыдущая сборка `ce8ed5b` per-user в `C:\Users\mb\AppData\Local\Project-S`; заменится только после установки нового установщика пользователем.
@@ -203,6 +203,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Действие: <что сделать / user|macos> — или [DONE]
 - Статус: waiting | done
 ```
+
+### 2026-10-23 19:18 UTC — macOS
+- Ветка: `master`
+- Коммит: `0ae7d06` (релизный тег `v1.0.3` → `3e9968f`); docs-only коммит этой записи
+- Сделано: опубликован публичный релиз **macOS 1.0.3** на GitVerse — https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.3 (release id `548937615`, тег `v1.0.3`, `target_commitish: master`, не draft/prerelease, `is_authorized_only: false`). Ассеты: `Project-S_1.0.3_aarch64.dmg` (id `31112`) — 21 796 376 байт, SHA256 `e11b67ac597981ecadc583091fce2dfc53048bde21b4d15298e6b9beb24bedcd` (скачан с GitVerse и сверен — совпало); `Project-S_1.0.3_aarch64.dmg.sha256.txt` (id `31116`) — 94 байта. Публичная страница релиза отвечает 200.
+- Влияние: только публикация релиза и документация; код, контракты и БД не менялись. Сборка нотаризована (первый запуск — правый клик → «Открыть»). **Платформа: только macOS (aarch64).** Windows 1.0.3 и Linux — ещё не опубликованы.
+- Действие: user — Windows-сборка 1.0.3 по явной команде (§3.1) и публикация Windows-ассета в этот же тег; Linux — Flatpak позже.
+- Статус: waiting
 
 ### 2026-10-23 18:56 UTC — macOS
 - Ветка: `master`
