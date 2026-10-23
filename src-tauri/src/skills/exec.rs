@@ -31,7 +31,9 @@ fn is_executable(path: &Path) -> bool {
 // canonicalized target leaves the canonicalized folder) are refused.
 fn resolve_entry(skill_dir: &Path, entry: &str) -> std::result::Result<PathBuf, String> {
     let rel = Path::new(entry);
-    if rel.is_absolute() || rel.components().any(|c| matches!(c, Component::ParentDir)) {
+    if rel.is_absolute()
+        || rel.components().any(|c| matches!(c, Component::ParentDir | Component::RootDir | Component::Prefix(_)))
+    {
         return Err(format!("entrypoint \"{entry}\" escapes the skill folder"));
     }
     let candidate = skill_dir.join(rel);
@@ -75,7 +77,7 @@ fn command_for(candidate: &Path) -> std::result::Result<(Command, String), Strin
             }
         }
         "sh" | "bash" => match crate::platform::process::bash_program() {
-            Some(path) => (path.to_string_lossy().into_owned(), &[]),
+            Some(path) => (path.to_string_lossy().into_owned(), &["-l"]),
             None => {
                 return Err(
                     "bash not found: install Git for Windows (Git Bash) to run .sh/.bash skills, or use a .py/.js skill"

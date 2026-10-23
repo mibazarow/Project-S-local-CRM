@@ -87,6 +87,20 @@ pub fn path_string(path: &Path) -> String {
     path.display().to_string()
 }
 
+// Relative paths cross the UI/SQL boundary with forward slashes on every
+// platform. Windows joins them with `\`; normalizing here keeps search hits,
+// kanban links and saved paths stable when a workspace moves between macOS
+// and Windows.
+#[cfg(windows)]
+pub fn rel_path_string(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+#[cfg(not(windows))]
+pub fn rel_path_string(path: &Path) -> String {
+    path.to_string_lossy().into_owned()
+}
+
 // POSIX mode bits; a no-op on Windows, where ACLs are managed by the OS and
 // the demo build has no equivalent of chmod 0600/0700.
 pub fn restrict_permissions(_path: &Path, _mode: u32) -> std::io::Result<()> {

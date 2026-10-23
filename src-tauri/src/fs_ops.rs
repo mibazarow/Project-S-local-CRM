@@ -634,7 +634,7 @@ pub(crate) fn entry(root: &Path, path: &Path) -> Result<FsEntry> {
             .unwrap_or_default(),
         rel_path: path
             .strip_prefix(root)
-            .map(|p| p.to_string_lossy().into_owned())
+            .map(crate::platform::rel_path_string)
             .unwrap_or_default(),
         kind: if is_dir { "dir" } else { "file" },
         size: if is_dir { 0 } else { meta.len() },

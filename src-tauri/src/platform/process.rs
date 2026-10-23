@@ -169,7 +169,7 @@ pub fn which(name: &str) -> Option<PathBuf> {
 pub fn tool_command(command: &str) -> Command {
     if let Some(bash) = bash_program() {
         let mut cmd = Command::new(bash);
-        cmd.arg("-c").arg(command);
+        cmd.arg("-lc").arg(command);
         return cmd;
     }
 

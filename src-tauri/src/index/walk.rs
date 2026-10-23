@@ -34,11 +34,9 @@ pub fn walk(root: &Path, cfg: &IndexingConfig) -> Vec<WalkedFile> {
                 let Ok(meta) = entry.metadata() else {
                     continue;
                 };
-                let rel = path
-                    .strip_prefix(root)
-                    .unwrap_or(&path)
-                    .to_string_lossy()
-                    .into_owned();
+                let rel = crate::platform::rel_path_string(
+                    path.strip_prefix(root).unwrap_or(&path),
+                );
                 let mtime = meta
                     .modified()
                     .ok()

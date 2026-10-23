@@ -321,6 +321,9 @@ pub(crate) fn fs_transfer(args: &Value, ctx: &ToolCtx, move_it: bool, max_len: u
 
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    use crate::agent::harness_tools::test_support::{exec, setup, tool};
+    #[cfg(not(unix))]
     use crate::agent::harness_tools::test_support::{exec, setup};
     use serde_json::json;
     use std::fs;
