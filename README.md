@@ -8,7 +8,7 @@
 
 Project-S — локальное десктопное приложение для фрилансера, студии или небольшого агентства. Один проект — одна папка: в ней файлы, договоры, задачи, заметки и чат с агентом, который знает контекст этого проекта. Никакого облака и подписок: данные, ключи и история остаются у вас, а AI работает через ваши собственные ключи к любой OpenAI-совместимой модели.
 
-**Релиз для macOS 1.0.3 уже опубликован: [Project-S 1.0.3 — macOS](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.3). Windows и Linux — следом. Проект проходит стадию тестирования в реальном использовании.**
+**Релиз 1.0.5 опубликован для macOS и Windows: [Project-S 1.0.5](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.5). Linux — следом. Проект проходит стадию тестирования в реальном использовании.**
 
 <p align="center">
   <a href="https://www.donationalerts.com/r/bazarow_ru">
@@ -107,13 +107,13 @@ Project-S собирает работу в одно окно. Проект зд�
 
 ## Платформы и релизы
 
-- **macOS** (Apple Silicon) — **релиз 1.0.3 опубликован:** [Project-S 1.0.3 — macOS](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.3), DMG ~21 МБ.
-- **Windows 11** (x64, установщик NSIS) — 1.0.3 следует.
+- **macOS** (Apple Silicon) — **1.0.5 опубликован:** DMG `Project-S-1.0.5-macOS-ARM.dmg`, ~21 МБ.
+- **Windows 11** (x64) — **1.0.5 опубликован:** ZIP `Project-S-1.0.5-Windows-x64-Setup.zip`, внутри NSIS-установщик ~14 МБ.
 - **Linux** — скоро: один Flatpak-пакет для большинства дистрибутивов.
 
 Модель эмбеддингов Gemma 2 (~300 МБ) не вшита в установщик: приложение скачивает её один раз после онбординга с Hugging Face и показывает прогресс. Без неё поиск работает только по словам — установщик из-за этого заметно меньше.
 
-Релизы публикуются в GitVerse ([репозиторий Project-S-local-CRM](https://gitverse.ru/mibazarow/Project-S-local-CRM)): установщики для всех трёх платформ из одного релизного тега. macOS 1.0.3 уже доступен, Windows и Linux — следом.
+Релизы публикуются в GitVerse ([репозиторий Project-S-local-CRM](https://gitverse.ru/mibazarow/Project-S-local-CRM)): macOS и Windows уже в [релизе 1.0.5](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.5). Linux — следом.
 
 ## Техническая основа
 
@@ -121,15 +121,20 @@ Project-S собирает работу в одно окно. Проект зд�
 
 ## Что дальше
 
-- Публичные релизы в GitVerse: macOS 1.0.3 — опубликован, Windows и Linux Flatpak — следом.
+- Публичные релизы в GitVerse: macOS и Windows 1.0.5 — опубликованы; Linux Flatpak — следом.
 - Linux-порт и доводка Windows (подпись, автообновление).
 - Расширение скиллов и интеграций агента, полировка UI по очереди задач от реальных пользователей.
 
 ## Попробовать
 
-**macOS 1.0.3 уже доступен:** скачайте DMG из релиза [Project-S 1.0.3 — macOS](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.3), откройте его и перетащите Project-S в Applications. Сборка пока не нотаризована, поэтому при первом запуске macOS может предупредить о неизвестном разработчике — правый клик по приложению → «Открыть». Windows 1.0.3 и Linux — следом; следите за разделом **Releases** в [репозитории Project-S-local-CRM](https://gitverse.ru/mibazarow/Project-S-local-CRM). Поддержать проект можно через [DonationAlerts](https://www.donationalerts.com/r/bazarow_ru) — это ускоряет выход релизов и портов.
+**Релиз 1.0.5:** [Project-S 1.0.5 — macOS + Windows](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.5).
 
-После установки: онбординг — выбираете пустую папку для данных, добавляете провайдера LLM (или локальную модель) — и работаете.
+- **macOS (Apple Silicon):** скачайте `Project-S-1.0.5-macOS-ARM.dmg`, откройте DMG и перетащите Project-S в Applications. Сборка не нотаризована: при первом запуске может понадобиться правый клик по приложению → «Открыть».
+- **Windows 11 x64:** скачайте `Project-S-1.0.5-Windows-x64-Setup.zip`, распакуйте и запустите `Project-S-1.0.5-Windows-x64-Setup.exe`. Установщик не подписан: SmartScreen → «Подробнее» → «Выполнить всё равно».
+
+После установки: онбординг — выбираете пустую папку для данных, добавляете провайдера LLM (или локальную модель) — и работаете. Модель эмбеддингов (~300 МБ) скачается после онбординга; без неё поиск работает по словам.
+
+Поддержать проект: [DonationAlerts](https://www.donationalerts.com/r/bazarow_ru) — это ускоряет выход релизов и портов.
 
 ## Для разработчиков
 

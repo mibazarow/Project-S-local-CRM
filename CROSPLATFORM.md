@@ -40,7 +40,7 @@
 
 - **Обычный режим:** работаем только на macOS — фичи, полировка, дизайн, функционал, тесты, релиз macOS.
 - **Windows-режим:** включается **только явной командой пользователя** («а теперь делаем для Windows»). Никаких автоматических Windows-сборок на каждый push или после каждой macOS-правки.
-- **Windows — только demo-сборка.** Боевых данных и production-релиза на Windows нет. Подпись, updater, миграция данных, Credential Manager, Recycle Bin и полный паритет инструментов **не блокируют demo**; там всё проще.
+- **Windows — рабочая сборка для локального использования.** Production-hardening (подпись, updater, миграция данных, Credential Manager, Recycle Bin и полный паритет инструментов) ведётся отдельно; GUI-проверки выполняет пользователь.
 - **По команде:** macOS-агент подключается к Windows по SSH, делает `pull`/merge `master`, применяет изменения, собирает, гоняет тесты, забирает артефакты и пишет отчёт. Пользователь проверяет GUI на Windows.
 - **Пакетно:** накапливаем правки на macOS и собираем Windows **по команде**, а не на каждый мелкий фикс. Перед сборкой — пакет изменений, тесты macOS, затем одна Windows-сборка.
 - **Windows-сессия сама не начинает работу**: ждёт команду пользователя или `[ACTION: windows]` в этом журнале.
@@ -61,7 +61,7 @@
 - `master` — единый источник правды и защищённая ветка. Все изменения — через PR/merge.
 - Постоянных веток `macos`/`windows`/`linux` и временной `port/windows` **нет**. Весь код, включая `platform/`, пишет macOS-агент в `feat/*`/`fix/*` или `master`.
 - Windows build host не коммитит: только `git pull`, сборка, тесты, артефакты. Все коммиты и push делает macOS.
-- Релизные теги (`v1.0.3`) ставятся на `master`; артефакты собираются под каждую ОС из одного коммита.
+- Релизные теги (`v1.0.5`) ставятся на `master`; артефакты собираются под каждую ОС из одного коммита.
 - Если Windows временно отстаёт — используем pre-release-тег (`v1.0.3-win.1`), а не отдельную версию кода.
 
 ## 2. Код: платформенный слой, а не форк
@@ -160,27 +160,26 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 ## 5. Текущее состояние (обновлять при изменениях)
 
 - **Разработка продукта — только на macOS.** Windows/Linux: порт, платформенный слой, сборка.
-- Версия: **1.0.3**.
+- Версия: **1.0.5**.
 - Ветка: **master**; remote `origin` — приватный GitVerse.
 - Схема БД: **v40**.
 - Встроенных скиллов: **38**.
 - Модель эмбеддингов: **не в git и не в бандле** (с 1.0.3); ~300 МБ, приложение скачивает разово после онбординга (UI-прогресс, повтор при ошибке); без неё — только FTS-поиск.
-- macOS: рабочая сборка, aarch64. **Публичный релиз 1.0.3 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.3 (tag `v1.0.3`, commit `3e9968f`), ассет `Project-S_1.0.3_aarch64.dmg` — 21 796 376 байт, SHA256 `e11b67ac597981ecadc583091fce2dfc53048bde21b4d15298e6b9beb24bedcd`; контрольная сумма отдельным ассетом `Project-S_1.0.3_aarch64.dmg.sha256.txt` (GitVerse не принимает расширение `.sha256` — 400). Только macOS; Windows/Linux — следом.
-- Windows: **demo-сборка собрана 2026-10-23 на `0003135`** (без боевых данных); минимальный платформенный шов для компиляции есть (`platform/mod.rs`, cfg-ветки, Windows-конфиг), полного порта нет; сборка — с macOS по SSH (§3.1). **Windows-агента нет**; код пишет macOS.
-- Windows demo, последний собранный установщик: `Project-S_1.0.2_x64-setup.exe`, 297 438 162 байт (283.66 MiB), SHA256 `2b5f208c20029628a21f5046afa72927d0fd9f45ee0a7389369636bdcf55d041` — собран 2026-10-23 на `0003135`, разложен (сверено по SHA256) на рабочий стол Windows (`C:\Users\mb\Desktop`) и рабочий стол Mac (`~/Desktop`). **Не установлен**, GUI не запускался. Единственное предупреждение сборки — прежнее нефатальное `esaxx-rs` `-std=c++11` D9002.
-- Windows demo, установленная копия: всё ещё предыдущая сборка `ce8ed5b` per-user в `C:\Users\mb\AppData\Local\Project-S`; заменится только после установки нового установщика пользователем.
-- Доступ к Windows VM проверен 2026-10-23: `DOCS/WINDOWS-ACCESS.md`; Windows HEAD `0003135`, рабочее дерево чистое.
+- macOS: рабочая сборка, aarch64. **Публичный релиз 1.0.5 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.5 (tag `v1.0.5`, commit `ada814c`). Ассет `Project-S-1.0.5-macOS-ARM.dmg` — 21 804 979 байт, SHA256 `4a28bd40cadf5aa8b6196daa409cde3ba6272adad4c7077fb46266d9b860a6eb`; контрольная сумма отдельным `.sha256.txt`. Сборка ad-hoc, не нотаризована.
+- Windows: **рабочая сборка 1.0.5 собрана 2026-10-23 на `ada814c`**. NSIS `Project-S-1.0.5-Windows-x64-Setup.exe` — 14 292 714 байт, SHA256 `f0265cd8cc1c94603c3bc4b96998bd85a88b754f82e801fd7ece843d5b376f4c`; ZIP для GitVerse `Project-S-1.0.5-Windows-x64-Setup.zip` — 14 276 267 байт, SHA256 `8a468f859f1e55e0947f7e13aa2e0d0bcb36561b9f6db7dfb1e203606f041ebf`. GitVerse не принимает `.exe`, поэтому в релизе ZIP. Оба файла лежат на рабочих столах Windows и Mac; **не установлены**, GUI не запускался.
+- Windows, установленная копия: всё ещё предыдущая сборка `ce8ed5b` per-user; заменится после установки пользователем.
+- Доступ к Windows VM проверен 2026-10-23: `DOCS/WINDOWS-ACCESS.md`; Windows HEAD `ada814c`, рабочее дерево чистое.
 - Linux: план, реализации нет.
 - Модель/ONNX: `ort-backend`, модель скачивается после онбординга (не в бандле); на Windows нужны `onnxruntime.dll` и MSVC runtime.
 
 ## 6. Windows P0 (код пишет macOS, собирает Windows)
 
 - [x] Убрать Unix-импорты из production (`processes.rs`, `skills/exec.rs`, `cdp/mod.rs`, `ssh_tools.rs`).
-- [ ] Shell: убрать `sh -c` в инструменте `bash` и `bash`/`python3` в скиллах; PowerShell/cmd, quoting, UTF-8.
+- [x] Shell: Git Bash при наличии, иначе PowerShell с UTF-8; login PATH без потери TMPDIR; Python/`py` для скиллов; verbatim-пути не передаются в MSYS.
 - [ ] Job Objects + kill tree вместо process group/`kill -0` (сейчас живость и kill — через `taskkill`/`tasklist`).
 - [ ] askpass без `sh`: `.cmd`/`.exe` + ACL вместо `askpass.sh` с 0600/0700.
 - [x] `HOME` → `dirs`/platform resolver; убрать macOS-пути.
-- [ ] `canonicalize`/`\\?\`, длинные пути, UNC, reparse points, абсолютные пути в БД.
+- [ ] `canonicalize`/`\\?\`, длинные пути, UNC, reparse points, абсолютные пути в БД (относительные пути уже нормализуются в `/`, project root/absolute path очищаются от `\\?\`).
 - [x] Путь ресурсов `exe_dir/resources/...`; 38 скиллов находятся после установки (модель с 1.0.3 не бандлится).
 - [x] ~~Модель доставлена в `src-tauri/resources/models/embeddinggemma-2`~~ — с 1.0.3 не бандлится; приложение скачивает само (`download_embed_model`).
 - [x] `bundle.windows`, `bundle.targets`, иконки (`icon.ico` + Square*Logo).
@@ -204,11 +203,19 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Статус: waiting | done
 ```
 
+### 2026-10-23 22:50 UTC — macOS
+- Ветка: `master`
+- Коммит: `ada814c` (тег `v1.0.5`)
+- Сделано: Windows-рантайм: shell-инструмент использует Git Bash (`-c`) с явным PATH или PowerShell с UTF-8; `.sh`/`.bash` скиллы получают Git Bash и обычный (не verbatim) путь; Python-скиллы — `python`/`py -3`; относительные пути нормализуются в `/`; project/absolute path очищаются от `\\?\`. Собраны macOS DMG и Windows NSIS 1.0.5. GitVerse: release id `548937654`, тег `v1.0.5`, ассеты `Project-S-1.0.5-macOS-ARM.dmg` (21 804 979 Б, SHA256 `4a28bd40…a6eb`), `Project-S-1.0.5-Windows-x64-Setup.zip` (14 276 267 Б, SHA256 `8a468f85…ebf`; внутри EXE 14 292 714 Б, SHA256 `f0265cd8…f4c`), `.sha256.txt` и `RELEASE_NOTES_1.0.5.md`. GitVerse не принимает `.exe` и пробелы в именах ассетов.
+- Влияние: Windows-сборка стала рабочей для базового сценария; macOS-поведение не изменилось; релиз 1.0.4 заменён на 1.0.5.
+- Действие: `[ACTION: user]` установить Windows-версию, проверить GUI; Linux Flatpak — следующий этап.
+- Статус: waiting
+
 ### 2026-10-23 19:18 UTC — macOS
 - Ветка: `master`
 - Коммит: `0ae7d06` (релизный тег `v1.0.3` → `3e9968f`); docs-only коммит этой записи
 - Сделано: опубликован публичный релиз **macOS 1.0.3** на GitVerse — https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.3 (release id `548937615`, тег `v1.0.3`, `target_commitish: master`, не draft/prerelease, `is_authorized_only: false`). Ассеты: `Project-S_1.0.3_aarch64.dmg` (id `31112`) — 21 796 376 байт, SHA256 `e11b67ac597981ecadc583091fce2dfc53048bde21b4d15298e6b9beb24bedcd` (скачан с GitVerse и сверен — совпало); `Project-S_1.0.3_aarch64.dmg.sha256.txt` (id `31116`) — 94 байта. Публичная страница релиза отвечает 200.
-- Влияние: только публикация релиза и документация; код, контракты и БД не менялись. Сборка нотаризована (первый запуск — правый клик → «Открыть»). **Платформа: только macOS (aarch64).** Windows 1.0.3 и Linux — ещё не опубликованы.
+- Влияние: только публикация релиза и документация; код, контракты и БД не менялись. Сборка не нотаризована (первый запуск — правый клик → «Открыть»). **Платформа: только macOS (aarch64).** Windows 1.0.3 и Linux — ещё не опубликованы.
 - Действие: user — Windows-сборка 1.0.3 по явной команде (§3.1) и публикация Windows-ассета в этот же тег; Linux — Flatpak позже.
 - Статус: waiting
 

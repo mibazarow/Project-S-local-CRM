@@ -1,8 +1,8 @@
 # WINDOWS-PORT — Windows 11: текущее состояние и остаток работ
 
-Статус: **сборка под Windows 11 x64 работает**. Demo-установщик собран **2026-10-23** на коммите `0003135`: `Project-S_1.0.2_x64-setup.exe`, 297 438 162 байт (283.66 MiB), SHA256 `2b5f208c20029628a21f5046afa72927d0fd9f45ee0a7389369636bdcf55d041`. Установщик скопирован на рабочий стол Windows и на рабочий стол Mac, **не установлен**; установленная копия — более ранняя сборка `ce8ed5b`. GUI после нового установщика **не проверен**. Осталось: платформенные P0 (shell, процессы, пути, WebView2, single-instance) и production-hardening (подпись, updater, миграция данных).
+Статус: **сборка под Windows 11 x64 работает**. Релиз **1.0.5** собран 2026-10-23 на коммите `ada814c`: NSIS `Project-S-1.0.5-Windows-x64-Setup.exe` — 14 292 714 байт, SHA256 `f0265cd8cc1c94603c3bc4b96998bd85a88b754f82e801fd7ece843d5b376f4c`; ZIP для GitVerse `Project-S-1.0.5-Windows-x64-Setup.zip` — 14 276 267 байт, SHA256 `8a468f859f1e55e0947f7e13aa2e0d0bcb36561b9f6db7dfb1e203606f041ebf`. Оба файла на рабочих столах Windows и Mac, **не установлены**; установленная копия — более ранняя сборка `ce8ed5b`. GUI после нового установщика **не проверен**. Осталось: askpass, Job Objects, WebView2, single-instance, длинные/UNC-пути и production-hardening (подпись, updater).
 
-Scope остаётся прежним: **Windows — только demo-сборка**, без боевых данных. Подпись, updater, Credential Manager, Recycle Bin и полный паритет инструментов demo не блокируют.
+Scope: **Windows — рабочая сборка для локального использования**; боевые данные и production-hardening (подпись, updater, Credential Manager, Recycle Bin, полный паритет инструментов) остаются отдельным этапом.
 
 > **Агента на Windows нет.** Весь код, включая `src-tauri/src/platform/`, пишет macOS-агент. Windows-хост только делает `git pull`, сборку, тесты и отдаёт артефакты; код там не правится и не коммитится. Сборка — по явной команде пользователя, с macOS по SSH (`CROSPLATFORM.md` §3.1).
 
@@ -19,7 +19,9 @@ Scope остаётся прежним: **Windows — только demo-сбор�
 | Файловый менеджер | `reveal_in_file_manager` → `explorer.exe /select,` |
 | Фоновые команды | `background_command` → `cmd /C` + скрытая консоль |
 | Живость процессов | `kill_alive` / `liveness_target` / `signal_group` → `taskkill` + `tasklist` вместо `kill -0`/PGID |
-| bash-инструмент | `kill_tool_child` на Windows: `taskkill /PID <pid> /T /F` — рвёт всё дерево (`sh`-обёртка, команда, её дети) на cancel/timeout. Скомпилировано и проверено сборкой `0003135` |
+| bash-инструмент | Git Bash (`-c`) с явным PATH или PowerShell с UTF-8; `kill_tool_child` — `taskkill /PID <pid> /T /F` по всему дереву на cancel/timeout |
+| Скиллы | `.sh`/`.bash` — Git Bash с обычным (не verbatim) путём; `.py` — `python` или `py -3`; `node` для `.js`/`.mjs` |
+| Пути | относительные пути нормализуются в `/`; project root и absolute path очищаются от `\\?\`; длинные/UNC/reparse остаются в P0 |
 | Компиляция | Полная сборка под `x86_64-pc-windows-msvc` проходит на Windows-хосте (по SSH); Unix-код разведён по cfg. На macOS Windows-ветка не компилируется — проверка только на хосте |
 | Упаковка | `src-tauri/tauri.windows.conf.json`: `targets: ["nsis"]`, `installMode: currentUser`, WebView2 `downloadBootstrapper` (silent), ресурсы `resources/skills` (модель с 1.0.3 не бандлится) |
 | Ресурсы | скиллы ищутся в `exe_dir/resources/...`; модель эмбеддингов — в `<workingDir>/Settings/models/embeddinggemma-2/`, скачивается приложением |
@@ -28,28 +30,24 @@ Scope остаётся прежним: **Windows — только demo-сбор�
 | Сборка по SSH | рабочий путь: macOS-агент по SSH делает `pull` → `npm ci` → `npx tauri build --config src-tauri/tauri.windows.conf.json`, артефакты забирает на Mac |
 | Единственное предупреждение сборки | нефатальное `esaxx-rs` `-std=c++11` D9002 |
 
-Не сделано и не проверено: **GUI на Windows после нового установщика**. Установленная копия — `ce8ed5b`.
+Не сделано и не проверено: **GUI на Windows после нового установщика**. Установленная копия — `ce8ed5b`. Shell, Python-скиллы и базовые пути уже исправлены и собраны.
 
-### 1.1. Что в собранной demo-сборке заведомо не работает (runtime-риски)
+### 1.1. Что в собранной сборке заведомо не работает (runtime-риски)
 
 Это не «мелочи», а ожидаемое поведение текущей сборки — чтобы не чинить их задним числом под видом багов:
 
-- Инструмент `bash` зависит от `sh`: работает только там, где в PATH есть Git Bash.
-- Скиллы, вызывающие `bash`/`python3`, падают; `.py`-скиллы работают только если интерпретатор доступен как `python3`.
 - SSH с парольной авторизацией не работает: askpass пишется как `askpass.sh`.
 - macOS-инструменты харнеса (clipboard image, OCR, PDFKit, скриншоты, `open_with`, `mdfind`, `launchd`, `trash_paths`, `keychain_get`, `defaults_write`, `archive`) на Windows не портированы — часть из них вообще не вызывается, часть даёт ошибку.
 - ONNX-эмбеддинги: `onnxruntime.dll` и MSVC runtime должны быть на машине; семантический поиск деградирует до FTS, если модель/бинарники не на месте.
-- Пути вида `\\?\C:\...` из `canonicalize` могут просачиваться в UI и в SQL-фильтры.
+- Длинные пути/UNC/reparse points и часть абсолютных путей в БД ещё не покрыты.
 
 ## 2. Остаток P0
 
 | # | Задача | Где сейчас | Что не так |
 |---|---|---|---|
-| P0-1 | Shell для инструмента `bash` | `platform/process.rs::tool_command` — на Windows тоже `sh -c` | `sh` на Windows есть только как Git Bash и не гарантирован. Нужен PowerShell/cmd: `CommandLineToArgvW`-quoting, `PATHEXT`, вывод UTF-8 (не CP866/CP1251) |
-| P0-2 | Скиллы | `skills/exec.rs`: `.py` → `python3`, `.sh`/`.bash` → `bash` | На Windows — `python`/`py`; `bash` нет. Скиллы, зовущие `bash`/`python3`, падают |
 | P0-3 | SSH askpass | `agent/ssh/askpass.rs` пишет `askpass.sh` (0600/0700) | Нет POSIX-прав и `sh`. Нужен askpass как `.cmd`/`.exe` + ACL через `icacls`; проверка наличия OpenSSH Client (`Optional component`), понятная ошибка если нет |
 | P0-4 | Процессы: Job Objects | живость и kill — через `taskkill`/`tasklist` | Работает, но это не групповой контроль: нет гарантированного «дочерние не переживают родителя», есть race pid. Нужны Job Objects + `GetExitCodeProcess` для MCP/stdio и фоновых процессов |
-| P0-5 | Пути | `canonicalize` без обёртки | На Windows отдаёт `\\?\C:\...` — ломает сравнение путей, вывод в UI и SQL-фильтры. Остались: длинные пути (manifest + `LongPathsEnabled`), UNC/сетевые шары, junctions/reparse points в `path_policy`, зарезервированные имена (`CON`, `NUL`, хвостовые точки/пробелы) |
+| P0-5 | Пути | относительные/абсолютные пути уже нормализуются на границе | Остались длинные пути (manifest + `LongPathsEnabled`), UNC/сетевые шары, junctions/reparse points в `path_policy`, зарезервированные имена (`CON`, `NUL`, хвостовые точки/пробелы) |
 | P0-6 | WebView2: режим и UDF | `downloadBootstrapper` | Решение не принято: `fixedRuntime` (self-contained, без админа, обновления везём сами) или `offlineInstaller`. UDF не задан — нужен `%LOCALAPPDATA%\Project-S\WebView2`, один экземпляр на профиль |
 | P0-7 | Single-instance | отсутствует | Второй запуск плодит окно и делит один WebView2-профиль. Нужен mutex + передача аргументов |
 
@@ -74,7 +72,7 @@ Baseline Tauri 2 — **109.0.1518.78** (`CROSPLATFORM.md` §0.1); ниже ил�
 - **Uninstall:** не должен удалять рабочие папки проектов и пользовательские данные; чистить ярлыки/автозапуск.
 - **Автозапуск:** `HKCU\...\Run` или Task Scheduler; учитывать отключение пользователем.
 - **Deep links:** регистрация протокола + передача аргументов в уже запущенный экземпляр (вместе с P0-7).
-- **Размер:** установщик 1.0.2 — 283.66 MiB с моделью (~330 МБ) в бандле; с 1.0.3 модель не бандлится (скачивается после онбординга), установщик станет заметно меньше. `fixedRuntime` добавит ещё — бюджет зафиксировать отдельно. Windows-сборка 1.0.3 ещё не собиралась.
+- **Размер:** установщик 1.0.5 — 13.63 MiB; модель (~300 МБ) не в бандле и скачивается после онбординга. `fixedRuntime` добавит ещё — бюджет зафиксировать отдельно.
 - **CI:** отсутствует; сборка on-demand по SSH. `scripts/install-app.sh` (bash + `ditto`/`xattr`) на Windows неприменим, `npm run app:build`/`app:install` на Windows не использовать.
 
 ## 4. Данные, пути, миграция
@@ -130,7 +128,7 @@ Baseline Tauri 2 — **109.0.1518.78** (`CROSPLATFORM.md` §0.1); ниже ил�
 
 ## 7. Секреты и безопасность
 
-- Как есть (паритет с macOS, для demo приемлемо): API-ключи открытым текстом в `Settings/config/llm.json`, MCP env/headers в `mcp.json`, SSH-пароли в `ssh.json` и `datas.md`.
+- Как есть (паритет с macOS, для локальной сборки приемлемо): API-ключи открытым текстом в `Settings/config/llm.json`, MCP env/headers в `mcp.json`, SSH-пароли в `ssh.json` и `datas.md`.
 - `license-accepted.json` — обычный JSON без anti-tamper; не менять.
 - CSP в `tauri.conf.json` — `null`.
 - `keychain_get` — только агентский инструмент чтения, для секретов приложения не используется.
@@ -146,7 +144,7 @@ ssh win11 'powershell -NoProfile -Command "cd <repo>; git pull; npm ci; npx taur
 scp -r "win11:<repo>/src-tauri/target/release/bundle" ./artifacts/windows/
 ```
 
-Конфиг обязателен: без `--config src-tauri/tauri.windows.conf.json` Tauri берёт macOS-конфиг. Установщик: `src-tauri\target\release\bundle\nsis\Project-S_1.0.2_x64-setup.exe`; тихая установка per-user: `Start-Process <installer> -ArgumentList '/S' -Wait`. Проверка артефакта: `Get-FileHash` по SHA256.
+Конфиг обязателен: без `--config src-tauri/tauri.windows.conf.json` Tauri берёт macOS-конфиг. Установщик: `src-tauri\target\release\bundle\nsis\Project-S_1.0.5_x64-setup.exe`; тихая установка per-user: `Start-Process <installer> -ArgumentList '/S' -Wait`. Проверка артефакта: `Get-FileHash` по SHA256.
 
 Матрица:
 
@@ -166,7 +164,7 @@ scp -r "win11:<repo>/src-tauri/target/release/bundle" ./artifacts/windows/
 
 - [ ] Основной установщик: NSIS per-user или MSI per-machine?
 - [ ] WebView2: `fixedRuntime` всегда или системный + fallback? Путь UDF?
-- [ ] Допустим ли размер установщика с фиксированным runtime? Бюджет? (С 1.0.3 модель не в бандле — размер резко меньше.)
+- [ ] Допустим ли размер установщика с фиксированным runtime? Бюджет? (С 1.0.3 модель не в бандле — установщик 1.0.5 ~13.6 MiB.)
 - [ ] Секреты: оставить plaintext JSON (паритет) или Credential Manager/DPAPI? Как мигрировать?
 - [ ] `onnxruntime.dll`: в установщике или отдельным пакетом? (Модель решена в 1.0.3: скачивается приложением после онбординга.)
 - [ ] Автообновление: Tauri updater или внешний канал; какой канал (stable/beta)?
