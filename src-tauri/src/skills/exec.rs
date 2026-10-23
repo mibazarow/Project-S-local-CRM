@@ -106,7 +106,11 @@ fn command_for(candidate: &Path) -> std::result::Result<(Command, String), Strin
         }
     };
     let mut cmd = Command::new(&interpreter);
-    cmd.args(extra_args).arg(candidate);
+    // Windows canonicalize() returns a \\?\ verbatim path. Git Bash (and
+    // MSYS path conversion) mangles that prefix into a non-existent path, so
+    // hand the interpreter the ordinary drive path instead.
+    cmd.args(extra_args)
+        .arg(crate::platform::path_string(candidate));
     Ok((cmd, interpreter))
 }
 
@@ -214,8 +218,9 @@ impl Tool for SkillExecTool {
             SkillKind::Script { timeout_sec } => timeout_sec.clamp(1, SCRIPT_EXEC_TIMEOUT_SEC),
             _ => SCRIPT_EXEC_TIMEOUT_SEC,
         };
+        let workdir = std::path::PathBuf::from(crate::platform::path_string(skill_dir));
         let mut child = match cmd
-            .current_dir(skill_dir)
+            .current_dir(workdir)
             .env("TMPDIR", &tmp)
             .env("TEMP", &tmp)
             .env("TMP", &tmp)
