@@ -11,6 +11,7 @@ import HarnessView from "./components/harness/HarnessView";
 import NotesView from "./components/notes/NotesView";
 import Toasts from "./components/shared/toast";
 import ConfirmDialogHost from "./components/shared/ConfirmDialogHost";
+import EmbedModelBootstrap from "./components/EmbedModelBootstrap";
 import { setNoteLinkHandler } from "./shared/noteLink";
 
 // User-triggered overlays: not part of the startup view, so they are code-split
@@ -157,6 +158,7 @@ export default function App() {
       )}
       <Toasts />
       <ConfirmDialogHost />
+      <EmbedModelBootstrap />
     </div>
   );
 }

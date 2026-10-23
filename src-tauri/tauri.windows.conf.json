@@ -4,7 +4,7 @@
   "identifier": "app.project-s.ru",
   "bundle": {
     "targets": ["nsis"],
-    "resources": ["resources/skills", "resources/models/embeddinggemma-2"],
+    "resources": ["resources/skills"],
     "windows": {
       "webviewInstallMode": {
         "type": "downloadBootstrapper",

@@ -84,6 +84,14 @@ export interface EmbedStatus {
   reason?: string | null;
 }
 
+// "embed-model-progress" event payload: emitted while download_embed_model
+// streams one of the four model files (done/total are bytes for that file).
+export interface EmbedModelProgress {
+  file: string;
+  done: number;
+  total: number;
+}
+
 export interface IndexStats {
   filesSeen: number;
   filesIndexed: number;

@@ -64,6 +64,16 @@
   border-radius: var(--radius);
   padding: var(--sp-2) var(--sp-3);
 }
+.onboarding-model-note {
+  font-size: var(--fs-control);
+  line-height: var(--lh-loose);
+  color: var(--text);
+  background: var(--accent-soft);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  padding: var(--sp-2) var(--sp-3);
+}
 .onboarding-actions { display: flex; gap: var(--sp-2); margin-top: var(--sp-1); }
 
 /* ---------- Лицензия перед онбордингом ---------- */

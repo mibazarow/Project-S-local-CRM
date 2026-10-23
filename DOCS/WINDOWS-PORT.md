@@ -21,9 +21,9 @@ Scope остаётся прежним: **Windows — только demo-сбор�
 | Живость процессов | `kill_alive` / `liveness_target` / `signal_group` → `taskkill` + `tasklist` вместо `kill -0`/PGID |
 | bash-инструмент | `kill_tool_child` на Windows: `taskkill /PID <pid> /T /F` — рвёт всё дерево (`sh`-обёртка, команда, её дети) на cancel/timeout. Скомпилировано и проверено сборкой `0003135` |
 | Компиляция | Полная сборка под `x86_64-pc-windows-msvc` проходит на Windows-хосте (по SSH); Unix-код разведён по cfg. На macOS Windows-ветка не компилируется — проверка только на хосте |
-| Упаковка | `src-tauri/tauri.windows.conf.json`: `targets: ["nsis"]`, `installMode: currentUser`, WebView2 `downloadBootstrapper` (silent), ресурсы `resources/skills` + `resources/models/embeddinggemma-2` |
-| Ресурсы | скиллы и модель ищутся в `exe_dir/resources/...`; NSIS-бандл несёт и то и другое |
-| Доставка модели | `scripts/windows/stage-embed-model.ps1` — идемпотентен, источник через `PROJECT_S_MODEL_SRC` |
+| Упаковка | `src-tauri/tauri.windows.conf.json`: `targets: ["nsis"]`, `installMode: currentUser`, WebView2 `downloadBootstrapper` (silent), ресурсы `resources/skills` (модель с 1.0.3 не бандлится) |
+| Ресурсы | скиллы ищутся в `exe_dir/resources/...`; модель эмбеддингов — в `<workingDir>/Settings/models/embeddinggemma-2/`, скачивается приложением |
+| Доставка модели | с 1.0.3 — само приложение после онбординга (команда `download_embed_model`, HF `onnx-community/embeddinggemma-2-ONNX`, ~300 МБ, UI-прогресс, FTS-fallback); `scripts/windows/stage-embed-model.ps1` — только для разработчиков |
 | CRT-патч | `esaxx-rs 0.1.10` вендорен в `vendor/esaxx-rs` (`[patch.crates-io]`), в `build.rs` для Windows убран `static_crt(true)` — иначе LNK2038/LNK2005 против dynamic CRT (`/MD`) у prebuilt ONNX Runtime. Не возвращать |
 | Сборка по SSH | рабочий путь: macOS-агент по SSH делает `pull` → `npm ci` → `npx tauri build --config src-tauri/tauri.windows.conf.json`, артефакты забирает на Mac |
 | Единственное предупреждение сборки | нефатальное `esaxx-rs` `-std=c++11` D9002 |
@@ -74,7 +74,7 @@ Baseline Tauri 2 — **109.0.1518.78** (`CROSPLATFORM.md` §0.1); ниже ил�
 - **Uninstall:** не должен удалять рабочие папки проектов и пользовательские данные; чистить ярлыки/автозапуск.
 - **Автозапуск:** `HKCU\...\Run` или Task Scheduler; учитывать отключение пользователем.
 - **Deep links:** регистрация протокола + передача аргументов в уже запущенный экземпляр (вместе с P0-7).
-- **Размер:** установщик 283.66 MiB с моделью (~330 МБ). `fixedRuntime` добавит ещё — бюджет зафиксировать отдельно.
+- **Размер:** установщик 1.0.2 — 283.66 MiB с моделью (~330 МБ) в бандле; с 1.0.3 модель не бандлится (скачивается после онбординга), установщик станет заметно меньше. `fixedRuntime` добавит ещё — бюджет зафиксировать отдельно. Windows-сборка 1.0.3 ещё не собиралась.
 - **CI:** отсутствует; сборка on-demand по SSH. `scripts/install-app.sh` (bash + `ditto`/`xattr`) на Windows неприменим, `npm run app:build`/`app:install` на Windows не использовать.
 
 ## 4. Данные, пути, миграция
@@ -166,9 +166,9 @@ scp -r "win11:<repo>/src-tauri/target/release/bundle" ./artifacts/windows/
 
 - [ ] Основной установщик: NSIS per-user или MSI per-machine?
 - [ ] WebView2: `fixedRuntime` всегда или системный + fallback? Путь UDF?
-- [ ] Допустим ли размер установщика с моделью и фиксированным runtime? Бюджет?
+- [ ] Допустим ли размер установщика с фиксированным runtime? Бюджет? (С 1.0.3 модель не в бандле — размер резко меньше.)
 - [ ] Секреты: оставить plaintext JSON (паритет) или Credential Manager/DPAPI? Как мигрировать?
-- [ ] Модель и `onnxruntime.dll`: в установщике, докачивать при первом запуске или отдельным пакетом?
+- [ ] `onnxruntime.dll`: в установщике или отдельным пакетом? (Модель решена в 1.0.3: скачивается приложением после онбординга.)
 - [ ] Автообновление: Tauri updater или внешний канал; какой канал (stable/beta)?
 - [ ] Кодовая подпись: обычный или EV сертификат, кто владелец?
 - [ ] ARM64 (`aarch64-pc-windows-msvc`) — нужен? Тогда отдельные ONNX-бинарники.

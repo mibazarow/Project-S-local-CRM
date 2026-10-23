@@ -73,6 +73,12 @@ export default function Onboarding() {
         </div>
         {autostartNote && <div className="set-hint">{autostartNote}</div>}
 
+        <div className="onboarding-model-note">
+          После настройки приложение скачает модель эмбеддингов Gemma 2 (~300 МБ) из Hugging Face.
+          Она нужна для поиска по смыслу; без неё поиск будет работать только по словам. Это разовая
+          загрузка.
+        </div>
+
         {state.error && <div className="onboarding-error">{state.error}</div>}
 
         <div className="onboarding-actions">

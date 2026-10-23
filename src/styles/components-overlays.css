@@ -29,6 +29,55 @@
   color: var(--danger);
 }
 
+/* ---------- Баннер загрузки модели эмбеддингов (разово, после онбординга) ---------- */
+
+.embed-model-banner {
+  position: fixed;
+  left: var(--sp-4);
+  bottom: var(--sp-4);
+  z-index: 990;
+  width: 320px;
+  padding: var(--sp-3);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-menu);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+}
+.embed-model-banner.error {
+  border-color: var(--danger-tint);
+  border-left-color: var(--danger);
+  background: var(--danger-soft);
+}
+.embed-model-banner-title {
+  font-size: var(--fs-control);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-base);
+  color: var(--text);
+}
+.embed-model-banner.error .embed-model-banner-title { color: var(--danger); }
+.embed-model-banner-meta {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+.embed-model-progress {
+  height: 4px;
+  border-radius: var(--radius-pill);
+  background: var(--seg-bg);
+  overflow: hidden;
+}
+.embed-model-progress-fill {
+  height: 100%;
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  transition: width var(--dur) var(--ease);
+}
+.embed-model-banner-actions { display: flex; gap: var(--sp-2); }
+
 /* ---------- Контекстное меню файлов ---------- */
 
 .context-menu {

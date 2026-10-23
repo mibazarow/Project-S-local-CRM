@@ -33,7 +33,7 @@
 2. **Shell:** платформенно-нейтральный `shell` (`auto`/PowerShell/cmd/sh); `bash` — алиас на Unix. Windows реализует PowerShell/cmd. Скиллы не форкаем; жёсткие bash-примеры правит macOS в `master`.
 3. **UI/UX:** решения за macOS. Windows — нативный titlebar, Segoe UI, Ctrl вместо Cmd, DPI через платформенный слой; без редизайна.
 4. **WebView2:** baseline **109.0.1518.78** (Tauri 2); ниже/нет — fixed runtime. Сверить с release notes Tauri перед релизом.
-5. **Ресурсы:** единый `resource_dir()` + fallback `exe_dir/resources` для dev. macOS добавляет helper; `paths.rs` — `notes_dir` и `harness_inbox_dir`. Модель доставляют `scripts/stage-embed-model.sh` (bash/macOS) и `scripts/windows/stage-embed-model.ps1` (Windows), источник — `PROJECT_S_MODEL_SRC`; общий `.mjs` не заводили.
+5. **Ресурсы:** единый `resource_dir()` + fallback `exe_dir/resources` для dev. macOS добавляет helper; `paths.rs` — `notes_dir` и `harness_inbox_dir`. С 1.0.3 модель эмбеддингов **не бандлится**: приложение скачивает её само после онбординга в `<workingDir>/Settings/models/embeddinggemma-2/` (HF `onnx-community/embeddinggemma-2-ONNX`, ~300 МБ, UI-прогресс, FTS-fallback). Скрипты `scripts/stage-embed-model.sh` / `scripts/windows/stage-embed-model.ps1` — только для разработчиков (`npm run model:stage`).
 6. **Vendor CRT-патч:** `esaxx-rs 0.1.10` вендорен в `vendor/esaxx-rs` и подключён через `[patch.crates-io]` в `src-tauri/Cargo.toml`; в `build.rs` для Windows убран `static_crt(true)` — иначе LNK2038/LNK2005 против dynamic CRT (`/MD`) у prebuilt ONNX Runtime. Не возвращать. Дельта против crates.io только эта: плюс удалённые секции `[[example]]`/`[[bench]]` (их каталоги не вендорены). Патч нужен, пока `tokenizers` → `esaxx-rs` в дереве (`ort-backend` — дефолтный бэкенд эмбеддингов).
 
 ## 0.2. Режим работы: macOS по умолчанию, Windows по команде
@@ -61,7 +61,7 @@
 - `master` — единый источник правды и защищённая ветка. Все изменения — через PR/merge.
 - Постоянных веток `macos`/`windows`/`linux` и временной `port/windows` **нет**. Весь код, включая `platform/`, пишет macOS-агент в `feat/*`/`fix/*` или `master`.
 - Windows build host не коммитит: только `git pull`, сборка, тесты, артефакты. Все коммиты и push делает macOS.
-- Релизные теги (`v1.0.2`) ставятся на `master`; артефакты собираются под каждую ОС из одного коммита.
+- Релизные теги (`v1.0.3`) ставятся на `master`; артефакты собираются под каждую ОС из одного коммита.
 - Если Windows временно отстаёт — используем pre-release-тег (`v1.0.3-win.1`), а не отдельную версию кода.
 
 ## 2. Код: платформенный слой, а не форк
@@ -160,18 +160,18 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 ## 5. Текущее состояние (обновлять при изменениях)
 
 - **Разработка продукта — только на macOS.** Windows/Linux: порт, платформенный слой, сборка.
-- Версия: **1.0.2**.
+- Версия: **1.0.3**.
 - Ветка: **master**; remote `origin` — приватный GitVerse.
 - Схема БД: **v40**.
 - Встроенных скиллов: **38**.
-- Модель эмбеддингов: **не в git**, ~330 МБ; доставляется до сборки (см. `DOCS/about.md` → «Поиск и индексация»).
+- Модель эмбеддингов: **не в git и не в бандле** (с 1.0.3); ~300 МБ, приложение скачивает разово после онбординга (UI-прогресс, повтор при ошибке); без неё — только FTS-поиск.
 - macOS: рабочая сборка, aarch64.
 - Windows: **demo-сборка собрана 2026-10-23 на `0003135`** (без боевых данных); минимальный платформенный шов для компиляции есть (`platform/mod.rs`, cfg-ветки, Windows-конфиг), полного порта нет; сборка — с macOS по SSH (§3.1). **Windows-агента нет**; код пишет macOS.
 - Windows demo, последний собранный установщик: `Project-S_1.0.2_x64-setup.exe`, 297 438 162 байт (283.66 MiB), SHA256 `2b5f208c20029628a21f5046afa72927d0fd9f45ee0a7389369636bdcf55d041` — собран 2026-10-23 на `0003135`, разложен (сверено по SHA256) на рабочий стол Windows (`C:\Users\mb\Desktop`) и рабочий стол Mac (`~/Desktop`). **Не установлен**, GUI не запускался. Единственное предупреждение сборки — прежнее нефатальное `esaxx-rs` `-std=c++11` D9002.
 - Windows demo, установленная копия: всё ещё предыдущая сборка `ce8ed5b` per-user в `C:\Users\mb\AppData\Local\Project-S`; заменится только после установки нового установщика пользователем.
 - Доступ к Windows VM проверен 2026-10-23: `DOCS/WINDOWS-ACCESS.md`; Windows HEAD `0003135`, рабочее дерево чистое.
 - Linux: план, реализации нет.
-- Модель/ONNX: `ort-backend`, модель в бандле; на Windows нужны `onnxruntime.dll` и MSVC runtime.
+- Модель/ONNX: `ort-backend`, модель скачивается после онбординга (не в бандле); на Windows нужны `onnxruntime.dll` и MSVC runtime.
 
 ## 6. Windows P0 (код пишет macOS, собирает Windows)
 
@@ -181,8 +181,8 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - [ ] askpass без `sh`: `.cmd`/`.exe` + ACL вместо `askpass.sh` с 0600/0700.
 - [x] `HOME` → `dirs`/platform resolver; убрать macOS-пути.
 - [ ] `canonicalize`/`\\?\`, длинные пути, UNC, reparse points, абсолютные пути в БД.
-- [x] Путь ресурсов `exe_dir/resources/...`; 38 скиллов и модель находятся после установки.
-- [x] Модель доставлена в `src-tauri/resources/models/embeddinggemma-2` (4 файла); `scripts/windows/stage-embed-model.ps1`.
+- [x] Путь ресурсов `exe_dir/resources/...`; 38 скиллов находятся после установки (модель с 1.0.3 не бандлится).
+- [x] ~~Модель доставлена в `src-tauri/resources/models/embeddinggemma-2`~~ — с 1.0.3 не бандлится; приложение скачивает само (`download_embed_model`).
 - [x] `bundle.windows`, `bundle.targets`, иконки (`icon.ico` + Square*Logo).
 - [ ] Нативный Windows-titlebar / Snap Layouts.
 - [ ] Single-instance (второй запуск плодит окно и делит WebView2-профиль).
@@ -203,6 +203,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Действие: <что сделать / user|macos> — или [DONE]
 - Статус: waiting | done
 ```
+
+### 2026-10-23 18:56 UTC — macOS
+- Ветка: `master`
+- Коммит: (рабочее дерево, не закоммичено по указанию пользователя)
+- Сделано: 1.0.3 — модель EmbeddingGemma 2 убрана из бандла (`bundle.resources` = только `resources/skills` в обоих конфигах; из `app:build`/`app:install` убран стейдж модели, добавлен dev-скрипт `npm run model:stage`). Скачивание на фронтенде после онбординга: store `src/state/embedModelDownload.ts` (идемпотентный, FTS-fallback), баннер `EmbedModelBootstrap` (прогресс ~300 МБ, «Повторить»/«Скрыть»), уведомление в онбординге, кнопка «Скачать модель (~300 МБ)» в Настройки → Агент; IPC `downloadEmbedModel` + событие `embed-model-progress`.
+- Влияние: установщики резко меньше (macOS DMG 1.0.3 < 100 МБ против ~330 МБ с моделью); без модели поиск только по словам; контракты Rust-команд не менялись (`download_embed_model` уже был).
+- Действие: user — Windows-сборка 1.0.3 по явной команде (ещё не собрана; предыдущий установщик 1.0.2 — история).
+- Статус: waiting
 
 ### 2026-10-23 15:34 UTC — macOS
 - Ветка: `master`

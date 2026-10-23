@@ -3,6 +3,7 @@ import * as ipc from "../../api/ipc";
 import type { EmbedStatus, IndexingConfig, ProjectIndexStats } from "../../api/types";
 import { toMessage as errMsg } from "../../shared/errors";
 import { confirmAction } from "../../shared/confirm";
+import { startEmbedModelDownload, useEmbedModelDownload } from "../../state/embedModelDownload";
 import { Card, Field } from "./shared";
 import Switch from "../shared/Switch";
 import { useDebouncedConfig, type DebouncedConfig } from "./useDebouncedConfig";
@@ -43,6 +44,7 @@ export default function AgentTab({
     setError,
   );
   const [embed, setEmbed] = useState<EmbedStatus | null>(null);
+  const dl = useEmbedModelDownload();
   const [reindexBusy, setReindexBusy] = useState<"inc" | "hard" | null>(null);
   const [reindexNote, setReindexNote] = useState<string | null>(null);
   const [styleBusy, setStyleBusy] = useState(false);
@@ -56,6 +58,16 @@ export default function AgentTab({
       .then(setEmbed)
       .catch(() => setEmbed(null));
   }, []);
+
+  // A finished model download changes the embed status: re-read it so the
+  // card switches to "скачана, активна" without reopening settings.
+  useEffect(() => {
+    if (dl.phase !== "done") return;
+    void ipc
+      .embedStatus()
+      .then(setEmbed)
+      .catch(() => {});
+  }, [dl.phase]);
 
   useEffect(() => {
     let cancelled = false;
@@ -211,6 +223,32 @@ export default function AgentTab({
           </div>
         )}
         {embed?.reason && <div className="set-note">{embed.reason}</div>}
+        {embed && !embed.modelPresent && (
+          <>
+            <div className="set-actions">
+              <button
+                className="ghost-btn"
+                disabled={dl.phase === "checking" || dl.phase === "downloading"}
+                onClick={() => void startEmbedModelDownload()}
+              >
+                {dl.phase === "checking"
+                  ? "Проверяем…"
+                  : dl.phase === "downloading"
+                    ? "Скачиваем модель…"
+                    : dl.phase === "error"
+                      ? "Повторить"
+                      : "Скачать модель (~300 МБ)"}
+              </button>
+            </div>
+            {dl.phase === "downloading" && (
+              <div className="set-note">
+                {dl.total > 0 ? `${Math.min(100, Math.round((dl.done / dl.total) * 100))}%` : "…"}
+                {dl.file && ` · ${dl.file}`} · всего ~300 МБ
+              </div>
+            )}
+            {dl.phase === "error" && dl.error && <div className="set-note">{dl.error}</div>}
+          </>
+        )}
       </Card>
       {error && <div className="set-error">{error}</div>}
     </div>

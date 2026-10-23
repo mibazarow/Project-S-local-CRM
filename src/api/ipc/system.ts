@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type {
+  EmbedModelProgress,
   EmbedStatus,
   ExportSummary,
   GlobalHit,
@@ -105,6 +106,11 @@ export const reindexStatus = () => invoke<ReindexStatus>("reindex_status");
 
 export const embedStatus = () => invoke<EmbedStatus>("embed_status");
 
+// One-time download of the EmbeddingGemma 2 model (~300 MB) from Hugging
+// Face into Settings/models/embeddinggemma-2/. Returns the new embed status;
+// per-file byte progress arrives as "embed-model-progress".
+export const downloadEmbedModel = () => invoke<EmbedStatus>("download_embed_model");
+
 // Global cross-entity search (⌘K palette): projects, files, tasks, notes and
 // harness chats in one merged, ranked list.
 export const globalSearch = (query: string, limit?: number) =>
@@ -122,6 +128,10 @@ export const onReindexProgress = (handler: (payload: ReindexProgress) => void) =
 // Emitted once when a reindex pass finishes.
 export const onReindexDone = (handler: (payload: ReindexDone) => void) =>
   listen<ReindexDone>("reindex-done", (e) => handler(e.payload));
+
+// Emitted by download_embed_model after each chunk of a model file.
+export const onEmbedModelProgress = (handler: (payload: EmbedModelProgress) => void) =>
+  listen<EmbedModelProgress>("embed-model-progress", (e) => handler(e.payload));
 
 // Emitted by the tray menu after showing the window: routes «Быстрая
 // заметка» / «Новая задача» to the capture modal.
