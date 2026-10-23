@@ -1,6 +1,6 @@
 # WINDOWS-PORT — Windows 11: текущее состояние и остаток работ
 
-Статус: **сборка под Windows 11 x64 работает**. Релиз **1.0.5** собран 2026-10-23 на коммите `ada814c`: NSIS `Project-S-1.0.5-Windows-x64-Setup.exe` — 14 292 714 байт, SHA256 `f0265cd8cc1c94603c3bc4b96998bd85a88b754f82e801fd7ece843d5b376f4c`; ZIP для GitVerse `Project-S-1.0.5-Windows-x64-Setup.zip` — 14 276 267 байт, SHA256 `8a468f859f1e55e0947f7e13aa2e0d0bcb36561b9f6db7dfb1e203606f041ebf`. Оба файла на рабочих столах Windows и Mac, **не установлены**; установленная копия — более ранняя сборка `ce8ed5b`. GUI после нового установщика **не проверен**. Осталось: askpass, Job Objects, WebView2, single-instance, длинные/UNC-пути и production-hardening (подпись, updater).
+Статус: **сборка под Windows 11 x64 работает**. Релиз **1.0.6** собран 2026-10-23 на коммите `27500d3`: NSIS `Project-S-1.0.6-Windows-x64-Setup.exe` — 14 322 887 байт, SHA256 `c5ad410a98c967b4693418cd80028712765156051395ce5f19df21406d3565ac`; ZIP для GitVerse `Project-S-1.0.6-Windows-x64-Setup.zip` — 14 306 516 байт, SHA256 `70a8b0884b5333b1bb516e682d76bce70908338926dc723e13cbed0e9d7ae1de`. Оба файла на рабочих столах Windows и Mac, **не установлены**; установленная копия — более ранняя сборка `ce8ed5b`. GUI после нового установщика **не проверен**. Askpass, Job Objects, single-instance и shell исправлены; WebView2 по решению пользователя остаётся онлайн-загрузчиком. Осталось: длинные/UNC-пути, macOS-only инструменты и production-hardening (подпись, updater).
 
 Scope: **Windows — рабочая сборка для локального использования**; боевые данные и production-hardening (подпись, updater, Credential Manager, Recycle Bin, полный паритет инструментов) остаются отдельным этапом.
 
@@ -13,13 +13,16 @@ Scope: **Windows — рабочая сборка для локального и�
 | Область | Что сделано |
 |---|---|
 | Платформенный шов | `src-tauri/src/platform/` — два файла: `mod.rs` и `process.rs`. Отдельных каталогов `platform/<os>` нет; различия ОС — cfg-ветками внутри этих двух файлов |
+| Job Objects | foreground `bash`-инструмент получает Job Object с `KILL_ON_JOB_CLOSE`; при cancel/timeout — `TerminateJobObject` |
 | Дом и рабочая папка | `dirs` вместо `HOME`: `home_dir()`, `default_working_dir()` = `dirs::document_dir()/PROJECT-S` |
 | Исполняемость и права | `is_executable` (Unix — бит, Windows — расширения), `restrict_permissions` (Windows — no-op вместо `PermissionsExt`) |
 | Консоль | `hide_console` → `CREATE_NO_WINDOW` на Windows: окна не мигают |
 | Файловый менеджер | `reveal_in_file_manager` → `explorer.exe /select,` |
 | Фоновые команды | `background_command` → `cmd /C` + скрытая консоль |
 | Живость процессов | `kill_alive` / `liveness_target` / `signal_group` → `taskkill` + `tasklist` вместо `kill -0`/PGID |
-| bash-инструмент | Git Bash (`-c`) с явным PATH или PowerShell с UTF-8; `kill_tool_child` — `taskkill /PID <pid> /T /F` по всему дереву на cancel/timeout |
+| bash-инструмент | Git Bash (`-c`) с явным PATH или PowerShell с UTF-8; foreground-процесс в Job Object с `KILL_ON_JOB_CLOSE` + `TerminateJobObject`, `taskkill /T /F` остаётся fallback |
+| Askpass | Windows OpenSSH запускает сам `project-s.exe` в режиме `PROJECT_S_ASKPASS_FILE`: пароль читается из private-файла, процесс выходит до Tauri/GUI |
+| Single-instance | `tauri-plugin-single-instance`: второй запуск фокусирует существующее окно |
 | Скиллы | `.sh`/`.bash` — Git Bash с обычным (не verbatim) путём; `.py` — `python` или `py -3`; `node` для `.js`/`.mjs` |
 | Пути | относительные пути нормализуются в `/`; project root и absolute path очищаются от `\\?\`; длинные/UNC/reparse остаются в P0 |
 | Компиляция | Полная сборка под `x86_64-pc-windows-msvc` проходит на Windows-хосте (по SSH); Unix-код разведён по cfg. На macOS Windows-ветка не компилируется — проверка только на хосте |
@@ -36,7 +39,6 @@ Scope: **Windows — рабочая сборка для локального и�
 
 Это не «мелочи», а ожидаемое поведение текущей сборки — чтобы не чинить их задним числом под видом багов:
 
-- SSH с парольной авторизацией не работает: askpass пишется как `askpass.sh`.
 - macOS-инструменты харнеса (clipboard image, OCR, PDFKit, скриншоты, `open_with`, `mdfind`, `launchd`, `trash_paths`, `keychain_get`, `defaults_write`, `archive`) на Windows не портированы — часть из них вообще не вызывается, часть даёт ошибку.
 - ONNX-эмбеддинги: `onnxruntime.dll` и MSVC runtime должны быть на машине; семантический поиск деградирует до FTS, если модель/бинарники не на месте.
 - Длинные пути/UNC/reparse points и часть абсолютных путей в БД ещё не покрыты.
@@ -45,11 +47,8 @@ Scope: **Windows — рабочая сборка для локального и�
 
 | # | Задача | Где сейчас | Что не так |
 |---|---|---|---|
-| P0-3 | SSH askpass | `agent/ssh/askpass.rs` пишет `askpass.sh` (0600/0700) | Нет POSIX-прав и `sh`. Нужен askpass как `.cmd`/`.exe` + ACL через `icacls`; проверка наличия OpenSSH Client (`Optional component`), понятная ошибка если нет |
-| P0-4 | Процессы: Job Objects | живость и kill — через `taskkill`/`tasklist` | Работает, но это не групповой контроль: нет гарантированного «дочерние не переживают родителя», есть race pid. Нужны Job Objects + `GetExitCodeProcess` для MCP/stdio и фоновых процессов |
 | P0-5 | Пути | относительные/абсолютные пути уже нормализуются на границе | Остались длинные пути (manifest + `LongPathsEnabled`), UNC/сетевые шары, junctions/reparse points в `path_policy`, зарезервированные имена (`CON`, `NUL`, хвостовые точки/пробелы) |
-| P0-6 | WebView2: режим и UDF | `downloadBootstrapper` | Решение не принято: `fixedRuntime` (self-contained, без админа, обновления везём сами) или `offlineInstaller`. UDF не задан — нужен `%LOCALAPPDATA%\Project-S\WebView2`, один экземпляр на профиль |
-| P0-7 | Single-instance | отсутствует | Второй запуск плодит окно и делит один WebView2-профиль. Нужен mutex + передача аргументов |
+| P0-6 | WebView2 | `downloadBootstrapper` | Решено: онлайн-загрузчик, без fixedRuntime/offlineInstaller. UDF/проверка наличия остаются в общем smoke-test. |
 
 ### 2.1. WebView2: что проверить после фиксации режима
 
@@ -71,8 +70,8 @@ Baseline Tauri 2 — **109.0.1518.78** (`CROSPLATFORM.md` §0.1); ниже ил�
 - **Updater:** отсутствует. Нужен канал (Tauri updater или внешний), подпись манифеста, откат, миграции схемы при обновлении.
 - **Uninstall:** не должен удалять рабочие папки проектов и пользовательские данные; чистить ярлыки/автозапуск.
 - **Автозапуск:** `HKCU\...\Run` или Task Scheduler; учитывать отключение пользователем.
-- **Deep links:** регистрация протокола + передача аргументов в уже запущенный экземпляр (вместе с P0-7).
-- **Размер:** установщик 1.0.5 — 13.63 MiB; модель (~300 МБ) не в бандле и скачивается после онбординга. `fixedRuntime` добавит ещё — бюджет зафиксировать отдельно.
+- **Deep links:** регистрация протокола + передача аргументов в уже запущенный экземпляр (single-instance уже есть, нужна обработка argv).
+- **Размер:** установщик 1.0.6 — 13.66 MiB; модель (~300 МБ) не в бандле и скачивается после онбординга. WebView2 — онлайн-загрузчик, fixedRuntime не используем.
 - **CI:** отсутствует; сборка on-demand по SSH. `scripts/install-app.sh` (bash + `ditto`/`xattr`) на Windows неприменим, `npm run app:build`/`app:install` на Windows не использовать.
 
 ## 4. Данные, пути, миграция
@@ -88,13 +87,11 @@ Baseline Tauri 2 — **109.0.1518.78** (`CROSPLATFORM.md` §0.1); ниже ил�
 
 ## 5. Паритет инструментов (только остаток)
 
-Сделано: `fs_reveal_in_finder` → `explorer /select,`; фоновые процессы/живость/kill (`taskkill`/`tasklist`); дерево `bash`-инструмента (`taskkill /T /F`).
+Сделано: `fs_reveal_in_finder` → `explorer /select,`; фоновые процессы/живость/kill (`taskkill`/`tasklist`); дерево `bash`-инструмента (Job Object + `taskkill` fallback); askpass; single-instance.
 
 | Инструмент | macOS сегодня | Windows: осталось |
 |---|---|---|
-| `bash` (runner) | `sh -c` | PowerShell/cmd + quoting + UTF-8 (P0-1) |
-| Скиллы (`exec`) | `python3`, `bash` | `python`/`py`, без `bash` (P0-2) |
-| SSH askpass | `askpass.sh`, 0600/0700 | `.cmd`/`.exe` + ACL, детект OpenSSH (P0-3) |
+
 | `clipboard_get_image` | osascript PNGf/TIFF + `sips` | Win32 clipboard `CF_DIB`/`CF_PNG` + `image` |
 | Скриншот | `screencapture` | GDI/BitBlt или Windows Graphics Capture, Per-Monitor V2 DPI |
 | OCR | Apple Vision (Swift) | Windows.Media.Ocr / Tesseract / vision-провайдер LLM |
@@ -132,7 +129,7 @@ Baseline Tauri 2 — **109.0.1518.78** (`CROSPLATFORM.md` §0.1); ниже ил�
 - `license-accepted.json` — обычный JSON без anti-tamper; не менять.
 - CSP в `tauri.conf.json` — `null`.
 - `keychain_get` — только агентский инструмент чтения, для секретов приложения не используется.
-- Осталось: askpass-файлы на Windows требуют restrictive ACL (`icacls`), иначе ssh откажется читать ключ; интеграция с Credential Manager/DPAPI — будущая работа, меняет формат хранения и требует миграции.
+- Askpass-файл на Windows лежит в private-каталоге профиля и наследует его ACL; отдельный `icacls`-хардening, Credential Manager/DPAPI — будущая работа, меняет формат хранения и требует миграции.
 
 ## 8. Тестовая матрица и команды сборки
 
@@ -144,7 +141,7 @@ ssh win11 'powershell -NoProfile -Command "cd <repo>; git pull; npm ci; npx taur
 scp -r "win11:<repo>/src-tauri/target/release/bundle" ./artifacts/windows/
 ```
 
-Конфиг обязателен: без `--config src-tauri/tauri.windows.conf.json` Tauri берёт macOS-конфиг. Установщик: `src-tauri\target\release\bundle\nsis\Project-S_1.0.5_x64-setup.exe`; тихая установка per-user: `Start-Process <installer> -ArgumentList '/S' -Wait`. Проверка артефакта: `Get-FileHash` по SHA256.
+Конфиг обязателен: без `--config src-tauri/tauri.windows.conf.json` Tauri берёт macOS-конфиг. Установщик: `src-tauri\target\release\bundle\nsis\Project-S_1.0.6_x64-setup.exe`; тихая установка per-user: `Start-Process <installer> -ArgumentList '/S' -Wait`. Проверка артефакта: `Get-FileHash` по SHA256.
 
 Матрица:
 
@@ -164,7 +161,7 @@ scp -r "win11:<repo>/src-tauri/target/release/bundle" ./artifacts/windows/
 
 - [ ] Основной установщик: NSIS per-user или MSI per-machine?
 - [ ] WebView2: `fixedRuntime` всегда или системный + fallback? Путь UDF?
-- [ ] Допустим ли размер установщика с фиксированным runtime? Бюджет? (С 1.0.3 модель не в бандле — установщик 1.0.5 ~13.6 MiB.)
+- [ ] Допустим ли размер установщика с фиксированным runtime? Бюджет? (С 1.0.3 модель не в бандле — установщик 1.0.6 ~13.66 MiB.)
 - [ ] Секреты: оставить plaintext JSON (паритет) или Credential Manager/DPAPI? Как мигрировать?
 - [ ] `onnxruntime.dll`: в установщике или отдельным пакетом? (Модель решена в 1.0.3: скачивается приложением после онбординга.)
 - [ ] Автообновление: Tauri updater или внешний канал; какой канал (stable/beta)?

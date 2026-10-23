@@ -32,7 +32,7 @@
 1. **Платформенный шов:** `platform/mod.rs` + `platform/macos` — в `master` до merge Windows-кода. Никаких `#[cfg(unix)]` в бизнес-логике; временный cfg допустим только как scaffold в `port/windows`, не в `master`.
 2. **Shell:** платформенно-нейтральный `shell` (`auto`/PowerShell/cmd/sh); `bash` — алиас на Unix. Windows реализует PowerShell/cmd. Скиллы не форкаем; жёсткие bash-примеры правит macOS в `master`.
 3. **UI/UX:** решения за macOS. Windows — нативный titlebar, Segoe UI, Ctrl вместо Cmd, DPI через платформенный слой; без редизайна.
-4. **WebView2:** baseline **109.0.1518.78** (Tauri 2); ниже/нет — fixed runtime. Сверить с release notes Tauri перед релизом.
+4. **WebView2:** baseline **109.0.1518.78** (Tauri 2); по решению пользователя используем онлайн-загрузчик `downloadBootstrapper`, fixed runtime не поставляем.
 5. **Ресурсы:** единый `resource_dir()` + fallback `exe_dir/resources` для dev. macOS добавляет helper; `paths.rs` — `notes_dir` и `harness_inbox_dir`. С 1.0.3 модель эмбеддингов **не бандлится**: приложение скачивает её само после онбординга в `<workingDir>/Settings/models/embeddinggemma-2/` (HF `onnx-community/embeddinggemma-2-ONNX`, ~300 МБ, UI-прогресс, FTS-fallback). Скрипты `scripts/stage-embed-model.sh` / `scripts/windows/stage-embed-model.ps1` — только для разработчиков (`npm run model:stage`).
 6. **Vendor CRT-патч:** `esaxx-rs 0.1.10` вендорен в `vendor/esaxx-rs` и подключён через `[patch.crates-io]` в `src-tauri/Cargo.toml`; в `build.rs` для Windows убран `static_crt(true)` — иначе LNK2038/LNK2005 против dynamic CRT (`/MD`) у prebuilt ONNX Runtime. Не возвращать. Дельта против crates.io только эта: плюс удалённые секции `[[example]]`/`[[bench]]` (их каталоги не вендорены). Патч нужен, пока `tokenizers` → `esaxx-rs` в дереве (`ort-backend` — дефолтный бэкенд эмбеддингов).
 
@@ -61,7 +61,7 @@
 - `master` — единый источник правды и защищённая ветка. Все изменения — через PR/merge.
 - Постоянных веток `macos`/`windows`/`linux` и временной `port/windows` **нет**. Весь код, включая `platform/`, пишет macOS-агент в `feat/*`/`fix/*` или `master`.
 - Windows build host не коммитит: только `git pull`, сборка, тесты, артефакты. Все коммиты и push делает macOS.
-- Релизные теги (`v1.0.5`) ставятся на `master`; артефакты собираются под каждую ОС из одного коммита.
+- Релизные теги (`v1.0.6`) ставятся на `master`; артефакты собираются под каждую ОС из одного коммита.
 - Если Windows временно отстаёт — используем pre-release-тег (`v1.0.3-win.1`), а не отдельную версию кода.
 
 ## 2. Код: платформенный слой, а не форк
@@ -160,13 +160,13 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 ## 5. Текущее состояние (обновлять при изменениях)
 
 - **Разработка продукта — только на macOS.** Windows/Linux: порт, платформенный слой, сборка.
-- Версия: **1.0.5**.
+- Версия: **1.0.6**.
 - Ветка: **master**; remote `origin` — приватный GitVerse.
 - Схема БД: **v40**.
 - Встроенных скиллов: **38**.
 - Модель эмбеддингов: **не в git и не в бандле** (с 1.0.3); ~300 МБ, приложение скачивает разово после онбординга (UI-прогресс, повтор при ошибке); без неё — только FTS-поиск.
-- macOS: рабочая сборка, aarch64. **Публичный релиз 1.0.5 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.5 (tag `v1.0.5`, commit `ada814c`). Ассет `Project-S-1.0.5-macOS-ARM.dmg` — 21 804 979 байт, SHA256 `4a28bd40cadf5aa8b6196daa409cde3ba6272adad4c7077fb46266d9b860a6eb`; контрольная сумма отдельным `.sha256.txt`. Сборка ad-hoc, не нотаризована.
-- Windows: **рабочая сборка 1.0.5 собрана 2026-10-23 на `ada814c`**. NSIS `Project-S-1.0.5-Windows-x64-Setup.exe` — 14 292 714 байт, SHA256 `f0265cd8cc1c94603c3bc4b96998bd85a88b754f82e801fd7ece843d5b376f4c`; ZIP для GitVerse `Project-S-1.0.5-Windows-x64-Setup.zip` — 14 276 267 байт, SHA256 `8a468f859f1e55e0947f7e13aa2e0d0bcb36561b9f6db7dfb1e203606f041ebf`. GitVerse не принимает `.exe`, поэтому в релизе ZIP. Оба файла лежат на рабочих столах Windows и Mac; **не установлены**, GUI не запускался.
+- macOS: рабочая сборка, aarch64. **Публичный релиз 1.0.6 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.6 (tag `v1.0.6`, commit `27500d3`). Ассет `Project-S-1.0.6-macOS-ARM.dmg` — 21 842 873 байта, SHA256 `22230931a652416da017adeac86c315b128490773c2ec56a4272ed3cdd5137d8`; контрольная сумма отдельным `.sha256.txt`. Сборка ad-hoc, не нотаризована.
+- Windows: **рабочая сборка 1.0.6 собрана 2026-10-23 на `27500d3`**. NSIS `Project-S-1.0.6-Windows-x64-Setup.exe` — 14 322 887 байт, SHA256 `c5ad410a98c967b4693418cd80028712765156051395ce5f19df21406d3565ac`; ZIP для GitVerse `Project-S-1.0.6-Windows-x64-Setup.zip` — 14 306 516 байт, SHA256 `70a8b0884b5333b1bb516e682d76bce70908338926dc723e13cbed0e9d7ae1de`. GitVerse не принимает `.exe`, поэтому в релизе ZIP. Оба файла лежат на рабочих столах Windows и Mac; **не установлены**, GUI не запускался. Windows-фиксы: askpass через сам бинарь, Job Objects, single-instance, WebView2 оставлен онлайн-загрузчиком.
 - Windows, установленная копия: всё ещё предыдущая сборка `ce8ed5b` per-user; заменится после установки пользователем.
 - Доступ к Windows VM проверен 2026-10-23: `DOCS/WINDOWS-ACCESS.md`; Windows HEAD `ada814c`, рабочее дерево чистое.
 - Linux: план, реализации нет.
@@ -176,16 +176,16 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 
 - [x] Убрать Unix-импорты из production (`processes.rs`, `skills/exec.rs`, `cdp/mod.rs`, `ssh_tools.rs`).
 - [x] Shell: Git Bash при наличии, иначе PowerShell с UTF-8; login PATH без потери TMPDIR; Python/`py` для скиллов; verbatim-пути не передаются в MSYS.
-- [ ] Job Objects + kill tree вместо process group/`kill -0` (сейчас живость и kill — через `taskkill`/`tasklist`).
-- [ ] askpass без `sh`: `.cmd`/`.exe` + ACL вместо `askpass.sh` с 0600/0700.
+- [x] Job Objects для foreground `bash`-инструмента: KILL_ON_JOB_CLOSE + TerminateJobObject; taskkill остаётся fallback.
+- [x] askpass без `sh`: на Windows приложение запускается как askpass-helper, читает пароль из private-файла и выходит до Tauri.
 - [x] `HOME` → `dirs`/platform resolver; убрать macOS-пути.
 - [ ] `canonicalize`/`\\?\`, длинные пути, UNC, reparse points, абсолютные пути в БД (относительные пути уже нормализуются в `/`, project root/absolute path очищаются от `\\?\`).
 - [x] Путь ресурсов `exe_dir/resources/...`; 38 скиллов находятся после установки (модель с 1.0.3 не бандлится).
 - [x] ~~Модель доставлена в `src-tauri/resources/models/embeddinggemma-2`~~ — с 1.0.3 не бандлится; приложение скачивает само (`download_embed_model`).
 - [x] `bundle.windows`, `bundle.targets`, иконки (`icon.ico` + Square*Logo).
 - [ ] Нативный Windows-titlebar / Snap Layouts.
-- [ ] Single-instance (второй запуск плодит окно и делит WebView2-профиль).
-- [ ] WebView2: зафиксировать режим (`fixedRuntime` vs системный + fallback) и путь UDF.
+- [x] Single-instance: `tauri-plugin-single-instance`, второй запуск фокусирует существующее окно.
+- [x] WebView2: по решению пользователя оставлен онлайн-загрузчик `downloadBootstrapper`, без fixedRuntime.
 
 Подробности: `DOCS/WINDOWS-PORT.md`.
 
@@ -202,6 +202,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Действие: <что сделать / user|macos> — или [DONE]
 - Статус: waiting | done
 ```
+
+### 2026-10-23 20:55 UTC — macOS
+- Ветка: `master`
+- Коммит: `27500d3` (тег `v1.0.6`)
+- Сделано: Windows 1.0.6 — askpass теперь запускает сам бинарь приложения в режиме `PROJECT_S_ASKPASS_FILE` (без `sh`/`.cmd`), foreground `bash` получил Job Object с `KILL_ON_JOB_CLOSE`, добавлен `tauri-plugin-single-instance`; WebView2 оставлен онлайн-загрузчиком по решению пользователя. Собраны macOS DMG и Windows NSIS 1.0.6, оба с проверкой версии/хешей. GitVerse release id `548937654` заменён новым релизом 1.0.6.
+- Влияние: Windows-рантайм закрывает askpass, дерево процессов и второй запуск; macOS получает single-instance. GUI на Windows не проверялся (по договорённости).
+- Действие: `[ACTION: user]` установить Windows 1.0.6 и проверить GUI; Linux Flatpak — следующий этап.
+- Статус: waiting
 
 ### 2026-10-23 22:50 UTC — macOS
 - Ветка: `master`
