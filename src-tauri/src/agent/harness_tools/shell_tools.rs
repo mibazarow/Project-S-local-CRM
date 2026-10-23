@@ -140,6 +140,18 @@ mod tests {
     use serde_json::json;
     use std::path::{Path, PathBuf};
 
+    // Windows keeps a directory handle briefly after a killed Git Bash child
+    // exits. Retry the test cleanup instead of failing the behavior assertion.
+    fn cleanup(dir: &Path) {
+        for _ in 0..20 {
+            match fs::remove_dir_all(dir) {
+                Ok(()) => return,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return,
+                Err(_) => std::thread::sleep(Duration::from_millis(50)),
+            }
+        }
+    }
+
     #[test]
     fn bash_runs_with_tmp_env_default_cwd_and_exit_codes() {
         let env = setup("ht-bash");
@@ -170,7 +182,7 @@ mod tests {
             r.data.unwrap()["stdout"].as_str().unwrap().trim(),
             env.wd.join("sub").canonicalize().unwrap().display().to_string()
         );
-        fs::remove_dir_all(&env.wd).unwrap();
+        cleanup(&env.wd);
     }
 
     #[test]
@@ -185,7 +197,7 @@ mod tests {
         assert_eq!(err.code, "execution_error");
         assert!(err.message.contains("timed out"), "{}", err.message);
         assert!(elapsed < Duration::from_secs(4), "kill took {elapsed:?}");
-        fs::remove_dir_all(&env.wd).unwrap();
+        cleanup(&env.wd);
     }
 
     #[test]
@@ -212,7 +224,7 @@ mod tests {
         assert!(err.message.contains("cancelled"), "{}", err.message);
         // The child must die on cancel, not after the 120 s command timeout.
         assert!(elapsed < Duration::from_secs(5), "cancel took {elapsed:?}");
-        fs::remove_dir_all(&env.wd).unwrap();
+        cleanup(&env.wd);
     }
 
     // Unix group kill (R-24): the tool signals the whole process group, so a
@@ -291,7 +303,7 @@ mod tests {
         assert!(r.error.unwrap().message.contains("timed out"));
         let pid = grandchild_pid(&pidfile);
         assert!(pid_is_gone(pid), "grandchild {pid} survived the timeout kill");
-        fs::remove_dir_all(&env.wd).unwrap();
+        cleanup(&env.wd);
     }
 
     #[cfg(unix)]
@@ -316,6 +328,6 @@ mod tests {
         assert!(r.error.unwrap().message.contains("cancelled"));
         let pid = grandchild_pid(&pidfile);
         assert!(pid_is_gone(pid), "grandchild {pid} survived the cancel kill");
-        fs::remove_dir_all(&env.wd).unwrap();
+        cleanup(&env.wd);
     }
 }
