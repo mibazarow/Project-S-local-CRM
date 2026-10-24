@@ -9,11 +9,9 @@ import {
 } from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
-import {
-  joinMarkdownBlocks,
-  renderMarkdown,
-  splitMarkdownBlocks,
-} from "../shared/markdown";
+import { renderMarkdown, splitMarkdownBlocksWithRanges } from "../shared/markdown";
+import MarkdownCodeEditor from "../shared/MarkdownCodeEditor";
+import { EditorView } from "@codemirror/view";
 import VersionHistory from "../shared/VersionHistory";
 import { toMessage } from "../../shared/errors";
 import { EntryIcon } from "../files/icons";
@@ -24,7 +22,7 @@ interface Props {
 }
 
 // "blocks" = live block editor (markdown default), "source" = raw markdown
-// textarea. Non-md files are preview-only: text read-only, images/PDF inline,
+// CodeMirror editor. Non-md files are preview-only: text read-only, images/PDF inline,
 // everything else a card with an "open in system" action.
 type Mode = "blocks" | "source";
 
@@ -67,6 +65,53 @@ const HEADING: Partial<Record<Format, string>> = {
   h3: "### ",
 };
 
+interface FormatEdit {
+  from: number;
+  to: number;
+  insert: string;
+  ns: number;
+  ne: number;
+}
+
+// Compute the text edit for a toolbar format on [s, e) of `value`: wrap the
+// selection or toggle the heading prefix on its lines, plus the caret/
+// selection the caller should restore afterwards.
+const formatEdit = (value: string, s: number, e: number, fmt: Format): FormatEdit => {
+  const head = HEADING[fmt];
+  if (head) {
+    const lineStart = value.lastIndexOf("\n", s - 1) + 1;
+    let lineEnd = value.indexOf("\n", Math.max(e, s));
+    if (lineEnd === -1) lineEnd = value.length;
+    const lines = value.slice(lineStart, lineEnd).split("\n");
+    const allHave = lines.every((l) => l.startsWith(head));
+    const nextLines = lines.map((l) =>
+      allHave ? l.slice(head.length) : head + l.replace(/^#{1,6}\s+/, ""),
+    );
+    const delta = nextLines[0].length - lines[0].length;
+    return {
+      from: lineStart,
+      to: lineEnd,
+      insert: nextLines.join("\n"),
+      ns: Math.max(lineStart, s + delta),
+      ne: Math.max(lineStart, e + delta),
+    };
+  }
+  const [open, close] = WRAP[fmt]!;
+  const sel = value.slice(s, e);
+  let inner = sel;
+  let wrapped = true;
+  if (sel.startsWith(open) && sel.endsWith(close) && sel.length >= open.length + close.length) {
+    inner = sel.slice(open.length, sel.length - close.length);
+    wrapped = false;
+  }
+  const inserted = wrapped ? open + inner + close : inner;
+  if (wrapped && sel === "") {
+    const at = s + open.length;
+    return { from: s, to: e, insert: inserted, ns: at, ne: at };
+  }
+  return { from: s, to: e, insert: inserted, ns: s, ne: s + inserted.length };
+};
+
 const TOOLBAR: { fmt: Format; label: string; cls: string; title: string }[] = [
   { fmt: "h1", label: "H1", cls: "tb-h", title: "Заголовок 1" },
   { fmt: "h2", label: "H2", cls: "tb-h", title: "Заголовок 2" },
@@ -96,12 +141,12 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
   const [missing, setMissing] = useState(false);
   const [reloadSeq, setReloadSeq] = useState(0);
   const blockTaRef = useRef<HTMLTextAreaElement | null>(null);
-  const sourceTaRef = useRef<HTMLTextAreaElement | null>(null);
+  const sourceViewRef = useRef<EditorView | null>(null);
   const blocksRef = useRef<HTMLDivElement | null>(null);
   const textPreRef = useRef<HTMLPreElement | null>(null);
   const pendingCaret = useRef<number | null>(null);
   const relRef = useRef<string | null>(null);
-  const restoreRef = useRef<{ top: number; start: number | null; end: number | null } | null>(null);
+  const restoreRef = useRef<number | null>(null);
   const savedRef = useRef("");
   const dirtyRef = useRef(false);
 
@@ -202,24 +247,17 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
 
   const scroller = (): HTMLElement | null =>
     mode === "source"
-      ? sourceTaRef.current
+      ? null // CodeMirror keeps its own scroll/caret across a value sync
       : entry?.isMarkdown
         ? blocksRef.current
         : textPreRef.current;
 
   // Replace the shown content with freshly read disk content, keeping the
-  // scroll position and (in source mode) the caret/selection.
+  // scroll position (the CodeMirror source view syncs its doc in place).
   const applyExternal = useCallback(
     (content: string) => {
       const el = scroller();
-      if (el) {
-        const ta = el instanceof HTMLTextAreaElement ? el : null;
-        restoreRef.current = {
-          top: el.scrollTop,
-          start: ta ? ta.selectionStart : null,
-          end: ta ? ta.selectionEnd : null,
-        };
-      }
+      restoreRef.current = el ? el.scrollTop : null;
       setText(content);
       setSaved(content);
       setExternal(null);
@@ -234,14 +272,9 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
   useLayoutEffect(() => {
     if (reloadSeq === 0) return;
     const el = scroller();
-    const r = restoreRef.current;
+    const top = restoreRef.current;
     restoreRef.current = null;
-    if (!el || !r) return;
-    el.scrollTop = r.top;
-    if (r.start !== null && el instanceof HTMLTextAreaElement) {
-      el.focus();
-      el.setSelectionRange(r.start, r.end ?? r.start);
-    }
+    if (el && top !== null) el.scrollTop = top;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reloadSeq, mode, entry?.isMarkdown]);
 
@@ -346,7 +379,7 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
   };
 
   const blocks = useMemo(
-    () => (entry?.isMarkdown ? splitMarkdownBlocks(text) : []),
+    () => (entry?.isMarkdown ? splitMarkdownBlocksWithRanges(text) : []),
     [entry?.isMarkdown, text],
   );
 
@@ -367,7 +400,7 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
 
   const startEdit = (index: number) => {
     setActive(index);
-    setDraft(blocks[index] ?? "");
+    setDraft(blocks[index]?.text ?? "");
   };
 
   const appendBlock = () => {
@@ -375,19 +408,35 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
     setDraft("");
   };
 
+  // Replace only the edited block's range in the original text, so blank-line
+  // structure elsewhere (runs of blanks, leading/trailing blanks) survives.
+  // Deleting a block also removes its following blank-line gap (or the
+  // preceding one for the last block); appending adds one blank-line gap.
   const commitBlock = () => {
     if (active === null) return;
-    const next = [...blocks];
-    if (active < next.length) {
-      if (draft.trim() === "" && next.length > 1) next.splice(active, 1);
-      else next[active] = draft;
+    let next = text;
+    if (active < blocks.length) {
+      const r = blocks[active];
+      if (draft.trim() === "" && blocks.length > 1) {
+        const from = r.from;
+        const to = active + 1 < blocks.length ? blocks[active + 1].from : r.to;
+        const cutFrom = active + 1 < blocks.length ? from : blocks[active - 1].to;
+        next = text.slice(0, cutFrom) + text.slice(to);
+      } else {
+        next = text.slice(0, r.from) + draft + text.slice(r.to);
+      }
     } else if (draft.trim() !== "") {
-      next.push(draft);
+      const sep =
+        text === "" || /\n[ \t]*\n[ \t]*$/.test(text)
+          ? ""
+          : /\n[ \t]*$/.test(text)
+            ? "\n"
+            : "\n\n";
+      next = text + sep + draft;
     }
     setActive(null);
     setDraft("");
-    const joined = joinMarkdownBlocks(next);
-    if (joined !== text) setText(joined);
+    if (next !== text) setText(next);
   };
 
   const cancelBlock = () => {
@@ -412,55 +461,37 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
     fmt: Format,
     commit: (value: string) => void,
   ) => {
-    const value = ta.value;
-    const s = ta.selectionStart;
-    const e = ta.selectionEnd;
-    let next: string;
-    let ns: number;
-    let ne: number;
-    const head = HEADING[fmt];
-    if (head) {
-      const lineStart = value.lastIndexOf("\n", s - 1) + 1;
-      let lineEnd = value.indexOf("\n", Math.max(e, s));
-      if (lineEnd === -1) lineEnd = value.length;
-      const lines = value.slice(lineStart, lineEnd).split("\n");
-      const allHave = lines.every((l) => l.startsWith(head));
-      const nextLines = lines.map((l) =>
-        allHave ? l.slice(head.length) : head + l.replace(/^#{1,6}\s+/, ""),
-      );
-      const delta = nextLines[0].length - lines[0].length;
-      next = value.slice(0, lineStart) + nextLines.join("\n") + value.slice(lineEnd);
-      ns = Math.max(lineStart, s + delta);
-      ne = Math.max(lineStart, e + delta);
-    } else {
-      const [open, close] = WRAP[fmt]!;
-      const sel = value.slice(s, e);
-      let inner = sel;
-      let wrapped = true;
-      if (sel.startsWith(open) && sel.endsWith(close) && sel.length >= open.length + close.length) {
-        inner = sel.slice(open.length, sel.length - close.length);
-        wrapped = false;
-      }
-      const inserted = wrapped ? open + inner + close : inner;
-      next = value.slice(0, s) + inserted + value.slice(e);
-      if (wrapped && sel === "") {
-        ns = ne = s + open.length;
-      } else {
-        ns = s;
-        ne = s + inserted.length;
-      }
-    }
+    const ed = formatEdit(ta.value, ta.selectionStart, ta.selectionEnd, fmt);
+    const next = ta.value.slice(0, ed.from) + ed.insert + ta.value.slice(ed.to);
     ta.value = next;
     commit(next);
     ta.focus();
-    ta.setSelectionRange(ns, ne);
+    ta.setSelectionRange(ed.ns, ed.ne);
+  };
+
+  // Same format applied through the CodeMirror source view; the update
+  // listener pushes the new doc into `text`.
+  const applyToView = (view: EditorView, fmt: Format) => {
+    const ed = formatEdit(
+      view.state.doc.toString(),
+      view.state.selection.main.from,
+      view.state.selection.main.to,
+      fmt,
+    );
+    view.dispatch({
+      changes: { from: ed.from, to: ed.to, insert: ed.insert },
+      selection: { anchor: ed.ns, head: ed.ne },
+    });
+    view.focus();
   };
 
   const applyFormat = (fmt: Format) => {
-    const target =
-      active !== null ? blockTaRef.current : mode === "source" ? sourceTaRef.current : null;
-    if (target) {
-      applyToTextarea(target, fmt, active !== null ? setDraft : setText);
+    if (active !== null && blockTaRef.current) {
+      applyToTextarea(blockTaRef.current, fmt, setDraft);
+      return;
+    }
+    if (mode === "source" && sourceViewRef.current) {
+      applyToView(sourceViewRef.current, fmt);
       return;
     }
     // No active block: insert a new block at the end and format it there.
@@ -604,12 +635,12 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
         </div>
       ) : mode === "source" ? (
         <div className="notes-editor-body">
-          <textarea
-            ref={sourceTaRef}
-            className="preview-textarea"
+          <MarkdownCodeEditor
             value={text}
-            onChange={(e) => setText(e.target.value)}
+            onChange={setText}
             autoFocus
+            ariaLabel="Исходный Markdown заметки"
+            viewRef={sourceViewRef}
           />
         </div>
       ) : (
@@ -626,7 +657,7 @@ export default function NoteEditor({ entry, onDirtyChange }: Props) {
               >
                 <div
                   className="preview-body md"
-                  dangerouslySetInnerHTML={{ __html: renderMarkdown(block) }}
+                  dangerouslySetInnerHTML={{ __html: renderMarkdown(block.text, { breaks: true }) }}
                 />
               </div>
             ),

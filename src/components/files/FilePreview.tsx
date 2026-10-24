@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { marked } from "marked";
-import DOMPurify from "dompurify";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { toMessage } from "./fileOps";
+import { renderMarkdown } from "../shared/markdown";
+import MarkdownCodeEditor from "../shared/MarkdownCodeEditor";
 import Button from "../shared/Button";
 import IconButton from "../shared/IconButton";
 import { useFileCrossActions } from "../shared/crossActions";
@@ -49,7 +49,7 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
   const [missing, setMissing] = useState(false);
   const [reloadSeq, setReloadSeq] = useState(0);
   const bodyRef = useRef<HTMLElement | null>(null);
-  const restoreRef = useRef<{ top: number; start: number | null; end: number | null } | null>(null);
+  const restoreRef = useRef<number | null>(null);
   const savedRef = useRef("");
   const dirtyRef = useRef(false);
 
@@ -118,17 +118,10 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
   dirtyRef.current = dirty;
 
   // Replace the shown content with freshly read disk content, keeping the
-  // scroll position and (in edit mode) the caret/selection of the body element.
+  // scroll position (the CodeMirror edit view syncs its doc in place, so its
+  // caret/selection and scroll survive the reload).
   const applyExternal = useCallback((content: string) => {
-    const el = bodyRef.current;
-    if (el) {
-      const ta = el instanceof HTMLTextAreaElement ? el : null;
-      restoreRef.current = {
-        top: el.scrollTop,
-        start: ta ? ta.selectionStart : null,
-        end: ta ? ta.selectionEnd : null,
-      };
-    }
+    restoreRef.current = bodyRef.current ? bodyRef.current.scrollTop : null;
     setText(content);
     setSaved(content);
     setExternal(null);
@@ -140,14 +133,9 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
   useLayoutEffect(() => {
     if (reloadSeq === 0) return;
     const el = bodyRef.current;
-    const r = restoreRef.current;
+    const top = restoreRef.current;
     restoreRef.current = null;
-    if (!el || !r) return;
-    el.scrollTop = r.top;
-    if (r.start !== null && el instanceof HTMLTextAreaElement) {
-      el.focus();
-      el.setSelectionRange(r.start, r.end ?? r.start);
-    }
+    if (el && top !== null) el.scrollTop = top;
   }, [reloadSeq]);
 
   // Re-read the open file when the backend reports a change for this path
@@ -198,11 +186,9 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
     };
   }, [projectId, entry.relPath, isTextual, checkExternal]);
 
+  // breaks: true — single newlines render as line breaks, like Obsidian/chat.
   const html = useMemo(
-    () =>
-      entry.isMarkdown
-        ? DOMPurify.sanitize(marked.parse(text, { async: false }))
-        : null,
+    () => (entry.isMarkdown ? renderMarkdown(text, { breaks: true }) : null),
     [entry.isMarkdown, text],
   );
 
@@ -315,14 +301,11 @@ export default function FilePreview({ projectId, entry, onClose, onDirtyChange }
           {dataUrl && <img src={dataUrl} alt={entry.name} />}
         </div>
       ) : mode === "edit" ? (
-        <textarea
-          ref={(el) => {
-            bodyRef.current = el;
-          }}
-          className="preview-textarea"
+        <MarkdownCodeEditor
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={setText}
           autoFocus
+          ariaLabel="Текст файла"
         />
       ) : entry.isMarkdown ? (
         <div

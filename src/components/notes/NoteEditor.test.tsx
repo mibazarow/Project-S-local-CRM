@@ -1,6 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EditorView } from "@codemirror/view";
 import type { FsEntry } from "../../api/types";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -169,6 +170,31 @@ describe("NoteEditor markdown editor", () => {
     vi.useRealTimers();
     expect(notesWrite).toHaveBeenCalledWith("note.md", "изменённый блок");
   });
+
+  it("preserves blank-line structure when committing an edited block", async () => {
+    notesRead.mockResolvedValue("первый\n\n\n\nвторой\n\n");
+    await mount(mdEntry);
+    const blocks = container.querySelectorAll<HTMLElement>(".md-block");
+    await act(async () => {
+      blocks[1].click();
+    });
+    const ta = container.querySelector<HTMLTextAreaElement>(".md-block-textarea")!;
+    const setter = Object.getOwnPropertyDescriptor(
+      window.HTMLTextAreaElement.prototype,
+      "value",
+    )!.set!;
+    vi.useFakeTimers();
+    act(() => {
+      setter.call(ta, "изменённый");
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+      ta.blur();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(900);
+    });
+    vi.useRealTimers();
+    expect(notesWrite).toHaveBeenCalledWith("note.md", "первый\n\n\n\nизменённый\n\n");
+  });
 });
 
 describe("NoteEditor non-md previews", () => {
@@ -232,13 +258,18 @@ describe("NoteEditor external reload", () => {
     await settle();
   };
 
-  const setValue = (ta: HTMLTextAreaElement, value: string) => {
-    const setter = Object.getOwnPropertyDescriptor(
-      window.HTMLTextAreaElement.prototype,
-      "value",
-    )!.set!;
-    setter.call(ta, value);
-    ta.dispatchEvent(new Event("input", { bubbles: true }));
+  const cmView = (): EditorView => {
+    const el = container.querySelector(".cm-editor");
+    const view = el ? EditorView.findFromDOM(el as HTMLElement) : null;
+    if (!view) throw new Error("CodeMirror view not found");
+    return view;
+  };
+
+  const setCmValue = (value: string) => {
+    const view = cmView();
+    act(() => {
+      view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
+    });
   };
 
   it("silently reloads a clean text file and keeps the scroll position", async () => {
@@ -259,14 +290,11 @@ describe("NoteEditor external reload", () => {
     await act(async () => {
       button("Исходник")!.click();
     });
-    const ta = container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")!;
-    setValue(ta, "моя правка");
+    setCmValue("моя правка");
     notesRead.mockResolvedValue("правка извне");
     await fireNotes("note.md");
     expect(container.querySelector(".preview-conflict")?.textContent).toContain("Файл изменён извне");
-    expect(container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")?.value).toBe(
-      "моя правка",
-    );
+    expect(cmView().state.doc.toString()).toBe("моя правка");
     expect(notesWrite).not.toHaveBeenCalled();
   });
 
@@ -276,17 +304,14 @@ describe("NoteEditor external reload", () => {
     await act(async () => {
       button("Исходник")!.click();
     });
-    const ta = container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")!;
-    setValue(ta, "моя правка");
+    setCmValue("моя правка");
     notesRead.mockResolvedValue("правка извне");
     await fireNotes("note.md");
     await act(async () => {
       button("Обновить")!.click();
     });
     await settle();
-    expect(container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")?.value).toBe(
-      "правка извне",
-    );
+    expect(cmView().state.doc.toString()).toBe("правка извне");
     expect(container.querySelector(".preview-conflict")).toBeNull();
   });
 
@@ -296,16 +321,13 @@ describe("NoteEditor external reload", () => {
     await act(async () => {
       button("Исходник")!.click();
     });
-    const ta = container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")!;
-    setValue(ta, "моя правка");
+    setCmValue("моя правка");
     notesRead.mockResolvedValue("правка извне");
     await fireNotes("note.md");
     await act(async () => {
       button("Оставить моё")!.click();
     });
-    expect(container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")?.value).toBe(
-      "моя правка",
-    );
+    expect(cmView().state.doc.toString()).toBe("моя правка");
     expect(container.querySelector(".preview-conflict")).toBeNull();
   });
 

@@ -68,20 +68,18 @@
 .notes-file-card .file-card-icon svg { width: 48px; height: 48px; }
 .notes-file-card .file-card-name { font-weight: var(--fw-semibold); font-size: var(--fs-base); color: var(--text); }
 .notes-file-card .file-card-meta { font-size: var(--fs-control); }
-.preview-textarea {
-  display: block;
+/* Markdown source editor (CodeMirror 6) — заполняет область редактирования */
+.md-code-editor {
+  display: flex;
+  flex-direction: column;
   width: 100%;
   min-height: 260px;
-  border: none;
-  outline: none;
-  resize: vertical;
-  padding: var(--sp-4);
-  font-family: var(--font-mono);
-  font-size: var(--fs-control);
-  line-height: 1.6;
-  color: var(--text);
   background: var(--surface);
 }
+.md-code-editor .cm-editor { flex: 1; min-height: 0; }
+.md-code-editor .cm-editor,
+.md-code-editor .cm-editor.cm-focused { outline: none; }
+.md-code-editor .cm-scroller { overflow: auto; }
 
 /* рендеренный markdown */
 .preview-body.md { font-family: inherit; white-space: normal; line-height: var(--lh-loose); }

@@ -1,6 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { EditorView } from "@codemirror/view";
 import type { FsEntry } from "../../api/types";
 
 (globalThis as Record<string, unknown>).IS_REACT_ACT_ENVIRONMENT = true;
@@ -101,13 +102,18 @@ const button = (label: string) =>
     (b) => b.textContent === label,
   );
 
-const setValue = (ta: HTMLTextAreaElement, value: string) => {
-  const setter = Object.getOwnPropertyDescriptor(
-    window.HTMLTextAreaElement.prototype,
-    "value",
-  )!.set!;
-  setter.call(ta, value);
-  ta.dispatchEvent(new Event("input", { bubbles: true }));
+const cmView = (): EditorView => {
+  const el = container.querySelector(".cm-editor");
+  const view = el ? EditorView.findFromDOM(el as HTMLElement) : null;
+  if (!view) throw new Error("CodeMirror view not found");
+  return view;
+};
+
+const setCmValue = (value: string) => {
+  const view = cmView();
+  act(() => {
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value } });
+  });
 };
 
 const fireFs = async (rel: string) => {
@@ -167,14 +173,11 @@ describe("FilePreview external reload", () => {
     await act(async () => {
       button("Редактировать")!.click();
     });
-    const ta = container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")!;
-    setValue(ta, "моя правка");
+    setCmValue("моя правка");
     fsReadText.mockResolvedValue("правка извне");
     await fireFs("note.md");
     expect(container.querySelector(".preview-conflict")?.textContent).toContain("Файл изменён извне");
-    expect(container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")?.value).toBe(
-      "моя правка",
-    );
+    expect(cmView().state.doc.toString()).toBe("моя правка");
     expect(fsWriteText).not.toHaveBeenCalled();
   });
 
@@ -184,17 +187,14 @@ describe("FilePreview external reload", () => {
     await act(async () => {
       button("Редактировать")!.click();
     });
-    const ta = container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")!;
-    setValue(ta, "моя правка");
+    setCmValue("моя правка");
     fsReadText.mockResolvedValue("правка извне");
     await fireFs("note.md");
     await act(async () => {
       button("Обновить")!.click();
     });
     await settle();
-    expect(container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")?.value).toBe(
-      "правка извне",
-    );
+    expect(cmView().state.doc.toString()).toBe("правка извне");
     expect(container.querySelector(".preview-conflict")).toBeNull();
   });
 
@@ -204,17 +204,21 @@ describe("FilePreview external reload", () => {
     await act(async () => {
       button("Редактировать")!.click();
     });
-    const ta = container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")!;
-    setValue(ta, "моя правка");
+    setCmValue("моя правка");
     fsReadText.mockResolvedValue("правка извне");
     await fireFs("note.md");
     await act(async () => {
       button("Оставить моё")!.click();
     });
-    expect(container.querySelector<HTMLTextAreaElement>("textarea.preview-textarea")?.value).toBe(
-      "моя правка",
-    );
+    expect(cmView().state.doc.toString()).toBe("моя правка");
     expect(container.querySelector(".preview-conflict")).toBeNull();
+  });
+
+  it("renders single newlines as line breaks in the markdown view", async () => {
+    fsReadText.mockResolvedValue("строка 1\nстрока 2");
+    await mount(mdEntry);
+    const body = container.querySelector(".preview-body.md")!;
+    expect(body.innerHTML).toContain("<br");
   });
 
   it("reports a deleted/renamed file instead of a broken view", async () => {

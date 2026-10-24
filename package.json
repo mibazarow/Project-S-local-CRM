@@ -15,9 +15,11 @@
     "model:stage": "bash scripts/stage-embed-model.sh"
   },
   "dependencies": {
+    "@codemirror/lang-markdown": "^6.5.2",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-dialog": "^2",
     "@tauri-apps/plugin-opener": "^2",
+    "codemirror": "^6.0.2",
     "dompurify": "^3.4.17",
     "marked": "^18.1.1",
     "react": "^19.2.8",

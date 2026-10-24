@@ -16,17 +16,30 @@ export function renderMarkdown(source: string, options?: MarkedOptions): string 
   return DOMPurify.sanitize(marked.parse(source, { ...options, async: false }), MARKDOWN_SANITIZE_CONFIG);
 }
 
-// Top-level markdown blocks: split on blank lines, but never inside a fenced
-// code block (``` / ~~~). Lists, tables and blockquotes without blank lines
-// stay in one block; a blank line inside a fence keeps the fence intact.
-export function splitMarkdownBlocks(source: string): string[] {
+export interface MarkdownBlockRange {
+  text: string;
+  // Offset range in the original source covering exactly the block content;
+  // blank lines around the block stay outside [from, to).
+  from: number;
+  to: number;
+}
+
+// Top-level markdown blocks with their offsets in the source: split on blank
+// lines, but never inside a fenced code block (``` / ~~~). Lists, tables and
+// blockquotes without blank lines stay in one block; a blank line inside a
+// fence keeps the fence intact. Ranges let callers replace a single block in
+// place, so untouched blank-line structure (runs, leading/trailing blanks)
+// survives an edit instead of being re-joined with exactly two newlines.
+export function splitMarkdownBlocksWithRanges(source: string): MarkdownBlockRange[] {
   const lines = source.split("\n");
-  const blocks: string[] = [];
+  const blocks: MarkdownBlockRange[] = [];
   let current: string[] = [];
   let fence: string | null = null;
-  const flush = () => {
+  let blockFrom = 0;
+  let offset = 0;
+  const flush = (to: number) => {
     if (current.length > 0) {
-      blocks.push(current.join("\n"));
+      blocks.push({ text: current.join("\n"), from: blockFrom, to });
       current = [];
     }
   };
@@ -37,21 +50,24 @@ export function splitMarkdownBlocks(source: string): string[] {
       if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length) {
         fence = null;
       }
-      continue;
-    }
-    if (marker) {
+    } else if (marker) {
+      if (current.length === 0) blockFrom = offset;
       fence = marker[1];
       current.push(line);
-      continue;
+    } else if (line.trim() === "") {
+      flush(Math.max(offset - 1, 0));
+    } else {
+      if (current.length === 0) blockFrom = offset;
+      current.push(line);
     }
-    if (line.trim() === "") {
-      flush();
-      continue;
-    }
-    current.push(line);
+    offset += line.length + 1;
   }
-  flush();
+  flush(source.length);
   return blocks;
+}
+
+export function splitMarkdownBlocks(source: string): string[] {
+  return splitMarkdownBlocksWithRanges(source).map((b) => b.text);
 }
 
 export function joinMarkdownBlocks(blocks: string[]): string {

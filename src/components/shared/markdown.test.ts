@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { joinMarkdownBlocks, splitMarkdownBlocks } from "./markdown";
+import {
+  joinMarkdownBlocks,
+  renderMarkdown,
+  splitMarkdownBlocks,
+  splitMarkdownBlocksWithRanges,
+} from "./markdown";
 
 describe("splitMarkdownBlocks", () => {
   it("splits on blank lines and keeps single-line runs together", () => {
@@ -69,5 +74,52 @@ describe("joinMarkdownBlocks", () => {
     expect(joinMarkdownBlocks(["a", "b"])).toBe("a\n\nb");
     expect(joinMarkdownBlocks([])).toBe("");
     expect(joinMarkdownBlocks(["only"])).toBe("only");
+  });
+});
+
+describe("splitMarkdownBlocksWithRanges", () => {
+  it("ranges cover only block content, keeping blank lines outside", () => {
+    const src = "\na\n\n\n\nb\n\n";
+    const info = splitMarkdownBlocksWithRanges(src);
+    expect(info.map((b) => b.text)).toEqual(["a", "b"]);
+    expect(info.map((b) => src.slice(b.from, b.to))).toEqual(["a", "b"]);
+  });
+
+  it("editing one block in place keeps runs of blank lines and trailing blanks", () => {
+    const src = "\none\n\n\n\n# Head\n\nlast\n\n\n";
+    const info = splitMarkdownBlocksWithRanges(src);
+    const edited = src.slice(0, info[1].from) + "edited" + src.slice(info[1].to);
+    expect(edited).toBe("\none\n\n\n\nedited\n\nlast\n\n\n");
+    expect(splitMarkdownBlocks(edited)).toEqual(["one", "edited", "last"]);
+  });
+
+  it("deleting a block with its following gap leaves other blank lines alone", () => {
+    const src = "a\n\n\nb\n\n\n\nc";
+    const info = splitMarkdownBlocksWithRanges(src);
+    const deleted = src.slice(0, info[1].from) + src.slice(info[2].from);
+    expect(deleted).toBe("a\n\n\nc");
+  });
+
+  it("ranges keep a fenced code block with blank lines inside as one block", () => {
+    const src = "para\n\n```\nx\n\ny\n```\n\n";
+    const info = splitMarkdownBlocksWithRanges(src);
+    expect(info.map((b) => b.text)).toEqual(["para", "```\nx\n\ny\n```"]);
+    expect(src.slice(info[1].from, info[1].to)).toBe("```\nx\n\ny\n```");
+  });
+
+  it("ranges match splitMarkdownBlocks texts", () => {
+    const src = "a\nb\n\n\n  ```\nfenced\n\ninside\n  ```\n\nc\n";
+    const info = splitMarkdownBlocksWithRanges(src);
+    expect(info.map((b) => src.slice(b.from, b.to))).toEqual(splitMarkdownBlocks(src));
+  });
+});
+
+describe("renderMarkdown", () => {
+  it("renders single newlines as <br> with breaks: true", () => {
+    expect(renderMarkdown("a\nb", { breaks: true })).toContain("<br");
+  });
+
+  it("keeps a soft-wrapped paragraph as one line without breaks", () => {
+    expect(renderMarkdown("a\nb")).not.toContain("<br");
   });
 });
