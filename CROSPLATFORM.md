@@ -215,7 +215,7 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Ветка: `master`
 - Коммит: `f39e7d9` (тег `v1.0.7`)
 - Сделано: CodeMirror 6 в редакторах Markdown (проекты + source-режим заметок), сохранение пустых строк в блочном режиме заметок, `breaks: true` в предпросмотре, правый клик «Показать в Finder» для файлов и папок заметок. Собраны macOS DMG и Windows NSIS 1.0.7; macOS установлен в `/Applications/Project-S.app`.
-- Влияние: только редактор/заметки; БД/контракты не менялись. GitVerse: release `v1.0.7` (id `548937812`), ассеты `Project-S-1.0.7-macOS-ARM.dmg` (22 026 781 Б, SHA256 `b2e5c188…cdba`), `Project-S-1.0.7-Windows-x64-Setup.zip` (14 498 264 Б, SHA256 `89a3bd7f…5801`; внутри EXE 14 515 123 Б, SHA256 `ee342740…22f9`), `.sha256.txt`, notes.
+- Влияние: только редактор/заметки; БД/контракты не менялись. GitVerse: release `v1.0.7` (id `548938540`), ассеты `Project-S-1.0.7-macOS-ARM.dmg` (22 026 781 Б, SHA256 `b2e5c188…cdba`), `Project-S-1.0.7-Windows-x64-Setup.zip` (14 498 264 Б, SHA256 `89a3bd7f…5801`; внутри EXE 14 515 123 Б, SHA256 `ee342740…22f9`), `.sha256.txt`, notes.
 - Действие: `[ACTION: user]` установить Windows 1.0.7 и проверить GUI; Linux Flatpak — следующий этап.
 - Статус: waiting
 
