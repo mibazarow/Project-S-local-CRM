@@ -230,6 +230,14 @@ pub(crate) fn notes_import(
     Ok(items)
 }
 
+// Reveals a vault entry in the OS file manager (Finder on macOS, Explorer
+// on Windows). Path safety is the shared Notes containment policy: escapes,
+// symlink hops and missing entries are rejected before any reveal runs.
+#[tauri::command]
+pub(crate) fn notes_reveal(state: State<AppState>, rel: String) -> Result<()> {
+    notes::reveal(&state.working_dir()?, &rel)
+}
+
 #[tauri::command]
 pub(crate) fn notes_delete(app: AppHandle, state: State<AppState>, rel: String) -> Result<()> {
     let wd = state.working_dir()?;

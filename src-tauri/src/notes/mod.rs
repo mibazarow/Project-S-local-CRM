@@ -8,7 +8,7 @@ mod notes_chat;
 
 pub use fs::{
     append_inbox, copy, create, delete, ensure, import, list, mkdir, move_entry, read,
-    read_binary_data_url, rename, tree, write,
+    read_binary_data_url, rename, reveal, tree, write,
 };
 pub(crate) use fs::{
     copy_at, create_at, delete_at, list_at, mkdir_at, move_at, read_at, rename_at, vault_root,

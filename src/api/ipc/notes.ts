@@ -38,6 +38,10 @@ export const notesImport = (destRel: string, sourcePaths: string[]) =>
 
 export const notesDelete = (rel: string) => invoke<void>("notes_delete", { rel });
 
+// Reveals a vault entry in the OS file manager (Finder/Explorer); rel "" is
+// the Notes folder itself. Escapes and missing entries are rejected backend-side.
+export const notesReveal = (rel: string) => invoke<void>("notes_reveal", { rel });
+
 // Notes chat: one continuous chat per working dir; events route by
 // "notes: true" on agent-event / agent-confirmation.
 export const ensureNotesChat = () => invoke<number>("ensure_notes_chat");

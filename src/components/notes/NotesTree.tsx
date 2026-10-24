@@ -1,14 +1,21 @@
-import { useEffect, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  useEffect,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import * as ipc from "../../api/ipc";
 import type { FsEntry } from "../../api/types";
 import { confirmRemove } from "../../shared/confirm";
 import { usePointerDrag } from "../../hooks/usePointerDrag";
 import { toMessage } from "../../shared/errors";
+import ContextMenu from "../shared/ContextMenu";
 import RenameInput from "../files/RenameInput";
 import { useOsFileDrag } from "../files/useOsFileDrag";
 import {
   EntryIcon,
   IconChevron,
+  IconEye,
   IconFilePlus,
   IconFolderPlus,
   IconPencil,
@@ -57,6 +64,7 @@ function NotesRow({
   onDelete,
   onPointerDown,
   consumeSuppressedClick,
+  onContextMenu,
 }: {
   entry: FsEntry;
   open: boolean;
@@ -73,6 +81,7 @@ function NotesRow({
   onDelete: (entry: FsEntry) => void;
   onPointerDown: (entry: FsEntry, e: ReactPointerEvent<HTMLDivElement>) => void;
   consumeSuppressedClick: () => boolean;
+  onContextMenu: (entry: FsEntry, e: ReactMouseEvent<HTMLDivElement>) => void;
 }) {
   const isDir = entry.kind === "dir";
   const classes = [
@@ -91,6 +100,13 @@ function NotesRow({
       data-drop-dir={isDir ? entry.relPath : undefined}
       onPointerDown={(e) => {
         if (!renaming) onPointerDown(entry, e);
+      }}
+      onContextMenu={(e) => {
+        if (renaming) return;
+        // Right-click must not select/toggle or start a drag: the menu owns it.
+        e.preventDefault();
+        e.stopPropagation();
+        onContextMenu(entry, e);
       }}
       onClick={() => {
         // A drag must not open/toggle the row it ended on.
@@ -162,6 +178,7 @@ export default function NotesTree({
   const [creating, setCreating] = useState<{ parentRel: string; kind: "dir" | "file" } | null>(
     null,
   );
+  const [menu, setMenu] = useState<{ entry: FsEntry; x: number; y: number } | null>(null);
 
   // Finder drag-and-drop (SPEC 4.2): drops copy files/folders into the vault
   // via notes_import; the tree refreshes through the notes-changed bump of
@@ -284,6 +301,14 @@ export default function NotesTree({
     }
   };
 
+  const revealEntry = async (entry: FsEntry) => {
+    try {
+      await ipc.notesReveal(entry.relPath);
+    } catch (e) {
+      setError(toMessage(e));
+    }
+  };
+
   const startCreate = (kind: "dir" | "file") => {
     setRenamingPath(null);
     setCreating({ parentRel: selectedDirRel, kind });
@@ -354,6 +379,7 @@ export default function NotesTree({
           onDelete={(e) => void confirmDelete(e)}
           onPointerDown={(e, ev) => onPointerDown(ev, e.relPath)}
           consumeSuppressedClick={consumeSuppressedClick}
+          onContextMenu={(e, ev) => setMenu({ entry: e, x: ev.clientX, y: ev.clientY })}
         />
         {entry.kind === "dir" && open && (
           <ul className="tree-children nested">
@@ -400,6 +426,20 @@ export default function NotesTree({
       >
         {body}
       </div>
+      {menu && (
+        <ContextMenu
+          x={menu.x}
+          y={menu.y}
+          items={[
+            {
+              label: "Показать в Finder",
+              icon: <IconEye />,
+              onSelect: () => void revealEntry(menu.entry),
+            },
+          ]}
+          onClose={() => setMenu(null)}
+        />
+      )}
     </>
   );
 }

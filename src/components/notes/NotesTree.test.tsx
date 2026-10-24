@@ -37,6 +37,7 @@ const entries = vi.hoisted((): FsEntry[] => []);
 const notesTree = vi.hoisted(() => vi.fn(async () => entries.slice()));
 const notesImport = vi.hoisted(() => vi.fn(async (_destRel: string, _paths: string[]) => []));
 const notesCreate = vi.hoisted(() => vi.fn(async (_rel: string, _content: string) => undefined));
+const notesReveal = vi.hoisted(() => vi.fn(async (_rel: string) => undefined));
 
 vi.mock("../../api/ipc", () => ({
   notesTree,
@@ -45,6 +46,7 @@ vi.mock("../../api/ipc", () => ({
   notesRename: vi.fn(async () => undefined),
   notesDelete: vi.fn(async () => undefined),
   notesCreate,
+  notesReveal,
 }));
 
 // Captures the webview drag-drop callback so tests can fire OS (Finder)
@@ -263,5 +265,79 @@ describe("NotesTree create actions (no note templates)", () => {
     });
     await commitCreate("Docs");
     expect(notesCreate).toHaveBeenCalledWith("Docs/Новая заметка.md", "");
+  });
+});
+
+describe("NotesTree context menu", () => {
+  const menuItem = (label: string) =>
+    Array.from(document.querySelectorAll<HTMLButtonElement>(".context-menu-item")).find(
+      (b) => b.textContent?.trim() === label,
+    );
+
+  const rightClick = async (el: HTMLElement) => {
+    await act(async () => {
+      el.dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          button: 2,
+          clientX: 40,
+          clientY: 60,
+        }),
+      );
+    });
+  };
+
+  it("right-clicking a note file shows «Показать в Finder» and it calls notesReveal with the relPath", async () => {
+    const onSelect = vi.fn();
+    await act(async () => {
+      root.render(
+        <NotesTree
+          treeVersion={0}
+          selectedRelPath={null}
+          selectedDirRel=""
+          onSelect={onSelect}
+          onDeleted={vi.fn()}
+          onRenamed={vi.fn()}
+          onMoved={vi.fn()}
+        />,
+      );
+    });
+    await settle();
+    // Right-click must not select the row.
+    expect(onSelect).not.toHaveBeenCalled();
+    await rightClick(row("a.md"));
+    const item = menuItem("Показать в Finder");
+    expect(item).toBeDefined();
+    await act(async () => {
+      item!.click();
+    });
+    expect(notesReveal).toHaveBeenCalledWith("a.md");
+    // The menu closed after the action.
+    expect(document.querySelector(".context-menu")).toBeNull();
+  });
+
+  it("right-clicking a folder row also offers reveal with the folder relPath", async () => {
+    await mount();
+    await rightClick(row("docs"));
+    const item = menuItem("Показать в Finder");
+    expect(item).toBeDefined();
+    await act(async () => {
+      item!.click();
+    });
+    expect(notesReveal).toHaveBeenCalledWith("docs");
+  });
+
+  it("a failed reveal shows the existing error style instead of crashing", async () => {
+    notesReveal.mockRejectedValueOnce(new Error('"x" escapes the Notes folder'));
+    await mount();
+    await rightClick(row("a.md"));
+    await act(async () => {
+      menuItem("Показать в Finder")!.click();
+    });
+    await settle();
+    expect(container.querySelector(".tree-error")?.textContent).toContain(
+      "escapes the Notes folder",
+    );
   });
 });

@@ -308,6 +308,15 @@ pub fn import(wd: &Path, dest_rel: &str, source_paths: Vec<String>) -> Result<Ve
     fs_ops::import_into(&root, &dest, source_paths)
 }
 
+// Reveals a vault entry in the OS file manager (Finder/Explorer). The rel
+// path goes through the same vault containment policy as reads, so missing
+// entries, ".." traversals and symlink escapes are rejected before any
+// reveal command runs.
+pub fn reveal(wd: &Path, rel: &str) -> Result<()> {
+    let path = existing_at(&vault_root(wd)?, rel)?;
+    crate::platform::reveal_in_file_manager(&path).map_err(AppError::Io)
+}
+
 // Quick capture (SPEC quick capture slice): append a timestamped bullet to
 // the daily note Входящие/<YYYY-MM-DD>.md, creating the folder and the note
 // (with its «# Входящие · <date>» header) on first use. Returns the
@@ -468,6 +477,37 @@ mod tests {
         }
         assert!(matches!(delete(&conn, &wd, ""), Err(AppError::Invalid(_))));
         assert!(matches!(create(&wd, "", None), Err(AppError::Invalid(_))));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[test]
+    fn reveal_rejects_escapes_and_missing_entries_before_touching_the_file_manager() {
+        let wd = setup("notes-reveal");
+        // Every rejection happens in the path policy, before the reveal
+        // command would run: escapes, the vault root itself and missing
+        // entries are all Invalid, never an OS call.
+        for bad in ["../x", "..", "/etc/passwd", "a/../../x", "./x", "missing.md"] {
+            assert!(
+                matches!(reveal(&wd, bad), Err(AppError::Invalid(_))),
+                "reveal accepted: {bad:?}"
+            );
+        }
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reveal_rejects_symlink_escapes_out_of_the_vault() {
+        let wd = setup("notes-reveal-escape");
+        use std::os::unix::fs::symlink;
+        let outside = temp_test_dir("notes-reveal-outside");
+        fs::write(outside.join("secret.md"), "leak").unwrap();
+        symlink(outside.join("secret.md"), notes(&wd).join("link.md")).unwrap();
+        assert!(matches!(
+            reveal(&wd, "link.md"),
+            Err(AppError::Invalid(_))
+        ));
+        fs::remove_dir_all(&outside).unwrap();
         fs::remove_dir_all(&wd).unwrap();
     }
 

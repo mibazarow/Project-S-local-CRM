@@ -339,6 +339,7 @@ pub fn run() {
             commands::notes::notes_move,
             commands::notes::notes_copy,
             commands::notes::notes_import,
+            commands::notes::notes_reveal,
             commands::notes::notes_delete,
             commands::undo::undo_last,
             commands::undo::undo_list,
