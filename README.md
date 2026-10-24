@@ -8,7 +8,7 @@
 
 Project-S — локальное десктопное приложение для фрилансера, студии или небольшого агентства. Один проект — одна папка: в ней файлы, договоры, задачи, заметки и чат с агентом, который знает контекст этого проекта. Никакого облака и подписок: данные, ключи и история остаются у вас, а AI работает через ваши собственные ключи к любой OpenAI-совместимой модели.
 
-**Релиз 1.0.6 опубликован для macOS и Windows: [Project-S 1.0.6](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.6). Linux — следом. Проект проходит стадию тестирования в реальном использовании.**
+**Релиз 1.0.7 опубликован для macOS и Windows: [Project-S 1.0.7](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.7). Linux — следом. Проект проходит стадию тестирования в реальном использовании.**
 
 <p align="center">
   <a href="https://www.donationalerts.com/r/bazarow_ru">
@@ -107,13 +107,13 @@ Project-S собирает работу в одно окно. Проект зд�
 
 ## Платформы и релизы
 
-- **macOS** (Apple Silicon) — **1.0.6 опубликован:** DMG `Project-S-1.0.6-macOS-ARM.dmg`, ~21 МБ.
-- **Windows 11** (x64) — **1.0.6 опубликован:** ZIP `Project-S-1.0.6-Windows-x64-Setup.zip`, внутри NSIS-установщик ~14 МБ.
+- **macOS** (Apple Silicon) — **1.0.7 опубликован:** DMG `Project-S-1.0.7-macOS-ARM.dmg`, ~21 МБ.
+- **Windows 11** (x64) — **1.0.7 опубликован:** ZIP `Project-S-1.0.7-Windows-x64-Setup.zip`, внутри NSIS-установщик ~14 МБ.
 - **Linux** — скоро: один Flatpak-пакет для большинства дистрибутивов.
 
 Модель эмбеддингов Gemma 2 (~300 МБ) не вшита в установщик: приложение скачивает её один раз после онбординга с Hugging Face и показывает прогресс. Без неё поиск работает только по словам — установщик из-за этого заметно меньше.
 
-Релизы публикуются в GitVerse ([репозиторий Project-S-local-CRM](https://gitverse.ru/mibazarow/Project-S-local-CRM)): macOS и Windows уже в [релизе 1.0.6](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.6). Linux — следом.
+Релизы публикуются в GitVerse ([репозиторий Project-S-local-CRM](https://gitverse.ru/mibazarow/Project-S-local-CRM)): macOS и Windows уже в [релизе 1.0.7](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.7). Linux — следом.
 
 ## Техническая основа
 
@@ -121,16 +121,16 @@ Project-S собирает работу в одно окно. Проект зд�
 
 ## Что дальше
 
-- Публичные релизы в GitVerse: macOS и Windows 1.0.6 — опубликованы; Linux Flatpak — следом.
+- Публичные релизы в GitVerse: macOS и Windows 1.0.7 — опубликованы; Linux Flatpak — следом.
 - Linux-порт и доводка Windows (подпись, автообновление).
 - Расширение скиллов и интеграций агента, полировка UI по очереди задач от реальных пользователей.
 
 ## Попробовать
 
-**Релиз 1.0.6:** [Project-S 1.0.6 — macOS + Windows](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.6).
+**Релиз 1.0.7:** [Project-S 1.0.7 — macOS + Windows](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.7).
 
-- **macOS (Apple Silicon):** скачайте `Project-S-1.0.6-macOS-ARM.dmg`, откройте DMG и перетащите Project-S в Applications. Сборка не нотаризована: при первом запуске может понадобиться правый клик по приложению → «Открыть».
-- **Windows 11 x64:** скачайте `Project-S-1.0.6-Windows-x64-Setup.zip`, распакуйте и запустите `Project-S-1.0.6-Windows-x64-Setup.exe`. Установщик не подписан: SmartScreen → «Подробнее» → «Выполнить всё равно».
+- **macOS (Apple Silicon):** скачайте `Project-S-1.0.7-macOS-ARM.dmg`, откройте DMG и перетащите Project-S в Applications. Сборка не нотаризована: при первом запуске может понадобиться правый клик по приложению → «Открыть».
+- **Windows 11 x64:** скачайте `Project-S-1.0.7-Windows-x64-Setup.zip`, распакуйте и запустите `Project-S-1.0.7-Windows-x64-Setup.exe`. Установщик не подписан: SmartScreen → «Подробнее» → «Выполнить всё равно».
 
 После установки: онбординг — выбираете пустую папку для данных, добавляете провайдера LLM (или локальную модель) — и работаете. Модель эмбеддингов (~300 МБ) скачается после онбординга; без неё поиск работает по словам.
 

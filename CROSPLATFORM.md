@@ -61,7 +61,7 @@
 - `master` — единый источник правды и защищённая ветка. Все изменения — через PR/merge.
 - Постоянных веток `macos`/`windows`/`linux` и временной `port/windows` **нет**. Весь код, включая `platform/`, пишет macOS-агент в `feat/*`/`fix/*` или `master`.
 - Windows build host не коммитит: только `git pull`, сборка, тесты, артефакты. Все коммиты и push делает macOS.
-- Релизные теги (`v1.0.6`) ставятся на `master`; артефакты собираются под каждую ОС из одного коммита.
+- Релизные теги (`v1.0.7`) ставятся на `master`; артефакты собираются под каждую ОС из одного коммита.
 - Если Windows временно отстаёт — используем pre-release-тег (`v1.0.3-win.1`), а не отдельную версию кода.
 
 ## 2. Код: платформенный слой, а не форк
@@ -160,13 +160,13 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 ## 5. Текущее состояние (обновлять при изменениях)
 
 - **Разработка продукта — только на macOS.** Windows/Linux: порт, платформенный слой, сборка.
-- Версия: **1.0.6**.
+- Версия: **1.0.7**.
 - Ветка: **master**; remote `origin` — приватный GitVerse.
 - Схема БД: **v40**.
 - Встроенных скиллов: **38**.
 - Модель эмбеддингов: **не в git и не в бандле** (с 1.0.3); ~300 МБ, приложение скачивает разово после онбординга (UI-прогресс, повтор при ошибке); без неё — только FTS-поиск.
-- macOS: рабочая сборка, aarch64. **Публичный релиз 1.0.6 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.6 (tag `v1.0.6`, commit `27500d3`). Ассет `Project-S-1.0.6-macOS-ARM.dmg` — 21 842 873 байта, SHA256 `22230931a652416da017adeac86c315b128490773c2ec56a4272ed3cdd5137d8`; контрольная сумма отдельным `.sha256.txt`. Сборка ad-hoc, не нотаризована.
-- Windows: **рабочая сборка 1.0.6 собрана 2026-10-23 на `27500d3`**. NSIS `Project-S-1.0.6-Windows-x64-Setup.exe` — 14 322 887 байт, SHA256 `c5ad410a98c967b4693418cd80028712765156051395ce5f19df21406d3565ac`; ZIP для GitVerse `Project-S-1.0.6-Windows-x64-Setup.zip` — 14 306 516 байт, SHA256 `70a8b0884b5333b1bb516e682d76bce70908338926dc723e13cbed0e9d7ae1de`. GitVerse не принимает `.exe`, поэтому в релизе ZIP. Оба файла лежат на рабочих столах Windows и Mac; **не установлены**, GUI не запускался. Windows-фиксы: askpass через сам бинарь, Job Objects, single-instance, WebView2 оставлен онлайн-загрузчиком.
+- macOS: рабочая сборка, aarch64. **Публичный релиз 1.0.7 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.7 (tag `v1.0.7`, commit `f39e7d9`). Ассет `Project-S-1.0.7-macOS-ARM.dmg` — 22 026 781 байт, SHA256 `b2e5c188811e33ba785ad9a9550a345c3409fb75427744fa6de70dbac533cdba`; контрольная сумма отдельным `.sha256.txt`. Сборка ad-hoc, не нотаризована.
+- Windows: **рабочая сборка 1.0.7 собрана 2026-10-24 на `f39e7d9`**. NSIS `Project-S-1.0.7-Windows-x64-Setup.exe` — 14 515 123 байта, SHA256 `ee34274030f80072178bdaa3c97cc0228e1fbaf31d97221d28279f56ed1b22f9`; ZIP для GitVerse `Project-S-1.0.7-Windows-x64-Setup.zip` — 14 498 264 байта, SHA256 `89a3bd7fb7df80935ddf19f57eeb9afe3c5ba317530514397564d7168ab45801`. GitVerse не принимает `.exe`, поэтому в релизе ZIP. Оба файла лежат на рабочих столах Windows и Mac; **не установлены**, GUI не запускался.
 - Windows, установленная копия: всё ещё предыдущая сборка `ce8ed5b` per-user; заменится после установки пользователем.
 - Доступ к Windows VM проверен 2026-10-23: `DOCS/WINDOWS-ACCESS.md`; Windows HEAD `ada814c`, рабочее дерево чистое.
 - Linux: план, реализации нет.
@@ -209,6 +209,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Сделано: Obsidian-like редактор Markdown на CodeMirror 6 (`codemirror`, `@codemirror/lang-markdown` — новые npm-зависимости): общий компонент `MarkdownCodeEditor` для source-режима заметок и edit-режима предпросмотра файлов; блочный режим заметок сохраняет пустые строки (range-aware split + замена только редактируемого блока); предпросмотр Markdown рендерится с `breaks: true` (одинарный перенос строки = `<br>`).
 - Влияние: только фронтенд; Rust-контракты/БД/пути не менялись. Windows/Linux: при следующей сборке нужен `npm ci` (новые зависимости в package-lock), бандл стал крупнее (~1.1 МБ JS).
 - Действие: `[ACTION: windows]` при следующей пакетной сборке — `npm ci` и пересборка фронтенда; GUI-проверка редактора — user.
+- Статус: waiting
+
+### 2026-10-24 12:40 UTC — macOS
+- Ветка: `master`
+- Коммит: `f39e7d9` (тег `v1.0.7`)
+- Сделано: CodeMirror 6 в редакторах Markdown (проекты + source-режим заметок), сохранение пустых строк в блочном режиме заметок, `breaks: true` в предпросмотре, правый клик «Показать в Finder» для файлов и папок заметок. Собраны macOS DMG и Windows NSIS 1.0.7; macOS установлен в `/Applications/Project-S.app`.
+- Влияние: только редактор/заметки; БД/контракты не менялись. GitVerse: release `v1.0.7` (id `548937812`), ассеты `Project-S-1.0.7-macOS-ARM.dmg` (22 026 781 Б, SHA256 `b2e5c188…cdba`), `Project-S-1.0.7-Windows-x64-Setup.zip` (14 498 264 Б, SHA256 `89a3bd7f…5801`; внутри EXE 14 515 123 Б, SHA256 `ee342740…22f9`), `.sha256.txt`, notes.
+- Действие: `[ACTION: user]` установить Windows 1.0.7 и проверить GUI; Linux Flatpak — следующий этап.
 - Статус: waiting
 
 ### 2026-10-23 20:55 UTC — macOS

@@ -1,6 +1,6 @@
 # WINDOWS-PORT — Windows 11: текущее состояние и остаток работ
 
-Статус: **сборка под Windows 11 x64 работает**. Релиз **1.0.6** собран 2026-10-23 на коммите `27500d3`: NSIS `Project-S-1.0.6-Windows-x64-Setup.exe` — 14 322 887 байт, SHA256 `c5ad410a98c967b4693418cd80028712765156051395ce5f19df21406d3565ac`; ZIP для GitVerse `Project-S-1.0.6-Windows-x64-Setup.zip` — 14 306 516 байт, SHA256 `70a8b0884b5333b1bb516e682d76bce70908338926dc723e13cbed0e9d7ae1de`. Оба файла на рабочих столах Windows и Mac, **не установлены**; установленная копия — более ранняя сборка `ce8ed5b`. GUI после нового установщика **не проверен**. Askpass, Job Objects, single-instance и shell исправлены; WebView2 по решению пользователя остаётся онлайн-загрузчиком. Осталось: длинные/UNC-пути, macOS-only инструменты и production-hardening (подпись, updater).
+Статус: **сборка под Windows 11 x64 работает**. Релиз **1.0.7** собран 2026-10-24 на коммите `f39e7d9`: NSIS `Project-S-1.0.7-Windows-x64-Setup.exe` — 14 515 123 байта, SHA256 `ee34274030f80072178bdaa3c97cc0228e1fbaf31d97221d28279f56ed1b22f9`; ZIP для GitVerse `Project-S-1.0.7-Windows-x64-Setup.zip` — 14 498 264 байта, SHA256 `89a3bd7fb7df80935ddf19f57eeb9afe3c5ba317530514397564d7168ab45801`. Оба файла на рабочих столах Windows и Mac, **не установлены**; установленная копия — более ранняя сборка `ce8ed5b`. GUI после нового установщика **не проверен**. Askpass, Job Objects, single-instance и shell исправлены; WebView2 по решению пользователя остаётся онлайн-загрузчиком. Осталось: длинные/UNC-пути, macOS-only инструменты и production-hardening (подпись, updater).
 
 Scope: **Windows — рабочая сборка для локального использования**; боевые данные и production-hardening (подпись, updater, Credential Manager, Recycle Bin, полный паритет инструментов) остаются отдельным этапом.
 
@@ -71,7 +71,7 @@ Baseline Tauri 2 — **109.0.1518.78** (`CROSPLATFORM.md` §0.1); ниже ил�
 - **Uninstall:** не должен удалять рабочие папки проектов и пользовательские данные; чистить ярлыки/автозапуск.
 - **Автозапуск:** `HKCU\...\Run` или Task Scheduler; учитывать отключение пользователем.
 - **Deep links:** регистрация протокола + передача аргументов в уже запущенный экземпляр (single-instance уже есть, нужна обработка argv).
-- **Размер:** установщик 1.0.6 — 13.66 MiB; модель (~300 МБ) не в бандле и скачивается после онбординга. WebView2 — онлайн-загрузчик, fixedRuntime не используем.
+- **Размер:** установщик 1.0.7 — 13.84 MiB; модель (~300 МБ) не в бандле и скачивается после онбординга. WebView2 — онлайн-загрузчик, fixedRuntime не используем.
 - **CI:** отсутствует; сборка on-demand по SSH. `scripts/install-app.sh` (bash + `ditto`/`xattr`) на Windows неприменим, `npm run app:build`/`app:install` на Windows не использовать.
 
 ## 4. Данные, пути, миграция
@@ -141,7 +141,7 @@ ssh win11 'powershell -NoProfile -Command "cd <repo>; git pull; npm ci; npx taur
 scp -r "win11:<repo>/src-tauri/target/release/bundle" ./artifacts/windows/
 ```
 
-Конфиг обязателен: без `--config src-tauri/tauri.windows.conf.json` Tauri берёт macOS-конфиг. Установщик: `src-tauri\target\release\bundle\nsis\Project-S_1.0.6_x64-setup.exe`; тихая установка per-user: `Start-Process <installer> -ArgumentList '/S' -Wait`. Проверка артефакта: `Get-FileHash` по SHA256.
+Конфиг обязателен: без `--config src-tauri/tauri.windows.conf.json` Tauri берёт macOS-конфиг. Установщик: `src-tauri\target\release\bundle\nsis\Project-S_1.0.7_x64-setup.exe`; тихая установка per-user: `Start-Process <installer> -ArgumentList '/S' -Wait`. Проверка артефакта: `Get-FileHash` по SHA256.
 
 Матрица:
 
@@ -161,7 +161,7 @@ scp -r "win11:<repo>/src-tauri/target/release/bundle" ./artifacts/windows/
 
 - [ ] Основной установщик: NSIS per-user или MSI per-machine?
 - [ ] WebView2: `fixedRuntime` всегда или системный + fallback? Путь UDF?
-- [ ] Допустим ли размер установщика с фиксированным runtime? Бюджет? (С 1.0.3 модель не в бандле — установщик 1.0.6 ~13.66 MiB.)
+- [ ] Допустим ли размер установщика с фиксированным runtime? Бюджет? (С 1.0.3 модель не в бандле — установщик 1.0.7 ~13.84 MiB.)
 - [ ] Секреты: оставить plaintext JSON (паритет) или Credential Manager/DPAPI? Как мигрировать?
 - [ ] `onnxruntime.dll`: в установщике или отдельным пакетом? (Модель решена в 1.0.3: скачивается приложением после онбординга.)
 - [ ] Автообновление: Tauri updater или внешний канал; какой канал (stable/beta)?
