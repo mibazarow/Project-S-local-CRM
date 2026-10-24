@@ -203,6 +203,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Статус: waiting | done
 ```
 
+### 2026-10-24 15:30 UTC — macOS
+- Ветка: `master`
+- Коммит: `f675a59`
+- Сделано: Obsidian-like редактор Markdown на CodeMirror 6 (`codemirror`, `@codemirror/lang-markdown` — новые npm-зависимости): общий компонент `MarkdownCodeEditor` для source-режима заметок и edit-режима предпросмотра файлов; блочный режим заметок сохраняет пустые строки (range-aware split + замена только редактируемого блока); предпросмотр Markdown рендерится с `breaks: true` (одинарный перенос строки = `<br>`).
+- Влияние: только фронтенд; Rust-контракты/БД/пути не менялись. Windows/Linux: при следующей сборке нужен `npm ci` (новые зависимости в package-lock), бандл стал крупнее (~1.1 МБ JS).
+- Действие: `[ACTION: windows]` при следующей пакетной сборке — `npm ci` и пересборка фронтенда; GUI-проверка редактора — user.
+- Статус: waiting
+
 ### 2026-10-23 20:55 UTC — macOS
 - Ветка: `master`
 - Коммит: `27500d3` (тег `v1.0.6`)
