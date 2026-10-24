@@ -115,6 +115,8 @@ Project-S собирает работу в одно окно. Проект зд�
 
 Релизы публикуются в GitVerse ([репозиторий Project-S-local-CRM](https://gitverse.ru/mibazarow/Project-S-local-CRM)): macOS и Windows уже в [релизе 1.0.7](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.7). Linux — следом.
 
+Автоматических обновлений пока нет. Как проверить и поставить новую версию вручную — [UPDATES.md](UPDATES.md).
+
 ## Техническая основа
 
 Если коротко: Tauri 2 + Rust (агентный луп, SQLite, поиск, планировщик) и React + TypeScript для интерфейса. Поиск — SQLite FTS5 плюс локальные нейросетевые эмбеддинги на ONNX Runtime, без Python и без облака. Полная архитектура, инструменты агента, сборка и тесты — в [`DOCS/about.md`](DOCS/about.md).
