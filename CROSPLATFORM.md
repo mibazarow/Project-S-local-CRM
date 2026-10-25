@@ -61,7 +61,7 @@
 - `master` — единый источник правды и защищённая ветка. Все изменения — через PR/merge.
 - Постоянных веток `macos`/`windows`/`linux` и временной `port/windows` **нет**. Весь код, включая `platform/`, пишет macOS-агент в `feat/*`/`fix/*` или `master`.
 - Windows build host не коммитит: только `git pull`, сборка, тесты, артефакты. Все коммиты и push делает macOS.
-- Релизные теги (`v1.0.7`) ставятся на `master`; артефакты собираются под каждую ОС из одного коммита.
+- Релизные теги (`v1.0.8`) ставятся на `master`; артефакты собираются под каждую ОС из одного коммита.
 - Если Windows временно отстаёт — используем pre-release-тег (`v1.0.3-win.1`), а не отдельную версию кода.
 
 ## 2. Код: платформенный слой, а не форк
@@ -160,14 +160,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 ## 5. Текущее состояние (обновлять при изменениях)
 
 - **Разработка продукта — только на macOS.** Windows/Linux: порт, платформенный слой, сборка.
-- Версия: **1.0.7**.
+- Версия: **1.0.8**.
 - Ветка: **master**; remote `origin` — приватный GitVerse.
 - Схема БД: **v40**.
 - Встроенных скиллов: **38**.
 - Модель эмбеддингов: **не в git и не в бандле** (с 1.0.3); ~300 МБ, приложение скачивает разово после онбординга (UI-прогресс, повтор при ошибке); без неё — только FTS-поиск.
-- macOS: рабочая сборка, aarch64. **Публичный релиз 1.0.7 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.7 (tag `v1.0.7`, commit `f39e7d9`). Ассет `Project-S-1.0.7-macOS-ARM.dmg` — 22 026 781 байт, SHA256 `b2e5c188811e33ba785ad9a9550a345c3409fb75427744fa6de70dbac533cdba`; контрольная сумма отдельным `.sha256.txt`. Сборка ad-hoc, не нотаризована.
-- Windows: **рабочая сборка 1.0.7 собрана 2026-10-24 на `f39e7d9`**. NSIS `Project-S-1.0.7-Windows-x64-Setup.exe` — 14 515 123 байта, SHA256 `ee34274030f80072178bdaa3c97cc0228e1fbaf31d97221d28279f56ed1b22f9`; ZIP для GitVerse `Project-S-1.0.7-Windows-x64-Setup.zip` — 14 498 264 байта, SHA256 `89a3bd7fb7df80935ddf19f57eeb9afe3c5ba317530514397564d7168ab45801`. GitVerse не принимает `.exe`, поэтому в релизе ZIP. Оба файла лежат на рабочих столах Windows и Mac; **не установлены**, GUI не запускался.
-- Windows, установленная копия: всё ещё предыдущая сборка `ce8ed5b` per-user; заменится после установки пользователем.
+- macOS: рабочая сборка, aarch64. **Публичный релиз 1.0.8 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.8 (tag `v1.0.8`, commit `95e06b1`). Ассет `Project-S-1.0.8-macOS-ARM.dmg` — 22 038 082 байта, SHA256 `c8f9eeaafede104600f40acc1ecfef9976b2d29460cf307f8d1fdc1e8d18c5b8`; контрольная сумма отдельным `.sha256.txt`. Сборка ad-hoc, не нотаризована; 1.0.8 установлен в `/Applications/Project-S.app`.
+- Windows: **рабочая сборка 1.0.8 собрана 2026-10-25 на `95e06b1`**. ZIP для GitVerse `Project-S-1.0.8-Windows-x64-Setup.zip` — 14 491 329 байт, SHA256 `344a21c1754bb8c81c9a2a3e0a1d03ca6b58941d7c535d05b052e612658daa6d`; внутри NSIS `Project-S 1.0.8 Windows x64 Setup.exe` — 14 507 700 байт, SHA256 `81b7dea3f25888d629940bcd5eca6cab7609ceaf087d10795076a030dafd87d4`. GitVerse не принимает `.exe`, поэтому в релизе ZIP. На Windows эмбеддинги считаются на CPU: CoreML EP запрашивается только на macOS. Файлы лежат на рабочих столах Windows и Mac; **1.0.8 не установлен**, GUI не запускался.
+- Windows, установленная копия: предыдущая сборка per-user; 1.0.8 не установлен, GUI не проверялся.
 - Доступ к Windows VM проверен 2026-10-23: `DOCS/WINDOWS-ACCESS.md`; Windows HEAD `ada814c`, рабочее дерево чистое.
 - Linux: план, реализации нет.
 - Модель/ONNX: `ort-backend`, модель скачивается после онбординга (не в бандле); на Windows нужны `onnxruntime.dll` и MSVC runtime.
@@ -202,6 +202,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Действие: <что сделать / user|macos> — или [DONE]
 - Статус: waiting | done
 ```
+
+### 2026-10-25 17:10 UTC — macOS
+- Ветка: `master`
+- Коммит: `95e06b1` (тег `v1.0.8`)
+- Сделано: релиз 1.0.8 опубликован для macOS и Windows. CoreML EP запрашивается только на macOS; на Windows/Linux ONNX Runtime использует CPU-провайдеры. На macOS недоступность CoreML («not supported in this build») — warning и CPU-fallback; ошибка эмбеддингов показывает понятное сообщение про поиск по смыслу. macOS 1.0.8 установлен в `/Applications/Project-S.app`; Windows 1.0.8 **не установлен**.
+- Влияние: правки только вокруг эмбеддера и футера ошибок чата; БД/контракты/пути не менялись, миграций нет. Windows-сборка работает на CPU; CoreML-код на Windows не компилируется.
+- Действие: `[ACTION: user]` установить Windows 1.0.8 и проверить GUI; Linux Flatpak — следующий этап. Релиз: https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.8.
+- Статус: waiting
 
 ### 2026-10-25 17:05 UTC — macOS
 - Ветка: `master`
