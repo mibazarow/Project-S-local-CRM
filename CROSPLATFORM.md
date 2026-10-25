@@ -207,7 +207,7 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Ветка: `master`
 - Коммит: `909a761` (тег `v1.0.9` на docs-коммите)
 - Сделано: релиз 1.0.9 опубликован для macOS и Windows. Внешние ссылки (`http://`, `https://`, `mailto:`, `tel:`) открываются в браузере/почтовом клиенте по умолчанию, внутренние `notes:`/`note:` и относительные `.md`-ссылки остаются в приложении. Тесты: **1095 passed / 19 ignored** (Rust), **592** (vitest). macOS 1.0.9 установлен в `/Applications/Project-S.app`; Windows 1.0.9 **не установлен**, GUI не запускался.
-- Влияние: правки навигации/ссылок во фронтенде и shell-слое; БД/контракты/пути не менялись, миграций нет. Windows-сборка собрана из того же коммита, что и macOS. GitVerse: release `v1.0.9` (id будет записан отдельным коммитом), ассеты `Project-S-1.0.9-macOS-ARM.dmg` (22 036 199 Б), `Project-S-1.0.9-Windows-x64-Setup.zip` (14 492 926 Б; внутри EXE 14 509 306 Б), `.sha256.txt`, notes.
+- Влияние: правки навигации/ссылок во фронтенде и shell-слое; БД/контракты/пути не менялись, миграций нет. Windows-сборка собрана из того же коммита, что и macOS. GitVerse: release `v1.0.9` (id `548939619`), ассеты `Project-S-1.0.9-macOS-ARM.dmg` (22 036 199 Б), `Project-S-1.0.9-Windows-x64-Setup.zip` (14 492 926 Б; внутри EXE 14 509 306 Б), `.sha256.txt`, notes.
 - Действие: `[ACTION: user]` установить Windows 1.0.9 и проверить GUI; Linux Flatpak — следующий этап. Релиз: https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.9.
 - Статус: waiting
 
