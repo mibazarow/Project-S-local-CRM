@@ -207,7 +207,7 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Ветка: `master`
 - Коммит: `95e06b1` (тег `v1.0.8`)
 - Сделано: релиз 1.0.8 опубликован для macOS и Windows. CoreML EP запрашивается только на macOS; на Windows/Linux ONNX Runtime использует CPU-провайдеры. На macOS недоступность CoreML («not supported in this build») — warning и CPU-fallback; ошибка эмбеддингов показывает понятное сообщение про поиск по смыслу. macOS 1.0.8 установлен в `/Applications/Project-S.app`; Windows 1.0.8 **не установлен**.
-- Влияние: правки только вокруг эмбеддера и футера ошибок чата; БД/контракты/пути не менялись, миграций нет. Windows-сборка работает на CPU; CoreML-код на Windows не компилируется.
+- Влияние: правки только вокруг эмбеддера и футера ошибок чата; БД/контракты/пути не менялись, миграций нет. Windows-сборка работает на CPU; CoreML-код на Windows не компилируется. GitVerse: release `v1.0.8` (id `548939558`), ассеты `Project-S-1.0.8-macOS-ARM.dmg` (22 038 082 Б), `Project-S-1.0.8-Windows-x64-Setup.zip` (14 491 329 Б; внутри EXE 14 507 700 Б), `.sha256.txt`, notes.
 - Действие: `[ACTION: user]` установить Windows 1.0.8 и проверить GUI; Linux Flatpak — следующий этап. Релиз: https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.8.
 - Статус: waiting
 
