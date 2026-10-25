@@ -13,6 +13,7 @@ import Toasts from "./components/shared/toast";
 import ConfirmDialogHost from "./components/shared/ConfirmDialogHost";
 import EmbedModelBootstrap from "./components/EmbedModelBootstrap";
 import { setNoteLinkHandler } from "./shared/noteLink";
+import { installExternalLinkHandler } from "./shared/externalLink";
 
 // User-triggered overlays: not part of the startup view, so they are code-split
 // out of the initial chunk. Each is only mounted once opened, so a null Suspense
@@ -33,6 +34,10 @@ export default function App() {
   useEffect(() => {
     ensureSubscribed();
   }, []);
+
+  // External links must not navigate the app WebView: open them in the OS
+  // default browser instead, for the whole app lifetime.
+  useEffect(() => installExternalLinkHandler(), []);
 
   // Quick capture entry points: the global shortcut opens note mode; the
   // tray menu routes «Быстрая заметка» / «Новая задача» to the matching mode.

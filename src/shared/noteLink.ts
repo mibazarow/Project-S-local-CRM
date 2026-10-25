@@ -1,15 +1,17 @@
 // Conservative classifier for markdown links in agent answers: decides whether
 // an <a href> points at a note in the Notes/ vault (so the click opens it inside
-// «Заметки и файлы») or must keep its default behavior (external browser, project
-// file, image, in-page anchor). Returns the vault-relative path for a note link,
-// otherwise null.
+// «Заметки и файлы») or must keep its default behavior (project file, image,
+// in-page anchor). External URLs are not the WebView default: the global
+// external-link handler (shared/externalLink.ts) opens them in the OS browser.
+// Returns the vault-relative path for a note link, otherwise null.
 //
 // Treated as a note:
 //   - explicit `note:` / `notes:` scheme (scheme stripped, remainder is the path);
 //   - a relative path ending in `.md`/`.markdown` with no `..` traversal;
 //   - an absolute path inside the vault (has a `/Notes/` segment → part after it).
 // Everything else (http/https, mailto, tel, other schemes, non-`.md` files,
-// images, `#…` anchors) is left to the webview default.
+// images, `#…` anchors) is not a note; external URLs go through the global
+// external-link handler, the rest keeps its own behavior.
 export function resolveNoteLink(href: string): string | null {
   const raw = href.trim();
   if (!raw) return null;
