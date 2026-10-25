@@ -17,6 +17,7 @@ import {
 } from "../../state/chatRunStore";
 import type { MessageAttachmentDto } from "../../api/types";
 import { toMessage } from "../../shared/errors";
+import { errorHint } from "./errorHint";
 import { historyToItems } from "./chatHistory";
 import { resolvePinMessageId, resolveRegenerateTurn } from "./messageActions";
 import type { ChatItem } from "./chatTypes";
@@ -309,7 +310,7 @@ export default function ProjectChat({ projectId, projectName }: Props) {
         <div className="chat-error">
           {slice.sendError}
           <br />
-          Проверьте Настройки → Модель.
+          {errorHint(slice.sendError)}
         </div>
       )}
 

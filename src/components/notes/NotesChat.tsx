@@ -16,6 +16,7 @@ import {
   useChatSlice,
 } from "../../state/chatRunStore";
 import { toMessage } from "../../shared/errors";
+import { errorHint } from "../chat/errorHint";
 import { historyToItems } from "../chat/chatHistory";
 import { resolvePinMessageId, resolveRegenerateTurn } from "../chat/messageActions";
 import type { ChatItem } from "../chat/chatTypes";
@@ -247,7 +248,7 @@ export default function NotesChat() {
         <div className="chat-error">
           {slice.sendError}
           <br />
-          Проверьте Настройки → Модель.
+          {errorHint(slice.sendError)}
         </div>
       )}
 

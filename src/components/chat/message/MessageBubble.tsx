@@ -2,6 +2,7 @@ import { memo, useEffect, useState } from "react";
 import { MarkdownMessage } from "../MarkdownMessage";
 import { BranchIcon, NoteIcon, PinIcon, RegenerateIcon, TaskIcon } from "../actions/icons";
 import { MessageAttachments } from "../attachments/MessageAttachments";
+import { errorHint } from "../errorHint";
 import { CompactionNote, ReasoningBlock, StepsList } from "./MessageParts";
 import type { ChatItem, TranscriptActions } from "../chatTypes";
 
@@ -214,7 +215,7 @@ export const MessageRow = memo(function MessageRow({
           ) : (
             <>
               <br />
-              Проверьте Настройки → Модель.
+              {errorHint(item.error)}
             </>
           )}
         </div>

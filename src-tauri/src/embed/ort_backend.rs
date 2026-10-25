@@ -66,6 +66,9 @@ fn load(model_dir: &Path) -> std::result::Result<Inner, String> {
     let env = environment()?;
     let mut builder = ort::session::Session::builder(env)
         .map_err(|e| format!("ort session builder: {e}"))?;
+    // CoreML is a macOS-only provider; every other target keeps the default
+    // CPU provider list. See `pin_cpu_only` for why macOS needs the pin.
+    #[cfg(target_os = "macos")]
     pin_cpu_only(&mut builder)?;
     // External data (model_quantized.onnx_data) is resolved next to the .onnx.
     let session = builder
@@ -83,6 +86,13 @@ fn load(model_dir: &Path) -> std::result::Result<Inner, String> {
 // RequireStaticInputShapes=1 replaces that default registration; since the
 // text inputs are dynamic [batch, seq], CoreML then takes only the single
 // static-shape constant node and the whole transformer runs on CPU.
+//
+// Only some macOS ONNX Runtime builds ship the CoreML provider. When this one
+// does not, appending it fails with "not supported in this build" — there is
+// then no default CoreML registration to replace either, so the default
+// providers (CPU) are already what we want. Genuine CoreML errors still fail
+// the load; only the unavailable message is downgraded to a warning.
+#[cfg(target_os = "macos")]
 fn pin_cpu_only(builder: &mut ort::session::builder::SessionBuilder) -> std::result::Result<(), String> {
     use ort::AsPointer as _;
     let name = c"CoreMLExecutionProvider";
@@ -109,10 +119,27 @@ fn pin_cpu_only(builder: &mut ort::session::builder::SessionBuilder) -> std::res
                 .to_string_lossy()
                 .into_owned();
             ((*api).ReleaseStatus)(status.0);
+            if coreml_unavailable(&msg) {
+                eprintln!("warning: CoreML execution provider is unavailable, using CPU ({msg})");
+                return Ok(());
+            }
             return Err(format!("ort coreml pin: {msg}"));
         }
     }
     Ok(())
+}
+
+// Pure classifier for the "this build has no CoreML provider" reply. Any other
+// CoreML failure (bad graph, invalid option, runtime error) stays fatal.
+#[cfg(target_os = "macos")]
+fn coreml_unavailable(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
+    const MARKERS: [&str; 3] = [
+        "not supported in this build",
+        "not available in this build",
+        "is not supported on this platform",
+    ];
+    MARKERS.iter().any(|marker| message.contains(marker))
 }
 
 // Mean-pool [seq, hidden] rows over the attention mask, then MRL-truncate to
@@ -268,6 +295,30 @@ mod tests {
         let embedder = OrtEmbedder::new(PathBuf::from("/nonexistent/embed-model"), EMBED_DIM);
         let err = embedder.embed_texts(&["привет".into()]).unwrap_err();
         assert!(err.to_string().contains("tokenizer"), "{err}");
+    }
+
+    // A macOS runtime built without CoreML must degrade to CPU instead of
+    // failing the whole embedder load; real CoreML failures stay fatal.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn coreml_unavailable_matches_only_build_availability_messages() {
+        assert!(coreml_unavailable(
+            "CoreMLExecutionProvider execution provider is not supported in this build. \
+             Please refer to https://onnxruntime.ai/docs/execution-providers/ for details"
+        ));
+        assert!(coreml_unavailable(
+            "CoreMLExecutionProvider is Not Supported In This Build"
+        ));
+        assert!(coreml_unavailable(
+            "CoreMLExecutionProvider is not supported on this platform"
+        ));
+        assert!(!coreml_unavailable(
+            "the ort_value must contain a constructed tensor"
+        ));
+        assert!(!coreml_unavailable(
+            "CoreMLExecutionProvider: invalid session option RequireStaticInputShapes"
+        ));
+        assert!(!coreml_unavailable(""));
     }
 
     // Needs the provisioned model (Settings/models/embeddinggemma-2 in the

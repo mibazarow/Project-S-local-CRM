@@ -2,6 +2,7 @@ import { type RefObject } from "react";
 import type { ConfirmationRequestPayload, SessionDto } from "../../api/types";
 import type { Slice, TranscriptActions } from "../chat/chatTypes";
 import { ChatTranscript } from "../chat/message/ChatTranscript";
+import { errorHint } from "../chat/errorHint";
 import { ConfirmCard } from "../chat/actions/ConfirmCard";
 import { AttachFileIcon, AttachXIcon } from "../chat/attachments/MessageAttachments";
 import { ChatComposer } from "../chat/composer/ChatComposer";
@@ -119,7 +120,7 @@ export function HarnessChatPanel({
         <div className="chat-error">
           {slice.sendError}
           <br />
-          Проверьте Настройки → Модель.
+          {errorHint(slice.sendError)}
         </div>
       )}
 
