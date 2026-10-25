@@ -203,6 +203,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Статус: waiting | done
 ```
 
+### 2026-10-25 17:05 UTC — macOS
+- Ветка: `master`
+- Коммит: `be18e73`
+- Сделано: 1.0.8 bugfix по ошибке харнеса `ort coreml pin: CoreMLExecutionProvider execution provider is not supported in this build`. `pin_cpu_only` (добавление CoreML EP с `RequireStaticInputShapes=1`) теперь под `#[cfg(target_os = "macos")]`; на Windows/Linux default-провайдеры ONNX Runtime (CPU), macOS-обход остаётся. На macOS недоступность CoreML («not supported in this build») — warning + CPU вместо ошибки загрузки эмбеддера; прочие ошибки CoreML по-прежнему фатальны. Общий хелпер футера ошибок чата `src/components/chat/errorHint.ts`: ошибки эмбеддера/CoreML/ONNX показывают честный текст про модель эмбеддингов (Настройки → Агент), остальные — прежний «Проверьте Настройки → Модель».
+- Влияние: Rust меняется только внутри `embed/ort_backend.rs` (общий код), контракты/БД/пути не тронуты; на Windows/Linux CoreML-код вообще не компилируется. Фронтенд — 4 места футера (project/notes/harness chat, `MessageBubble`).
+- Действие: `[ACTION: windows]` при следующей пакетной сборке — просто `git pull` и пересборка; правок не требуется.
+- Статус: waiting
+
 ### 2026-10-24 15:30 UTC — macOS
 - Ветка: `master`
 - Коммит: `f675a59`
