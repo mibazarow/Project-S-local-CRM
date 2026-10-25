@@ -61,7 +61,7 @@
 - `master` — единый источник правды и защищённая ветка. Все изменения — через PR/merge.
 - Постоянных веток `macos`/`windows`/`linux` и временной `port/windows` **нет**. Весь код, включая `platform/`, пишет macOS-агент в `feat/*`/`fix/*` или `master`.
 - Windows build host не коммитит: только `git pull`, сборка, тесты, артефакты. Все коммиты и push делает macOS.
-- Релизные теги (`v1.0.8`) ставятся на `master`; артефакты собираются под каждую ОС из одного коммита.
+- Релизные теги (`v1.0.9`) ставятся на `master`; артефакты собираются под каждую ОС из одного коммита.
 - Если Windows временно отстаёт — используем pre-release-тег (`v1.0.3-win.1`), а не отдельную версию кода.
 
 ## 2. Код: платформенный слой, а не форк
@@ -160,14 +160,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 ## 5. Текущее состояние (обновлять при изменениях)
 
 - **Разработка продукта — только на macOS.** Windows/Linux: порт, платформенный слой, сборка.
-- Версия: **1.0.8**.
+- Версия: **1.0.9**.
 - Ветка: **master**; remote `origin` — приватный GitVerse.
 - Схема БД: **v40**.
 - Встроенных скиллов: **38**.
 - Модель эмбеддингов: **не в git и не в бандле** (с 1.0.3); ~300 МБ, приложение скачивает разово после онбординга (UI-прогресс, повтор при ошибке); без неё — только FTS-поиск.
-- macOS: рабочая сборка, aarch64. **Публичный релиз 1.0.8 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.8 (tag `v1.0.8`, commit `95e06b1`). Ассет `Project-S-1.0.8-macOS-ARM.dmg` — 22 038 082 байта, SHA256 `c8f9eeaafede104600f40acc1ecfef9976b2d29460cf307f8d1fdc1e8d18c5b8`; контрольная сумма отдельным `.sha256.txt`. Сборка ad-hoc, не нотаризована; 1.0.8 установлен в `/Applications/Project-S.app`.
-- Windows: **рабочая сборка 1.0.8 собрана 2026-10-25 на `95e06b1`**. ZIP для GitVerse `Project-S-1.0.8-Windows-x64-Setup.zip` — 14 491 329 байт, SHA256 `344a21c1754bb8c81c9a2a3e0a1d03ca6b58941d7c535d05b052e612658daa6d`; внутри NSIS `Project-S 1.0.8 Windows x64 Setup.exe` — 14 507 700 байт, SHA256 `81b7dea3f25888d629940bcd5eca6cab7609ceaf087d10795076a030dafd87d4`. GitVerse не принимает `.exe`, поэтому в релизе ZIP. На Windows эмбеддинги считаются на CPU: CoreML EP запрашивается только на macOS. Файлы лежат на рабочих столах Windows и Mac; **1.0.8 не установлен**, GUI не запускался.
-- Windows, установленная копия: предыдущая сборка per-user; 1.0.8 не установлен, GUI не проверялся.
+- macOS: рабочая сборка, aarch64. **Публичный релиз 1.0.9 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.9 (tag `v1.0.9`, commit `909a761`). Ассет `Project-S-1.0.9-macOS-ARM.dmg` — 22 036 199 байт, SHA256 `3fe1161da41465080842d653be7f512ebe73ddbfc3fa68f73fb122a39e5c021d`; контрольная сумма отдельным `.sha256.txt`. Сборка ad-hoc, не нотаризована; 1.0.9 установлен в `/Applications/Project-S.app`.
+- Windows: **рабочая сборка 1.0.9 собрана 2026-10-25 на `909a761`**. ZIP для GitVerse `Project-S-1.0.9-Windows-x64-Setup.zip` — 14 492 926 байт, SHA256 `d2361e42c01d883c5f7c5de74aa217ae8e53d084f23ed82b51f8321dc3876c9f`; внутри NSIS `Project-S 1.0.9 Windows x64 Setup.exe` — 14 509 306 байт, SHA256 `189b4fc2568ed41456193f5f1a27cb97627a8f1a38c367b7afb15b559bd91b41`. GitVerse не принимает `.exe`, поэтому в релизе ZIP. На Windows эмбеддинги считаются на CPU: CoreML EP запрашивается только на macOS. Файлы лежат на рабочих столах Windows и Mac; **1.0.9 не установлен**, GUI не запускался.
+- Windows, установленная копия: предыдущая сборка per-user; 1.0.9 не установлен, GUI не проверялся.
 - Доступ к Windows VM проверен 2026-10-23: `DOCS/WINDOWS-ACCESS.md`; Windows HEAD `ada814c`, рабочее дерево чистое.
 - Linux: план, реализации нет.
 - Модель/ONNX: `ort-backend`, модель скачивается после онбординга (не в бандле); на Windows нужны `onnxruntime.dll` и MSVC runtime.
@@ -202,6 +202,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Действие: <что сделать / user|macos> — или [DONE]
 - Статус: waiting | done
 ```
+
+### 2026-10-25 18:20 UTC — macOS
+- Ветка: `master`
+- Коммит: `909a761` (тег `v1.0.9` на docs-коммите)
+- Сделано: релиз 1.0.9 опубликован для macOS и Windows. Внешние ссылки (`http://`, `https://`, `mailto:`, `tel:`) открываются в браузере/почтовом клиенте по умолчанию, внутренние `notes:`/`note:` и относительные `.md`-ссылки остаются в приложении. Тесты: **1095 passed / 19 ignored** (Rust), **592** (vitest). macOS 1.0.9 установлен в `/Applications/Project-S.app`; Windows 1.0.9 **не установлен**, GUI не запускался.
+- Влияние: правки навигации/ссылок во фронтенде и shell-слое; БД/контракты/пути не менялись, миграций нет. Windows-сборка собрана из того же коммита, что и macOS. GitVerse: release `v1.0.9` (id будет записан отдельным коммитом), ассеты `Project-S-1.0.9-macOS-ARM.dmg` (22 036 199 Б), `Project-S-1.0.9-Windows-x64-Setup.zip` (14 492 926 Б; внутри EXE 14 509 306 Б), `.sha256.txt`, notes.
+- Действие: `[ACTION: user]` установить Windows 1.0.9 и проверить GUI; Linux Flatpak — следующий этап. Релиз: https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.9.
+- Статус: waiting
 
 ### 2026-10-25 17:10 UTC — macOS
 - Ветка: `master`

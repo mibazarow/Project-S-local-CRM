@@ -2,7 +2,7 @@
 
 Этот файл — техническое продолжение [`README.md`](../README.md): архитектура, данные, агентский луп, поиск, провайдеры, сборка, тесты. Для нетехнического чтения предназначен README.
 
-Текущий статус: **v1.0.8**, схема БД **v40**, **38** встроенных скиллов, **1095 passed / 19 ignored** бэкенд-тестов (Rust) и **582** фронтенд-тестов (vitest). macOS (Apple Silicon) и Windows 11 x64 — **опубликованы** в [релизе 1.0.8](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.8); Linux — в плане (Flatpak).
+Текущий статус: **v1.0.9**, схема БД **v40**, **38** встроенных скиллов, **1095 passed / 19 ignored** бэкенд-тестов (Rust) и **592** фронтенд-тестов (vitest). macOS (Apple Silicon) и Windows 11 x64 — **опубликованы** в [релизе 1.0.9](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.9); Linux — в плане (Flatpak).
 
 ## Что это
 
@@ -88,13 +88,13 @@ AI-чат проекта и Харнес работают через один а
 
 ## Платформы и сборки
 
-| Платформа | Статус v1.0.8 | Упаковка |
+| Платформа | Статус v1.0.9 | Упаковка |
 |---|---|---|
-| macOS (Apple Silicon) | **опубликовано:** [v1.0.8](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.8) | DMG `Project-S-1.0.8-macOS-ARM.dmg` (22 038 082 Б, SHA256 `c8f9eeaa…8c5b8`); нотаризация ещё не сделана |
-| Windows 11 x64 | **опубликовано:** [v1.0.8](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.8) | ZIP `Project-S-1.0.8-Windows-x64-Setup.zip` (14 491 329 Б, SHA256 `344a21c1…daa6d`), внутри NSIS `Project-S 1.0.8 Windows x64 Setup.exe` (14 507 700 Б, SHA256 `81b7dea3…87d4`); ONNX на Windows — CPU, CoreML только на macOS |
+| macOS (Apple Silicon) | **опубликовано:** [v1.0.9](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.9) | DMG `Project-S-1.0.9-macOS-ARM.dmg` (22 036 199 Б, SHA256 `3fe1161d…c021d`); нотаризация ещё не сделана |
+| Windows 11 x64 | **опубликовано:** [v1.0.9](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.9) | ZIP `Project-S-1.0.9-Windows-x64-Setup.zip` (14 492 926 Б, SHA256 `d2361e42…76c9f`), внутри NSIS `Project-S 1.0.9 Windows x64 Setup.exe` (14 509 306 Б, SHA256 `189b4fc2…91b41`); ONNX на Windows — CPU, CoreML только на macOS |
 | Linux | в плане | Flatpak (один пакет для большинства дистрибутивов) |
 
-- Релизный тег `v1.0.8` — на `master`; macOS и Windows собраны из одного коммита. Публичный релиз: https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.8. Linux будет добавлен в следующий тег.
+- Релизный тег `v1.0.9` — на `master`; macOS и Windows собраны из одного коммита. Публичный релиз: https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.9. Linux будет добавлен в следующий тег.
 - Windows-сборка идёт с macOS по SSH на build-хост; production-hardening (подпись, updater, Credential Manager) для текущей Windows-сборки не блокирует. Подробности — [`CROSPLATFORM.md`](../CROSPLATFORM.md), [`DOCS/WINDOWS-PORT.md`](WINDOWS-PORT.md).
 - Linux: WebKitGTK, Flatpak, XDG, sandbox, Wayland — [`DOCS/LINUX-PORT.md`](LINUX-PORT.md).
 - На Windows нужны `onnxruntime.dll` и MSVC runtime; CRT-конфликт решён вендорингом `esaxx-rs` (`vendor/`, `[patch.crates-io]`).
@@ -154,7 +154,7 @@ Project-S распространяется по **source-available** лицен�
 
 ## Дорожная карта
 
-- Релизы на GitVerse: macOS DMG и Windows NSIS — [1.0.8 опубликованы](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.8), Linux Flatpak — следом.
+- Релизы на GitVerse: macOS DMG и Windows NSIS — [1.0.9 опубликованы](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.0.9), Linux Flatpak — следом.
 - Linux-порт (Flatpak) — [`DOCS/LINUX-PORT.md`](LINUX-PORT.md).
 - Windows: подпись, updater, паритет инструментов — [`DOCS/WINDOWS-PORT.md`](WINDOWS-PORT.md).
 - Живые очереди: [`DOCS/Q.md`](Q.md) (задачи/баги), [`DOCS/REFACTOR_PLAN.md`](REFACTOR_PLAN.md) (срезы рефакторинга).
