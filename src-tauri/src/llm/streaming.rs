@@ -129,7 +129,7 @@ pub(crate) fn run_sse(
             // socket) is dropped on return, closing the connection.
             Err(e) if e.kind() == std::io::ErrorKind::TimedOut => {
                 return Err(AppError::LlmTimeout(format!(
-                    "Провайдер не отвечает {} секунд — проверьте баланс, API-ключ и статус провайдера.",
+                    "Провайдер не отвечает {} секунд. Проверьте баланс, доступность API и лимиты токенов.",
                     inactivity.as_secs()
                 )));
             }

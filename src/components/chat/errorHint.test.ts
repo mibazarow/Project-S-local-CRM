@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EMBED_HINT, MODEL_HINT, errorHint, isEmbeddingError } from "./errorHint";
+import { EMBED_HINT, LOCAL_HINT, PROVIDER_HINT, errorHint, isEmbeddingError } from "./errorHint";
 
 describe("errorHint", () => {
   it("points an embedder failure at the embedding model, not the LLM", () => {
@@ -17,17 +17,32 @@ describe("errorHint", () => {
     expect(errorHint("поиск по смыслу: модель не загружена")).toBe(EMBED_HINT);
   });
 
-  it("keeps the model hint for plain LLM errors", () => {
+  it("points plain LLM errors at the provider balance, availability and token limits", () => {
     for (const error of [
       "Провайдер не отвечает 180 секунд",
       "401 Unauthorized: invalid api key",
+      "429 Too Many Requests: quota exceeded",
       "Модель не найдена: gpt-x",
       "",
       null,
       undefined,
     ]) {
       expect(isEmbeddingError(error)).toBe(false);
-      expect(errorHint(error)).toBe(MODEL_HINT);
+      expect(errorHint(error)).toBe(PROVIDER_HINT);
     }
+    expect(PROVIDER_HINT).toContain("баланс");
+    expect(PROVIDER_HINT).toContain("доступность API");
+    expect(PROVIDER_HINT).toContain("лимиты токенов");
+  });
+
+  it("does not blame the provider for explicit local/tool failures", () => {
+    expect(errorHint("Ошибка инструмента: path escapes the project root")).toBe(LOCAL_HINT);
+    expect(errorHint("database is locked")).toBe(LOCAL_HINT);
+    expect(errorHint("permission denied")).toBe(LOCAL_HINT);
+  });
+
+  it("treats an opaque error as provider-side", () => {
+    expect(errorHint("boom")).toBe(PROVIDER_HINT);
+    expect(errorHint("")).toBe(PROVIDER_HINT);
   });
 });

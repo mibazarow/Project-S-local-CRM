@@ -2,7 +2,7 @@ import { memo, useEffect, useState } from "react";
 import { MarkdownMessage } from "../MarkdownMessage";
 import { BranchIcon, NoteIcon, PinIcon, RegenerateIcon, TaskIcon } from "../actions/icons";
 import { MessageAttachments } from "../attachments/MessageAttachments";
-import { errorHint } from "../errorHint";
+import { PROVIDER_HINT, errorHint } from "../errorHint";
 import { CompactionNote, ReasoningBlock, StepsList } from "./MessageParts";
 import type { ChatItem, TranscriptActions } from "../chatTypes";
 
@@ -202,6 +202,8 @@ export const MessageRow = memo(function MessageRow({
           {item.retryable ? (
             canRetry && (
               <>
+                <br />
+                {PROVIDER_HINT}
                 <br />
                 <button
                   className="primary-btn small"

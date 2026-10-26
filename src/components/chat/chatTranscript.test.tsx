@@ -193,7 +193,38 @@ describe("provider-silence retry (SPEC 6.0.1, Q23)", () => {
     });
     expect(container.querySelector(".error.timeout")).toBeNull();
     expect(container.querySelector(".error button")).toBeNull();
-    expect(container.querySelector(".error")?.textContent).toContain("Проверьте Настройки");
+    expect(container.querySelector(".error")?.textContent).toContain("Похоже, проблема на стороне API-провайдера");
+  });
+
+  it("shows the provider hint when a live run stays silent for a minute", async () => {
+    vi.useFakeTimers();
+    try {
+      const silent: Slice = {
+        loaded: true,
+        items: [],
+        run: { text: "", reasoning: "", steps: [], compactions: [], error: null, local: true },
+        confirmations: [],
+        sendError: null,
+        queue: [],
+        stopping: false,
+        ready: false,
+      };
+      const listRef = { current: null } as React.RefObject<HTMLDivElement | null>;
+      await act(async () => {
+        root.render(
+          <ChatTranscript slice={silent} listRef={listRef} empty="Пусто" projectId={1} chatId={10} />,
+        );
+      });
+      expect(container.querySelector(".chat-slow")).toBeNull();
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(container.querySelector(".chat-slow")?.textContent).toContain(
+        "Похоже, проблема на стороне API-провайдера",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

@@ -1,9 +1,10 @@
-import { useCallback, useRef, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { PinIcon } from "../actions/icons";
 import { AttachXIcon } from "../attachments/MessageAttachments";
 import { MessageRow, RevealAnswer, usePrefersReducedMotion } from "./MessageBubble";
 import { CompactionNote, ReasoningBlock, StepsList } from "./MessageParts";
 import type { Slice, TranscriptActions } from "../chatTypes";
+import { PROVIDER_HINT } from "../errorHint";
 
 // A message typed while a run is live: shown in the transcript immediately as a
 // muted, semi-transparent user bubble with a «В очереди» caption and a remove
@@ -89,6 +90,20 @@ export function ChatTranscript({
   const setRunReveal = useCallback((n: number) => {
     runRevealRef.current = n;
   }, []);
+  const runIsSilent =
+    slice?.run != null &&
+    !slice.run.text &&
+    !slice.run.reasoning &&
+    slice.run.steps.length === 0 &&
+    slice.run.compactions.length === 0;
+  const [slowRun, setSlowRun] = useState(false);
+  useEffect(() => {
+    setSlowRun(false);
+    if (!runIsSilent) return;
+    const timer = window.setTimeout(() => setSlowRun(true), 60_000);
+    return () => window.clearTimeout(timer);
+  }, [runIsSilent]);
+
   const last = items[items.length - 1];
   const lastIsLiveAnswer =
     !!last &&
@@ -159,12 +174,10 @@ export function ChatTranscript({
               {slice.run.compactions.map((c) => (
                 <CompactionNote key={c.key} compaction={c} />
               ))}
-              {!slice.run.text &&
-                !slice.run.reasoning &&
-                slice.run.steps.length === 0 &&
-                slice.run.compactions.length === 0 && (
-                  <span className="note">агент думает…</span>
-                )}
+              {runIsSilent && (
+                <span className="note">агент думает…</span>
+              )}
+              {slowRun && <div className="note chat-slow">{PROVIDER_HINT}</div>}
             </div>
           )}
           {slice.queue.map((text, i) => (

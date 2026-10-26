@@ -162,6 +162,7 @@
 .msg.queued .queued-x:hover { color: var(--danger); background: rgba(0, 0, 0, .05); }
 .queue-flush { display: flex; justify-content: center; padding: var(--sp-1) 0 var(--sp-2); }
 .msg .note { font-size: var(--fs-control); color: var(--text-muted); font-style: italic; }
+.msg .note.chat-slow { font-style: normal; line-height: var(--lh-base); margin-top: var(--sp-1); }
 .msg .error { font-size: var(--fs-control); color: var(--danger); line-height: var(--lh-base); }
 
 /* Markdown в ответах агента: пузыри + кнопки копирования (весь ответ, код-блоки) */
