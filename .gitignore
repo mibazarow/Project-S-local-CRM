@@ -55,3 +55,6 @@ id_ed25519
 *.zip
 *.onnx
 *.onnx_data
+
+# Local GitVerse release token (never commit)
+/DOCS/gitverse-токен.md
