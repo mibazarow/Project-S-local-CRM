@@ -136,3 +136,53 @@
 .primary-btn.danger { background: var(--danger); }
 .primary-btn.danger:hover { background: var(--danger-hover); }
 
+
+/* ---------- Баннер доступного обновления ---------- */
+
+.update-banner {
+  position: fixed;
+  left: var(--sp-4);
+  bottom: calc(var(--sp-4) + 104px);
+  z-index: 991;
+  width: 340px;
+  padding: var(--sp-3) var(--sp-3) var(--sp-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-menu);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+}
+.update-banner-title {
+  padding-right: 18px;
+  font-size: var(--fs-control);
+  font-weight: var(--fw-medium);
+  line-height: var(--lh-base);
+  color: var(--text);
+}
+.update-banner-text {
+  font-size: var(--fs-meta);
+  color: var(--text-muted);
+  line-height: var(--lh-base);
+}
+.update-banner-link {
+  align-self: flex-start;
+  color: var(--accent);
+  font-size: var(--fs-control);
+  text-decoration: underline;
+}
+.update-banner-close {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+.update-banner-close:hover { color: var(--text); }

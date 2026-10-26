@@ -281,6 +281,7 @@ pub fn run() {
             commands::license::license_status,
             commands::license::license_accept,
             commands::license::license_decline,
+            commands::update::check_update,
             commands::settings::config_dir_path,
             commands::settings::read_config,
             commands::settings::write_config,

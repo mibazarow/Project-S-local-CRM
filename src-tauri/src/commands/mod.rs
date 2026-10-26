@@ -23,6 +23,7 @@ pub(crate) mod tasks;
 pub(crate) mod templates;
 pub(crate) mod trash;
 pub(crate) mod undo;
+pub(crate) mod update;
 
 use crate::error::{AppError, Result};
 use crate::state::AppState;

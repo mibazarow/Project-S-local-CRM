@@ -134,3 +134,12 @@ export interface ReindexDone {
   done: number;
   total: number;
 }
+
+export interface UpdateInfo {
+  current: string;
+  latest: string | null;
+  url: string | null;
+  available: boolean;
+  checkedAt: string;
+  cached: boolean;
+}

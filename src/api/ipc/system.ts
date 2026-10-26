@@ -17,6 +17,7 @@ import type {
   ReindexProgress,
   ReindexStatus,
   TrayAction,
+  UpdateInfo,
   WorkingDirInfo,
 } from "../types";
 
@@ -142,3 +143,5 @@ export const onTrayAction = (handler: (payload: TrayAction) => void) =>
 // window: open the capture modal.
 export const onQuickCapture = (handler: () => void) =>
   listen<unknown>("quick-capture", () => handler());
+
+export const checkUpdate = () => invoke<UpdateInfo>("check_update");

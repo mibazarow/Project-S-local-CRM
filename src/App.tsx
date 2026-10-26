@@ -13,6 +13,7 @@ import Toasts from "./components/shared/toast";
 import ConfirmDialogHost from "./components/shared/ConfirmDialogHost";
 import EmbedModelBootstrap from "./components/EmbedModelBootstrap";
 import AppFooter from "./components/AppFooter";
+import UpdateBanner from "./components/UpdateBanner";
 import { setNoteLinkHandler } from "./shared/noteLink";
 import { installExternalLinkHandler } from "./shared/externalLink";
 
@@ -167,6 +168,7 @@ export default function App() {
       <Toasts />
       <ConfirmDialogHost />
       <EmbedModelBootstrap />
+      <UpdateBanner />
     </div>
   );
 }
