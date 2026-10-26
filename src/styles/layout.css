@@ -80,6 +80,46 @@
 }
 .view.active { display: grid; }
 
+/* Тонкая нижняя полоса на всё приложение: тот же тёмный тон, что у сайдбара. */
+.app-footer {
+  height: 26px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 14px;
+  background: var(--toolbar);
+  border-top: 1px solid var(--sidebar-border);
+  font-size: 10.5px;
+  letter-spacing: .01em;
+  user-select: none;
+}
+.app-footer-dev { color: #8BACD0; }
+.app-footer-site {
+  color: #D29200;
+  text-decoration: none;
+  transition: filter .15s;
+}
+.app-footer-site:hover { filter: brightness(1.18); }
+.app-footer-support {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 9px;
+  border: 1px solid #3B5C80;
+  border-radius: 100px;
+  background: #253A51;
+  color: #C0C0C0;
+  text-decoration: none;
+  transition: background .15s, border-color .15s, color .15s;
+}
+.app-footer-support:hover {
+  background: #2E4864;
+  border-color: #4C7096;
+  color: #fff;
+}
+
 /* ---------- Сайдбар ---------- */
 
 .sidebar {

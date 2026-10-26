@@ -1,6 +1,6 @@
 import { Card, Field } from "../shared";
 import Segmented from "../../shared/Segmented";
-import { UI_SCALE_STEPS, uiScaleLabel } from "../../../shared/uiScale";
+import { UI_SCALE_STEPS } from "../../../shared/uiScale";
 
 // UI scale (Q.md item 4): discrete steps, a live-applied webview zoom and a
 // retry button while the last apply failed.
@@ -34,15 +34,6 @@ export function UiScaleCard({
           onChange={(value) => onScale(Number(value))}
           title="Масштаб интерфейса"
         />
-        <span className="scale-value">{uiScaleLabel(percent)}</span>
-        <button
-          type="button"
-          className="ghost-btn small"
-          onClick={() => onScale(100)}
-          disabled={percent === 100}
-        >
-          Сбросить
-        </button>
         {scaleError && (
           <button
             type="button"

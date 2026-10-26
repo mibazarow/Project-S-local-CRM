@@ -92,7 +92,7 @@ async function click(el: HTMLElement) {
 }
 
 describe("OtherTab UI scale control", () => {
-  it("renders the four discrete steps and the current value label", async () => {
+  it("renders the four discrete steps without a duplicate value or reset button", async () => {
     appStub = makeApp(130);
     await mount(appStub);
     for (const step of ["100", "110", "130", "175"]) {
@@ -101,7 +101,8 @@ describe("OtherTab UI scale control", () => {
     for (const removed of ["125", "150", "200"]) {
       expect(btnByText(removed)).toBeUndefined();
     }
-    expect(container.textContent).toContain("130 %");
+    expect(container.textContent).not.toContain("130 %");
+    expect(btnByText("Сбросить")).toBeUndefined();
   });
 
   it("clicking a step persists it and applies the zoom live", async () => {
@@ -129,18 +130,4 @@ describe("OtherTab UI scale control", () => {
     spy.mockRestore();
   });
 
-  it("reset returns the scale to 100 %", async () => {
-    appStub = makeApp(175);
-    await mount(appStub);
-    const reset = btnByText("Сбросить");
-    expect(reset.disabled).toBe(false);
-    await click(reset);
-    expect(updateForm).toHaveBeenCalledWith({ uiScalePercent: 100 });
-    expect(setZoomMock).toHaveBeenCalledWith(1);
-  });
-
-  it("disables reset when already at 100 %", async () => {
-    await mount(appStub);
-    expect(btnByText("Сбросить").disabled).toBe(true);
-  });
 });

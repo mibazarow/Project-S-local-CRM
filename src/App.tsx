@@ -12,6 +12,7 @@ import NotesView from "./components/notes/NotesView";
 import Toasts from "./components/shared/toast";
 import ConfirmDialogHost from "./components/shared/ConfirmDialogHost";
 import EmbedModelBootstrap from "./components/EmbedModelBootstrap";
+import AppFooter from "./components/AppFooter";
 import { setNoteLinkHandler } from "./shared/noteLink";
 import { installExternalLinkHandler } from "./shared/externalLink";
 
@@ -145,6 +146,8 @@ export default function App() {
       ) : (
         <NotesView />
       )}
+
+      <AppFooter />
 
       {settingsOpen && (
         <Suspense fallback={null}>
