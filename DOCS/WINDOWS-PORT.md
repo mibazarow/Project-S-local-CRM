@@ -1,6 +1,6 @@
 # WINDOWS-PORT — Windows 11: текущее состояние и остаток работ
 
-Статус: **сборка под Windows 11 x64 работает**. Релиз **1.0.9** собран 2026-10-25 на коммите `909a761`: ZIP для GitVerse `Project-S-1.0.9-Windows-x64-Setup.zip` — 14 492 926 байт, SHA256 `d2361e42c01d883c5f7c5de74aa217ae8e53d084f23ed82b51f8321dc3876c9f`; внутри NSIS `Project-S 1.0.9 Windows x64 Setup.exe` — 14 509 306 байт, SHA256 `189b4fc2568ed41456193f5f1a27cb97627a8f1a38c367b7afb15b559bd91b41`. Файлы лежат на рабочих столах Windows и Mac, **не установлены**; установленная копия — предыдущая сборка. GUI после нового установщика **не проверен**. На Windows ONNX Runtime работает на CPU; CoreML-провайдер — только macOS. Askpass, Job Objects, single-instance и shell исправлены; WebView2 по решению пользователя остаётся онлайн-загрузчиком. Осталось: длинные/UNC-пути, macOS-only инструменты и production-hardening (подпись, updater).
+Статус: **сборка под Windows 11 x64 работает**. Релиз **1.1.0** собран 2026-10-26 на коммите `74b9da6`: ZIP для GitVerse `Project-S-1.1.0-Windows-x64-Setup.zip` — 14 488 398 байт, SHA256 `026f9e7d7b0910d54b8e251159ec82ce53f7d0c95e490ae70e15911651b23870`; внутри NSIS `Project-S 1.1.0 Windows x64 Setup.exe` — 14 505 047 байт, SHA256 `ca4b8a1426d723ad38a46b96c31cae78d75da6ae7cdf20430e7520d3e683fefb`. Файлы лежат на рабочих столах Windows и Mac, **не установлены**; установленная копия — предыдущая сборка. GUI после нового установщика **не проверен**. На Windows ONNX Runtime работает на CPU; CoreML-провайдер — только macOS. Askpass, Job Objects, single-instance и shell исправлены; WebView2 по решению пользователя остаётся онлайн-загрузчиком. Осталось: длинные/UNC-пути, macOS-only инструменты и production-hardening (подпись, updater).
 
 Scope: **Windows — рабочая сборка для локального использования**; боевые данные и production-hardening (подпись, updater, Credential Manager, Recycle Bin, полный паритет инструментов) остаются отдельным этапом.
 
@@ -71,7 +71,7 @@ Baseline Tauri 2 — **109.0.1518.78** (`CROSPLATFORM.md` §0.1); ниже ил�
 - **Uninstall:** не должен удалять рабочие папки проектов и пользовательские данные; чистить ярлыки/автозапуск.
 - **Автозапуск:** `HKCU\...\Run` или Task Scheduler; учитывать отключение пользователем.
 - **Deep links:** регистрация протокола + передача аргументов в уже запущенный экземпляр (single-instance уже есть, нужна обработка argv).
-- **Размер:** установщик 1.0.9 — 13.84 MiB; модель (~300 МБ) не в бандле и скачивается после онбординга. WebView2 — онлайн-загрузчик, fixedRuntime не используем. Эмбеддинги на Windows считаются на CPU (CoreML — только macOS).
+- **Размер:** установщик 1.1.0 — 13.83 MiB; модель (~300 МБ) не в бандле и скачивается после онбординга. WebView2 — онлайн-загрузчик, fixedRuntime не используем. Эмбеддинги на Windows считаются на CPU (CoreML — только macOS).
 - **CI:** отсутствует; сборка on-demand по SSH. `scripts/install-app.sh` (bash + `ditto`/`xattr`) на Windows неприменим, `npm run app:build`/`app:install` на Windows не использовать.
 
 ## 4. Данные, пути, миграция
@@ -141,7 +141,7 @@ ssh win11 'powershell -NoProfile -Command "cd <repo>; git pull; npm ci; npx taur
 scp -r "win11:<repo>/src-tauri/target/release/bundle" ./artifacts/windows/
 ```
 
-Конфиг обязателен: без `--config src-tauri/tauri.windows.conf.json` Tauri берёт macOS-конфиг. Установщик: `src-tauri\target\release\bundle\nsis\Project-S_1.0.9_x64-setup.exe`; тихая установка per-user: `Start-Process <installer> -ArgumentList '/S' -Wait`. Проверка артефакта: `Get-FileHash` по SHA256.
+Конфиг обязателен: без `--config src-tauri/tauri.windows.conf.json` Tauri берёт macOS-конфиг. Установщик: `src-tauri\target\release\bundle\nsis\Project-S_1.1.0_x64-setup.exe`; тихая установка per-user: `Start-Process <installer> -ArgumentList '/S' -Wait`. Проверка артефакта: `Get-FileHash` по SHA256.
 
 Матрица:
 
@@ -155,13 +155,13 @@ scp -r "win11:<repo>/src-tauri/target/release/bundle" ./artifacts/windows/
 - Антивирус: Defender и сторонний, локи файлов при удалении проекта.
 - Уведомления: toast, клик, действия, Focus Assist, непрочитанные, сон/пробуждение.
 - Сценарии GUI: лицензия, онбординг, проект, «Мои задачи», Kanban/List, заметки/файлы, чат/агент, очередь/stop, расписание, настройки, бэкап/восстановление, архив, удаление проекта, обновление, удаление приложения.
-- **Первый прогон GUI на установщике 1.0.9 ещё не сделан** — это следующий шаг после ручной установки.
+- **Первый прогон GUI на установщике 1.1.0 ещё не сделан** — это следующий шаг после ручной установки.
 
 ## 9. Открытые вопросы
 
 - [ ] Основной установщик: NSIS per-user или MSI per-machine?
 - [ ] WebView2: `fixedRuntime` всегда или системный + fallback? Путь UDF?
-- [ ] Допустим ли размер установщика с фиксированным runtime? Бюджет? (С 1.0.3 модель не в бандле — установщик 1.0.9 ~13.84 MiB.)
+- [ ] Допустим ли размер установщика с фиксированным runtime? Бюджет? (С 1.0.3 модель не в бандле — установщик 1.1.0 ~13.83 MiB.)
 - [ ] Секреты: оставить plaintext JSON (паритет) или Credential Manager/DPAPI? Как мигрировать?
 - [ ] `onnxruntime.dll`: в установщике или отдельным пакетом? (Модель решена в 1.0.3: скачивается приложением после онбординга.)
 - [ ] Автообновление: Tauri updater или внешний канал; какой канал (stable/beta)?
