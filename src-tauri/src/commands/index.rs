@@ -7,6 +7,7 @@ use tauri::{AppHandle, Emitter, State};
 #[tauri::command]
 pub(crate) fn index_notes(app: AppHandle, state: State<AppState>) -> Result<index::IndexStats> {
     let stats = index::index_notes(&state.working_dir()?)?;
+    embed::release_cache();
     let _ = app.emit(
         "index-changed",
         index::IndexChanged {
@@ -27,6 +28,7 @@ pub(crate) struct ProjectIndexStats {
 #[tauri::command]
 pub(crate) fn index_project(app: AppHandle, state: State<AppState>, project_id: i64) -> Result<index::IndexStats> {
     let stats = index::index_project(&state, project_id)?;
+    embed::release_cache();
     let _ = app.emit(
         "index-changed",
         index::IndexChanged {
@@ -55,7 +57,9 @@ fn emit_results(app: &AppHandle, results: Vec<(i64, index::IndexStats)>) -> Vec<
 
 #[tauri::command]
 pub(crate) fn reindex_all(app: AppHandle, state: State<AppState>) -> Result<Vec<ProjectIndexStats>> {
-    Ok(emit_results(&app, index::index_all(&state)?))
+    let result = index::index_all(&state)?;
+    embed::release_cache();
+    Ok(emit_results(&app, result))
 }
 
 // Hard rebuild: wipes the whole file index in one transaction and reindexes
@@ -63,7 +67,9 @@ pub(crate) fn reindex_all(app: AppHandle, state: State<AppState>) -> Result<Vec<
 // progress events as reindex_all.
 #[tauri::command]
 pub(crate) fn reindex_hard(app: AppHandle, state: State<AppState>) -> Result<Vec<ProjectIndexStats>> {
-    Ok(emit_results(&app, index::reindex_hard(&state)?))
+    let result = index::reindex_hard(&state)?;
+    embed::release_cache();
+    Ok(emit_results(&app, result))
 }
 
 #[tauri::command]
@@ -73,7 +79,7 @@ pub(crate) fn index_status(state: State<AppState>, project_id: i64) -> Result<in
 
 // Search reindex («Переиндексация поиска»): manual start from the top bar;
 // the pass runs on its own thread and reports via "reindex-progress" /
-// "reindex-done". The same pass also fires automatically every 5 minutes
+// "reindex-done". The same pass also fires automatically every hour
 // (background tick started in setup / choose_working_dir).
 #[tauri::command]
 pub(crate) fn reindex_start(app: AppHandle, state: State<AppState>) -> Result<search_reindex::ReindexStatus> {

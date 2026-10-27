@@ -98,6 +98,19 @@ pub fn select_embedder(wd: &Path) -> Arc<dyn Embedder> {
     }
 }
 
+#[cfg(feature = "ort-backend")]
+pub fn release_cache() {
+    if let Some(cache) = EMBEDDER_CACHE.get() {
+        cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
+}
+
+#[cfg(not(feature = "ort-backend"))]
+pub fn release_cache() {}
+
 #[cfg(not(feature = "ort-backend"))]
 pub fn select_embedder(_wd: &Path) -> Arc<dyn Embedder> {
     eprintln!(

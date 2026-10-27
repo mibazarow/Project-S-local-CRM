@@ -2,7 +2,7 @@
 // searchable entity — each project (incremental index_root), the Notes vault,
 // the tasks_fts mirror, harness chat message vectors and the memory
 // mirror/vectors. Manual start from the top bar plus an automatic pass every
-// 5 minutes driven by a 30 s background tick; the pass runs on its own thread
+// hour driven by a 30 s background tick; the pass runs on its own thread
 // with its own DB connection and never blocks the UI. Status is global
 // (Mutex-protected) so the button can poll it; progress arrives as
 // "reindex-progress" events and the finish as "reindex-done".
@@ -26,7 +26,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
 // Countdown between passes, also the reset value after every completion.
-pub const REINDEX_INTERVAL_MS: i64 = 5 * 60 * 1000;
+pub const REINDEX_INTERVAL_MS: i64 = 60 * 60 * 1000;
 
 // Auto-tick period: the countdown is checked this often (same cadence as the
 // scheduler thread).
@@ -62,7 +62,7 @@ impl ReindexManager {
         lock_recover(&self.status).clone()
     }
 
-    // First countdown after start: now + 5 min, so the app never reindexes
+    // First countdown after start: now + 1 hour, so the app never reindexes
     // immediately on launch.
     pub fn arm_initial(&self) {
         let mut st = lock_recover(&self.status);
@@ -98,7 +98,13 @@ impl ReindexManager {
     // One full pass with the configured embedder.
     pub fn run_reindex(&self, wd: &Path, emitter: &dyn UiEmitter) -> Result<()> {
         let embedder = embed::select_embedder(wd);
-        self.run_reindex_with(wd, emitter, embedder.as_ref())
+        let result = self.run_reindex_with(wd, emitter, embedder.as_ref());
+        // The hourly pass is the only long-lived user of the embedder. Drop
+        // both the Arc and the process-wide cache entry so the ~300 MB ONNX
+        // session is released until the next pass or an on-demand search.
+        drop(embedder);
+        embed::release_cache();
+        result
     }
 
     // Core pass with an injected embedder (tests pass a fake). Finalizes the
@@ -403,7 +409,7 @@ mod tests {
         assert_eq!((st.done, st.total), (5, 5)); // 1 project + notes + tasks + chats + memory
         assert!(!st.running);
         assert!(st.last_run_at.is_some());
-        assert!(st.next_run_at > now_ms() + 4 * 60 * 1000);
+        assert!(st.next_run_at > now_ms() + 59 * 60 * 1000);
 
         assert_eq!(
             fts_count(&conn, "files_fts", "редизайн", "AND project_id = '1'"),
@@ -497,7 +503,7 @@ mod tests {
         let st = mgr.status();
         assert!(!st.running);
         assert_eq!((st.done, st.total), (5, 5));
-        assert!(st.next_run_at > now_ms() + 4 * 60 * 1000); // countdown reset after completion
+        assert!(st.next_run_at > now_ms() + 59 * 60 * 1000); // countdown reset after completion
 
         // Simulated concurrent pass: a second start is a no-op, no new thread.
         mgr.status.lock().unwrap().running = true;
@@ -525,7 +531,7 @@ mod tests {
         let sink: Arc<dyn UiEmitter> = emitter.clone();
         mgr.arm_initial();
         let armed = mgr.status().next_run_at;
-        assert!(armed > now_ms() + 4 * 60 * 1000 && armed <= now_ms() + 5 * 60 * 1000);
+        assert!(armed > now_ms() + 59 * 60 * 1000 && armed <= now_ms() + 60 * 60 * 1000);
 
         // Not due yet: the tick must not start a pass.
         mgr.start_if_due(wd.clone(), Arc::clone(&sink));
@@ -538,7 +544,7 @@ mod tests {
         let st = mgr.status();
         assert_eq!((st.done, st.total), (5, 5));
         assert!(st.last_run_at.is_some());
-        assert!(st.next_run_at > now_ms() + 4 * 60 * 1000);
+        assert!(st.next_run_at > now_ms() + 59 * 60 * 1000);
         fs::remove_dir_all(&wd).unwrap();
     }
 
@@ -555,7 +561,7 @@ mod tests {
         assert_eq!(rt.status().next_run_at, 0);
         rt.manager().arm_initial();
         let armed = rt.status().next_run_at;
-        assert!(armed > now_ms() + 4 * 60 * 1000 && armed <= now_ms() + 5 * 60 * 1000);
+        assert!(armed > now_ms() + 59 * 60 * 1000 && armed <= now_ms() + 60 * 60 * 1000);
     }
 
     #[test]
