@@ -21,6 +21,14 @@
 - `README.md` — обзор проекта для человека.
 - `UPDATES.md` — обновления для пользователей и план автообновления.
 - `CROSPLATFORM.md` — обязательный протокол связи macOS ↔ Windows ↔ Linux.
+- `DOCS/gitverse-токен.md`, `DOCS/github-token.md` — локальные токены публикации релизов (в git не попадают, в `.gitignore`).
+
+## Репозитории и релизы (GitVerse + GitHub)
+
+- Два remote: `origin` — GitVerse (основной), `github` — GitHub (зеркало). Один код, две площадки.
+- Push: `git push origin master --tags && git push github master --tags`.
+- Релиз публикуется на GitVerse, затем зеркалится на GitHub **теми же файлами** (имя, тело, ассеты 1:1). GitHub принимает `.exe`, но зеркало держим идентичным — расхождений в ассетах не заводим.
+- Токены только локально: `DOCS/gitverse-токен.md` и `DOCS/github-token.md`, права `600`, оба в `.gitignore`. В чат, коммиты и документацию их не вставлять.
 
 ## Кроссплатформенная работа (обязательно)
 

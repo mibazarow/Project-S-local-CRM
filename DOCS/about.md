@@ -94,7 +94,8 @@ AI-чат проекта и Харнес работают через один а
 | Windows 11 x64 | **опубликовано:** [v1.2.0](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.0) | ZIP `Project-S-1.2.0-Windows-x64-Setup.zip` (14 524 593 Б, SHA256 `aed83f43…a950b`), внутри NSIS `Project-S 1.2.0 Windows x64 Setup.exe` (14 541 089 Б, SHA256 `59375c80…42cfb`); ONNX на Windows — CPU, CoreML только на macOS |
 | Linux | в плане | Flatpak (один пакет для большинства дистрибутивов) |
 
-- Релизный тег `v1.2.0` — на `master`; macOS и Windows собраны из одного коммита. Публичный релиз: https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.0. Linux будет добавлен в следующий тег.
+- Релизный тег `v1.2.0` — на `master`; macOS и Windows собраны из одного коммита. Публичный релиз: https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.0; зеркало с теми же ассетами: https://github.com/mibazarow/Project-S-local-CRM/releases/tag/v1.2.0. Linux будет добавлен в следующий тег.
+- Два remote: `origin` — GitVerse (основной), `github` — GitHub (зеркало). Пуш: `git push origin master --tags && git push github master --tags`. Токены лежат локально в `DOCS/gitverse-токен.md` и `DOCS/github-token.md` и в git не попадают.
 - Windows-сборка идёт с macOS по SSH на build-хост; production-hardening (подпись, updater, Credential Manager) для текущей Windows-сборки не блокирует. Подробности — [`CROSPLATFORM.md`](../CROSPLATFORM.md), [`DOCS/WINDOWS-PORT.md`](WINDOWS-PORT.md).
 - Linux: WebKitGTK, Flatpak, XDG, sandbox, Wayland — [`DOCS/LINUX-PORT.md`](LINUX-PORT.md).
 - На Windows нужны `onnxruntime.dll` и MSVC runtime; CRT-конфликт решён вендорингом `esaxx-rs` (`vendor/`, `[patch.crates-io]`).
@@ -154,7 +155,7 @@ Project-S распространяется по **source-available** лицен�
 
 ## Дорожная карта
 
-- Релизы на GitVerse: macOS DMG и Windows NSIS — [1.2.0 опубликованы](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.0), Linux Flatpak — следом.
+- Релизы в GitVerse и на GitHub (зеркало): macOS DMG и Windows NSIS — [1.2.0 опубликованы](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.0), Linux Flatpak — следом.
 - Linux-порт (Flatpak) — [`DOCS/LINUX-PORT.md`](LINUX-PORT.md).
 - Windows: подпись, updater, паритет инструментов — [`DOCS/WINDOWS-PORT.md`](WINDOWS-PORT.md).
 - Живые очереди: [`DOCS/Q.md`](Q.md) (задачи/баги), [`DOCS/REFACTOR_PLAN.md`](REFACTOR_PLAN.md) (срезы рефакторинга).

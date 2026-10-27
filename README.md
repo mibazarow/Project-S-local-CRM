@@ -113,7 +113,7 @@ Project-S собирает работу в одно окно. Проект зд�
 
 Модель эмбеддингов Gemma 2 (~300 МБ) не вшита в установщик: приложение скачивает её один раз после онбординга с Hugging Face и показывает прогресс. Без неё поиск работает только по словам — установщик из-за этого заметно меньше.
 
-Релизы публикуются в GitVerse ([репозиторий Project-S-local-CRM](https://gitverse.ru/mibazarow/Project-S-local-CRM)): macOS и Windows уже в [релизе 1.2.0](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.0). Linux — следом.
+Релизы публикуются в GitVerse ([репозиторий Project-S-local-CRM](https://gitverse.ru/mibazarow/Project-S-local-CRM)) и зеркалятся на GitHub ([Project-S-local-CRM](https://github.com/mibazarow/Project-S-local-CRM)): macOS и Windows уже в [релизе 1.2.0](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.0). Linux — следом.
 
 Автоматической установки обновлений пока нет: приложение проверяет обновления раз в 8 часов и показывает баннер новой версии. Как поставить новую версию вручную — [UPDATES.md](UPDATES.md).
 
@@ -123,13 +123,13 @@ Project-S собирает работу в одно окно. Проект зд�
 
 ## Что дальше
 
-- Публичные релизы в GitVerse: macOS и Windows 1.2.0 — опубликованы; Linux Flatpak — следом.
+- Публичные релизы в GitVerse и на GitHub: macOS и Windows 1.2.0 — опубликованы; Linux Flatpak — следом.
 - Linux-порт и доводка Windows (подпись, автообновление).
 - Расширение скиллов и интеграций агента, полировка UI по очереди задач от реальных пользователей.
 
 ## Попробовать
 
-**Релиз 1.2.0:** [Project-S 1.2.0 — macOS + Windows](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.0).
+**Релиз 1.2.0:** [Project-S 1.2.0 — macOS + Windows](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.0) · [зеркало на GitHub](https://github.com/mibazarow/Project-S-local-CRM/releases/tag/v1.2.0).
 
 - **macOS (Apple Silicon):** скачайте `Project-S-1.2.0-macOS-ARM.dmg`, откройте DMG и перетащите Project-S в Applications. Сборка не нотаризована: при первом запуске может понадобиться правый клик по приложению → «Открыть».
 - **Windows 11 x64:** скачайте `Project-S-1.2.0-Windows-x64-Setup.zip`, распакуйте и запустите `Project-S 1.2.0 Windows x64 Setup.exe`. Установщик не подписан: SmartScreen → «Подробнее» → «Выполнить всё равно».
