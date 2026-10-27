@@ -161,11 +161,11 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 
 - **Разработка продукта — только на macOS.** Windows/Linux: порт, платформенный слой, сборка.
 - Версия: **1.2.0**.
-- Ветка: **master**; remote `origin` — приватный GitVerse.
+- Ветка: **master**; remotes: `origin` — GitVerse (основной), `github` — GitHub (зеркало кода и релизов).
 - Схема БД: **v40**.
 - Встроенных скиллов: **38**.
 - Модель эмбеддингов: **не в git и не в бандле** (с 1.0.3); ~300 МБ, приложение скачивает разово после онбординга (UI-прогресс, повтор при ошибке); без неё — только FTS-поиск.
-- macOS: рабочая сборка, aarch64. **Публичный релиз 1.2.0 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.0 (tag `v1.2.0`, commit `dbd6d43`, release id `548941103`). Ассет `Project-S-1.2.0-macOS-ARM.dmg` — 22 042 028 байт, SHA256 `36486ad598e46e96285d108e64d468ac4f2e58f1a12b06e427b2af2eae622b05`; контрольная сумма отдельным `.sha256.txt`. Сборка ad-hoc, не нотаризована; 1.2.0 установлен в `/Applications/Project-S.app`.
+- macOS: рабочая сборка, aarch64. **Публичный релиз 1.2.0 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.0 (tag `v1.2.0`, commit `dbd6d43`, release id `548941103`) **и зеркалён на GitHub:** https://github.com/mibazarow/Project-S-local-CRM/releases/tag/v1.2.0 (release id `425902377`, те же 5 ассетов). Ассет `Project-S-1.2.0-macOS-ARM.dmg` — 22 042 028 байт, SHA256 `36486ad598e46e96285d108e64d468ac4f2e58f1a12b06e427b2af2eae622b05`; контрольная сумма отдельным `.sha256.txt`. Сборка ad-hoc, не нотаризована; 1.2.0 установлен в `/Applications/Project-S.app`.
 - Windows: **рабочая сборка 1.2.0 собрана 2026-10-26 на `dbd6d43`**. ZIP для GitVerse `Project-S-1.2.0-Windows-x64-Setup.zip` — 14 524 593 байт, SHA256 `aed83f43f5a0fbfa1abf2512b7173c97f289c4b98ae3b48918b0e9e7ba3a950b`; внутри NSIS `Project-S 1.2.0 Windows x64 Setup.exe` — 14 541 089 байт, SHA256 `59375c80d2a3515a849539aadb247469d099ea91928aeb716cb4a91f4ba42cfb`. GitVerse не принимает `.exe`, поэтому в релизе ZIP. На Windows эмбеддинги считаются на CPU: CoreML EP запрашивается только на macOS. Файлы лежат на рабочих столах Windows и Mac; **1.2.0 не установлен**, GUI не запускался.
 - Windows, установленная копия: предыдущая сборка per-user; 1.2.0 не установлен, GUI не проверялся.
 - Доступ к Windows VM проверен 2026-10-23: `DOCS/WINDOWS-ACCESS.md`; Windows HEAD `ada814c`, рабочее дерево чистое.
@@ -202,6 +202,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Действие: <что сделать / user|macos> — или [DONE]
 - Статус: waiting | done
 ```
+
+### 2026-10-27 19:40 UTC — macOS
+- Ветка: `master`
+- Коммит: `5c71e18`
+- Сделано: репозиторий заведён на двух площадках. Добавлен remote `github` (https://github.com/mibazarow/Project-S-local-CRM), `master` и все теги (`v1.0.3`, `v1.0.5`–`v1.2.0`) запушены fast-forward без force. На GitHub созданы 8 релизов — зеркало GitVerse 1:1: те же имена, тела и ассеты (37 файлов, ~264 МБ), SHA256 каждого бинарника сверен после загрузки. Оформление репозитория: описание, homepage `https://bazarow.ru/`, 10 topics, `latest` = `v1.2.0`. Токен GitHub — в `DOCS/github-token.md` (0600, в `.gitignore`), доступ к GitHub через локальный credential helper вне репозитория. Документация: `AGENTS.md` (раздел «Репозитории и релизы»), `README.md`, `DOCS/about.md`.
+- Влияние: только публикация и документация; код, БД, контракты и сборка не менялись. Для Windows/Linux действий нет — `git pull` подтянет обычный `master`.
+- Действие: `[DONE]` — дальше каждый релиз публикуем на GitVerse и зеркалим на GitHub тем же набором файлов.
+- Статус: done
 
 ### 2026-10-27 08:30 UTC — macOS
 - Ветка: `master`
