@@ -155,30 +155,43 @@ pub fn parse_probe(raw: &str) -> Value {
 }
 
 /// What the numbers mean, in one stable token plus a human sentence.
+///
+/// Careful: `02:00:00:00:00:00` in `ifconfig` and reject routes on en0 also
+/// show up on a Mac where the LAN works fine (a TUN client sits in front of
+/// the stack), so they are a hint, not proof. A populated ARP table is the
+/// strongest sign that the stack itself is fine.
 fn verdict(data: &Value) -> (&'static str, &'static str) {
     let zeroed = data["zeroedMacs"].as_u64().unwrap_or(0);
     let reject = data["rejectRoutes"].as_u64().unwrap_or(0);
     let arp = data["arpEntries"].as_u64().unwrap_or(0);
-    if zeroed > 0 {
+    if arp > 0 {
         (
-            "local-network-denied",
-            "Все интерфейсы показывают заглушку 02:00:00:00:00:00: доступ к локальной сети закрыт \
-на уровне системы (разрешение «Локальная сеть» для Project-S) либо сеть перехвачена TUN-клиентом.",
+            "stack-looks-ok",
+            "ARP-таблица заполнена: сетевой стек работает. Скорее всего, хост выключен, \
+не в той подсети или закрыт файрволом.",
+        )
+    } else if zeroed > 0 && reject > 0 {
+        (
+            "interception-layer",
+            "Интерфейсы показывают заглушку 02:00:00:00:00:00, а на en0 есть reject-маршруты: \
+либо доступ к локальной сети закрыт именно для Project-S, либо трафик перехватывает TUN/VPN-клиент. \
+Если Терминал в этот же момент видит сеть — разрешение выдано ему, а не приложению.",
+        )
+    } else if zeroed > 0 {
+        (
+            "zeroed-interfaces",
+            "ifconfig показывает заглушку 02:00:00:00:00:00 у интерфейсов — типичный признак \
+закрытого доступа к локальной сети на уровне системы.",
         )
     } else if reject > 0 {
         (
             "reject-routes",
-            "На en0 есть reject-маршруты (флаг !): обычно это след аварийно завершённого TUN/VPN-клиента. \
-Помогает полное выключение клиента и перезагрузка Mac.",
-        )
-    } else if arp == 0 {
-        (
-            "no-arp-entries",
-            "ARP-таблица пуста: локальные адреса не резолвятся. Проверьте, что хост включён и в той же подсети.",
+            "На en0 есть reject-маршруты (флаг !): обычно это след аварийно завершённого \
+TUN/VPN-клиента. Помогает полное выключение клиента и перезагрузка Mac.",
         )
     } else {
         (
-            "unreachable",
+            "no-anomaly",
             "Снимок сети не показывает явной блокировки: хост может быть выключен или закрыт файрволом.",
         )
     }
@@ -229,7 +242,7 @@ destination: 192.168.1.122\n\
     #[test]
     fn detects_denied_local_network() {
         let data = finish(parse_probe(DENIED));
-        assert_eq!(data["verdict"], "local-network-denied");
+        assert_eq!(data["verdict"], "interception-layer");
         assert_eq!(data["zeroedMacs"], 15);
         assert_eq!(data["rejectRoutes"], 5);
         assert_eq!(data["arpEntries"], 0);
@@ -242,17 +255,23 @@ destination: 192.168.1.122\n\
     #[test]
     fn detects_leftover_reject_routes() {
         let raw = "ifconfigMac=fc:b2:14:c4:a1:57\nnetworksetupMac=fc:b2:14:c4:a1:57\n\
-zeroedMacs=0\nrejectRoutes=3\narpEntries=2\n";
+zeroedMacs=0\nrejectRoutes=3\narpEntries=0\n";
         let data = finish(parse_probe(raw));
         assert_eq!(data["verdict"], "reject-routes");
     }
 
     #[test]
-    fn reports_empty_arp_and_clean_stack() {
-        let empty = finish(parse_probe("zeroedMacs=0\nrejectRoutes=0\narpEntries=0\n"));
-        assert_eq!(empty["verdict"], "no-arp-entries");
-        let clean = finish(parse_probe("zeroedMacs=0\nrejectRoutes=0\narpEntries=4\n"));
-        assert_eq!(clean["verdict"], "unreachable");
+    fn populated_arp_outranks_the_zeroed_interface_hint() {
+        // A working LAN on a Mac behind a TUN client still shows zeroed MACs
+        // and reject routes; a filled ARP table is the stronger signal.
+        let working = finish(parse_probe(
+            "zeroedMacs=15\nrejectRoutes=6\narpEntries=2\n",
+        ));
+        assert_eq!(working["verdict"], "stack-looks-ok");
+        let clean = finish(parse_probe("zeroedMacs=0\nrejectRoutes=0\narpEntries=0\n"));
+        assert_eq!(clean["verdict"], "no-anomaly");
+        let zeroed = finish(parse_probe("zeroedMacs=4\nrejectRoutes=0\narpEntries=0\n"));
+        assert_eq!(zeroed["verdict"], "zeroed-interfaces");
     }
 
     #[test]
