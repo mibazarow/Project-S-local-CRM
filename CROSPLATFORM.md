@@ -34,7 +34,8 @@
 3. **UI/UX:** решения за macOS. Windows — нативный titlebar, Segoe UI, Ctrl вместо Cmd, DPI через платформенный слой; без редизайна.
 4. **WebView2:** baseline **109.0.1518.78** (Tauri 2); по решению пользователя используем онлайн-загрузчик `downloadBootstrapper`, fixed runtime не поставляем.
 5. **Ресурсы:** единый `resource_dir()` + fallback `exe_dir/resources` для dev. macOS добавляет helper; `paths.rs` — `notes_dir` и `harness_inbox_dir`. С 1.0.3 модель эмбеддингов **не бандлится**: приложение скачивает её само после онбординга в `<workingDir>/Settings/models/embeddinggemma-2/` (HF `onnx-community/embeddinggemma-2-ONNX`, ~300 МБ, UI-прогресс, FTS-fallback). Скрипты `scripts/stage-embed-model.sh` / `scripts/windows/stage-embed-model.ps1` — только для разработчиков (`npm run model:stage`).
-6. **Vendor CRT-патч:** `esaxx-rs 0.1.10` вендорен в `vendor/esaxx-rs` и подключён через `[patch.crates-io]` в `src-tauri/Cargo.toml`; в `build.rs` для Windows убран `static_crt(true)` — иначе LNK2038/LNK2005 против dynamic CRT (`/MD`) у prebuilt ONNX Runtime. Не возвращать. Дельта против crates.io только эта: плюс удалённые секции `[[example]]`/`[[bench]]` (их каталоги не вендорены). Патч нужен, пока `tokenizers` → `esaxx-rs` в дереве (`ort-backend` — дефолтный бэкенд эмбеддингов).
+6. **Локальная сеть (macOS 15+):** инструменты `bash`/`ssh_*` запускают процессы без своего sandbox-профиля и без подмены прокси — они обязаны видеть тот же сетевой стек, что Terminal.app. Разрешение «Локальная сеть» выдаётся системе по приложению, поэтому сборка подписывается ad-hoc с постоянным идентификатором `app.project-s.ru` (`bundle.macOS.signingIdentity: "-"`), а в `src-tauri/Info.plist` объявлен `NSLocalNetworkUsageDescription`. Изоляция — только opt-in (`sandbox: true` у `bash`, macOS). При `EHOSTUNREACH` инструменты прикладывают `hint` + `diagnostics` (`src-tauri/src/netdiag.rs`).
+7. **Vendor CRT-патч:** `esaxx-rs 0.1.10` вендорен в `vendor/esaxx-rs` и подключён через `[patch.crates-io]` в `src-tauri/Cargo.toml`; в `build.rs` для Windows убран `static_crt(true)` — иначе LNK2038/LNK2005 против dynamic CRT (`/MD`) у prebuilt ONNX Runtime. Не возвращать. Дельта против crates.io только эта: плюс удалённые секции `[[example]]`/`[[bench]]` (их каталоги не вендорены). Патч нужен, пока `tokenizers` → `esaxx-rs` в дереве (`ort-backend` — дефолтный бэкенд эмбеддингов).
 
 ## 0.2. Режим работы: macOS по умолчанию, Windows по команде
 
@@ -160,13 +161,13 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 ## 5. Текущее состояние (обновлять при изменениях)
 
 - **Разработка продукта — только на macOS.** Windows/Linux: порт, платформенный слой, сборка.
-- Версия: **1.2.0**.
+- Версия: **1.2.1**.
 - Ветка: **master**; remotes: `origin` — GitVerse (основной), `github` — GitHub (зеркало кода и релизов).
 - Схема БД: **v40**.
 - Встроенных скиллов: **38**.
 - Модель эмбеддингов: **не в git и не в бандле** (с 1.0.3); ~300 МБ, приложение скачивает разово после онбординга (UI-прогресс, повтор при ошибке); без неё — только FTS-поиск.
-- macOS: рабочая сборка, aarch64. **Публичный релиз 1.2.0 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.0 (tag `v1.2.0`, commit `dbd6d43`, release id `548941103`) **и зеркалён на GitHub:** https://github.com/mibazarow/Project-S-local-CRM/releases/tag/v1.2.0 (release id `425902377`, те же 5 ассетов). Ассет `Project-S-1.2.0-macOS-ARM.dmg` — 22 042 028 байт, SHA256 `36486ad598e46e96285d108e64d468ac4f2e58f1a12b06e427b2af2eae622b05`; контрольная сумма отдельным `.sha256.txt`. Сборка ad-hoc, не нотаризована; 1.2.0 установлен в `/Applications/Project-S.app`.
-- Windows: **рабочая сборка 1.2.0 собрана 2026-10-26 на `dbd6d43`**. ZIP для GitVerse `Project-S-1.2.0-Windows-x64-Setup.zip` — 14 524 593 байт, SHA256 `aed83f43f5a0fbfa1abf2512b7173c97f289c4b98ae3b48918b0e9e7ba3a950b`; внутри NSIS `Project-S 1.2.0 Windows x64 Setup.exe` — 14 541 089 байт, SHA256 `59375c80d2a3515a849539aadb247469d099ea91928aeb716cb4a91f4ba42cfb`. GitVerse не принимает `.exe`, поэтому в релизе ZIP. На Windows эмбеддинги считаются на CPU: CoreML EP запрашивается только на macOS. Файлы лежат на рабочих столах Windows и Mac; **1.2.0 не установлен**, GUI не запускался.
+- macOS: рабочая сборка, aarch64. **Публичный релиз 1.2.1 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.1 (tag `v1.2.1`, commit `a5082f6`, release id `548946225`) **и зеркалён на GitHub:** https://github.com/mibazarow/Project-S-local-CRM/releases/tag/v1.2.1 (release id `426455599`, те же 5 ассетов). Ассет `Project-S-1.2.1-macOS-ARM.dmg` — 21 716 067 байт, SHA256 `b4de296e7de45f06ad0c3eb6fa71f018d710b356eaa07d422339aa532ee89b96`; контрольная сумма отдельным `.sha256.txt`. Сборка ad-hoc с постоянным идентификатором `app.project-s.ru`, не нотаризована; 1.2.1 установлен в `/Applications/Project-S.app`.
+- Windows: **рабочая сборка 1.2.1 собрана 2026-10-28 на `a5082f6`** скриптом `scripts/windows/build.ps1`. ZIP для GitVerse `Project-S-1.2.1-Windows-x64-Setup.zip` — 14 518 651 байт, SHA256 `91df51779957ba72589d4a05a6b1b694be5bef702f88dfb074978cb289a0890b`; внутри NSIS `Project-S 1.2.1 Windows x64 Setup.exe` — 14 535 129 байт, SHA256 `782d486685d7c46656f6127b0815ad33366fe2bdfcbfb8a78c20c9f82d42c8fd`. GitVerse не принимает `.exe`, поэтому в релизе ZIP. На Windows эмбеддинги считаются на CPU: CoreML EP запрашивается только на macOS. **1.2.1 не установлен**, GUI не запускался.
 - Windows, установленная копия: предыдущая сборка per-user; 1.2.0 не установлен, GUI не проверялся.
 - Доступ к Windows VM проверен 2026-10-23: `DOCS/WINDOWS-ACCESS.md`; Windows HEAD `ada814c`, рабочее дерево чистое.
 - Linux: план, реализации нет.
@@ -202,6 +203,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Действие: <что сделать / user|macos> — или [DONE]
 - Статус: waiting | done
 ```
+
+### 2026-10-28 12:15 UTC — macOS
+- Ветка: `master`
+- Коммит: `a5082f6` (тег `v1.2.1`)
+- Сделано: закрыт пункт Q.md про недоступную локальную сеть. Причина — не код и не seatbelt: macOS 15+ выдаёт разрешение «Локальная сеть» каждому приложению отдельно, а сборка была подписана ad-hoc с хешем в идентификаторе (`project_s-<hash>`), поэтому грант терялся при каждой переустановке; строки `NSLocalNetworkUsageDescription` не было вовсе. Исправлено: `src-tauri/Info.plist` с описанием доступа к LAN; `bundle.macOS.signingIdentity: "-"` — бандл (и DMG) подписывается ad-hoc с постоянным `app.project-s.ru`; `scripts/install-app.sh` переподписывает установленную копию тем же идентификатором. Добавлен `src-tauri/src/netdiag.rs`: при `EHOSTUNREACH`/`ENETUNREACH` `bash` и `ssh_exec`/`ssh_upload`/`ssh_download`/`ssh_install_key` возвращают поля `hint` и `diagnostics` (MAC из `ifconfig` и `networksetup`, число заглушек `02:00:00:00:00:00`, reject-маршруты, ARP, `route -n get`); у `bash` появился `diagnose: true` и opt-in `sandbox: true` (`sandbox-exec`, «всё кроме сети», macOS). Инструменты по-прежнему запускаются без своего sandbox-профиля и без подмены прокси. Windows: добавлен `scripts/windows/build.ps1` (pull → npm ci → tauri build с windows-конфигом), починен импорт `Path` в `platform/process.rs`.
+- Влияние: поведение инструментов по умолчанию не изменилось; новые поля результата и два необязательных аргумента. Windows-сборка обязана идти через `scripts/windows/build.ps1` — там проверяются коды возврата. Разрешение «Локальная сеть» пользователь подтверждает один раз после установки; при переустановке идентификатор не меняется.
+- Действие: `[ACTION: user]` установить 1.2.1, при первом LAN-запросе разрешить «Локальную сеть» и проверить `ssh_exec` к LAN-хосту; `[ACTION: user]` установить Windows 1.2.1 и проверить GUI.
+- Статус: done
 
 ### 2026-10-27 19:40 UTC — macOS
 - Ветка: `master`
