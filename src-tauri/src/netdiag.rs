@@ -11,9 +11,12 @@
 // The probe is cheap, read-only and only runs when a command actually fails
 // with an unreachable error (or when the caller asks for `diagnose: true`).
 use serde_json::{json, Value};
+#[cfg(any(target_os = "macos", test))]
 use std::process::{Command, Stdio};
+#[cfg(any(target_os = "macos", test))]
 use std::time::{Duration, Instant};
 
+#[cfg(any(target_os = "macos", test))]
 const PROBE_TIMEOUT: Duration = Duration::from_secs(4);
 
 pub const HINT: &str = "Локальная сеть недоступна из окружения инструмента, хотя интернет может работать. \
@@ -56,6 +59,7 @@ pub fn host_from(text: &str) -> Option<String> {
 }
 
 /// Safe to splice into the probe script: hostnames and IPs only.
+#[cfg(any(target_os = "macos", test))]
 fn valid_probe_target(target: &str) -> bool {
     !target.is_empty()
         && target.len() <= 255
@@ -65,6 +69,7 @@ fn valid_probe_target(target: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | ':' | '_'))
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn probe_script(target: Option<&str>) -> String {
     let mut script = String::from(
         "if_mac=$(ifconfig en0 2>/dev/null | awk '/ether/{print $2; exit}'); \
@@ -84,6 +89,7 @@ printf 'ifconfigMac=%s\\nnetworksetupMac=%s\\nzeroedMacs=%s\\nrejectRoutes=%s\\n
 }
 
 /// Run the probe script with a hard deadline. `None` means it did not finish.
+#[cfg(any(target_os = "macos", test))]
 fn run_probe(script: &str) -> Option<String> {
     let mut child = Command::new("/bin/sh")
         .arg("-c")
@@ -122,6 +128,7 @@ fn run_probe(script: &str) -> Option<String> {
 }
 
 /// Turn the raw probe output into the fields the tools report.
+#[cfg(any(target_os = "macos", test))]
 pub fn parse_probe(raw: &str) -> Value {
     let (stats, route) = match raw.split_once("---route---") {
         Some((stats, route)) => (stats, Some(route.trim())),

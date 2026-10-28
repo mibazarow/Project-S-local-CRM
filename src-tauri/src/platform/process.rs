@@ -11,10 +11,10 @@
 use std::process::{Child, Command, Stdio};
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
+#[cfg(any(windows, target_os = "macos"))]
+use std::path::Path;
 #[cfg(windows)]
 use std::path::PathBuf;
-#[cfg(target_os = "macos")]
-use std::path::Path;
 #[cfg(windows)]
 use std::sync::OnceLock;
 #[cfg(windows)]
