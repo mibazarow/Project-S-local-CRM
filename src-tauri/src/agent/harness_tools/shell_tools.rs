@@ -3,11 +3,17 @@
 // timeout that kills the command and everything it spawned (see the platform
 // process seam), and capped stdout/stderr. The background twin lives in
 // process_tools.rs.
+//
+// The child inherits the app's environment and runs unsandboxed by default:
+// it must see the same network stack as Terminal.app, otherwise LAN hosts and
+// SSH become unreachable (see netdiag). `sandbox: true` opts into seatbelt
+// network isolation, `diagnose: true` attaches a network snapshot.
 use crate::agent::project_tools::require_wd;
 use crate::agent::result::{read_capped, ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use super::resolve_path;
 use crate::error::Result;
+use crate::netdiag;
 use crate::paths;
 use crate::platform;
 use serde_json::{json, Value};
@@ -43,9 +49,9 @@ impl Tool for BashTool {
     }
     fn description(&self) -> &str {
         if cfg!(windows) {
-            "Run a shell command. On Windows it uses Git Bash when installed, otherwise Windows PowerShell with UTF-8 output (default cwd: Harness/). TMPDIR/TEMP/TMP point at Harness/tmp/, never the system temp. Returns exitCode, stdout, stderr; 120 s timeout."
+            "Run a shell command. On Windows it uses Git Bash when installed, otherwise Windows PowerShell with UTF-8 output (default cwd: Harness/). TMPDIR/TEMP/TMP point at Harness/tmp/, never the system temp. Returns exitCode, stdout, stderr; 120 s timeout. diagnose:true attaches a network snapshot."
         } else {
-            "Run a shell command via sh -c (default cwd: Harness/). TMPDIR/TEMP/TMP point at Harness/tmp/, never the system /tmp. Returns exitCode, stdout, stderr; 120 s timeout."
+            "Run a shell command via sh -c (default cwd: Harness/). TMPDIR/TEMP/TMP point at Harness/tmp/, never the system /tmp. Returns exitCode, stdout, stderr; 120 s timeout. diagnose:true attaches a network snapshot; sandbox:true (macOS) denies network access."
         }
     }
     fn parameters(&self) -> Value {
@@ -53,7 +59,15 @@ impl Tool for BashTool {
             "type": "object",
             "properties": {
                 "command": { "type": "string" },
-                "cwd": { "type": "string" }
+                "cwd": { "type": "string" },
+                "diagnose": {
+                    "type": "boolean",
+                    "description": "Attach a local network snapshot (interface MACs, reject routes, ARP, route) to the result even when the command succeeds."
+                },
+                "sandbox": {
+                    "type": "boolean",
+                    "description": "macOS only, opt-in: deny all network access for this command. Default false — the command keeps the app's normal network stack."
+                }
             },
             "required": ["command"],
             "additionalProperties": false
@@ -81,7 +95,21 @@ impl Tool for BashTool {
             _ => paths::harness_dir(&wd),
         };
         fs::create_dir_all(&cwd)?;
-        let mut child = platform::process::tool_command(command)
+        let sandbox = args.get("sandbox").and_then(Value::as_bool).unwrap_or(false);
+        let mut command_builder = if sandbox {
+            match platform::process::sandboxed_tool_command(command) {
+                Some(cmd) => cmd,
+                None => {
+                    return Ok(ToolResult::err(
+                        ToolErrorCode::InvalidArgs,
+                        "sandbox: true is supported only on macOS",
+                    ))
+                }
+            }
+        } else {
+            platform::process::tool_command(command)
+        };
+        let mut child = command_builder
             .current_dir(&cwd)
             .env("TMPDIR", &tmp)
             .env("TEMP", &tmp)
@@ -120,14 +148,23 @@ impl Tool for BashTool {
         };
         let (stdout, out_cut) = out_thread.join().unwrap_or_default().unwrap_or_default();
         let (stderr, err_cut) = err_thread.join().unwrap_or_default().unwrap_or_default();
-        Ok(ToolResult::ok(json!({
+        let exit_code = status.code().unwrap_or(-1);
+        let unreachable = exit_code != 0 && netdiag::looks_unreachable(&stderr);
+        let mut data = json!({
             "cwd": cwd.display().to_string(),
-            "exitCode": status.code().unwrap_or(-1),
+            "exitCode": exit_code,
             "stdout": stdout,
             "stderr": stderr,
             "truncated": out_cut || err_cut,
-        }))
-        .capped(self.max_result_len()))
+        });
+        if unreachable || args.get("diagnose").and_then(Value::as_bool).unwrap_or(false) {
+            let host = netdiag::host_from(&stderr);
+            data["diagnostics"] = netdiag::snapshot(host.as_deref());
+        }
+        if unreachable {
+            data["hint"] = json!(netdiag::HINT);
+        }
+        Ok(ToolResult::ok(data).capped(self.max_result_len()))
     }
 }
 
@@ -328,6 +365,55 @@ mod tests {
         assert!(r.error.unwrap().message.contains("cancelled"));
         let pid = grandchild_pid(&pidfile);
         assert!(pid_is_gone(pid), "grandchild {pid} survived the cancel kill");
+        cleanup(&env.wd);
+    }
+
+    #[test]
+    fn bash_diagnose_attaches_network_snapshot() {
+        let env = setup("ht-bash-diagnose");
+        let r = exec("bash", json!({ "command": "echo hi", "diagnose": true }), &env.ctx);
+        assert!(r.ok, "{:?}", r.error);
+        let data = r.data.unwrap();
+        assert!(data["diagnostics"]["verdict"].is_string(), "{data}");
+        assert!(data["diagnostics"]["hint"].is_string());
+        // A successful command carries no error hint.
+        assert!(data.get("hint").is_none());
+        cleanup(&env.wd);
+    }
+
+    #[test]
+    fn bash_plain_command_has_no_diagnostics() {
+        let env = setup("ht-bash-nodiag");
+        let r = exec("bash", json!({ "command": "echo hi" }), &env.ctx);
+        let data = r.data.unwrap();
+        assert!(data.get("diagnostics").is_none());
+        cleanup(&env.wd);
+    }
+
+    // Opt-in isolation: a raw socket is denied inside the seatbelt, while the
+    // same command without the flag reaches the stack normally.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sandbox_flag_denies_network_but_not_the_shell() {
+        let env = setup("ht-bash-sandbox");
+        let probe = json!({ "command": "echo alive; ping -c 1 -t 1 127.0.0.1" });
+
+        let plain = exec("bash", probe.clone(), &env.ctx);
+        let plain = plain.data.unwrap();
+        assert!(plain["stdout"].as_str().unwrap().starts_with("alive\n"));
+        assert_eq!(plain["exitCode"], 0, "{plain}");
+
+        let mut sandboxed_args = probe;
+        sandboxed_args["sandbox"] = json!(true);
+        let sandboxed = exec("bash", sandboxed_args, &env.ctx);
+        let sandboxed = sandboxed.data.unwrap();
+        assert!(sandboxed["stdout"].as_str().unwrap().starts_with("alive\n"));
+        assert_ne!(sandboxed["exitCode"], 0, "{sandboxed}");
+        let stderr = sandboxed["stderr"].as_str().unwrap().to_lowercase();
+        assert!(
+            stderr.contains("not permitted"),
+            "expected a seatbelt denial, got {stderr}"
+        );
         cleanup(&env.wd);
     }
 }

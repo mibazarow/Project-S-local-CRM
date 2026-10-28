@@ -12,7 +12,9 @@ use std::process::{Child, Command, Stdio};
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
 #[cfg(windows)]
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+#[cfg(target_os = "macos")]
+use std::path::Path;
 #[cfg(windows)]
 use std::sync::OnceLock;
 #[cfg(windows)]
@@ -124,6 +126,34 @@ pub fn tool_command(command: &str) -> Command {
     let mut cmd = Command::new("sh");
     cmd.arg("-c").arg(command).process_group(0);
     cmd
+}
+
+// Opt-in isolation for the `bash` tool (`sandbox: true`): the same `sh -c`,
+// wrapped in a seatbelt profile that allows everything except sockets. The
+// default stays unsandboxed on purpose — the tools must see the same network
+// stack as Terminal.app, otherwise LAN access and SSH break (see netdiag).
+// Returns `None` when the platform has no seatbelt (Windows, Linux).
+#[cfg(target_os = "macos")]
+pub fn sandboxed_tool_command(command: &str) -> Option<Command> {
+    use std::os::unix::process::CommandExt;
+    const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
+    const PROFILE: &str = "(version 1)(allow default)(deny network*)";
+    if !Path::new(SANDBOX_EXEC).is_file() {
+        return None;
+    }
+    let mut cmd = Command::new(SANDBOX_EXEC);
+    cmd.arg("-p")
+        .arg(PROFILE)
+        .arg("/bin/sh")
+        .arg("-c")
+        .arg(command)
+        .process_group(0);
+    Some(cmd)
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn sandboxed_tool_command(_command: &str) -> Option<Command> {
+    None
 }
 
 // Windows has no guaranteed POSIX shell. Prefer Git Bash when it is installed:

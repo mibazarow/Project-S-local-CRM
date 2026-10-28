@@ -2,7 +2,7 @@
 
 Этот файл — техническое продолжение [`README.md`](../README.md): архитектура, данные, агентский луп, поиск, провайдеры, сборка, тесты. Для нетехнического чтения предназначен README.
 
-Текущий статус: **v1.2.0**, схема БД **v40**, **38** встроенных скиллов, **1098 passed / 19 ignored** бэкенд-тестов (Rust) и **597** фронтенд-тестов (vitest). macOS (Apple Silicon) и Windows 11 x64 — **опубликованы** в [релизе 1.2.0](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.0); Linux — в плане (Flatpak).
+Текущий статус: **v1.2.1**, схема БД **v40**, **38** встроенных скиллов, **1109 passed / 19 ignored** бэкенд-тестов (Rust) и **597** фронтенд-тестов (vitest). macOS (Apple Silicon) и Windows 11 x64 — **опубликованы** в [релизе 1.2.1](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.1); Linux — в плане (Flatpak).
 
 ## Что это
 
@@ -100,6 +100,16 @@ AI-чат проекта и Харнес работают через один а
 - Linux: WebKitGTK, Flatpak, XDG, sandbox, Wayland — [`DOCS/LINUX-PORT.md`](LINUX-PORT.md).
 - На Windows нужны `onnxruntime.dll` и MSVC runtime; CRT-конфликт решён вендорингом `esaxx-rs` (`vendor/`, `[patch.crates-io]`).
 
+### Локальная сеть (macOS 15+)
+
+Инструменты `bash`, `ssh_exec`, `ssh_upload`/`ssh_download` запускаются обычным `sh -c` / `ssh` в окружении приложения: своего sandbox-профиля, подмены `PATH` и прокси-переменных нет. Поэтому они видят ровно тот сетевой стек, что и Terminal.app, — при условии, что системе разрешено пускать приложение в локальную сеть.
+
+- В `src-tauri/Info.plist` объявлен `NSLocalNetworkUsageDescription`: система показывает запрос при первом обращении к LAN. Разрешение — «Системные настройки → Конфиденциальность и безопасность → Локальная сеть».
+- Сборка подписана ad-hoc (`scripts/install-app.sh` переподписывает её с постоянным идентификатором `app.project-s.ru`). Полноценного Developer ID нет, поэтому после переустановки macOS может спросить разрешение заново — это ожидаемо.
+- Если LAN недоступен из инструмента, а интернет работает (`ifconfig` показывает `ether 02:00:00:00:00:00` у всех интерфейсов, `arp -an` пуст, `ssh` падает с `No route to host` за 0.000 с) — это либо отозванное разрешение, либо TUN/VPN-клиент (FlClash, Proxifier, Kaspersky), оставивший reject-маршруты на `en0`. Лечится включением разрешения или полным выключением клиента и перезагрузкой Mac.
+- Инструменты сами диагностируют это: при `EHOSTUNREACH`/`ENETUNREACH` результат получает поля `hint` и `diagnostics` (снимок `ifconfig`/`arp`/reject-маршрутов/`route -n get`). У `bash` есть ещё флаг `diagnose: true` — снимок при любом исходе.
+- `sandbox: true` у `bash` — opt-in изоляция: `sandbox-exec` с профилем «всё разрешено, кроме сети». По умолчанию выключена, чтобы не ломать LAN и SSH.
+
 ## Сборка из исходников
 
 Нужны Node.js 20+, Rust stable и Xcode Command Line Tools (macOS) или VS Build Tools 2022 + Rust MSVC (Windows).
@@ -111,7 +121,7 @@ npm run tauri dev     # приложение в dev-режиме
 
 ```bash
 npm test              # фронтенд-тесты (vitest) — 597
-cargo test            # бэкенд-тесты (из src-tauri) — 1098 passed / 19 ignored
+cargo test            # бэкенд-тесты (из src-tauri) — 1109 passed / 19 ignored
 npm run build         # tsc + vite build
 npm run app:build     # релизная сборка Tauri (macOS)
 npm run app:install   # сборка + установка в /Applications/Project-S.app

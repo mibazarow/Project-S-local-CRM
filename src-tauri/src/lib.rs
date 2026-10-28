@@ -21,6 +21,7 @@ mod links;
 mod llm;
 mod mcp;
 mod memory;
+mod netdiag;
 mod notes;
 mod objectives;
 mod onboarding;

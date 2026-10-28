@@ -17,9 +17,18 @@ use crate::agent::result::{ToolErrorCode, ToolResult};
 use crate::agent::task_glue::{read_datas, upsert_section, write_datas};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
+use crate::netdiag;
 use serde_json::{json, Value};
 use std::fs;
 use std::time::Duration;
+
+// A failed connect usually means the host is unreachable from *this* process
+// (macOS local network permission denied, or a TUN client left reject routes
+// behind) rather than that the server is down. Build one compact snapshot and
+// an actionable hint instead of leaving the agent to guess from stderr.
+pub(super) fn net_diagnostics(code: i32, stderr: &str, host: &str) -> Option<Value> {
+    (code != 0 && netdiag::looks_unreachable(stderr)).then(|| netdiag::snapshot(Some(host)))
+}
 
 pub struct SshListProfilesTool;
 
@@ -148,14 +157,19 @@ impl Tool for SshExecTool {
         let askpass = askpass_for(&target, &wd)?;
         let envs = askpass.as_ref().map(|a| a.envs()).unwrap_or_default();
         let out = run_process("ssh", &argv, &wd, opts.timeout, &envs, ctx.cancel.as_deref())?;
-        Ok(ToolResult::ok(json!({
+        let diagnostics = net_diagnostics(out.code, &out.stderr, &target.host);
+        let mut data = json!({
             "target": target.label(),
             "exitCode": out.code,
             "stdout": out.stdout,
             "stderr": out.stderr,
             "truncated": out.truncated,
-        }))
-        .capped(self.max_result_len()))
+        });
+        if let Some(diagnostics) = diagnostics {
+            data["hint"] = json!(netdiag::HINT);
+            data["diagnostics"] = diagnostics;
+        }
+        Ok(ToolResult::ok(data).capped(self.max_result_len()))
     }
 }
 
@@ -247,14 +261,19 @@ impl Tool for SshCopyTool {
         let askpass = askpass_for(&target, &wd)?;
         let envs = askpass.as_ref().map(|a| a.envs()).unwrap_or_default();
         let out = run_process("scp", &argv, &wd, SSH_TIMEOUT, &envs, ctx.cancel.as_deref())?;
-        Ok(ToolResult::ok(json!({
+        let diagnostics = net_diagnostics(out.code, &out.stderr, &target.host);
+        let mut data = json!({
             "target": target.label(),
             "exitCode": out.code,
             "stdout": out.stdout,
             "stderr": out.stderr,
             "truncated": out.truncated,
-        }))
-        .capped(self.max_result_len()))
+        });
+        if let Some(diagnostics) = diagnostics {
+            data["hint"] = json!(netdiag::HINT);
+            data["diagnostics"] = diagnostics;
+        }
+        Ok(ToolResult::ok(data).capped(self.max_result_len()))
     }
 }
 
@@ -428,15 +447,20 @@ impl Tool for SshInstallKeyTool {
         let askpass = askpass_for(&target, &wd)?;
         let envs = askpass.as_ref().map(|a| a.envs()).unwrap_or_default();
         let out = run_process("ssh", &argv, &wd, SSH_TIMEOUT, &envs, ctx.cancel.as_deref())?;
-        Ok(ToolResult::ok(json!({
+        let diagnostics = net_diagnostics(out.code, &out.stderr, &target.host);
+        let mut data = json!({
             "target": target.label(),
             "exitCode": out.code,
             "installed": out.code == 0,
             "stdout": out.stdout,
             "stderr": out.stderr,
             "truncated": out.truncated,
-        }))
-        .capped(self.max_result_len()))
+        });
+        if let Some(diagnostics) = diagnostics {
+            data["hint"] = json!(netdiag::HINT);
+            data["diagnostics"] = diagnostics;
+        }
+        Ok(ToolResult::ok(data).capped(self.max_result_len()))
     }
 }
 

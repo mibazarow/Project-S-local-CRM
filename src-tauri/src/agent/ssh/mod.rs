@@ -27,8 +27,8 @@ mod tests {
     use super::policy::destructive_reasons;
     use super::session::{run_process, SSH_OUTPUT_CAP};
     use super::tools::{
-        SshCopyTool, SshExecTool, SshGenerateKeyTool, SshInstallKeyTool, SshListProfilesTool,
-        SshSaveProfileToDatasTool,
+        net_diagnostics, SshCopyTool, SshExecTool, SshGenerateKeyTool, SshInstallKeyTool,
+        SshListProfilesTool, SshSaveProfileToDatasTool,
     };
     use crate::agent::result::read_capped;
     use crate::agent::tool::{validate_args, PermissionPolicy, Tool, ToolClass, ToolCtx};
@@ -1154,6 +1154,25 @@ mod tests {
         // the journal masking covers datas.md-style password lines
         assert_eq!(mask_secrets("password: hunter2"), "password: ***");
         fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // A failed connect carries one network snapshot; a successful command and
+    // an unrelated failure stay exactly as they were.
+    #[test]
+    fn unreachable_connect_attaches_network_diagnostics() {
+        let diag = net_diagnostics(
+            255,
+            "ssh: connect to host 192.0.2.1 port 22: No route to host",
+            "192.0.2.1",
+        )
+        .expect("unreachable connect must carry diagnostics");
+        assert!(diag["verdict"].is_string(), "{diag}");
+        assert!(diag["hint"].as_str().unwrap().contains("Локальная сеть"));
+        assert_eq!(
+            net_diagnostics(0, "ssh: connect to host 192.0.2.1 port 22: No route to host", "192.0.2.1"),
+            None
+        );
+        assert_eq!(net_diagnostics(255, "Permission denied (publickey).", "192.0.2.1"), None);
     }
 
     #[test]

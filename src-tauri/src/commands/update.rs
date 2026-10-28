@@ -68,7 +68,7 @@ fn fresh(last: &UpdateCheck) -> bool {
 
 fn parse_version(value: &str) -> Option<(u64, u64, u64)> {
     let core = value.trim().trim_start_matches('v');
-    let core = core.split(|c| c == '-' || c == '+').next().unwrap_or(core);
+    let core = core.split(['-', '+']).next().unwrap_or(core);
     let mut parts = core.split('.');
     let major = parts.next()?.parse().ok()?;
     let minor = parts.next()?.parse().ok()?;
