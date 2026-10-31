@@ -8,7 +8,7 @@
 
 1. Откройте раздел **Releases**:
    https://gitverse.ru/mibazarow/Project-S-local-CRM/releases
-2. Посмотрите последнюю версию. Сейчас актуальна **1.3.0**. Если у вас старее — скачайте новый файл.
+2. Посмотрите последнюю версию. Сейчас актуальна **1.2.1**. Если у вас старее — скачайте новый файл.
    Релизы публикуются в двух местах, файлы там одинаковые: [GitVerse](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases) и [GitHub](https://github.com/mibazarow/Project-S-local-CRM/releases).
 3. Полностью закройте Project-S (`⌘Q`), чтобы приложение не держало файлы.
 4. Установите новую версию:

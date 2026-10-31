@@ -2,7 +2,7 @@
 
 Этот файл — техническое продолжение [`README.md`](../README.md): архитектура, данные, агентский луп, поиск, провайдеры, сборка, тесты. Для нетехнического чтения предназначен README.
 
-Текущий статус: **v1.3.0**, схема БД **v41**, **38** встроенных скиллов, **1112 passed / 19 ignored** бэкенд-тестов (Rust) и **599** фронтенд-тестов (vitest). macOS (Apple Silicon) и Windows 11 x64 — **опубликованы** в [релизе 1.3.0](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.3.0); Linux — в плане (Flatpak).
+Текущий статус: **v1.3.0**, схема БД **v41**, **38** встроенных скиллов, **1112 passed / 19 ignored** бэкенд-тестов (Rust) и **599** фронтенд-тестов (vitest). macOS (Apple Silicon) и Windows 11 x64 — **опубликованы** в [релизе 1.2.1](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.1); 1.3.0 собрана для macOS и установлена локально, публикация — после Windows-сборки. Linux — в плане (Flatpak).
 
 ## Что это
 
