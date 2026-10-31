@@ -7,6 +7,7 @@ mod v01_10;
 mod v11_20;
 mod v21_30;
 mod v31_40;
+mod v41_50;
 
 use crate::db::schema::SCHEMA_VERSION;
 use crate::error::Result;
@@ -54,7 +55,8 @@ const MIGRATIONS: &[(u32, Migration)] = &[
     (37, v31_40::migrate_v37),
     (38, v31_40::migrate_v38),
     (39, v31_40::migrate_v39),
-    (SCHEMA_VERSION as u32, v31_40::migrate_v40),
+    (40, v31_40::migrate_v40),
+    (SCHEMA_VERSION as u32, v41_50::migrate_v41),
 ];
 
 pub fn run_migrations(conn: &Connection) -> Result<()> {

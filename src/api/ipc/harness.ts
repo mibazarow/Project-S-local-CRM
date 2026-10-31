@@ -23,6 +23,10 @@ export const harnessDeleteSession = (id: number) => invoke<void>("harness_delete
 export const harnessPinSession = (id: number, pinned: boolean) =>
   invoke<SessionDto[]>("harness_pin_session", { id, pinned });
 
+// Bind the chat to a folder (null clears the binding); returns the fresh list.
+export const harnessSetWorkingDir = (id: number, path: string | null) =>
+  invoke<SessionDto[]>("harness_set_working_dir", { id, path });
+
 export const harnessSessionHistory = (id: number) =>
   invoke<MessageDto[]>("harness_session_history", { id });
 

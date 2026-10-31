@@ -36,8 +36,8 @@ pub(crate) use search::index_chat_messages_with;
 #[cfg(test)]
 pub(crate) use search::store_message_vector;
 pub use store::{
-    append_chat_message, append_message, branch_chat, ensure_project_chat, set_pinned,
-    truncate_after,
+    append_chat_message, append_message, branch_chat, chat_working_dir, ensure_project_chat,
+    set_pinned, truncate_after,
 };
 // run.rs reaches the append internals through `super::…`.
 pub(crate) use store::append_full;

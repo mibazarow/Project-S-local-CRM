@@ -9,7 +9,7 @@
 // confirmation; extract and every overwrite confirm. A missing binary is a
 // not_found error with an install hint.
 use super::system_tools::run_cmd;
-use crate::agent::project_tools::require_wd;
+use crate::agent::project_tools::require_root;
 use crate::agent::result::{ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::Result;
@@ -359,7 +359,7 @@ impl Tool for ArchiveTool {
             .then(|| "перезапись существующего архива (overwrite=true)".to_string())
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
+        let wd = require_root(ctx)?;
         let action = args.get("action").and_then(Value::as_str).unwrap_or("");
         let overwrite = args.get("overwrite").and_then(Value::as_bool).unwrap_or(false);
         match action {

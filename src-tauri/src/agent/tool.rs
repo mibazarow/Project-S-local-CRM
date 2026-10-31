@@ -30,6 +30,11 @@ pub struct ToolCtx {
     // this chat (SPEC 6.1 agent-initiated attachments). Set for every chat run.
     pub chat_id: Option<i64>,
     pub working_dir: Option<std::path::PathBuf>,
+    // Per-chat folder binding (Q.md «привязка чата к папке»): when set, the
+    // file tools resolve relative paths against it and treat it as their
+    // territory, while `working_dir` stays the app workspace (config, DB,
+    // Harness scratch). None = the chat uses the app-wide working dir.
+    pub scope: Option<std::path::PathBuf>,
     // Canonical Notes/ vault root, set only for notes-agent runs: the notes
     // tools refuse to work without it (SPEC notes chat slice).
     pub notes_root: Option<std::path::PathBuf>,

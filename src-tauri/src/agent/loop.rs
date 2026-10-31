@@ -102,6 +102,8 @@ pub struct AgentRunConfig {
     // run thread's DB connection and working dir through it.
     pub state: Option<Arc<crate::state::AppState>>,
     pub working_dir: Option<std::path::PathBuf>,
+    // Chat-bound folder (see ToolCtx::scope); None uses `working_dir`.
+    pub scope: Option<std::path::PathBuf>,
     // Canonical Notes/ vault root for notes-agent runs (notes tools only).
     pub notes_root: Option<std::path::PathBuf>,
 }

@@ -45,6 +45,7 @@ pub fn setup(tag: &str) -> Env {
     let events = recorder.events.clone();
     *state.emitter.lock().unwrap() = Some(Arc::new(recorder));
     let ctx = ToolCtx {
+        scope: None,
         cancel: None,
         project_id: Some(dto.id),
         session_id: None,

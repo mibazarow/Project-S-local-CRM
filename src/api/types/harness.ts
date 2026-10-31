@@ -10,6 +10,8 @@ export interface SessionDto {
   // unpinned. Pinned sessions sort to the top of the session list.
   pinned: boolean;
   pinnedAt: string | null;
+  // Folder this chat is bound to; null = the app-wide working dir.
+  workingDir: string | null;
 }
 
 // search::ChatHit — one harness session matched by search_chats; the snippet

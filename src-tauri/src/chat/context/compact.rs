@@ -87,6 +87,36 @@ pub fn build_context(
     }
 
     let summaries = load_summaries(conn, chat_id)?;
+    // messages is append-only with contiguous positions 1..=N, so a message's
+    // index in `history` equals its position minus one.
+    let last_up_to: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(up_to_position), 0) FROM summaries WHERE chat_id = ?1",
+        params![chat_id],
+        |r| r.get(0),
+    )?;
+    // The trigger must be measured on the view the model actually receives.
+    // The raw transcript keeps growing after a fold (the summary replaces it
+    // only for the request), so estimating `full` would keep the chat in
+    // "compacting" mode forever and fold the newest 1–3 messages on every
+    // turn. Re-check the already-compacted view first and only fold again
+    // when it genuinely crosses the threshold.
+    if !summaries.is_empty() {
+        let kept = (last_up_to.max(0) as usize).min(history.len());
+        let mut view = Vec::with_capacity(summaries.len() + 1 + history.len() - kept);
+        view.push(system.clone());
+        for summary in &summaries {
+            view.push(summary_message(summary));
+        }
+        view.extend(history[kept..].iter().cloned());
+        if estimate_tokens(&view) <= threshold_tokens {
+            return Ok(ContextOutcome {
+                messages: view,
+                new_checkpoint_up_to: None,
+                new_summary: None,
+                compaction_error: None,
+            });
+        }
+    }
     // Existing checkpoints and the system prompt are already fixed costs of
     // the compacted view; the tail budget must leave room for them plus the
     // summary about to be written.
@@ -106,13 +136,6 @@ pub fn build_context(
             .saturating_sub(reserve_tokens),
     );
     let budget_boundary = pick_boundary(&history, tail_budget);
-    // messages is append-only with contiguous positions 1..=N, so a message's
-    // index in `history` equals its position minus one.
-    let last_up_to: i64 = conn.query_row(
-        "SELECT COALESCE(MAX(up_to_position), 0) FROM summaries WHERE chat_id = ?1",
-        params![chat_id],
-        |r| r.get(0),
-    )?;
     let boundary = budget_boundary.max(last_up_to as usize);
     if boundary == 0 || boundary >= history.len() {
         return Ok(ContextOutcome {
@@ -130,7 +153,7 @@ pub fn build_context(
     let transcript_cap = summarizer_char_cap(context_window);
     let mut messages = vec![system];
     for summary in &summaries {
-        messages.push(ChatMessage::assistant(format!("{SUMMARY_PREFIX}\n{summary}")));
+        messages.push(summary_message(summary));
     }
     let mut new_checkpoint_up_to = None;
     let mut new_summary = None;
@@ -163,7 +186,7 @@ pub fn build_context(
                      VALUES (?1, ?2, ?3, datetime('now','localtime'))",
                     params![chat_id, boundary as i64, &summary],
                 )?;
-                messages.push(ChatMessage::assistant(format!("{SUMMARY_PREFIX}\n{summary}")));
+                messages.push(summary_message(&summary));
                 new_checkpoint_up_to = Some(boundary as i64);
                 new_summary = Some(summary);
             }
@@ -189,6 +212,10 @@ pub fn build_context(
         new_summary,
         compaction_error: None,
     })
+}
+
+fn summary_message(summary: &str) -> ChatMessage {
+    ChatMessage::assistant(format!("{SUMMARY_PREFIX}\n{summary}"))
 }
 
 // Index of the first history message kept verbatim; 0 means "nothing to

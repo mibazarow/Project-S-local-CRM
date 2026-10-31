@@ -19,6 +19,16 @@ pub(crate) fn require_wd(ctx: &ToolCtx) -> Result<PathBuf> {
     ctx.working_dir.clone().ok_or(AppError::NotConfigured)
 }
 
+// Path root for file tools: the folder a chat is bound to, else the app
+// workspace. Scratch/config paths keep using `require_wd` so a bound folder
+// never receives Harness/tmp or settings files.
+pub(crate) fn require_root(ctx: &ToolCtx) -> Result<PathBuf> {
+    ctx.scope
+        .clone()
+        .or_else(|| ctx.working_dir.clone())
+        .ok_or(AppError::NotConfigured)
+}
+
 pub(crate) fn state_of(ctx: &ToolCtx) -> Result<&crate::state::AppState> {
     ctx.state.as_deref().ok_or(AppError::NotConfigured)
 }

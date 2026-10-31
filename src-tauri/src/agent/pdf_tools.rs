@@ -11,7 +11,7 @@
 // and outputs are resolved by scope: project-relative through the fs_ops
 // resolvers, otherwise absolute/~/working-dir-relative.
 use super::harness_tools::{canonicalish, in_default_territory, resolve_path};
-use super::project_tools::{envelope, require_wd, with_conn};
+use super::project_tools::{envelope, require_root, with_conn};
 use super::result::{read_capped, ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
@@ -518,7 +518,7 @@ fn confirm_for(
         Err(e) => return Some(format!("{tool}: {}", e.to_string().replace("invalid input: ", ""))),
     };
     for path in outputs {
-        if ctx.project_id.is_none() && !in_default_territory(&path, wd) {
+        if ctx.project_id.is_none() && !in_default_territory(&path, wd, ctx.scope.is_some()) {
             return Some(format!(
                 "запись результата {tool} вне Harness/ и Projects/ ({})",
                 canonicalish(&path).display()
@@ -588,11 +588,11 @@ impl Tool for PdfMergeTool {
         PermissionPolicy::CheckConditional
     }
     fn danger_reason(&self, args: &Value, ctx: &ToolCtx) -> Option<String> {
-        let wd = ctx.working_dir.as_deref()?;
+        let wd = ctx.scope.as_deref().or(ctx.working_dir.as_deref())?;
         confirm_for("pdf_merge", merge_outputs(args, ctx, wd), ctx, wd)
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
+        let wd = require_root(ctx)?;
         let raw_inputs = args.get("inputs").and_then(Value::as_array).cloned().unwrap_or_default();
         let mut inputs: Vec<PathBuf> = Vec::new();
         for raw in &raw_inputs {
@@ -675,11 +675,11 @@ impl Tool for PdfSplitTool {
         PermissionPolicy::CheckConditional
     }
     fn danger_reason(&self, args: &Value, ctx: &ToolCtx) -> Option<String> {
-        let wd = ctx.working_dir.as_deref()?;
+        let wd = ctx.scope.as_deref().or(ctx.working_dir.as_deref())?;
         confirm_for("pdf_split", split_outputs(args, ctx, wd), ctx, wd)
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
+        let wd = require_root(ctx)?;
         let (in_label, input) = match resolve_input(args.get("input").and_then(Value::as_str).unwrap_or_default(), ctx, &wd) {
             Ok(v) => v,
             Err(e) => return Ok(envelope::<()>(Err(e))),
@@ -767,11 +767,11 @@ impl Tool for PdfFillFormTool {
         PermissionPolicy::CheckConditional
     }
     fn danger_reason(&self, args: &Value, ctx: &ToolCtx) -> Option<String> {
-        let wd = ctx.working_dir.as_deref()?;
+        let wd = ctx.scope.as_deref().or(ctx.working_dir.as_deref())?;
         confirm_for("pdf_fill_form", fill_outputs(args, ctx, wd), ctx, wd)
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
+        let wd = require_root(ctx)?;
         let (_, input) = match resolve_input(args.get("input").and_then(Value::as_str).unwrap_or_default(), ctx, &wd) {
             Ok(v) => v,
             Err(e) => return Ok(envelope::<()>(Err(e))),
@@ -826,6 +826,7 @@ mod tests {
         *state.working_dir.lock().unwrap() = Some(wd.clone());
         *state.db.lock().unwrap() = Some(conn);
         let ctx = ToolCtx {
+            scope: None,
             cancel: None,
             project_id: Some(dto.id),
             session_id: None,

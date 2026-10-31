@@ -8,7 +8,7 @@ use super::paths::{
 };
 use super::spreadsheet::{build_csv, build_xlsx, SHEET_FORMATS};
 use super::super::harness_tools::{in_default_territory, resolve_path};
-use super::super::project_tools::{envelope, require_wd};
+use super::super::project_tools::{envelope, require_root};
 use super::super::result::{ToolErrorCode, ToolResult};
 use super::super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::Result;
@@ -77,14 +77,14 @@ impl Tool for CreateSpreadsheetTool {
         if !self.harness {
             return None;
         }
-        let wd = ctx.working_dir.as_deref()?;
+        let wd = ctx.scope.as_deref().or(ctx.working_dir.as_deref())?;
         let raw = args.get("path").and_then(Value::as_str)?;
         let path = resolve_path(raw, wd);
-        (!in_default_territory(&path, wd))
+        (!in_default_territory(&path, wd, ctx.scope.is_some()))
             .then(|| "создание файла вне Harness/ и Projects/".to_string())
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
+        let wd = require_root(ctx)?;
         let (label, path) = match resolve_target(args, ctx, &wd) {
             Ok(v) => v,
             Err(e) => return Ok(envelope::<()>(Err(e))),

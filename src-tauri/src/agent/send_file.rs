@@ -263,6 +263,7 @@ mod tests {
 
     fn project_ctx(state: &Arc<AppState>, wd: &std::path::Path, pid: i64, chat_id: i64) -> ToolCtx {
         ToolCtx {
+            scope: None,
             cancel: None,
             project_id: Some(pid),
             session_id: None,
@@ -326,6 +327,7 @@ mod tests {
         drop(conn);
 
         let ctx = ToolCtx {
+            scope: None,
             project_id: None,
             cancel: None,
             session_id: None,
@@ -354,6 +356,7 @@ mod tests {
         fs::write(&file, "строчка").unwrap();
 
         let ctx = ToolCtx {
+            scope: None,
             project_id: None,
             cancel: None,
             session_id: Some(session.id),

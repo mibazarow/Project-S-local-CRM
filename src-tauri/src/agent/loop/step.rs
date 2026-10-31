@@ -152,6 +152,7 @@ impl Run {
             session_id: config.session_id,
             chat_id: config.chat_id,
             working_dir: config.working_dir.clone(),
+            scope: config.scope.clone(),
             state: config.state.clone(),
             notes_root: config.notes_root.clone(),
             cancel: config.cancel.clone(),

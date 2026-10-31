@@ -66,6 +66,7 @@ pub(crate) fn finish_call(answer: &str) -> ToolCall {
 
 pub(crate) fn test_config(user_message: &str) -> agent_loop::AgentRunConfig {
     agent_loop::AgentRunConfig {
+        scope: None,
         messages: vec![ChatMessage::system("sys"), ChatMessage::user(user_message)],
         max_steps: 8,
         limits: agent_loop::RunLimits::default(),

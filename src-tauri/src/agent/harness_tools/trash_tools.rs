@@ -8,7 +8,7 @@
 // dir and ledger path are injectable (TrashEnv) so tests use temp dirs and
 // never touch the real ~/.Trash.
 use super::{canonicalish, lenient_existing, resolve_path};
-use crate::agent::project_tools::require_wd;
+use crate::agent::project_tools::require_root;
 use crate::agent::result::{ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::Result;
@@ -374,7 +374,7 @@ impl Tool for TrashPathsTool {
         Some("удаление файлов в Корзину macOS".to_string())
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
+        let wd = require_root(ctx)?;
         let paths: Vec<String> = args
             .get("paths")
             .and_then(Value::as_array)
@@ -435,7 +435,7 @@ impl Tool for RestoreTrashedTool {
         Some("восстановление файлов из Корзины macOS".to_string())
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
+        let wd = require_root(ctx)?;
         let collect = |key: &str| -> Vec<String> {
             args.get(key)
                 .and_then(Value::as_array)

@@ -1,9 +1,9 @@
 // fs_rename: rename inside the current parent folder (SPEC 5.2 item 2).
 // path plus a validated newName; the destination must not exist.
-use crate::agent::project_tools::{require_wd, with_conn};
+use crate::agent::project_tools::{require_root, with_conn};
 use crate::agent::result::{io_fail, ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
-use super::{in_default_territory, lenient_existing, lenient_fail, resolve_path};
+use super::{in_default_territory, lenient_existing, lenient_fail, resolve_path, scope_denied};
 use crate::error::Result;
 use crate::{fs_ops, undo};
 use serde_json::{json, Value};
@@ -36,17 +36,20 @@ impl Tool for FsRenameTool {
         PermissionPolicy::CheckConditional
     }
     fn danger_reason(&self, args: &Value, ctx: &ToolCtx) -> Option<String> {
-        let wd = ctx.working_dir.as_deref()?;
+        let wd = ctx.scope.as_deref().or(ctx.working_dir.as_deref())?;
         let path = resolve_path(args.get("path").and_then(Value::as_str)?, wd);
-        (!in_default_territory(&path, wd)).then(|| "переименование вне Harness/ и Projects/".to_string())
+        (!in_default_territory(&path, wd, ctx.scope.is_some())).then(|| "переименование вне Harness/ и Projects/".to_string())
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
+        let wd = require_root(ctx)?;
         let path = resolve_path(args["path"].as_str().unwrap_or_default(), &wd);
         let path = match lenient_existing(&path) {
             Ok(p) => p,
             Err(e) => return Ok(lenient_fail(&e)),
         };
+        if let Some(msg) = scope_denied(&path, ctx) {
+            return Ok(ToolResult::err(ToolErrorCode::PermissionDenied, msg));
+        }
         let new_name = match fs_ops::check_name(args["newName"].as_str().unwrap_or_default()) {
             Ok(name) => name,
             Err(e) => return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, e.to_string())),

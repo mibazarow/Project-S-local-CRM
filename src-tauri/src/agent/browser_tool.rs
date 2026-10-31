@@ -507,6 +507,7 @@ mod tests {
 
     fn ctx_for(wd: &std::path::Path) -> ToolCtx {
         ToolCtx {
+            scope: None,
             cancel: None,
             project_id: None,
             session_id: None,

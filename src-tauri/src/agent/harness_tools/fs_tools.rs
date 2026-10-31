@@ -37,7 +37,7 @@ fn lenient_target_parent(path: &Path) -> Result<PathBuf> {
 // file had; the primitives themselves live in harness_tools/mod.rs.
 pub(crate) use super::{
     canonicalish, envelope_r, in_default_territory, lenient_existing, lenient_fail, normalize,
-    resolve_path, IMAGE_READ_HINT,
+    resolve_path, scope_denied, IMAGE_READ_HINT,
 };
 
 use crate::error::Result;
@@ -51,6 +51,48 @@ mod tests {
     use serde_json::{json, Value};
     use std::fs;
     use std::io::Write as _;
+
+    // A chat bound to a folder owns it: relative paths resolve there and any
+    // write inside needs no confirmation, while an escape still asks.
+    #[test]
+    fn chat_scope_binds_relative_paths_and_territory() {
+        let env = setup("ht-fs-scope");
+        let scope = env.wd.join("bound-folder");
+        fs::create_dir_all(&scope).unwrap();
+        let mut ctx = env.ctx.clone();
+        ctx.scope = Some(scope.clone());
+
+        let r = exec("fs_write", json!({ "path": "note.md", "content": "v1" }), &ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert_eq!(fs::read_to_string(scope.join("note.md")).unwrap(), "v1");
+        assert!(!env.wd.join("Harness").join("note.md").exists());
+
+        // Inside the bound folder: no confirmation. Outside: confirmation.
+        let write = tool("fs_write");
+        assert!(write
+            .danger_reason(&json!({ "path": "note.md", "content": "x" }), &ctx)
+            .is_none());
+        assert!(write
+            .danger_reason(&json!({ "path": "../escape.md", "content": "x" }), &ctx)
+            .is_some());
+
+        // Mutations outside the bound folder are refused outright (autopilot
+        // lifts confirmations, not this boundary).
+        let escaped = exec(
+            "fs_write",
+            json!({ "path": "../escape.md", "content": "x" }),
+            &ctx,
+        );
+        assert!(!escaped.ok);
+        assert_eq!(escaped.error.unwrap().code, "permission_denied");
+        assert!(!env.wd.join("escape.md").exists());
+
+        // Reads follow the same root.
+        let r = exec("fs_read", json!({ "path": "note.md" }), &ctx);
+        assert!(r.ok, "{:?}", r.error);
+        assert!(r.data.unwrap()["content"].as_str().unwrap().contains("v1"));
+        fs::remove_dir_all(&env.wd).unwrap();
+    }
 
     #[test]
     fn fs_write_read_list_delete_round_trip_inside_and_outside() {

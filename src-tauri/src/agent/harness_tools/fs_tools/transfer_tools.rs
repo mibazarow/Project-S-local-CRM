@@ -11,11 +11,11 @@ use crate::error::Result;
 use serde_json::{json, Value};
 
 fn transfer_danger_reason(args: &Value, ctx: &ToolCtx, verb: &str) -> Option<String> {
-    let wd = ctx.working_dir.as_deref()?;
+    let wd = ctx.scope.as_deref().or(ctx.working_dir.as_deref())?;
     let from = resolve_path(args.get("from").and_then(Value::as_str)?, wd);
     let to = resolve_path(args.get("to").and_then(Value::as_str)?, wd);
     let mut reasons: Vec<String> = Vec::new();
-    if !(in_default_territory(&from, wd) && in_default_territory(&to, wd)) {
+    if !(in_default_territory(&from, wd, ctx.scope.is_some()) && in_default_territory(&to, wd, ctx.scope.is_some())) {
         reasons.push(format!("{verb} вне Harness/ и Projects/"));
     }
     if args.get("overwrite").and_then(Value::as_bool).unwrap_or(false) {

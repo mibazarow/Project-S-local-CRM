@@ -254,6 +254,7 @@ mod tests {
             catalog: &mut catalog,
         };
         let config = agent_loop::AgentRunConfig {
+            scope: None,
             messages: vec![ChatMessage::system("sys"), ChatMessage::user("прочитай заметку")],
             max_steps: 8,
             limits: agent_loop::RunLimits::default(),

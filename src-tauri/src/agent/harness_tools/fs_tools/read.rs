@@ -1,6 +1,6 @@
 // fs_read: read-only file read (SPEC 5.2 item 1). Text is returned as-is,
 // docx/xlsx/pdf are extracted to text, images and binaries are rejected.
-use crate::agent::project_tools::require_wd;
+use crate::agent::project_tools::require_root;
 use crate::agent::result::{io_fail, ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use super::{envelope_r, lenient_existing, lenient_fail, resolve_path, IMAGE_READ_HINT};
@@ -40,7 +40,7 @@ impl Tool for FsReadTool {
         PermissionPolicy::Skip
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
+        let wd = require_root(ctx)?;
         let path = resolve_path(args["path"].as_str().unwrap_or_default(), &wd);
         let path = match lenient_existing(&path) {
             Ok(p) => p,

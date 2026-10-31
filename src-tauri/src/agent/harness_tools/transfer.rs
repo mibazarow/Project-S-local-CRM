@@ -5,7 +5,7 @@
 // execute_transfer performs the rename (with the cross-volume copy+delete
 // fallback) or the copy; record_transfer_undo writes the undo/version
 // bookkeeping. fs_transfer keeps the original signature and result envelope.
-use crate::agent::project_tools::{emit_versions_changed, require_wd, with_conn};
+use crate::agent::project_tools::{emit_versions_changed, require_root, with_conn};
 use crate::agent::result::{io_fail, ToolErrorCode, ToolResult};
 use crate::agent::tool::ToolCtx;
 use super::{canonicalish, lenient_existing, lenient_fail, resolve_path};
@@ -103,7 +103,7 @@ enum Planned {
 }
 
 fn plan_transfer(args: &Value, ctx: &ToolCtx, verb: &str) -> Result<Planned> {
-    let wd = require_wd(ctx)?;
+    let wd = require_root(ctx)?;
     let from_raw = args["from"].as_str().unwrap_or_default();
     let to_raw = args["to"].as_str().unwrap_or_default();
     if from_raw.is_empty() || to_raw.is_empty() {
@@ -119,6 +119,14 @@ fn plan_transfer(args: &Value, ctx: &ToolCtx, verb: &str) -> Result<Planned> {
         Ok(p) => p,
         Err(e) => return Ok(Planned::Refused(lenient_fail(&e))),
     };
+    for candidate in [&from, &to] {
+        if let Some(msg) = super::scope_denied(candidate, ctx) {
+            return Ok(Planned::Refused(ToolResult::err(
+                ToolErrorCode::PermissionDenied,
+                msg,
+            )));
+        }
+    }
     // An existing destination (also via a lenient variant match) keeps its
     // real name for the collision rules; a genuinely new one keeps the
     // requested name. An ambiguous destination is refused, never guessed.

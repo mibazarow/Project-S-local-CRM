@@ -66,6 +66,7 @@ export default function HarnessView() {
     createScheduleChat,
     renameSession,
     togglePin,
+    setWorkingDir,
     deleteSession,
     toggleSchedule,
     deleteSchedule,
@@ -317,6 +318,9 @@ export default function HarnessView() {
           att.clear();
         }}
         onResolve={resolve}
+        onSetWorkingDir={(path) => {
+          if (activeSession) void setWorkingDir(activeSession, path);
+        }}
       />
 
       <SchedulePanel

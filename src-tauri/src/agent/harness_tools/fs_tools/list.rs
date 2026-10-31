@@ -1,6 +1,6 @@
 // fs_list: read-only folder listing (SPEC 5.2 item 1): name, kind, size per
 // entry, defaulting to the Harness/ territory.
-use crate::agent::project_tools::require_wd;
+use crate::agent::project_tools::require_root;
 use crate::agent::result::{io_fail, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use super::{lenient_existing, lenient_fail, resolve_path};
@@ -35,12 +35,13 @@ impl Tool for FsListTool {
         PermissionPolicy::Skip
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
+        let wd = require_root(ctx)?;
         let path = match args.get("path").and_then(Value::as_str) {
             Some(p) if !p.is_empty() => match lenient_existing(&resolve_path(p, &wd)) {
                 Ok(p) => p,
                 Err(e) => return Ok(lenient_fail(&e)),
             },
+            _ if ctx.scope.is_some() => wd.clone(),
             _ => paths::harness_dir(&wd),
         };
         let rd = match fs::read_dir(&path) {

@@ -125,6 +125,26 @@ fn seed_builtin_greeting(conn: &Connection, project_id: i64, chat_id: i64) -> Re
     Ok(())
 }
 
+// Per-chat folder binding (Q.md «привязка чата к папке»): the folder chosen in
+// the chat header, or None for the app-wide working dir. A stale path (folder
+// removed or no longer a directory) is treated as unbound so a broken link
+// cannot wedge the chat.
+pub fn chat_working_dir(conn: &Connection, chat_id: i64) -> Result<Option<std::path::PathBuf>> {
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT working_dir FROM chats WHERE id = ?1",
+            rusqlite::params![chat_id],
+            |r| r.get(0),
+        )
+        .optional()?
+        .flatten();
+    let Some(raw) = raw.map(|p| p.trim().to_string()).filter(|p| !p.is_empty()) else {
+        return Ok(None);
+    };
+    let path = std::path::PathBuf::from(raw);
+    Ok(path.is_dir().then_some(path))
+}
+
 pub fn append_message(
     conn: &Connection,
     chat_id: i64,

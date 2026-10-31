@@ -533,6 +533,7 @@ mod tests {
         let events = recorder.events.clone();
         *state.emitter.lock().unwrap() = Some(Arc::new(recorder));
         let ctx = ToolCtx {
+            scope: None,
             cancel: None,
             project_id: None,
             session_id: None,

@@ -1,10 +1,10 @@
 // fs_mkdir: create a single folder (SPEC 5.2 item 2). The parent must already
 // exist and the path must not; a near-duplicate name variant reports the real
 // folder instead of creating a second one next to it.
-use crate::agent::project_tools::require_wd;
+use crate::agent::project_tools::require_root;
 use crate::agent::result::{io_fail, ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
-use super::{in_default_territory, lenient_existing, lenient_fail, lenient_target_parent, resolve_path};
+use super::{in_default_territory, lenient_existing, lenient_fail, lenient_target_parent, resolve_path, scope_denied};
 use crate::error::Result;
 use serde_json::{json, Value};
 use std::fs;
@@ -33,12 +33,12 @@ impl Tool for FsMkdirTool {
         PermissionPolicy::CheckConditional
     }
     fn danger_reason(&self, args: &Value, ctx: &ToolCtx) -> Option<String> {
-        let wd = ctx.working_dir.as_deref()?;
+        let wd = ctx.scope.as_deref().or(ctx.working_dir.as_deref())?;
         let path = resolve_path(args.get("path").and_then(Value::as_str)?, wd);
-        (!in_default_territory(&path, wd)).then(|| "создание папки вне Harness/ и Projects/".to_string())
+        (!in_default_territory(&path, wd, ctx.scope.is_some())).then(|| "создание папки вне Harness/ и Projects/".to_string())
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
+        let wd = require_root(ctx)?;
         let raw = args["path"].as_str().unwrap_or_default();
         if raw.trim().is_empty() {
             return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, "path is empty"));
@@ -64,6 +64,9 @@ impl Tool for FsMkdirTool {
             Err(e) if e.to_string().contains("ambiguous") => return Ok(lenient_fail(&e)),
             Err(_) => lenient_target_parent(&path)?,
         };
+        if let Some(msg) = scope_denied(&path, ctx) {
+            return Ok(ToolResult::err(ToolErrorCode::PermissionDenied, msg));
+        }
         let Some(parent) = path.parent() else {
             return Ok(ToolResult::err(
                 ToolErrorCode::InvalidArgs,

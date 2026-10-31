@@ -97,6 +97,17 @@ export function useHarnessLists({
     }
   };
 
+  // Chat-bound folder: the backend validates the directory and returns the
+  // fresh session list, so the header chip and the sidebar update at once.
+  const setWorkingDir = async (s: SessionDto, path: string | null) => {
+    try {
+      setSessions(await ipc.harnessSetWorkingDir(s.id, path));
+      setSessionsError(null);
+    } catch (e) {
+      setSessionsError(toMessage(e));
+    }
+  };
+
   const deleteSession = async (s: SessionDto) => {
     const label = s.title ?? UNTITLED;
     const linked = schedules.filter((sc) => sc.sessionId === s.id).length;
@@ -182,6 +193,7 @@ export function useHarnessLists({
     createScheduleChat,
     renameSession,
     togglePin,
+    setWorkingDir,
     deleteSession,
     toggleSchedule,
     deleteSchedule,

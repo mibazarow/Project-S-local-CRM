@@ -188,6 +188,7 @@ fn catalog_with(extra: Option<EchoTool>) -> Catalog {
 
 fn config(max_steps: usize) -> AgentRunConfig {
     AgentRunConfig {
+        scope: None,
         messages: vec![ChatMessage::system("sys"), ChatMessage::user("go")],
         max_steps,
         limits: RunLimits::default(),

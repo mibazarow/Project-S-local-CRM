@@ -8,7 +8,7 @@
 // read-only and the writes land in the app's own tmp folder.
 use super::archive_tools::find_binary;
 use super::system_tools::run_cmd;
-use crate::agent::project_tools::require_wd;
+use crate::agent::project_tools::require_root;
 use crate::agent::result::{ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::Result;
@@ -157,7 +157,7 @@ impl Tool for PdfToImageTool {
         PermissionPolicy::Skip
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
+        let wd = require_root(ctx)?;
         let raw = args.get("pdf").and_then(Value::as_str).unwrap_or("");
         if raw.trim().is_empty() {
             return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, "pdf path is required"));

@@ -53,11 +53,33 @@ pub(crate) const IMAGE_READ_HINT: &str = "Image files cannot be read as text; at
 pub(crate) use crate::path_policy::{canonicalish, normalize, resolve_path};
 
 // SPEC 5.2: writes inside Harness/ and Projects/ skip confirmation.
-pub(crate) fn in_default_territory(path: &Path, wd: &Path) -> bool {
+// In-territory means "no confirmation needed". An unbound run keeps the
+// app workspace rule (Harness/ and Projects/ only); a chat bound to a folder
+// owns that whole folder, so any path inside it is in-territory and anything
+// outside still asks the user.
+pub(crate) fn in_default_territory(path: &Path, wd: &Path, scoped: bool) -> bool {
     let base = wd.canonicalize().unwrap_or_else(|_| normalize(wd));
     let resolved = canonicalish(path);
+    if scoped {
+        return resolved.starts_with(&base);
+    }
     resolved.starts_with(base.join(paths::HARNESS_DIR))
         || resolved.starts_with(base.join(paths::PROJECTS_DIR))
+}
+
+// Hard boundary for a chat bound to a folder: mutating file tools refuse a
+// path outside it. Autopilot lifts confirmations, not this check, so the
+// folder stays a real boundary in every mode.
+pub(crate) fn scope_denied(path: &Path, ctx: &crate::agent::tool::ToolCtx) -> Option<String> {
+    let scope = ctx.scope.as_deref()?;
+    let base = canonicalish(scope);
+    (!canonicalish(path).starts_with(&base)).then(|| {
+        format!(
+            "путь вне папки чата ({}): {}. Выйдите из привязки в шапке чата, чтобы работать шире.",
+            base.display(),
+            path.display()
+        )
+    })
 }
 
 // Lenient re-anchoring for paths that must already exist: an exact hit
@@ -136,6 +158,7 @@ pub(crate) mod test_support {
         let events = recorder.events.clone();
         *state.emitter.lock().unwrap() = Some(Arc::new(recorder));
         let ctx = ToolCtx {
+            scope: None,
             cancel: None,
             project_id: None,
             session_id: None,

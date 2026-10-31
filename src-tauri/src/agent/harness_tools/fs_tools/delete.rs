@@ -1,9 +1,9 @@
 // fs_delete: reversible delete (SPEC 5.2 item 2). Always confirmed; the item
 // moves into Settings/.trash and can be restored through the trash commands.
-use crate::agent::project_tools::{emit_trash_changed, require_wd, with_conn};
+use crate::agent::project_tools::{emit_trash_changed, require_root, with_conn};
 use crate::agent::result::{io_fail, ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
-use super::{canonicalish, envelope_r, lenient_existing, lenient_fail, normalize, resolve_path};
+use super::{canonicalish, envelope_r, lenient_existing, lenient_fail, normalize, resolve_path, scope_denied};
 use crate::error::Result;
 use crate::paths;
 use serde_json::{json, Value};
@@ -48,12 +48,15 @@ impl Tool for FsDeleteTool {
         Some("удаление файла или папки".to_string())
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
+        let wd = require_root(ctx)?;
         let path = resolve_path(args["path"].as_str().unwrap_or_default(), &wd);
         let path = match lenient_existing(&path) {
             Ok(p) => p,
             Err(e) => return Ok(lenient_fail(&e)),
         };
+        if let Some(msg) = scope_denied(&path, ctx) {
+            return Ok(ToolResult::err(ToolErrorCode::PermissionDenied, msg));
+        }
         if is_obviously_destructive(&path, &wd) {
             return Ok(ToolResult::err(
                 ToolErrorCode::PermissionDenied,

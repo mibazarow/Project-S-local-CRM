@@ -22,7 +22,7 @@ pub use files::{
 pub use tasks::{TaskCreateTool, TaskDeleteTool, TaskListTool, TaskMoveTool, TaskUpdateTool};
 pub(crate) use support::{
     emit_fs_changed_for_abs, emit_projects_changed, emit_tasks_changed, emit_trash_changed,
-    emit_versions_changed, envelope, require_wd, state_of, with_conn,
+    emit_versions_changed, envelope, require_root, require_wd, state_of, with_conn,
 };
 
 use super::catalog::Catalog;

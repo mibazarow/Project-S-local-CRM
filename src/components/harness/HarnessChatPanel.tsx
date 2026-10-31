@@ -1,4 +1,5 @@
-import { type RefObject } from "react";
+import { type RefObject, useState } from "react";
+import { open } from "@tauri-apps/plugin-dialog";
 import type { ConfirmationRequestPayload, SessionDto } from "../../api/types";
 import type { Slice, TranscriptActions } from "../chat/chatTypes";
 import { ChatTranscript } from "../chat/message/ChatTranscript";
@@ -32,6 +33,7 @@ export function HarnessChatPanel({
   onStop,
   onClear,
   onResolve,
+  onSetWorkingDir,
 }: {
   att: ReturnType<typeof useChatAttachments>;
   chatRootRef: RefObject<HTMLElement | null>;
@@ -53,7 +55,24 @@ export function HarnessChatPanel({
   onStop: () => void;
   onClear: () => void;
   onResolve: (decision: "allow" | "deny" | "allowAlways") => void;
+  onSetWorkingDir: (path: string | null) => void;
 }) {
+  const [picking, setPicking] = useState(false);
+  const boundDir = activeSession?.workingDir ?? null;
+  const folderName = boundDir ? (boundDir.split("/").filter(Boolean).pop() ?? boundDir) : null;
+
+  // The chip opens a native folder picker; the binding is per chat, so the
+  // agent's file tools stay inside the chosen folder (Q.md folder binding).
+  const pickFolder = async () => {
+    setPicking(true);
+    try {
+      const picked = await open({ directory: true, title: "Папка для этого чата" });
+      if (typeof picked === "string" && picked) onSetWorkingDir(picked);
+    } finally {
+      setPicking(false);
+    }
+  };
+
   return (
     <section
       className={att.dragOver ? "center center-harness drag-over" : "center center-harness"}
@@ -63,6 +82,35 @@ export function HarnessChatPanel({
       <div className="center-head">
         <h2>{activeSession ? activeSession.title ?? UNTITLED : "Харнес"}</h2>
         {running && <span className="chat-sub">агент работает…</span>}
+        {activeSession && (
+          <div className="chat-scope">
+            <button
+              type="button"
+              className={boundDir ? "chat-scope-btn bound" : "chat-scope-btn"}
+              onClick={() => void pickFolder()}
+              disabled={picking}
+              title={
+                boundDir
+                  ? `Агент работает только в этой папке: ${boundDir}`
+                  : "Агент работает в общей рабочей папке. Нажмите, чтобы выбрать отдельную папку для этого чата."
+              }
+            >
+              <span className="chat-scope-icon" aria-hidden="true">📁</span>
+              <span className="chat-scope-label">{folderName ?? "Общая папка"}</span>
+            </button>
+            {boundDir && (
+              <button
+                type="button"
+                className="chat-scope-reset"
+                onClick={() => onSetWorkingDir(null)}
+                title="Вернуть общую рабочую папку"
+                aria-label="Вернуть общую рабочую папку"
+              >
+                ×
+              </button>
+            )}
+          </div>
+        )}
       </div>
 
       {branchNote && <div className="set-hint harness-branch-note">{branchNote}</div>}

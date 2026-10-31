@@ -1257,6 +1257,7 @@ mod tests {
         let state = Arc::new(AppState::new());
         *state.db.lock().unwrap() = Some(conn);
         let ctx = ToolCtx {
+            scope: None,
             cancel: None,
             project_id: Some(project.id),
             session_id: None,
@@ -1335,6 +1336,7 @@ mod tests {
         let state = Arc::new(AppState::new());
         *state.db.lock().unwrap() = Some(conn);
         let ctx = ToolCtx {
+            scope: None,
             project_id: None,
             cancel: None,
             session_id: None,

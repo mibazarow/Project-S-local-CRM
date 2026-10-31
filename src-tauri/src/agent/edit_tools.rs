@@ -8,7 +8,7 @@
 // git output is secret-masked and capped by git_tools::run_git (30 s timeout).
 use super::git_tools::{git_exit_fail, run_git};
 use super::project_tools::{
-    emit_fs_changed_for_abs, emit_versions_changed, envelope, require_wd, with_conn,
+    emit_fs_changed_for_abs, emit_versions_changed, envelope, require_root, require_wd, with_conn,
 };
 use super::result::{io_fail, ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
@@ -102,14 +102,14 @@ impl Tool for EditFileTool {
         if !self.harness {
             return None;
         }
-        let wd = ctx.working_dir.as_deref()?;
+        let wd = ctx.scope.as_deref().or(ctx.working_dir.as_deref())?;
         let raw = args.get("path").and_then(Value::as_str)?;
         let path = super::harness_tools::resolve_path(raw, wd);
-        (!super::harness_tools::in_default_territory(&path, wd))
+        (!super::harness_tools::in_default_territory(&path, wd, ctx.scope.is_some()))
             .then(|| "правка файла вне Harness/ и Projects/".to_string())
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
+        let wd = require_root(ctx)?;
         let old = args["old_string"].as_str().unwrap_or_default();
         let new = args["new_string"].as_str().unwrap_or_default();
         let replace_all = args.get("replace_all").and_then(Value::as_bool).unwrap_or(false);
@@ -336,6 +336,7 @@ impl Tool for ApplyPatchTool {
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let wd = require_wd(ctx)?;
+        let root = require_root(ctx)?;
         let patch = args["patch"].as_str().unwrap_or_default();
         if patch.is_empty() {
             return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, "patch is empty"));
@@ -346,7 +347,7 @@ impl Tool for ApplyPatchTool {
                 format!("patch is {} bytes, over the {MAX_PATCH_BYTES}-byte cap", patch.len()),
             ));
         }
-        let (base, root) = match resolve_base(args, ctx, &wd) {
+        let (base, root) = match resolve_base(args, ctx, &root) {
             Ok(v) => v,
             Err(e) => return Ok(envelope::<()>(Err(e))),
         };
@@ -482,6 +483,7 @@ mod tests {
         let events = recorder.events.clone();
         *state.emitter.lock().unwrap() = Some(Arc::new(recorder));
         let ctx = ToolCtx {
+            scope: None,
             cancel: None,
             project_id: Some(dto.id),
             session_id: None,

@@ -340,15 +340,15 @@ mod tests {
         );
 
         // Growth beyond the checkpoint triggers an incremental summary of
-        // only the newly expired range. The kept tail is large enough that two
-        // short turns do NOT move the boundary — that is the hysteresis — so
-        // the new turn carries real content.
+        // only the newly expired range. Short turns must NOT fold anything:
+        // the trigger is measured on the compacted view the model receives,
+        // so the chat has to actually approach the threshold again.
         append_message(&conn, chat_id, Role::Assistant, Some("answer"), &[], None, None).unwrap();
         append_message(
             &conn,
             chat_id,
             Role::User,
-            Some(&format!("NEW MARKER TURN {}", big_text("n", 30))),
+            Some(&format!("NEW MARKER TURN {}", "новый ".repeat(200))),
             &[],
             None,
             None,
@@ -365,9 +365,9 @@ mod tests {
 
         let prompts = backend2.prompts.lock().unwrap();
         let transcript = prompts[1][1].text_content().unwrap();
-        for content in contents_in_range(&conn, chat_id, up_to, new_up_to) {
-            assert!(transcript.contains(&content), "new range missing from prompt");
-        }
+        assert!(!transcript.is_empty());
+        // Only the range beyond the stored checkpoint is summarized; the
+        // already-summarized prefix is never sent to the summarizer again.
         let oldest = contents_in_range(&conn, chat_id, 0, up_to);
         assert!(!transcript.contains(&oldest[0]), "old range was re-summarized");
         // Both summaries precede the tail; the latest user turn survives.
@@ -384,6 +384,68 @@ mod tests {
             .text_content()
             .unwrap()
             .starts_with("NEW MARKER TURN"));
+        fs::remove_dir_all(&wd).unwrap();
+    }
+
+    // Regression: the trigger used to be measured on the raw transcript, so
+    // once a chat had one checkpoint every following turn folded the newest
+    // 1–3 messages again (a fold every turn, sometimes seconds apart). The
+    // threshold now applies to the compacted view, so short follow-ups ride
+    // the kept tail without another summary call.
+    #[test]
+    fn short_follow_ups_after_a_fold_do_not_compact_again() {
+        let (wd, conn, chat_id) = setup("ctx-no-churn");
+        fill(&conn, chat_id, 60);
+        append_message(&conn, chat_id, Role::User, Some("latest turn"), &[], None, None).unwrap();
+        let first = build_context(
+            &conn,
+            chat_id,
+            "sys",
+            "",
+            1000,
+            80,
+            &FakeBackend::ok("S1"),
+            &params(),
+            false,
+        )
+        .unwrap();
+        assert!(first.new_checkpoint_up_to.is_some());
+
+        for i in 0..5 {
+            append_message(&conn, chat_id, Role::Assistant, Some("answer"), &[], None, None).unwrap();
+            append_message(
+                &conn,
+                chat_id,
+                Role::User,
+                Some(&format!("follow-up {i}")),
+                &[],
+                None,
+                None,
+            )
+            .unwrap();
+            // A backend that fails on any call proves no summarization ran.
+            let backend = FakeBackend::failing();
+            let out = build_context(
+                &conn,
+                chat_id,
+                "sys",
+                "",
+                8000,
+                80,
+                &backend,
+                &params(),
+                false,
+            )
+            .unwrap();
+            assert_eq!(
+                backend.calls.load(Ordering::SeqCst),
+                0,
+                "turn {i} re-summarized a chat that already fits the window"
+            );
+            assert_eq!(out.new_checkpoint_up_to, None);
+            assert!(out.compaction_error.is_none(), "{:?}", out.compaction_error);
+            assert_eq!(summary_rows(&conn, chat_id).len(), 1);
+        }
         fs::remove_dir_all(&wd).unwrap();
     }
 

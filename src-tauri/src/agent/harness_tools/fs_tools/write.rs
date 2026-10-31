@@ -1,10 +1,10 @@
 // fs_write: create or overwrite a text file (SPEC 5.2 item 2). Writes inside
 // Harness/ and Projects/ skip confirmation; the previous content is versioned
 // so the write is undoable.
-use crate::agent::project_tools::{emit_fs_changed_for_abs, emit_versions_changed, require_wd, with_conn};
+use crate::agent::project_tools::{emit_fs_changed_for_abs, emit_versions_changed, require_root, with_conn};
 use crate::agent::result::{io_fail, ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
-use super::{in_default_territory, lenient_existing, lenient_fail, lenient_target_parent, resolve_path};
+use super::{in_default_territory, lenient_existing, lenient_fail, lenient_target_parent, resolve_path, scope_denied};
 use crate::error::Result;
 use serde_json::{json, Value};
 use std::fs;
@@ -36,13 +36,13 @@ impl Tool for FsWriteTool {
         PermissionPolicy::CheckConditional
     }
     fn danger_reason(&self, args: &Value, ctx: &ToolCtx) -> Option<String> {
-        let wd = ctx.working_dir.as_deref()?;
+        let wd = ctx.scope.as_deref().or(ctx.working_dir.as_deref())?;
         let raw = args.get("path").and_then(Value::as_str)?;
         let path = resolve_path(raw, wd);
-        (!in_default_territory(&path, wd)).then(|| "запись вне Harness/ и Projects/".to_string())
+        (!in_default_territory(&path, wd, ctx.scope.is_some())).then(|| "запись вне Harness/ и Projects/".to_string())
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
+        let wd = require_root(ctx)?;
         let content = args["content"].as_str().unwrap_or_default();
         let path = resolve_path(args["path"].as_str().unwrap_or_default(), &wd);
         // An existing file (also via a lenient variant match) is overwritten;
@@ -52,6 +52,9 @@ impl Tool for FsWriteTool {
             Err(e) if e.to_string().contains("ambiguous") => return Ok(lenient_fail(&e)),
             Err(_) => lenient_target_parent(&path)?,
         };
+        if let Some(msg) = scope_denied(&path, ctx) {
+            return Ok(ToolResult::err(ToolErrorCode::PermissionDenied, msg));
+        }
         if let Ok(meta) = fs::metadata(&path) {
             if meta.is_dir() {
                 return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, format!("{} is a directory", path.display())));

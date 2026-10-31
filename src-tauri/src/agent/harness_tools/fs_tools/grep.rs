@@ -1,6 +1,6 @@
 // fs_grep: read-only recursive case-insensitive text search (SPEC 5.2
 // item 1). Skips binary, oversized files and .git/node_modules/target.
-use crate::agent::project_tools::require_wd;
+use crate::agent::project_tools::require_root;
 use crate::agent::result::{io_fail, ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use super::{lenient_existing, lenient_fail, resolve_path};
@@ -61,7 +61,7 @@ impl Tool for FsGrepTool {
         PermissionPolicy::Skip
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
+        let wd = require_root(ctx)?;
         let pattern = args["pattern"].as_str().unwrap_or_default();
         if pattern.is_empty() {
             return Ok(ToolResult::err(ToolErrorCode::InvalidArgs, "pattern is empty"));
@@ -76,6 +76,7 @@ impl Tool for FsGrepTool {
                 Ok(p) => p,
                 Err(e) => return Ok(lenient_fail(&e)),
             },
+            _ if ctx.scope.is_some() => wd.clone(),
             _ => paths::harness_dir(&wd),
         };
         if let Err(e) = fs::metadata(&root) {

@@ -38,17 +38,21 @@ pub struct SessionDto {
     // kind='harness' chat row; NULL means unpinned. Harness sessions only.
     pub pinned: bool,
     pub pinned_at: Option<String>,
+    // Folder the chat is bound to (Q.md «привязка чата к папке»), NULL when
+    // the chat uses the app-wide working dir.
+    pub working_dir: Option<String>,
 }
 
 fn session_dto(conn: &Connection, id: i64) -> Result<SessionDto> {
     conn.query_row(
-        "SELECT s.title, s.created_at, s.updated_at, s.last_active_at, c.pinned_at
+        "SELECT s.title, s.created_at, s.updated_at, s.last_active_at, c.pinned_at, c.working_dir
          FROM sessions s
          LEFT JOIN chats c ON c.session_id = s.id AND c.kind = 'harness'
          WHERE s.id = ?1",
         params![id],
         |r| {
             let pinned_at: Option<String> = r.get(4)?;
+            let working_dir: Option<String> = r.get(5)?;
             Ok(SessionDto {
                 id,
                 title: r.get(0)?,
@@ -57,6 +61,7 @@ fn session_dto(conn: &Connection, id: i64) -> Result<SessionDto> {
                 last_active_at: r.get(3)?,
                 pinned: pinned_at.is_some(),
                 pinned_at,
+                working_dir,
             })
         },
     )
@@ -139,6 +144,43 @@ pub fn set_session_pinned(conn: &Connection, id: i64, pinned: bool) -> Result<Ve
         )?;
     } else {
         conn.execute("UPDATE chats SET pinned_at = NULL WHERE id = ?1", params![chat_id])?;
+    }
+    list_sessions(conn)
+}
+
+// Bind the chat to a folder on disk (or clear the binding with None). The
+// path must be an existing directory; symlinks are resolved so the stored
+// value is the real folder. Returns the fresh session list for the sidebar.
+pub fn set_session_working_dir(
+    conn: &Connection,
+    id: i64,
+    path: Option<&str>,
+) -> Result<Vec<SessionDto>> {
+    let chat_id = session_chat_id(conn, id)?;
+    match path.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(raw) => {
+            let requested = std::path::PathBuf::from(raw);
+            let meta = std::fs::metadata(&requested).map_err(|_| {
+                AppError::Invalid(format!("папка не найдена: {}", requested.display()))
+            })?;
+            if !meta.is_dir() {
+                return Err(AppError::Invalid(format!(
+                    "это не папка: {}",
+                    requested.display()
+                )));
+            }
+            let resolved = requested.canonicalize().unwrap_or(requested);
+            conn.execute(
+                "UPDATE chats SET working_dir = ?1, updated_at = datetime('now','localtime') WHERE id = ?2",
+                params![resolved.to_string_lossy(), chat_id],
+            )?;
+        }
+        None => {
+            conn.execute(
+                "UPDATE chats SET working_dir = NULL, updated_at = datetime('now','localtime') WHERE id = ?1",
+                params![chat_id],
+            )?;
+        }
     }
     list_sessions(conn)
 }
@@ -488,6 +530,39 @@ mod tests {
             "finish_task".into(),
             json!({ "action": "finish", "answer": answer }).to_string(),
         )
+    }
+
+    // Q.md «привязка чата к папке»: a real directory is stored (canonical),
+    // a missing path or a file is rejected, and None clears the binding.
+    #[test]
+    fn session_working_dir_binds_validates_and_clears() {
+        let (wd, conn) = setup("harness-scope");
+        let session = create_session(&conn, Some("Bound")).unwrap();
+        assert_eq!(session.working_dir, None);
+
+        let folder = wd.join("client-folder");
+        fs::create_dir_all(&folder).unwrap();
+        let list = set_session_working_dir(&conn, session.id, Some(&folder.to_string_lossy())).unwrap();
+        let bound = list.iter().find(|s| s.id == session.id).unwrap();
+        assert_eq!(
+            bound.working_dir.as_deref(),
+            Some(folder.canonicalize().unwrap().to_string_lossy().as_ref())
+        );
+
+        let missing = wd.join("nope");
+        assert!(set_session_working_dir(&conn, session.id, Some(&missing.to_string_lossy())).is_err());
+
+        let file = wd.join("plain.txt");
+        fs::write(&file, "x").unwrap();
+        assert!(set_session_working_dir(&conn, session.id, Some(&file.to_string_lossy())).is_err());
+
+        // A rejected update leaves the previous binding in place.
+        let list = list_sessions(&conn).unwrap();
+        assert!(list.iter().find(|s| s.id == session.id).unwrap().working_dir.is_some());
+
+        let list = set_session_working_dir(&conn, session.id, None).unwrap();
+        assert_eq!(list.iter().find(|s| s.id == session.id).unwrap().working_dir, None);
+        fs::remove_dir_all(&wd).unwrap();
     }
 
     #[test]
@@ -842,6 +917,7 @@ mod tests {
             catalog: &mut catalog,
         };
         let config = agent_loop::AgentRunConfig {
+            scope: None,
             messages: vec![ChatMessage::system("sys"), ChatMessage::user("go")],
             max_steps: 8,
             limits: agent_loop::RunLimits::default(),

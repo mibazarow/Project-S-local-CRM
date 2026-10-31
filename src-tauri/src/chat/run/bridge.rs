@@ -229,6 +229,16 @@ fn run_agent_inner(
     *lock_recover(&thread_state.db) = Some(db::open(&paths::db_path(wd))?);
     // Tools that notify the UI (rename_chat, todowrite) emit through this handle.
     *lock_recover(&thread_state.emitter) = Some(Arc::new(app.clone()));
+    // Per-chat folder binding: file tools resolve relative paths against the
+    // folder chosen in the chat header, while `wd` stays the app workspace for
+    // config/DB/Harness scratch. A missing folder degrades to unbound.
+    let scope = {
+        let guard = lock_recover(&thread_state.db);
+        match guard.as_ref() {
+            Some(conn) => crate::chat::chat_working_dir(conn, chat_id).unwrap_or(None),
+            None => None,
+        }
+    };
 
     let llm_cfg: LlmConfig = serde_json::from_value(config::read_config(wd, ConfigKind::Llm)?)?;
     // Temperature is fixed per agent (project/harness/schedule 0.2, notes 0.4)
@@ -323,6 +333,7 @@ fn run_agent_inner(
         }),
     };
     let config = agent_loop::AgentRunConfig {
+        scope,
         messages: ctx.messages,
         max_steps: MAX_STEPS,
         limits: agent_loop::RunLimits::default(),

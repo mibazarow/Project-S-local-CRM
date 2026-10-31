@@ -9,7 +9,7 @@
 // under a 60 s timeout, and its output must exist and be non-empty; the
 // result queries the output size back with `sips -g pixelWidth -g pixelHeight`.
 use super::harness_tools::{canonicalish, in_default_territory, resolve_path};
-use super::project_tools::{envelope, require_wd, with_conn};
+use super::project_tools::{envelope, require_root, with_conn};
 use super::result::{read_capped, ToolErrorCode, ToolResult};
 use super::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use crate::error::{AppError, Result};
@@ -282,7 +282,7 @@ impl Tool for ImageTransformTool {
         PermissionPolicy::CheckConditional
     }
     fn danger_reason(&self, args: &Value, ctx: &ToolCtx) -> Option<String> {
-        let wd = ctx.working_dir.as_deref()?;
+        let wd = ctx.scope.as_deref().or(ctx.working_dir.as_deref())?;
         let out_raw = args
             .get("output")
             .and_then(Value::as_str)
@@ -307,7 +307,7 @@ impl Tool for ImageTransformTool {
             None => {
                 if let Some(o) = out_raw {
                     let out = resolve_path(o, wd);
-                    (!in_default_territory(&out, wd))
+                    (!in_default_territory(&out, wd, ctx.scope.is_some()))
                         .then(|| "запись результата image_transform вне Harness/ и Projects/".to_string())
                 } else {
                     let path = resolve_path(in_raw, wd);
@@ -320,7 +320,7 @@ impl Tool for ImageTransformTool {
         }
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
-        let wd = require_wd(ctx)?;
+        let wd = require_root(ctx)?;
         let (label, path, output) = match resolve_io(args, ctx, &wd) {
             Ok(v) => v,
             Err(e) => return Ok(envelope::<()>(Err(e))),
@@ -460,6 +460,7 @@ mod tests {
         *state.working_dir.lock().unwrap() = Some(wd.clone());
         *state.db.lock().unwrap() = Some(conn);
         let ctx = ToolCtx {
+            scope: None,
             cancel: None,
             project_id: Some(dto.id),
             session_id: None,

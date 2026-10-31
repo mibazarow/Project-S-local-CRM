@@ -342,6 +342,27 @@ body.dnd-active .project-item, body.dnd-active .task-card, body.dnd-active .note
   white-space: nowrap;
 }
 
+/* Привязка чата к папке: чип в шапке харнес-чата. */
+.chat-scope { display: flex; align-items: center; gap: 4px; margin-left: auto; min-width: 0; }
+.chat-scope-btn {
+  display: inline-flex; align-items: center; gap: 6px;
+  max-width: 320px; min-height: 26px; padding: 4px 10px;
+  border: 1px solid var(--hairline); border-radius: var(--radius);
+  background: var(--surface); color: var(--text-muted);
+  font-size: var(--fs-control); cursor: pointer;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.chat-scope-btn:hover { background: var(--hover, rgba(0,0,0,0.04)); }
+.chat-scope-btn.bound { color: var(--text); border-color: var(--accent, #376A9F); }
+.chat-scope-btn:disabled { opacity: 0.6; cursor: default; }
+.chat-scope-icon { font-size: 13px; line-height: 1; }
+.chat-scope-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-scope-reset {
+  border: none; background: transparent; color: var(--text-muted);
+  font-size: 16px; line-height: 1; padding: 2px 6px; cursor: pointer; border-radius: var(--radius-sm);
+}
+.chat-scope-reset:hover { color: var(--text); background: var(--hover, rgba(0,0,0,0.04)); }
+
 /* переключатель Файлы/Задачи */
 .segmented { display: flex; background: var(--seg-bg); border-radius: var(--radius); padding: 2px; }
 .seg { border: none; background: transparent; min-height: 24px; padding: 4px 12px; font-size: var(--fs-control); color: var(--text); border-radius: var(--radius-sm); cursor: pointer; transition: background var(--dur) var(--ease), box-shadow var(--dur) var(--ease); }

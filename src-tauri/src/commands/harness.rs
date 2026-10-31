@@ -50,6 +50,17 @@ pub(crate) fn harness_pin_session(
     with_db(&state, |conn| harness::set_session_pinned(conn, id, pinned))
 }
 
+// Bind the chat to a folder (or clear it when path is empty/null); returns the
+// fresh session list so the header chip and sidebar update from one response.
+#[tauri::command]
+pub(crate) fn harness_set_working_dir(
+    state: State<AppState>,
+    id: i64,
+    path: Option<String>,
+) -> Result<Vec<harness::SessionDto>> {
+    with_db(&state, |conn| harness::set_session_working_dir(conn, id, path.as_deref()))
+}
+
 #[tauri::command]
 pub(crate) fn harness_session_history(
     state: State<AppState>,

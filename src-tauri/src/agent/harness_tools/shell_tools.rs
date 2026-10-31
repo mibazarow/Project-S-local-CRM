@@ -8,7 +8,7 @@
 // it must see the same network stack as Terminal.app, otherwise LAN hosts and
 // SSH become unreachable (see netdiag). `sandbox: true` opts into seatbelt
 // network isolation, `diagnose: true` attaches a network snapshot.
-use crate::agent::project_tools::require_wd;
+use crate::agent::project_tools::{require_root, require_wd};
 use crate::agent::result::{read_capped, ToolErrorCode, ToolResult};
 use crate::agent::tool::{PermissionPolicy, Tool, ToolClass, ToolCtx};
 use super::resolve_path;
@@ -87,11 +87,13 @@ impl Tool for BashTool {
     }
     fn execute(&self, args: &Value, ctx: &ToolCtx) -> Result<ToolResult> {
         let wd = require_wd(ctx)?;
+        let root = require_root(ctx)?;
         let command = args["command"].as_str().unwrap_or_default();
         let tmp = paths::harness_tmp_dir(&wd);
         fs::create_dir_all(&tmp)?;
         let cwd = match args.get("cwd").and_then(Value::as_str) {
-            Some(c) if !c.is_empty() => resolve_path(c, &wd),
+            Some(c) if !c.is_empty() => resolve_path(c, &root),
+            _ if ctx.scope.is_some() => root.clone(),
             _ => paths::harness_dir(&wd),
         };
         fs::create_dir_all(&cwd)?;

@@ -15,6 +15,7 @@ vi.mock("../../api/ipc", async (importOriginal) => ({
   scheduleDelete: vi.fn(async () => undefined),
   harnessDeleteSession: vi.fn(async () => undefined),
   harnessPinSession: vi.fn(async () => []),
+  harnessSetWorkingDir: vi.fn(async () => []),
   harnessSessionHistory: vi.fn(async () => []),
   harnessCreateSession: vi.fn(async () => ({ id: 1, title: null, lastActiveAt: 0 })),
   sendSessionMessage: vi.fn(async () => 1),
@@ -139,6 +140,64 @@ describe("HarnessView session pinning (Q.md pin slice)", () => {
     const after = container.querySelectorAll<HTMLElement>(".session-item");
     expect(after[1].classList.contains("active")).toBe(false);
     expect(after[0].classList.contains("active")).toBe(true);
+  });
+});
+
+describe("HarnessView chat folder binding (Q.md folder slice)", () => {
+  const bound = {
+    id: 1,
+    title: "Проект",
+    createdAt: "",
+    updatedAt: "",
+    lastActiveAt: "2026-01-01",
+    pinned: false,
+    pinnedAt: null,
+    workingDir: null,
+  };
+
+  beforeEach(() => {
+    vi.mocked(ipc.harnessListSessions).mockResolvedValue([bound] as never);
+    vi.mocked(ipc.harnessSetWorkingDir).mockResolvedValue([
+      { ...bound, workingDir: "/tmp/client-folder" },
+    ] as never);
+  });
+
+  it("shows the shared folder by default and binds the picked folder", async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(open).mockResolvedValue("/tmp/client-folder");
+    await mount();
+
+    const chip = container.querySelector<HTMLButtonElement>(".chat-scope-btn")!;
+    expect(chip.textContent).toContain("Общая папка");
+    expect(chip.classList.contains("bound")).toBe(false);
+    expect(container.querySelector(".chat-scope-reset")).toBeNull();
+
+    await act(async () => {
+      chip.click();
+    });
+    expect(ipc.harnessSetWorkingDir).toHaveBeenCalledWith(1, "/tmp/client-folder");
+
+    // The fresh session list re-renders the chip with the folder name and a
+    // reset control.
+    const boundChip = container.querySelector<HTMLButtonElement>(".chat-scope-btn")!;
+    expect(boundChip.textContent).toContain("client-folder");
+    expect(boundChip.classList.contains("bound")).toBe(true);
+    expect(boundChip.getAttribute("title")).toContain("/tmp/client-folder");
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".chat-scope-reset")!.click();
+    });
+    expect(ipc.harnessSetWorkingDir).toHaveBeenLastCalledWith(1, null);
+  });
+
+  it("ignores a cancelled picker", async () => {
+    const { open } = await import("@tauri-apps/plugin-dialog");
+    vi.mocked(open).mockResolvedValue(null);
+    await mount();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(".chat-scope-btn")!.click();
+    });
+    expect(ipc.harnessSetWorkingDir).not.toHaveBeenCalled();
   });
 });
 
