@@ -161,12 +161,13 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 ## 5. Текущее состояние (обновлять при изменениях)
 
 - **Разработка продукта — только на macOS.** Windows/Linux: порт, платформенный слой, сборка.
-- Версия: **1.3.0** (macOS собрана и установлена; Windows-сборка и публикация — по команде пользователя).
+- Версия: **1.3.0**. macOS опубликована; Windows 1.3.0 — позже (VM недоступна), актуальная опубликованная для Windows — 1.2.1.
 - Ветка: **master**; remotes: `origin` — GitVerse (основной), `github` — GitHub (зеркало кода и релизов).
 - Схема БД: **v40**.
 - Встроенных скиллов: **38**.
 - Модель эмбеддингов: **не в git и не в бандле** (с 1.0.3); ~300 МБ, приложение скачивает разово после онбординга (UI-прогресс, повтор при ошибке); без неё — только FTS-поиск.
-- macOS: рабочая сборка, aarch64. **Публичный релиз 1.2.1 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.1 (tag `v1.2.1`, commit `a5082f6`, release id `548946225`) **и зеркалён на GitHub:** https://github.com/mibazarow/Project-S-local-CRM/releases/tag/v1.2.1 (release id `426455599`, те же 5 ассетов). Ассет `Project-S-1.2.1-macOS-ARM.dmg` — 21 716 067 байт, SHA256 `b4de296e7de45f06ad0c3eb6fa71f018d710b356eaa07d422339aa532ee89b96`; контрольная сумма отдельным `.sha256.txt`. Сборка ad-hoc с постоянным идентификатором `app.project-s.ru`, не нотаризована; 1.2.1 установлен в `/Applications/Project-S.app`.
+- macOS: рабочая сборка, aarch64. **Публичный релиз 1.3.0 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.3.0 (tag `v1.3.0`, commit `697fa63`, release id `548953579`) **и зеркалён на GitHub:** https://github.com/mibazarow/Project-S-local-CRM/releases/tag/v1.3.0 (release id `429827741`, те же 3 ассета). Ассет `Project-S-1.3.0-macOS-ARM.dmg` — 21 721 823 байта, SHA256 `180e7aed692fece0b192465cd8d7d91faed8e490b5105e058f21b9b42d8c8225`. В описании релиза сказано, что Windows-сборка будет позже и пока собирается из исходников.
+- Предыдущий релиз (для истории): **1.2.1 на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.1 (tag `v1.2.1`, commit `a5082f6`, release id `548946225`) **и зеркалён на GitHub:** https://github.com/mibazarow/Project-S-local-CRM/releases/tag/v1.2.1 (release id `426455599`, те же 5 ассетов). Ассет `Project-S-1.2.1-macOS-ARM.dmg` — 21 716 067 байт, SHA256 `b4de296e7de45f06ad0c3eb6fa71f018d710b356eaa07d422339aa532ee89b96`; контрольная сумма отдельным `.sha256.txt`. Сборка ad-hoc с постоянным идентификатором `app.project-s.ru`, не нотаризована; 1.2.1 установлен в `/Applications/Project-S.app`.
 - Windows: **рабочая сборка 1.2.1 собрана 2026-10-28 на `a5082f6`** скриптом `scripts/windows/build.ps1`. ZIP для GitVerse `Project-S-1.2.1-Windows-x64-Setup.zip` — 14 518 651 байт, SHA256 `91df51779957ba72589d4a05a6b1b694be5bef702f88dfb074978cb289a0890b`; внутри NSIS `Project-S 1.2.1 Windows x64 Setup.exe` — 14 535 129 байт, SHA256 `782d486685d7c46656f6127b0815ad33366fe2bdfcbfb8a78c20c9f82d42c8fd`. GitVerse не принимает `.exe`, поэтому в релизе ZIP. На Windows эмбеддинги считаются на CPU: CoreML EP запрашивается только на macOS. **1.2.1 не установлен**, GUI не запускался.
 - Windows, установленная копия: предыдущая сборка per-user; 1.2.0 не установлен, GUI не проверялся.
 - Доступ к Windows VM проверен 2026-10-23: `DOCS/WINDOWS-ACCESS.md`; Windows HEAD `ada814c`, рабочее дерево чистое.
@@ -203,6 +204,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Действие: <что сделать / user|macos> — или [DONE]
 - Статус: waiting | done
 ```
+
+### 2026-10-31 12:20 UTC — macOS
+- Ветка: `master`
+- Коммит: `697fa63` (тег `v1.3.0`)
+- Сделано: опубликован релиз **1.3.0 только для macOS** (Windows-сборка недоступна: VM выключена). GitVerse release id `548953579`, GitHub `429827741`, по 3 ассета: DMG 21 721 823 Б (`180e7aed…8225`), `.sha256.txt`, `RELEASE_NOTES_1.3.0.md`. В описании релиза прямо сказано, что Windows-сборка будет позже, а пока её можно собрать из исходников (`scripts/windows/build.ps1`). Скачивание с GitHub проверено: SHA256 совпадает. Документация (`README.md`, `DOCS/about.md`, `UPDATES.md`) переведена на 1.3.0 с пометкой про Windows.
+- Влияние: только публикация и документация. Версия кода — 1.3.0, схема БД v41.
+- Действие: `[ACTION: macos]` когда Windows-VM снова доступна — собрать 1.3.0 и добавить ZIP + NSIS в тот же релиз на обеих площадках.
+- Статус: done
 
 ### 2026-10-31 12:10 UTC — macOS
 - Ветка: `master`
