@@ -2,7 +2,7 @@
 
 Этот файл — техническое продолжение [`README.md`](../README.md): архитектура, данные, агентский луп, поиск, провайдеры, сборка, тесты. Для нетехнического чтения предназначен README.
 
-Текущий статус: **v1.3.0**, схема БД **v41**, **38** встроенных скиллов, **1112 passed / 19 ignored** бэкенд-тестов (Rust) и **599** фронтенд-тестов (vitest). macOS (Apple Silicon) — **опубликован** [релиз 1.3.0](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.3.0); Windows 11 x64 — актуальная опубликованная сборка 1.2.1, 1.3.0 для Windows появится позже (пока собирается из исходников). Linux — в плане (Flatpak).
+Текущий статус: **v1.3.1**, схема БД **v41**, **38** встроенных скиллов, **1120 passed / 19 ignored** бэкенд-тестов (Rust) и **603** фронтенд-теста (vitest). macOS (Apple Silicon) — **опубликован** [релиз 1.3.1](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.3.1); Windows 11 x64 — актуальная опубликованная сборка 1.2.1, 1.3.0 для Windows появится позже (пока собирается из исходников). Linux — в плане (Flatpak).
 
 ## Что это
 
@@ -88,13 +88,13 @@ AI-чат проекта и Харнес работают через один а
 
 ## Платформы и сборки
 
-| Платформа | Статус v1.3.0 | Упаковка |
+| Платформа | Статус v1.3.1 | Упаковка |
 |---|---|---|
-| macOS (Apple Silicon) | **опубликовано:** [v1.3.0](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.3.0) | DMG `Project-S-1.3.0-macOS-ARM.dmg` (21 721 823 Б, SHA256 `180e7aed…8225`); ad-hoc подпись с постоянным идентификатором `app.project-s.ru`, нотаризация ещё не сделана |
+| macOS (Apple Silicon) | **опубликовано:** [v1.3.1](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.3.1) | DMG `Project-S-1.3.0-macOS-ARM.dmg` (21 721 823 Б, SHA256 `180e7aed…8225`); ad-hoc подпись с постоянным идентификатором `app.project-s.ru`, нотаризация ещё не сделана |
 | Windows 11 x64 | **1.3.0 позже** (VM недоступна); актуальная опубликованная — [v1.2.1](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.1) | 1.3.0 собирается из исходников: `git pull`, `npm ci`, `npx tauri build --config src-tauri/tauri.windows.conf.json` (или `scripts/windows/build.ps1`). Опубликованный ZIP 1.2.1: `Project-S-1.2.1-Windows-x64-Setup.zip` (14 518 651 Б, SHA256 `91df5177…890b`), внутри NSIS `Project-S 1.2.1 Windows x64 Setup.exe` (14 535 129 Б, SHA256 `782d4866…c8fd`); ONNX на Windows — CPU, CoreML только на macOS |
 | Linux | в плане | Flatpak (один пакет для большинства дистрибутивов) |
 
-- Релизный тег `v1.3.0` — на `master` (коммит `697fa63`). Публичный релиз (только macOS): https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.3.0; зеркало с теми же ассетами: https://github.com/mibazarow/Project-S-local-CRM/releases/tag/v1.3.0. Windows-ассет добавляется в этот же релиз отдельным обновлением, когда появится сборка. Linux будет добавлен в следующий тег.
+- Релизный тег `v1.3.1` — на `master`. Публичный релиз (только macOS): https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.3.1; зеркало с теми же ассетами: https://github.com/mibazarow/Project-S-local-CRM/releases/tag/v1.3.1. Windows-ассет добавляется в этот же релиз отдельным обновлением, когда появится сборка. Linux будет добавлен в следующий тег.
 - Два remote: `origin` — GitVerse (основной), `github` — GitHub (зеркало). Пуш: `git push origin master --tags && git push github master --tags`. Токены лежат локально в `DOCS/gitverse-токен.md` и `DOCS/github-token.md` и в git не попадают.
 - Windows-сборка идёт с macOS по SSH на build-хост; production-hardening (подпись, updater, Credential Manager) для текущей Windows-сборки не блокирует. Подробности — [`CROSPLATFORM.md`](../CROSPLATFORM.md), [`DOCS/WINDOWS-PORT.md`](WINDOWS-PORT.md).
 - Linux: WebKitGTK, Flatpak, XDG, sandbox, Wayland — [`DOCS/LINUX-PORT.md`](LINUX-PORT.md).
@@ -113,6 +113,14 @@ AI-чат проекта и Харнес работают через один а
 Компактация срабатывает, когда модель-фейсинг вью подходит к порогу `compactionThresholdPercent` (по умолчанию 80%) от окна активной модели: `modelContextWindows[model]` → заявленный провайдером максимум → 100k. Окно задаётся в настройках провайдера, поэтому «модель заявила 1M, а я поставил 245k» — это порог 80% от 245k.
 
 До v1.3.0 порог мерился по **всему** сырому транскрипту: после первого сжатия чат навсегда оставался «за порогом» и складывал в резюме по 1–3 последних сообщения на каждом ходу (на реальной базе — 23 чекпоинта, пять из них за 5 минут). Теперь порог проверяется по уже сжатому вью (system + чекпоинты + хвост), и новый чекпоинт появляется только когда к порогу подошёл он.
+
+### Тул-колы текстом (v1.3.1)
+
+Некоторые OpenAI-совместимые шлюзы возвращают вызов инструмента не в поле `tool_calls`, а текстом в диалекте `<tool_call><function=name><parameter=key>value</parameter></tool_call>`. Раньше такой вызов попадал в транскрипт и в «Размышления» как обычный текст, инструмент не выполнялся, и модель повторяла вызов.
+
+- `src-tauri/src/llm/inline_tools.rs` разбирает этот диалект (включая блоки без `</function>`/`</parameter>` и JSON-тело) и превращает его в настоящий `ToolCall`. Срабатывает **только** если провайдер не прислал нативных вызовов — корректный поток не переинтерпретируется.
+- Разметка вырезается из `content` и `reasoning` (и в SSE, и в не-стриминговом разборе), поэтому в историю и в следующий запрос она не попадает.
+- `MarkdownMessage` дополнительно чистит текст при рендере: старые сообщения с разметкой и полусостримленный блок выглядят нормально.
 
 ### Локальная сеть (macOS 15+)
 
@@ -134,8 +142,8 @@ npm run tauri dev     # приложение в dev-режиме
 ```
 
 ```bash
-npm test              # фронтенд-тесты (vitest) — 599
-cargo test            # бэкенд-тесты (из src-tauri) — 1112 passed / 19 ignored
+npm test              # фронтенд-тесты (vitest) — 603
+cargo test            # бэкенд-тесты (из src-tauri) — 1120 passed / 19 ignored
 npm run build         # tsc + vite build
 npm run app:build     # релизная сборка Tauri (macOS)
 npm run app:install   # сборка + установка в /Applications/Project-S.app

@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { renderMarkdown } from "../shared/markdown";
 import { openNoteLink, resolveNoteLink } from "../../shared/noteLink";
+import { stripInlineToolCalls } from "../../shared/inlineToolCalls";
 
 const COPIED_MS = 1500;
 
@@ -74,7 +75,9 @@ function decorateCodeBlocks(html: string): string {
 // the whole message (copies the RAW text) and one per code block. Re-renders
 // incrementally on streaming deltas; unclosed fences are auto-closed by
 // marked, so partial markdown never breaks the bubble.
-export const MarkdownMessage = memo(function MarkdownMessage({ text }: { text: string }) {
+export const MarkdownMessage = memo(function MarkdownMessage({ text: raw }: { text: string }) {
+  // Model output sometimes carries tool calls as text; never render them.
+  const text = useMemo(() => stripInlineToolCalls(raw), [raw]);
   const html = useMemo(
     () => decorateCodeBlocks(renderMarkdown(text, { breaks: true })),
     [text],
