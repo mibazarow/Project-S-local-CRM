@@ -2,7 +2,7 @@
 
 Этот файл — техническое продолжение [`README.md`](../README.md): архитектура, данные, агентский луп, поиск, провайдеры, сборка, тесты. Для нетехнического чтения предназначен README.
 
-Текущий статус: **v1.3.3** (собран локально; опубликован 1.3.2), схема БД **v41**, **38** встроенных скиллов, **1130 passed / 19 ignored** бэкенд-тестов (Rust) и **606** фронтенд-тестов (vitest). macOS (Apple Silicon) — **опубликован** [релиз 1.3.2](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.3.2); Windows 11 x64 — актуальная опубликованная сборка 1.2.1, 1.3.0 для Windows появится позже (пока собирается из исходников). Linux — в плане (Flatpak).
+Текущий статус: **v1.3.3**, схема БД **v41**, **38** встроенных скиллов, **1130 passed / 19 ignored** бэкенд-тестов (Rust) и **606** фронтенд-тестов (vitest). macOS (Apple Silicon) — **опубликован** [релиз 1.3.3](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.3.3); Windows 11 x64 — актуальная опубликованная сборка 1.2.1, 1.3.0 для Windows появится позже (пока собирается из исходников). Linux — в плане (Flatpak).
 
 ## Что это
 
@@ -88,13 +88,13 @@ AI-чат проекта и Харнес работают через один а
 
 ## Платформы и сборки
 
-| Платформа | Статус v1.3.2 | Упаковка |
+| Платформа | Статус v1.3.3 | Упаковка |
 |---|---|---|
 | macOS (Apple Silicon) | **опубликовано:** [v1.3.1](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.3.1) | DMG `Project-S-1.3.0-macOS-ARM.dmg` (21 721 823 Б, SHA256 `180e7aed…8225`); ad-hoc подпись с постоянным идентификатором `app.project-s.ru`, нотаризация ещё не сделана |
 | Windows 11 x64 | **1.3.0 позже** (VM недоступна); актуальная опубликованная — [v1.2.1](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.1) | 1.3.0 собирается из исходников: `git pull`, `npm ci`, `npx tauri build --config src-tauri/tauri.windows.conf.json` (или `scripts/windows/build.ps1`). Опубликованный ZIP 1.2.1: `Project-S-1.2.1-Windows-x64-Setup.zip` (14 518 651 Б, SHA256 `91df5177…890b`), внутри NSIS `Project-S 1.2.1 Windows x64 Setup.exe` (14 535 129 Б, SHA256 `782d4866…c8fd`); ONNX на Windows — CPU, CoreML только на macOS |
 | Linux | в плане | Flatpak (один пакет для большинства дистрибутивов) |
 
-- Релизный тег `v1.3.2` — на `master` (коммит `a1617e5`). Публичный релиз (только macOS): https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.3.2; зеркало с теми же ассетами: https://github.com/mibazarow/Project-S-local-CRM/releases/tag/v1.3.2. Windows-ассет добавляется в этот же релиз отдельным обновлением, когда появится сборка. Linux будет добавлен в следующий тег.
+- Релизный тег `v1.3.3` — на `master` (коммит `3e8db94`). Публичный релиз (только macOS): https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.3.3; зеркало с теми же ассетами: https://github.com/mibazarow/Project-S-local-CRM/releases/tag/v1.3.3. Windows-ассет добавляется в этот же релиз отдельным обновлением, когда появится сборка. Linux будет добавлен в следующий тег.
 - Два remote: `origin` — GitVerse (основной), `github` — GitHub (зеркало). Пуш: `git push origin master --tags && git push github master --tags`. Токены лежат локально в `DOCS/gitverse-токен.md` и `DOCS/github-token.md` и в git не попадают.
 - Windows-сборка идёт с macOS по SSH на build-хост; production-hardening (подпись, updater, Credential Manager) для текущей Windows-сборки не блокирует. Подробности — [`CROSPLATFORM.md`](../CROSPLATFORM.md), [`DOCS/WINDOWS-PORT.md`](WINDOWS-PORT.md).
 - Linux: WebKitGTK, Flatpak, XDG, sandbox, Wayland — [`DOCS/LINUX-PORT.md`](LINUX-PORT.md).

@@ -161,12 +161,12 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 ## 5. Текущее состояние (обновлять при изменениях)
 
 - **Разработка продукта — только на macOS.** Windows/Linux: порт, платформенный слой, сборка.
-- Версия: **1.3.3** (собран локально, не опубликован); macOS 1.3.2 опубликована; Windows 1.3.x — позже (VM недоступна), актуальная опубликованная для Windows — 1.2.1.
+- Версия: **1.3.3**, macOS опубликована; Windows 1.3.x — позже (VM недоступна), актуальная опубликованная для Windows — 1.2.1.
 - Ветка: **master**; remotes: `origin` — GitVerse (основной), `github` — GitHub (зеркало кода и релизов).
 - Схема БД: **v40**.
 - Встроенных скиллов: **38**.
 - Модель эмбеддингов: **не в git и не в бандле** (с 1.0.3); ~300 МБ, приложение скачивает разово после онбординга (UI-прогресс, повтор при ошибке); без неё — только FTS-поиск.
-- macOS: рабочая сборка, aarch64. **Публичный релиз 1.3.2 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.3.2 (tag `v1.3.2`, commit `a1617e5`, release id `548962328`) **и зеркалён на GitHub:** https://github.com/mibazarow/Project-S-local-CRM/releases/tag/v1.3.2 (release id `433042780`, те же 3 ассета). Ассет `Project-S-1.3.2-macOS-ARM.dmg` — 21 749 604 байта, SHA256 `91f7dac7ad7defe4ec4b0708facb0014a5a53e3fb517aa81b6a2f45398a801ab`. В описании релиза сказано, что Windows-сборка будет позже и пока собирается из исходников.
+- macOS: рабочая сборка, aarch64. **Публичный релиз 1.3.3 опубликован на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.3.3 (tag `v1.3.3`, commit `3e8db94`, release id `548962334`) **и зеркалён на GitHub:** https://github.com/mibazarow/Project-S-local-CRM/releases/tag/v1.3.3 (release id `433058092`, те же 3 ассета). Ассет `Project-S-1.3.3-macOS-ARM.dmg` — 24 784 312 байт, SHA256 `b703ca7feb428e4402ba8cf7bde32f37469c8608c3d577445d79c35f8a0a3c12`. Образ собран вручную через `hdiutil create` (обход зависшего detach у Tauri). В описании релиза сказано, что Windows-сборка будет позже и пока собирается из исходников.
 - Предыдущий релиз (для истории): **1.2.1 на GitVerse:** https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.2.1 (tag `v1.2.1`, commit `a5082f6`, release id `548946225`) **и зеркалён на GitHub:** https://github.com/mibazarow/Project-S-local-CRM/releases/tag/v1.2.1 (release id `426455599`, те же 5 ассетов). Ассет `Project-S-1.2.1-macOS-ARM.dmg` — 21 716 067 байт, SHA256 `b4de296e7de45f06ad0c3eb6fa71f018d710b356eaa07d422339aa532ee89b96`; контрольная сумма отдельным `.sha256.txt`. Сборка ad-hoc с постоянным идентификатором `app.project-s.ru`, не нотаризована; 1.2.1 установлен в `/Applications/Project-S.app`.
 - Windows: **рабочая сборка 1.2.1 собрана 2026-10-28 на `a5082f6`** скриптом `scripts/windows/build.ps1`. ZIP для GitVerse `Project-S-1.2.1-Windows-x64-Setup.zip` — 14 518 651 байт, SHA256 `91df51779957ba72589d4a05a6b1b694be5bef702f88dfb074978cb289a0890b`; внутри NSIS `Project-S 1.2.1 Windows x64 Setup.exe` — 14 535 129 байт, SHA256 `782d486685d7c46656f6127b0815ad33366fe2bdfcbfb8a78c20c9f82d42c8fd`. GitVerse не принимает `.exe`, поэтому в релизе ZIP. На Windows эмбеддинги считаются на CPU: CoreML EP запрашивается только на macOS. **1.2.1 не установлен**, GUI не запускался.
 - Windows, установленная копия: предыдущая сборка per-user; 1.2.0 не установлен, GUI не проверялся.
@@ -204,6 +204,14 @@ scp -r "win:C:/path/Project-S/src-tauri/target/release/bundle" ./artifacts/windo
 - Действие: <что сделать / user|macos> — или [DONE]
 - Статус: waiting | done
 ```
+
+### 2026-11-03 21:25 UTC — macOS
+- Ветка: `master`
+- Коммит: `3e8db94` (тег `v1.3.3`)
+- Сделано: опубликован релиз **1.3.3 только для macOS**. GitVerse release id `548962334`, GitHub `433058092`, по 3 ассета: DMG 24 784 312 Б (`b703ca7f…3c12`), `.sha256.txt`, `RELEASE_NOTES_1.3.3.md`. В описании релиза указано, что Windows-сборка будет позже и пока собирается из исходников. Скачивание с GitHub проверено: SHA256 совпал. Тег создан обеими площадками автоматически при создании релиза (lightweight, `3e8db94`); локальный аннотированный тег заменён на тот же lightweight, чтобы local/remote совпадали.
+- Влияние: только публикация и документация.
+- Действие: `[ACTION: macos]` при следующем релизе собирать DMG вручную (`hdiutil create -srcfolder`), если шаг Tauri снова упрётся в `Resource busy`; `[ACTION: user]` Windows-сборка 1.3.3 — когда VM станет доступна.
+- Статус: done
 
 ### 2026-11-03 21:15 UTC — macOS
 - Ветка: `master`
