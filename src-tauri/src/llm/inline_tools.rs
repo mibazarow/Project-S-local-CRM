@@ -42,29 +42,93 @@ pub(crate) struct Parsed {
 /// dialects (fenced/bare JSON); pass an empty set to disable them.
 pub(crate) fn parse(text: &str, known: &BTreeSet<String>) -> Parsed {
     let mut out = Parsed {
-        cleaned: text.to_string(),
+        cleaned: String::new(),
         ..Parsed::default()
     };
     if text.is_empty() {
         return out;
     }
-    let original = out.cleaned.clone();
-    for (open, close, kind) in [
-        (CALL_OPEN, CALL_CLOSE, Body::Mixed),
-        (PIPE_OPEN, PIPE_CLOSE, Body::Mixed),
-        (FUNCS_OPEN, FUNCS_CLOSE, Body::Invoke),
-    ] {
-        extract_blocks(&mut out, open, close, kind, known);
-    }
-    extract_bare_functions(&mut out, known);
-    if out.calls.is_empty() {
-        extract_fenced_json(&mut out, known);
-        extract_bare_json(&mut out, known);
+    for segment in split_fences(text) {
+        match segment.kind {
+            SegmentKind::Text => {
+                let mut part = Parsed {
+                    cleaned: segment.body.to_string(),
+                    ..Parsed::default()
+                };
+                extract_blocks(&mut part, CALL_OPEN, CALL_CLOSE, Body::Mixed, known);
+                extract_blocks(&mut part, PIPE_OPEN, PIPE_CLOSE, Body::Mixed, known);
+                extract_blocks(&mut part, FUNCS_OPEN, FUNCS_CLOSE, Body::Invoke, known);
+                extract_bare_functions(&mut part, known);
+                extract_bare_json(&mut part, known);
+                out.calls.extend(part.calls);
+                out.cleaned.push_str(&part.cleaned);
+            }
+            // A ```json block that is exactly a registered call is how some
+            // models write tool calls; any other code fence is a code sample
+            // and must be left alone.
+            SegmentKind::JsonFence => {
+                let body = segment.body.trim();
+                if let Some(call) = parse_json_call(body, out.calls.len(), known, false) {
+                    out.calls.push(call);
+                } else {
+                    out.cleaned.push_str(segment.raw);
+                }
+            }
+            SegmentKind::CodeFence => {
+                out.cleaned.push_str(segment.raw);
+            }
+        }
     }
     // Only normalise whitespace when something was actually removed: a plain
     // answer must come back byte-for-byte (streaming readability).
-    if out.cleaned != original {
+    if out.cleaned != text {
         out.cleaned = out.cleaned.trim().to_string();
+    }
+    out
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum SegmentKind {
+    Text,
+    /// ```json … ``` — may be a tool call written as JSON.
+    JsonFence,
+    /// Any other fence: a code sample, never a call.
+    CodeFence,
+}
+
+struct Segment<'a> {
+    kind: SegmentKind,
+    /// The slice as it appears in the message (fences keep their backticks).
+    raw: &'a str,
+    /// Inner text: the fence body, or the whole slice for plain text.
+    body: &'a str,
+}
+
+// Splits on ``` fences. Unclosed fence runs to the end of the message (a call
+// still streaming in), so it is treated as code and left untouched.
+fn split_fences(text: &str) -> Vec<Segment<'_>> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(open) = rest.find("```") {
+        if open > 0 {
+            out.push(Segment { kind: SegmentKind::Text, raw: &rest[..open], body: &rest[..open] });
+        }
+        let after = &rest[open + 3..];
+        let Some(close) = after.find("```") else {
+            out.push(Segment { kind: SegmentKind::CodeFence, raw: &rest[open..], body: after });
+            return out;
+        };
+        let raw = &rest[open..open + 3 + close + 3];
+        let inner = &after[..close];
+        let (kind, body) = match inner.strip_prefix("json") {
+            Some(json_body) => (SegmentKind::JsonFence, json_body),
+            None => (SegmentKind::CodeFence, inner),
+        };
+        out.push(Segment { kind, raw, body });
+        rest = &after[close + 3..];
+    }
+    if !rest.is_empty() {
+        out.push(Segment { kind: SegmentKind::Text, raw: rest, body: rest });
     }
     out
 }
@@ -273,26 +337,6 @@ fn extract_bare_functions(out: &mut Parsed, known: &BTreeSet<String>) {
     }
 }
 
-fn extract_fenced_json(out: &mut Parsed, known: &BTreeSet<String>) {
-    let mut rest = out.cleaned.clone();
-    while let Some(open) = rest.find("```") {
-        let after = rest[open + 3..].to_string();
-        let after_body = after.strip_prefix("json").unwrap_or(&after).to_string();
-        let Some(close) = after_body.find("```") else {
-            break;
-        };
-        let body = after_body[..close].trim();
-        if let Some(call) = parse_json_call(body, out.calls.len(), known, false) {
-            record(out, call);
-            let tail = &after_body[close + 3..];
-            rest = format!("{}{tail}", &rest[..open]);
-            out.cleaned = rest.clone();
-        } else {
-            rest = after_body[close + 3..].to_string();
-        }
-    }
-}
-
 fn extract_bare_json(out: &mut Parsed, known: &BTreeSet<String>) {
     let trimmed = out.cleaned.trim();
     if !trimmed.starts_with('{') {
@@ -455,6 +499,40 @@ mod tests {
         let parsed = parse("<tool_call>мусор без функции</tool_call>", &known(&[]));
         assert!(parsed.calls.is_empty());
         assert_eq!(parsed.cleaned, "");
+    }
+
+    // Captured live from llm.camouf.ru (deepseek-v4.1-flash-1017) with the
+    // harness prompt listing tools but no schema: the model wrote the call as
+    // text, with every closing tag present.
+    const LIVE: &str = "<tool_call>\n<function=webfetch>\n<parameter=url>\nhttps://example.com\n</parameter>\n</function>\n</tool_call>";
+
+    #[test]
+    fn parses_the_live_gateway_output() {
+        let parsed = parse(LIVE, &known(&["webfetch"]));
+        assert_eq!(parsed.calls.len(), 1);
+        assert_eq!(parsed.calls[0].name, "webfetch");
+        assert_eq!(parsed.calls[0].arguments["url"], "https://example.com");
+        assert_eq!(parsed.cleaned, "");
+    }
+
+    // A code sample must never be executed: the model may quote the format
+    // when the user asks about it.
+    #[test]
+    fn code_fences_are_left_alone() {
+        let text = "Вот как это выглядит:\n```\n<tool_call><function=bash><parameter=command>rm -rf /</parameter></tool_call>\n```\nТак модель вызывает инструмент.";
+        let parsed = parse(text, &known(&["bash"]));
+        assert!(parsed.calls.is_empty(), "a quoted example must not execute");
+        assert_eq!(parsed.cleaned, text);
+    }
+
+    #[test]
+    fn json_fence_is_a_call_only_for_a_known_tool() {
+        let call = "```json\n{\"name\":\"webfetch\",\"arguments\":{\"url\":\"https://e.ru\"}}\n```";
+        assert_eq!(parse(call, &known(&["webfetch"])).calls.len(), 1);
+        let sample = "```json\n{\"name\":\"webfetch\"}\n```";
+        let parsed = parse(sample, &known(&["bash"]));
+        assert!(parsed.calls.is_empty());
+        assert_eq!(parsed.cleaned, sample);
     }
 
     #[test]

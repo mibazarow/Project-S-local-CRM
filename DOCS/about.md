@@ -2,7 +2,7 @@
 
 Этот файл — техническое продолжение [`README.md`](../README.md): архитектура, данные, агентский луп, поиск, провайдеры, сборка, тесты. Для нетехнического чтения предназначен README.
 
-Текущий статус: **v1.3.2**, схема БД **v41**, **38** встроенных скиллов, **1126 passed / 19 ignored** бэкенд-тестов (Rust) и **605** фронтенд-тестов (vitest). macOS (Apple Silicon) — **опубликован** [релиз 1.3.2](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.3.2); Windows 11 x64 — актуальная опубликованная сборка 1.2.1, 1.3.0 для Windows появится позже (пока собирается из исходников). Linux — в плане (Flatpak).
+Текущий статус: **v1.3.3** (собран локально; опубликован 1.3.2), схема БД **v41**, **38** встроенных скиллов, **1130 passed / 19 ignored** бэкенд-тестов (Rust) и **606** фронтенд-тестов (vitest). macOS (Apple Silicon) — **опубликован** [релиз 1.3.2](https://gitverse.ru/mibazarow/Project-S-local-CRM/releases/tag/v1.3.2); Windows 11 x64 — актуальная опубликованная сборка 1.2.1, 1.3.0 для Windows появится позже (пока собирается из исходников). Linux — в плане (Flatpak).
 
 ## Что это
 
@@ -145,8 +145,8 @@ npm run tauri dev     # приложение в dev-режиме
 ```
 
 ```bash
-npm test              # фронтенд-тесты (vitest) — 605
-cargo test            # бэкенд-тесты (из src-tauri) — 1126 passed / 19 ignored
+npm test              # фронтенд-тесты (vitest) — 606
+cargo test            # бэкенд-тесты (из src-tauri) — 1130 passed / 19 ignored
 npm run build         # tsc + vite build
 npm run app:build     # релизная сборка Tauri (macOS)
 npm run app:install   # сборка + установка в /Applications/Project-S.app

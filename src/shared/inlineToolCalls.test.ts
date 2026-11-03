@@ -33,6 +33,14 @@ describe("stripInlineToolCalls", () => {
     );
   });
 
+  it("never strips inside a code fence", () => {
+    const sample = "Вот пример:\n```\n<tool_call><function=bash><parameter=command>ls</parameter></tool_call>\n```";
+    expect(stripInlineToolCalls(sample)).toBe(sample);
+    // Outside the fence the markup still goes away.
+    const mixed = "до <tool_call><function=x></tool_call> ```code``` после";
+    expect(stripInlineToolCalls(mixed)).toBe("до  ```code``` после");
+  });
+
   it("leaves plain text and code samples untouched", () => {
     expect(stripInlineToolCalls("Первая ")).toBe("Первая ");
     expect(stripInlineToolCalls("")).toBe("");

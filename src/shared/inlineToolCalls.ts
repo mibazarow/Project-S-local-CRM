@@ -5,17 +5,30 @@
 // can flash before its closing tag arrives. Stripping at render time keeps the
 // content and the «Размышления» block readable.
 //
-// Covered: <tool_call>…</tool_call>, <|tool_call|>…<|/tool_call|>,
-// <function_calls>…</function_calls>, and a bare <function=…>…</function>.
-// Generic JSON/fenced blocks are left alone: they are indistinguishable from
-// ordinary code samples.
+// Code fences are left untouched: the model may quote the format when the user
+// asks about it, and a quoted example must be readable, not erased.
 const BLOCKS: ReadonlyArray<readonly [string, string]> = [
-    ["<tool_call>", "</tool_call>"],
-    ["<|tool_call|>", "<|/tool_call|>"],
-    ["<function_calls>", "</function_calls>"],
+  ["<tool_call>", "</tool_call>"],
+  ["<|tool_call|>", "<|/tool_call|>"],
+  ["<function_calls>", "</function_calls>"],
 ];
 
 export function stripInlineToolCalls(text: string): string {
+  let touched = false;
+  const parts = text.split(/(```[\s\S]*?(?:```|$))/);
+  const out = parts
+    .map((part, index) => {
+      // Odd indexes are the captured fences.
+      if (index % 2 === 1) return part;
+      const [next, changed] = stripText(part);
+      touched ||= changed;
+      return next;
+    })
+    .join("");
+  return touched ? out.trim() : text;
+}
+
+function stripText(text: string): [string, boolean] {
   let out = text;
   let touched = false;
   for (const [open, close] of BLOCKS) {
@@ -24,9 +37,7 @@ export function stripInlineToolCalls(text: string): string {
     touched ||= changed;
   }
   const [next, changed] = stripBareFunction(out);
-  out = next;
-  touched ||= changed;
-  return touched ? out.trim() : text;
+  return [next, touched || changed];
 }
 
 // Removes every `open … close` pair; an unterminated pair eats the rest (that

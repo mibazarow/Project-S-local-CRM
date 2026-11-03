@@ -1018,6 +1018,38 @@ fn cancel_after_a_tool_call_skips_the_remaining_calls_of_the_round() {
     assert_eq!(started, ["canceller"]);
 }
 
+// Native tool_calls always win: text markup in the same message is only
+// stripped, never executed a second time.
+#[test]
+fn native_tool_calls_win_over_text_markup() {
+    let mut outcome = tools_outcome(vec![call("c1", "echo", json!({ "text": "native" }))]);
+    outcome.content = Some(
+        "Проверяю.\n<tool_call><function=echo><parameter=text>text</parameter></tool_call>"
+            .to_string(),
+    );
+    let backend = ScriptedBackend::new(vec![outcome, tools_outcome(vec![finish_call("ok")])]);
+    let mut catalog = catalog_with(Some(EchoTool::new(PermissionPolicy::Skip)));
+    let mut state = AgentState {
+        backend: &backend,
+        catalog: &mut catalog,
+    };
+    let mut events = Vec::new();
+    run(&mut state, &config(6), &DenyAllConfirmer, |e| events.push(e)).unwrap();
+    let names: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCallStarted { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, ["echo", "finish_task"], "exactly one echo call");
+    let seen = backend.seen.lock().unwrap();
+    assert!(!seen[1]
+        .iter()
+        .filter_map(|m| m.text_content())
+        .any(|t| t.contains("<tool_call>")));
+}
+
 // A gateway that writes the call as text (no native tool_calls) must still
 // run the tool, keep the markup out of the transcript, and enable the deferred
 // tool so the next round uses the native form.
