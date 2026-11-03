@@ -1018,6 +1018,62 @@ fn cancel_after_a_tool_call_skips_the_remaining_calls_of_the_round() {
     assert_eq!(started, ["canceller"]);
 }
 
+// A gateway that writes the call as text (no native tool_calls) must still
+// run the tool, keep the markup out of the transcript, and enable the deferred
+// tool so the next round uses the native form.
+#[test]
+fn text_form_tool_call_executes_and_enables_the_deferred_tool() {
+    let backend = ScriptedBackend::new(vec![
+        text_outcome(
+            "Сейчас проверю.\n<tool_call><function=echo><parameter=text>hi</parameter></tool_call>",
+        ),
+        tools_outcome(vec![finish_call("готово")]),
+    ]);
+    let mut catalog = Catalog::new();
+    catalog.register(Arc::new(FinishTaskTool), true).unwrap();
+    // Registered as a deferred tool: absent from the schema, which is what
+    // makes the model improvise the call as text.
+    catalog
+        .register(Arc::new(EchoTool::new(PermissionPolicy::Skip)), false)
+        .unwrap();
+    assert!(!catalog.is_active("echo"));
+    let mut state = AgentState {
+        backend: &backend,
+        catalog: &mut catalog,
+    };
+    let mut events = Vec::new();
+    let result = run(&mut state, &config(6), &DenyAllConfirmer, |e| events.push(e)).unwrap();
+    assert_eq!(result.answer, "готово");
+
+    let names: Vec<String> = events
+        .iter()
+        .filter_map(|e| match e {
+            AgentEvent::ToolCallStarted { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, ["echo", "finish_task"], "the text-form call must execute");
+    assert!(
+        state.catalog.is_active("echo"),
+        "a deferred tool used in a text call must be enabled for the next turn"
+    );
+    // The tool result reached the model on the next round.
+    let seen = backend.seen.lock().unwrap();
+    let second = &seen[1];
+    assert_eq!(second.last().unwrap().role, Role::Tool);
+    assert!(second.last().unwrap().text_content().unwrap_or_default().contains("hi"));
+    // And the assistant turn carries no markup.
+    let assistant = second
+        .iter()
+        .rev()
+        .find(|m| m.role == Role::Assistant)
+        .unwrap();
+    assert!(!assistant
+        .text_content()
+        .unwrap_or_default()
+        .contains("<tool_call>"));
+}
+
 #[test]
 fn cancel_flag_is_per_run_and_never_leaks_into_the_next_run() {
     // Run one is cancelled by its own flag; run two gets a fresh flag and

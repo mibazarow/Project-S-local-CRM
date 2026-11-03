@@ -2,7 +2,7 @@ pub mod types;
 
 mod client;
 mod config;
-mod inline_tools;
+pub(crate) mod inline_tools;
 mod models;
 mod reasoning;
 mod streaming;

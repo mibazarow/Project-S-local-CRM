@@ -1,34 +1,62 @@
-// Display guard for the inline tool-call dialect some gateways emit as text:
+// Display guard for tool calls written as text instead of the native
+// `tool_calls` field. The backend parses these into real calls
+// (llm::inline_tools) and strips them from the stored message, but transcripts
+// written before that fix still contain the markup, and a half-streamed block
+// can flash before its closing tag arrives. Stripping at render time keeps the
+// content and the «Размышления» block readable.
 //
-//   <tool_call>
-//   <function=webfetch>
-//   <parameter=url>https://…</parameter>
-//   </tool_call>
-//
-// The backend now parses these into real tool calls (llm::inline_tools), but
-// transcripts written before that fix still contain the raw markup, and a
-// half-streamed block can flash before the closing tag arrives. Stripping at
-// render time keeps both the content and the «Размышления» block readable.
-const OPEN = "<tool_call>";
-const CLOSE = "</tool_call>";
+// Covered: <tool_call>…</tool_call>, <|tool_call|>…<|/tool_call|>,
+// <function_calls>…</function_calls>, and a bare <function=…>…</function>.
+// Generic JSON/fenced blocks are left alone: they are indistinguishable from
+// ordinary code samples.
+const BLOCKS: ReadonlyArray<readonly [string, string]> = [
+    ["<tool_call>", "</tool_call>"],
+    ["<|tool_call|>", "<|/tool_call|>"],
+    ["<function_calls>", "</function_calls>"],
+];
 
 export function stripInlineToolCalls(text: string): string {
-  if (!text.includes(OPEN)) return text;
+  let out = text;
+  let touched = false;
+  for (const [open, close] of BLOCKS) {
+    const [next, changed] = stripBlocks(out, open, close);
+    out = next;
+    touched ||= changed;
+  }
+  const [next, changed] = stripBareFunction(out);
+  out = next;
+  touched ||= changed;
+  return touched ? out.trim() : text;
+}
+
+// Removes every `open … close` pair; an unterminated pair eats the rest (that
+// is a call still streaming in).
+function stripBlocks(text: string, open: string, close: string): [string, boolean] {
+  if (!text.includes(open)) return [text, false];
   let out = "";
   let rest = text;
   for (;;) {
-    const start = rest.indexOf(OPEN);
+    const start = rest.indexOf(open);
     if (start === -1) {
       out += rest;
       break;
     }
     out += rest.slice(0, start);
-    const after = rest.slice(start + OPEN.length);
-    const close = after.indexOf(CLOSE);
-    // Unterminated block: the rest is markup (or a partial that is still
-    // streaming in), so nothing of it should be shown.
-    if (close === -1) break;
-    rest = after.slice(close + CLOSE.length);
+    const after = rest.slice(start + open.length);
+    const end = after.indexOf(close);
+    if (end === -1) break;
+    rest = after.slice(end + close.length);
   }
-  return out.trim();
+  return [out, true];
+}
+
+// A bare `<function=name>…</function>` without the wrapper tags.
+function stripBareFunction(text: string): [string, boolean] {
+  const open = /<function(?:=|\s+name=)/.exec(text);
+  if (!open) return [text, false];
+  const start = open.index;
+  const after = text.slice(start);
+  const close = after.indexOf("</function>");
+  const end = close === -1 ? after.length : close + "</function>".length;
+  return [text.slice(0, start) + after.slice(end), true];
 }

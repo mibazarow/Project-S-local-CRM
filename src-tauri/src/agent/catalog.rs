@@ -87,6 +87,18 @@ impl Catalog {
 
     // Specs for the active tool list; the two discovery meta-tools are always
     // exposed so the model can widen the set itself.
+    // Every registered name, active or deferred (hidden ones included: a call
+    // to a hidden tool must surface as `hidden: <reason>`, not as prose).
+    // Whether a tool is currently in the model-facing schema.
+    #[cfg(test)]
+    pub fn is_active(&self, name: &str) -> bool {
+        self.active.contains(name)
+    }
+
+    pub fn names(&self) -> BTreeSet<String> {
+        self.tools.keys().cloned().collect()
+    }
+
     pub fn to_specs(&self) -> Vec<ToolSpec> {
         let mut specs: Vec<ToolSpec> = self
             .active

@@ -18,8 +18,25 @@ describe("stripInlineToolCalls", () => {
     expect(stripInlineToolCalls("Думаю.\n<tool_call><function=bash>")).toBe("Думаю.");
   });
 
-  it("leaves plain text untouched, including whitespace", () => {
+  it("removes the pipe and function_calls dialects", () => {
+    expect(stripInlineToolCalls("a<|tool_call|><function=x><|/tool_call|>b")).toBe("ab");
+    expect(
+      stripInlineToolCalls(
+        'a<function_calls><invoke name="x"><parameter name="k">v</parameter></invoke></function_calls>b',
+      ),
+    ).toBe("ab");
+  });
+
+  it("removes a bare function tag", () => {
+    expect(stripInlineToolCalls("до <function=webfetch><parameter=url>u</parameter></function> после")).toBe(
+      "до  после",
+    );
+  });
+
+  it("leaves plain text and code samples untouched", () => {
     expect(stripInlineToolCalls("Первая ")).toBe("Первая ");
     expect(stripInlineToolCalls("")).toBe("");
+    const json = '```json\n{"name":"webfetch"}\n```';
+    expect(stripInlineToolCalls(json)).toBe(json);
   });
 });

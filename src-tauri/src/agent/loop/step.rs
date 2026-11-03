@@ -225,6 +225,46 @@ impl Run {
     // Accumulate this round's thinking trace and latch its final text as the
     // fallback answer candidate, before any transcript turns are appended.
     // The round's trace is kept for the assistant message appended by `step`.
+    // Text-form tool calls (llm::inline_tools): some gateways write the call
+    // into the message text instead of the native `tool_calls` array. Interpret
+    // it against the registered catalog, enable a deferred tool so the next
+    // turn can use the native form, and keep the markup out of the transcript.
+    pub(super) fn adopt_inline_tool_calls(
+        &mut self,
+        state: &mut AgentState<'_>,
+        outcome: &mut ChatOutcome,
+    ) {
+        if let Some(reasoning) = outcome.reasoning.as_deref() {
+            let cleaned = crate::llm::inline_tools::clean(reasoning);
+            outcome.reasoning = (!cleaned.is_empty()).then_some(cleaned);
+        }
+        let known = state.catalog.names();
+        if !outcome.tool_calls.is_empty() {
+            if let Some(content) = outcome.content.as_deref() {
+                let cleaned = crate::llm::inline_tools::clean(content);
+                outcome.content = (!cleaned.is_empty()).then_some(cleaned);
+            }
+            return;
+        }
+        let Some(content) = outcome.content.as_deref() else {
+            return;
+        };
+        let parsed = crate::llm::inline_tools::parse(content, &known);
+        if parsed.calls.is_empty() {
+            outcome.content = (!parsed.cleaned.is_empty()).then_some(parsed.cleaned);
+            return;
+        }
+        for call in &parsed.calls {
+            // A deferred tool is absent from the schema — exactly why the model
+            // improvised. Enabling it makes the next round native.
+            if known.contains(&call.name) {
+                let _ = state.catalog.enable(&call.name);
+            }
+        }
+        outcome.content = (!parsed.cleaned.is_empty()).then_some(parsed.cleaned);
+        outcome.tool_calls = parsed.calls;
+    }
+
     pub(super) fn note_round_outcome(&mut self, outcome: &ChatOutcome) {
         let round_reasoning = outcome
             .reasoning

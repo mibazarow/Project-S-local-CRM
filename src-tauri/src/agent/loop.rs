@@ -174,7 +174,7 @@ fn run_inner(
         if let Some(reason) = run.check_watchdog() {
             return Ok(run.finish_run(&mut hooks, reason, step - 1, None));
         }
-        let outcome = match run.call_llm(state, config, &mut hooks) {
+        let mut outcome = match run.call_llm(state, config, &mut hooks) {
             Ok(outcome) => outcome,
             Err(e) if run.is_cancelled(config) => {
                 let _ = e;
@@ -195,6 +195,7 @@ fn run_inner(
                 return Err(e);
             }
         };
+        run.adopt_inline_tool_calls(state, &mut outcome);
         run.note_round_outcome(&outcome);
         if run.is_cancelled(config) {
             return Ok(run.finish_run(&mut hooks, "cancelled", step - 1, None));

@@ -82,8 +82,8 @@ impl StreamAcc {
         }
     }
 
-    fn finish(mut self, on_event: &mut dyn FnMut(ChatEvent)) -> ChatOutcome {
-        let mut tool_calls: Vec<ToolCall> = self
+    fn finish(self, on_event: &mut dyn FnMut(ChatEvent)) -> ChatOutcome {
+        let tool_calls: Vec<ToolCall> = self
             .frags
             .into_iter()
             .map(|(i, (id, name, arguments))| {
@@ -95,23 +95,11 @@ impl StreamAcc {
                 ToolCall::new(id, name, arguments)
             })
             .collect();
-        // Fallback for gateways that write the call as text instead of the
-        // native `tool_calls` array (see llm::inline_tools). Only used when
-        // the provider sent nothing native, so a correct stream is untouched.
-        let mut content = std::mem::take(&mut self.content);
-        if tool_calls.is_empty() {
-            let (parsed, cleaned) = inline_tools::extract(&content);
-            if !parsed.is_empty() {
-                tool_calls = parsed;
-                content = cleaned;
-            } else {
-                content = cleaned;
-            }
-        } else {
-            content = inline_tools::strip(&content);
-        }
-        // The same markup lands in the thinking trace; it is not prose.
-        let reasoning = inline_tools::strip(&self.reasoning);
+        // Strip text-form tool-call markup. Interpreting it into real calls
+        // happens in the agent loop, which knows the registered tool set (and
+        // can auto-enable a deferred tool); see loop::adopt_inline_tool_calls.
+        let content = inline_tools::clean(&self.content);
+        let reasoning = inline_tools::clean(&self.reasoning);
         if !tool_calls.is_empty() {
             on_event(ChatEvent::ToolCallsFinal(tool_calls.clone()));
         }
@@ -183,7 +171,7 @@ pub(crate) fn parse_non_stream(value: &Value) -> Result<ChatOutcome> {
         .or_else(|| message.get("reasoning"))
         .and_then(Value::as_str)
         .map(String::from);
-    let mut tool_calls: Vec<ToolCall> = message
+    let tool_calls: Vec<ToolCall> = message
         .get("tool_calls")
         .and_then(Value::as_array)
         .map(|arr| {
@@ -202,25 +190,10 @@ pub(crate) fn parse_non_stream(value: &Value) -> Result<ChatOutcome> {
                 .collect()
         })
         .unwrap_or_default();
-    // Same text-dialect fallback as the SSE path (llm::inline_tools).
-    let mut content = content;
-    let mut reasoning = reasoning;
-    if tool_calls.is_empty() {
-        if let Some(raw) = content.as_deref() {
-            let (parsed, cleaned) = inline_tools::extract(raw);
-            if !parsed.is_empty() {
-                tool_calls = parsed;
-            }
-            content = (!cleaned.is_empty()).then_some(cleaned);
-        }
-    } else if let Some(raw) = content.as_deref() {
-        let cleaned = inline_tools::strip(raw);
-        content = (!cleaned.is_empty()).then_some(cleaned);
-    }
-    if let Some(raw) = reasoning.as_deref() {
-        let cleaned = inline_tools::strip(raw);
-        reasoning = (!cleaned.is_empty()).then_some(cleaned);
-    }
+    // Strip text-form tool-call markup; the loop interprets it (it knows the
+    // registered tool set). See loop::adopt_inline_tool_calls.
+    let content = content.map(|raw| inline_tools::clean(&raw)).filter(|c| !c.is_empty());
+    let reasoning = reasoning.map(|raw| inline_tools::clean(&raw)).filter(|r| !r.is_empty());
     Ok(ChatOutcome {
         content,
         reasoning,
@@ -291,20 +264,28 @@ mod tests {
         assert_eq!(outcome.content.as_deref(), Some("Первая "));
     }
 
-    // Gateways that write the call as text instead of native tool_calls:
-    // the markup becomes a real tool call and never reaches the transcript.
+    // The stream leaves text-form markup out of the content (the loop turns it
+    // into a real call, with catalog validation), so nothing leaks into the
+    // transcript even before the loop sees it.
     #[test]
-    fn sse_text_tool_call_becomes_a_native_call_and_leaves_no_markup() {
-        let (events, outcome) = sse(&[
+    fn sse_text_tool_call_markup_never_reaches_the_content() {
+        let (_, outcome) = sse(&[
             r#"data: {"choices":[{"index":0,"delta":{"content":"Сейчас проверю.\n<tool_call>\n<function=webfetch>\n<parameter=url>\nhttps://example.ru\n</parameter>\n</tool_call>"}}]}"#,
             r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
             "data: [DONE]",
         ]);
-        assert_eq!(outcome.tool_calls.len(), 1);
-        assert_eq!(outcome.tool_calls[0].name, "webfetch");
-        assert_eq!(outcome.tool_calls[0].arguments["url"], "https://example.ru");
+        assert!(outcome.tool_calls.is_empty());
         assert_eq!(outcome.content.as_deref(), Some("Сейчас проверю."));
-        assert!(events.iter().any(|e| matches!(e, ChatEvent::ToolCallsFinal(c) if c.len() == 1)));
+    }
+
+    #[test]
+    fn sse_reasoning_markup_is_stripped() {
+        let (_, outcome) = sse(&[
+            r#"data: {"choices":[{"index":0,"delta":{"reasoning_content":"Думаю.\n<tool_call><function=bash><parameter=command>pwd</parameter></tool_call>"}}]}"#,
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+            "data: [DONE]",
+        ]);
+        assert_eq!(outcome.reasoning.as_deref(), Some("Думаю."));
     }
 
     #[test]
